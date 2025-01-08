@@ -7,9 +7,6 @@ from django.utils import timezone
 
 from store.models import Categorie, Marque, Modele, Produit, Purete
 
-# from phonenumber_field.modelfields import PhoneNumberField
-
-
 
 # Create your models here.
 # Client Model

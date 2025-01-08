@@ -14,8 +14,6 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
-from decouple import config
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -25,7 +23,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # Sécuriser le SECRET_KEY
-SECRET_KEY = config('SECRET_KEY')
+SECRET_KEY = 'django-insecure-l0_vam@=nmq2gy4b7+=8izmh(h==!hmp=e^+0_97b&m(&#z77@'
+# SECRET_KEY = config('SECRET_KEY')
 # SECRET_KEY = os.environ.get('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -50,14 +49,13 @@ INSTALLED_APPS = [
     'store',
     'stock',
     'sale',
-    'phonenumber_field',
     'api',
     
     #Third Party App
     'rest_framework',
+    'knox',
     'corsheaders',
     'drf_yasg',
-    'knox', 
     'django_rest_passwordreset',
     # 'qrcode'
 ]
@@ -111,30 +109,24 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend.wsgi.application'
 
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': ('knox.auth.TokenAuthentication',)
+    'DEFAULT_AUTHENTICATION_CLASSES': ('knox.auth.TokenAuthentication',),
 }
 
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'jewellery_management',
-#         'USER': 'root',
-#         'PASSWORD': '',
-#         'HOST':'localhost',
-#         'PORT':'3306',
-#         'OPTIONS': {
-#             'sql_mode': 'STRICT_ALL_TABLES',
-#         },
-#     }
-# }
-
 DATABASES = {
-    "default": {
-        dj_database_url.parse(config('DATABASE_URL'))
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'jewellery_management',
+        'USER': 'root',
+        'PASSWORD': '',
+        'HOST':'localhost',
+        'PORT':'3306',
+        'OPTIONS': {
+            'sql_mode': 'STRICT_ALL_TABLES',
+        },
     }
 }
 
@@ -172,15 +164,15 @@ EMAIL_USE_TLS = True
 # EMAIL_HOST_USER = os.environ.get('EMAIL_USER')
 # EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_PASSWORD')
 # DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
-EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
-DEFAULT_FROM_EMAIL = 'Diouf7AH'
+# EMAIL_HOST_USER = config('EMAIL_HOST_USER')
+# EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
+# DEFAULT_FROM_EMAIL = 'Diouf7AH'
 
 
-# FROM_EMAIL = "lamzooo555@gmail.com"   
-# EMAIL_BACKEND = "anymail.backends.mailgun.EmailBackend"
-# DEFAULT_FROM_EMAIL = "lamzooo555@gmail.com"
-# SERVER_EMAIL = "lamzooo555@gmail.com"
+FROM_EMAIL = "'bijouterieriogold@gmail.com'"   
+EMAIL_BACKEND = "anymail.backends.mailgun.EmailBackend"
+DEFAULT_FROM_EMAIL = "'bijouterieriogold@gmail.com'"
+SERVER_EMAIL = "'bijouterieriogold@gmail.com'"
 
 # Internationalization
 # https://docs.djangoproject.com/en/4.2/topics/i18n/
