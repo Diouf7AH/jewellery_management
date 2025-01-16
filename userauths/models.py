@@ -27,7 +27,7 @@ class Role(models.Model):
         return f"{self.role}"
 
 
-class CustomUserManager(BaseUserManager): 
+class UserManager(BaseUserManager): 
     def create_user(self, email, password=None, **extra_fields ): 
         if not email: 
             raise ValueError('Email is a required field')
@@ -48,12 +48,12 @@ class CustomUserManager(BaseUserManager):
         user.save()
         return user
 
-class CustomUser(AbstractUser):
+class User(AbstractUser):
     email = models.EmailField(max_length=200, unique=True)
     dateNaiss = models.DateField(null=True, blank=True)
     username = models.CharField(max_length=200, null=True, blank=True)
-    # firstname =  models.CharField(max_length=200, blank=True, null=True)
-    # lastname =  models.CharField(max_length=200, blank=True, null=True)
+    firstname =  models.CharField(max_length=200, blank=True, null=True)
+    lastname =  models.CharField(max_length=200, blank=True, null=True)
     phone =  models.CharField(max_length=20,unique=True,null=True)
     address = models.TextField(default="")
     is_active = models.BooleanField(default=True)
@@ -63,7 +63,7 @@ class CustomUser(AbstractUser):
     bijouterie = models.ForeignKey(Bijouterie, on_delete=models.SET_NULL, null=True, related_name="user_bijouterie")
     user_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
 
-    objects = CustomUserManager()
+    objects = UserManager()
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
@@ -89,8 +89,7 @@ def password_reset_token_created(reset_password_token, *args, **kwargs):
     msg = EmailMultiAlternatives(
         subject = "Request for resetting password for {title}".format(title=reset_password_token.user.email), 
         body=plain_message,
-        # from_email = "sender@example.com", 
-        from_email = "lamzooo555@gmail.com", 
+        from_email = "sender@example.com", 
         to=[reset_password_token.user.email]
     )
 

@@ -75,11 +75,10 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-]
+CORS_ALLOWED_ORIGINS = ['http://localhost:5173',]
+# CORS_ALLOWED_ORIGINS = ['"http://127.0.0.1:8000",',]
 
-AUTH_USER_MODEL = 'userauths.CustomUser'
+
 
 AUTHENTICATION_BACKENDS = [
     # 'users.authback.EmailBackend',
@@ -108,10 +107,17 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'backend.wsgi.application'
 
-REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': ('knox.auth.TokenAuthentication',),
-}
+# REST_FRAMEWORK = {
+#     'DEFAULT_AUTHENTICATION_CLASSES': ('knox.auth.TokenAuthentication',),
+# }
 
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    )
+}   
+
+KNOX_TOKEN_TTL = timedelta(hours=1)
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
@@ -130,6 +136,7 @@ REST_FRAMEWORK = {
 #     }
 # }
 
+# U2ymRZYjZCAk
 
 DATABASES = {
     "default": {
@@ -157,10 +164,20 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # the email settings
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
+#EMAIL configuration
+# EMAIL_USE_TLS = True
+# EMAIL_HOST = 'smtp.gmail.com'
+# EMAIL_PORT = 587
+# EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER')
+# EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD')
+
+EMAIL_HOST ='smtp.gmail.com'
 EMAIL_PORT = 587
+EMAIL_HOST_USER = 'lamzooo555@gmail.com'
+EMAIL_HOST_PASSWORD = 'zyzruylpncztuqrn'
 EMAIL_USE_TLS = True
+
+# DEFAULT_FROM_EMAIL = 'no-reply@yourdomain.com'
 # EMAIL_HOST_USER = os.environ.get('EMAIL_USER')
 # EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_PASSWORD')
 # DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
@@ -169,10 +186,10 @@ EMAIL_USE_TLS = True
 # DEFAULT_FROM_EMAIL = 'Diouf7AH'
 
 
-FROM_EMAIL = "'bijouterieriogold@gmail.com'"   
-EMAIL_BACKEND = "anymail.backends.mailgun.EmailBackend"
-DEFAULT_FROM_EMAIL = "'bijouterieriogold@gmail.com'"
-SERVER_EMAIL = "'bijouterieriogold@gmail.com'"
+# FROM_EMAIL = "'bijouterieriogold@gmail.com'"   
+# EMAIL_BACKEND = "anymail.backends.mailgun.EmailBackend"
+# DEFAULT_FROM_EMAIL = "'bijouterieriogold@gmail.com'"
+# SERVER_EMAIL = "'bijouterieriogold@gmail.com'"
 
 # Internationalization
 # https://docs.djangoproject.com/en/4.2/topics/i18n/
@@ -198,15 +215,72 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 STATIC_URL = 'static/'
 
-MEDIA_URL = 'media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+# MEDIA_URL = 'media/'
+# MEDIA_ROOT = BASE_DIR / 'media'
 
-STATICFILES_STORAGE = "whitenoise.storage.CompresseManiStaticFilesStorage"
+# STATICFILES_STORAGE = "whitenoise.storage.CompresseManiStaticFilesStorage"
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# SWAGGER_SETTINGS = {
+#     'LOGIN_URL' : '/api/login/',
+#     'SECURITY_DEFINITIONS': {
+#         'Bearer': {
+#             'type': 'apiKey',
+#             'name': 'Authorization',
+#             'in': 'header'
+#         }
+#     }
+# }
+
+SWAGGER_SETTINGS = {
+   'SECURITY_DEFINITIONS': {
+      'Bearer': {
+            'type': 'apiKey',
+            'name': 'Authorization',
+            'in': 'header'
+      }
+   }
+}
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+AUTH_USER_MODEL = 'userauths.User'
+AUTHENTICATION_BACKENDS = [
+'account.auth_backend.EmailPhoneUsernameAuthenticationBackend'
+]
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=1000000),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=60),
+    'ROTATE_REFRESH_TOKENS': False,
+    'BLACKLIST_AFTER_ROTATION': False,
+    'UPDATE_LAST_LOGIN': False,
+
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+    'USER_AUTHENTICATION_RULE': 'rest_framework_simplejwt.authentication.default_user_authentication_rule',
+
+    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
+    'TOKEN_TYPE_CLAIM': 'token_type',
+    'TOKEN_USER_CLASS': 'rest_framework_simplejwt.models.TokenUser',
+
+    'JTI_CLAIM': 'jti',
+}
+
+MEDIA_ROOT = os.path.join(BASE_DIR,'media')
+MEDIA_URL = '/media/'
+
+
+
+CORS_ORIGIN_WHITELIST = [
+    'http://localhost:3000',
+]
 
 CORS_ALLOW_METHODS = [
     'GET',
@@ -214,4 +288,16 @@ CORS_ALLOW_METHODS = [
     'PUT',
     'DELETE',
     'OPTIONS',
+]
+
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
 ]

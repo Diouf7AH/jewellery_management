@@ -2,6 +2,9 @@ from io import BytesIO
 
 import qrcode
 from django.http import HttpResponse
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
+from knox.auth import TokenAuthentication
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -18,11 +21,25 @@ from store.serializers import (BijouterieSerializer, CategorieSerializer,
 class BijouterieListCreateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', BijouterieSerializer)},
+        )
     def get(self, request):
+        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
+            return Response({"message": "Access Denied"})
         bijouteries = Bijouterie.objects.all()
         serializer = BijouterieSerializer(bijouteries, many=True)
         return Response(serializer.data)
     
+    @swagger_auto_schema(
+        operation_description="Register a new user",
+        request_body=BijouterieSerializer,
+        responses={
+            status.HTTP_201_CREATED: openapi.Response('User created successfully', BijouterieSerializer),
+            status.HTTP_400_BAD_REQUEST: openapi.Response('Bad Request')
+        }
+    )
     def post(self, request):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
             return Response({"message": "Access Denied"})
@@ -80,21 +97,44 @@ class BijouterieDetailAPIView(APIView):
 class CategorieListCreateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', CategorieSerializer)},
+        )
     def get(self, request):
         categories = Categorie.objects.all()
         serializer = CategorieSerializer(categories, many=True)
         return Response(serializer.data)
     
+    @swagger_auto_schema(
+        operation_description="Register a new user",
+        request_body=CategorieSerializer,
+        responses={
+            status.HTTP_201_CREATED: openapi.Response('User created successfully', CategorieSerializer),
+            status.HTTP_400_BAD_REQUEST: openapi.Response('Bad Request')
+        }
+    )
     def post(self, request):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
             return Response({"message": "Access Denied"})
         # if request.user.is_authenticated and request.user.user_role and not request.user.user_role.role == 'admin' and not request.user.user_role.role == 'manager' and not request.user.user_role.role == 'seller':
         #     return Response({"message": "Access Denied"})
         serializer = CategorieSerializer(data=request.data)
+        # if serializer.is_valid():
+        #     serializer.save()
+        #     return Response(serializer.data, status=status.HTTP_201_CREATED)
+        # return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            try:
+                # Saving the data
+                serializer.save()
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+            except Exception as e:
+                # Log the error if something goes wrong
+                return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
 
 
 class CategorieDetailAPIView(APIView):
@@ -198,11 +238,23 @@ class CategorieDetailAPIView(APIView):
 class PureteListCreateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', PureteSerializer)},
+        )
     def get(self, request):
         puretes = Purete.objects.all()
         serializer = PureteSerializer(puretes, many=True)
         return Response(serializer.data)
 
+    @swagger_auto_schema(
+        operation_description="Register a new user",
+        request_body=PureteSerializer,
+        responses={
+            status.HTTP_201_CREATED: openapi.Response('User created successfully', PureteSerializer),
+            status.HTTP_400_BAD_REQUEST: openapi.Response('Bad Request')
+        }
+    )
     def post(self, request):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
             return Response({"message": "Access Denied"})
@@ -260,11 +312,23 @@ class PureteDetailAPIView(APIView):
 class MarqueListCreateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', BijouterieSerializer)},
+        )
     def get(self, request):
         marques = Marque.objects.all()
         serializer = MarqueSerializer(marques, many=True)
         return Response(serializer.data)
 
+    @swagger_auto_schema(
+        operation_description="Register a new user",
+        request_body=MarqueSerializer,
+        responses={
+            status.HTTP_201_CREATED: openapi.Response('User created successfully', BijouterieSerializer),
+            status.HTTP_400_BAD_REQUEST: openapi.Response('Bad Request')
+        }
+    )
     def post(self, request):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
             return Response({"message": "Access Denied"})
@@ -321,11 +385,23 @@ class MarqueDetailAPIView(APIView):
 class ModeleListCreateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', BijouterieSerializer)},
+        )
     def get(self, request):
         modeles = Modele.objects.all()
         serializer = ModeleSerializer(modeles, many=True)
         return Response(serializer.data)
 
+    @swagger_auto_schema(
+        operation_description="Register a new user",
+        request_body=ModeleSerializer,
+        responses={
+            status.HTTP_201_CREATED: openapi.Response('User created successfully', BijouterieSerializer),
+            status.HTTP_400_BAD_REQUEST: openapi.Response('Bad Request')
+        }
+    )
     def post(self, request):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
             return Response({"message": "Access Denied"})
@@ -382,11 +458,23 @@ class ModeleDetailAPIView(APIView):
 class ProduitListCreateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', BijouterieSerializer)},
+        )
     def get(self, request):
         produits = Produit.objects.all()
         serializer = ProduitSerializer(produits, many=True)
         return Response(serializer.data)
 
+    @swagger_auto_schema(
+        operation_description="Register a new user",
+        request_body=ProduitSerializer,
+        responses={
+            status.HTTP_201_CREATED: openapi.Response('User created successfully', ProduitSerializer),
+            status.HTTP_400_BAD_REQUEST: openapi.Response('Bad Request')
+        }
+    )
     def post(self, request):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
             return Response({"message": "Access Denied"})
@@ -445,6 +533,10 @@ class ProduitDetailAPIView(APIView):
 class QRCodeView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', BijouterieSerializer)},
+        )
     def get(self, request, slug, format=None):
         try:
             # Retrieve the produit by its ID

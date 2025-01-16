@@ -2,6 +2,8 @@ import json
 
 from django.db import transaction
 from django.shortcuts import get_object_or_404, render
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -21,6 +23,16 @@ from store.serializers import MarqueSerializer, ProduitSerializer
 class ProduitStockAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        operation_description="User login with email and password",
+        request_body=StockSerializer,
+        responses={
+            200: openapi.Response("Login successful", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"token": openapi.Schema(type=openapi.TYPE_STRING)})),
+            400: openapi.Response("Bad request", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"detail": openapi.Schema(type=openapi.TYPE_STRING)}))
+        }
+    )
+    
     @transaction.atomic
     def post(self, request, *args, **kwargs):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
@@ -84,9 +96,11 @@ class ProduitStockAPIView(APIView):
         except Exception as e:
             # If any exception occurs, the transaction will be rolled back
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    
-    
-    
+
+
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', StockSerializer)},
+    )
     #get all
     def get(self, request, *args, **kwargs):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur':
@@ -237,6 +251,7 @@ class UpdateStockAPIView(APIView):
 
         serializer = StockSerializer(stock)
         return Response(serializer.data)
+    
     
     # POST method to create a new stock instance
     def post(self, request, format=None):

@@ -7,6 +7,8 @@ from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import render
 from django.template.loader import render_to_string
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
 # import phonenumbers
 # from phonenumbers import PhoneNumber
@@ -27,6 +29,16 @@ from store.models import Produit
 class VenteProduitCreateView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        operation_description="User login with email and password",
+        request_body=VenteProduitSerializers,
+        responses={
+            200: openapi.Response("Login successful", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"token": openapi.Schema(type=openapi.TYPE_STRING)})),
+            400: openapi.Response("Bad request", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"detail": openapi.Schema(type=openapi.TYPE_STRING)}))
+        }
+    )
+    
     @transaction.atomic
     def post(self, request, *args, **kwargs):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur':
@@ -111,6 +123,9 @@ class VenteProduitCreateView(APIView):
 class ListFactureView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', FactureSerializers)},
+    )
     def get(self, request):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur' and request.user.user_role.role != 'caissier':
             return Response({"message": "Access Denied"})
@@ -122,6 +137,9 @@ class ListFactureView(APIView):
 class RechercherFactureView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', FactureSerializers)},
+    )
     def get(self, request, numero_facture):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur' and request.user.user_role.role != 'caissier':
             return Response({"message": "Access Denied"})
@@ -138,6 +156,16 @@ class RechercherFactureView(APIView):
 class PaiementFactureView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        operation_description="User login with email and password",
+        request_body=PaiementSerializers,
+        responses={
+            200: openapi.Response("Login successful", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"token": openapi.Schema(type=openapi.TYPE_STRING)})),
+            400: openapi.Response("Bad request", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"detail": openapi.Schema(type=openapi.TYPE_STRING)}))
+        }
+    )
+    
     def post(self, request, facture_numero):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'caissier':
             return Response({"message": "Access Denied"})
@@ -258,6 +286,9 @@ class PaiementFactureView(APIView):
 class VentProduitsListAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', VenteProduitSerializers)},
+    )
     def get(self, request):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur' and request.user.user_role.role != 'caissier':
             return Response({"message": "Access Denied"})

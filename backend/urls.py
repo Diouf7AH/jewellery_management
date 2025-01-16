@@ -38,11 +38,14 @@ schema_view = get_schema_view(
     public=True,
     permission_classes=(permissions.AllowAny,),
 )
+API_DESCRIPTION = 'A Web API for creating and editing.' # new
+API_TITLE = 'API' # new
 
 urlpatterns = [
     path('swagger<format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
     path('', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
+    
     
     # API V1 Urls
     path("api/", include("api.urls")),

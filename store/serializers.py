@@ -8,13 +8,13 @@ from store.models import (Bijouterie, Categorie, Gallery, HistoriquePrix,
 class BijouterieSerializer(serializers.ModelSerializer):
     class Meta:
         model = Bijouterie
-        fields = '__all__'
+        fields = ['id', 'nom', 'telephone_portable_1', 'telephone_portable_2', 'telephone_portable_3', 'telephone_portable_4', 'telephone_portable_5', 'telephone_fix', 'adresse', 'logo_blanc', 'logo_noir', 'nom_de_domaine', 'tiktok', 'facebook', 'intagram']
         
 
 class CategorieSerializer(serializers.ModelSerializer):
     class Meta:
         model = Categorie
-        fields = '__all__'
+        fields = ['id', 'nom', 'image', 'active', 'slug']
 
 
 # class TypeSerializer(serializers.ModelSerializer):

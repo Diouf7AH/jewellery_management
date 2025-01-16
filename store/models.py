@@ -206,6 +206,9 @@ class Produit(models.Model):
     genre = models.CharField(choices=GENRE, default="femme", max_length=10, blank=True, null=True)
     status = models.CharField(choices=STATUS, max_length=50, default="publié", null=True, blank=True)
     
+    slug = models.SlugField(unique=True, max_length=50, null=True, blank=True)
+    sku = models.CharField( max_length=15, blank=True, unique=True)
+    
     #prix par defaut
     # prix_vente_grammes = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
     # prix avec redution
@@ -213,6 +216,10 @@ class Produit(models.Model):
     prix_avec_tax = models.DecimalField(blank=True, null=True, default=0.00, decimal_places=2, max_digits=12)
     
     quantite_en_stock = models.PositiveIntegerField(default=0)
+    
+    # Date of product creation
+    date_ajout = models.DateTimeField(auto_now_add=True) 
+    date_modification = models.DateTimeField(auto_now=True) 
     # stock = models.IntegerField(default=0)
     
     # Unique short UUIDs for SKU and product
@@ -234,16 +241,14 @@ class Produit(models.Model):
     # tous les pantalons verts du modèle n° 4355 en taille 36 femme ont donc le même numéro.
     
     # sku = ShortUUIDField(unique=True, length=5, max_length=50, prefix="SKU", alphabet="1234567890")
-    sku = models.CharField( max_length=15, blank=True, unique=True)
+    
     # sku = models.CharField( max_length=13, blank=True, unique=True, default=generate_sku)
     # qr_code = models.ImageField(upload_to='qr_codes', blank=True)
     # qr_code = models.CharField(max_length=255, blank=True, null=True)
     # Slug for SEO-friendly URLs
-    slug = models.SlugField(unique=True, max_length=50, null=True, blank=True)
     
-    # Date of product creation
-    date_ajout = models.DateTimeField(auto_now_add=True) 
-    date_modification = models.DateTimeField(auto_now=True) 
+    
+    
     
     # def calcule_prix_vente(self):
     #     prix_vente = self.poids * self.marque.prix
