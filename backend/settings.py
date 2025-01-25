@@ -32,7 +32,8 @@ SECRET_KEY = 'django-insecure-l0_vam@=nmq2gy4b7+=8izmh(h==!hmp=e^+0_97b&m(&#z77@
 DEBUG = True
 
 # ALLOWED_HOSTS = [''127.0.0.1, 'localhost', '51.222.110.64', '.rio-gold.com']
-ALLOWED_HOSTS = ['*']
+# ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 
 # Application definition
