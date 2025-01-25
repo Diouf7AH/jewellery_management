@@ -28,7 +28,8 @@ SECRET_KEY = 'django-insecure-l0_vam@=nmq2gy4b7+=8izmh(h==!hmp=e^+0_97b&m(&#z77@
 # SECRET_KEY = os.environ.get('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+# DEBUG = False
+DEBUG = True
 
 # ALLOWED_HOSTS = [''127.0.0.1, 'localhost', '51.222.110.64', '.rio-gold.com']
 ALLOWED_HOSTS = ['*']
@@ -50,10 +51,11 @@ INSTALLED_APPS = [
     'stock',
     'sale',
     'api',
+    'vendor',
     
     #Third Party App
     'rest_framework',
-    'knox',
+    # 'knox',
     'corsheaders',
     'drf_yasg',
     'django_rest_passwordreset',
@@ -75,15 +77,17 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOWED_ORIGINS = ['http://localhost:5173',]
+CORS_ALLOWED_ORIGINS = ['http://rio-gold.com/',]
+# CORS_ALLOWED_ORIGINS = ['http://rio-gold.com/',]
 # CORS_ALLOWED_ORIGINS = ['"http://127.0.0.1:8000",',]
 
 
 
-AUTHENTICATION_BACKENDS = [
-    # 'users.authback.EmailBackend',
-    "django.contrib.auth.backends.ModelBackend", # this line fixed my problem
-]
+# AUTHENTICATION_BACKENDS = [
+#     # 'users.authback.EmailBackend',
+#     "django.contrib.auth.backends.ModelBackend", # this line fixed my problem
+#     'userauths.auth_backend.EmailPhoneUsernameAuthenticationBackend',
+# ]
 
 # ROOT_URLCONF = 'api.urls'
 
@@ -250,7 +254,8 @@ SWAGGER_SETTINGS = {
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'userauths.User'
 AUTHENTICATION_BACKENDS = [
-'account.auth_backend.EmailPhoneUsernameAuthenticationBackend'
+    "django.contrib.auth.backends.ModelBackend", # this line fixed my problem
+    'userauths.auth_backend.EmailPhoneUsernameAuthenticationBackend',
 ]
 
 SIMPLE_JWT = {
@@ -276,11 +281,11 @@ SIMPLE_JWT = {
 MEDIA_ROOT = os.path.join(BASE_DIR,'media')
 MEDIA_URL = '/media/'
 
+CORS_ALLOW_CREDENTIALS = True
 
-
-CORS_ORIGIN_WHITELIST = [
-    'http://localhost:3000',
-]
+# CORS_ORIGIN_WHITELIST = [
+#     'http://localhost:3000',
+# ]
 
 CORS_ALLOW_METHODS = [
     'GET',
@@ -291,13 +296,7 @@ CORS_ALLOW_METHODS = [
 ]
 
 CORS_ALLOW_HEADERS = [
-    'accept',
-    'accept-encoding',
-    'authorization',
     'content-type',
-    'dnt',
-    'origin',
-    'user-agent',
-    'x-csrftoken',
+    'authorization',
     'x-requested-with',
 ]

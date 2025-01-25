@@ -4,7 +4,7 @@ import qrcode
 from django.http import HttpResponse
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from knox.auth import TokenAuthentication
+# from knox.auth import TokenAuthentication
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response

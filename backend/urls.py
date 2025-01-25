@@ -20,7 +20,7 @@ from django.contrib import admin
 from django.urls import include, path
 from drf_yasg import openapi
 from drf_yasg.views import get_schema_view
-from knox import views as knox_views
+# from knox import views as knox_views
 # drf-yasg imports
 # drf-yasg imports
 from rest_framework import permissions
@@ -53,9 +53,9 @@ urlpatterns = [
     # Admin URL
     path('admin/', admin.site.urls),
     
-    path('logout/',knox_views.LogoutView.as_view(), name='knox_logout'), 
-    path('logoutall/',knox_views.LogoutAllView.as_view(), name='knox_logoutall'), 
-    path('api/password_reset/',include('django_rest_passwordreset.urls', namespace='password_reset')),
+    # path('logout/',knox_views.LogoutView.as_view(), name='knox_logout'), 
+    # path('logoutall/',knox_views.LogoutAllView.as_view(), name='knox_logoutall'), 
+    # path('api/password_reset/',include('django_rest_passwordreset.urls', namespace='password_reset')),
 
 ]
 

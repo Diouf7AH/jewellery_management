@@ -7,7 +7,8 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from rest_framework import generics, permissions, status
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,10 +17,10 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from backend.renderers import UserRenderer
 
 from .auth_backend import EmailPhoneUsernameAuthenticationBackend as EoP
-from .models import Role, User
-from .serializers import (RoleSerializers, UserChangePasswordSerializer,
-                          UserDetailSerializer, UserLoginSerializer,
-                          UserRegistrationSerializer)
+from .models import Profile, Role, User
+from .serializers import (ProfileSerializer, RoleSerializers,
+                          UserChangePasswordSerializer, UserDetailSerializer,
+                          UserLoginSerializer, UserRegistrationSerializer)
 
 
 # Create your views here.
@@ -62,8 +63,8 @@ class UserRegistrationView(APIView):
 
 
 class UserLoginView(APIView):
-    renderer_classes = [UserRenderer]
-    permission_classes = [permissions.AllowAny]
+    # renderer_classes = [UserRenderer]
+    permission_classes = [AllowAny]
     
     # @swagger_auto_schema(
     #     operation_description="User login with email and password",
@@ -111,10 +112,10 @@ class UserLoginView(APIView):
             return Response({'errors':{'non_field_errors':['Email or Password is not Valid']}}, status=status.HTTP_404_NOT_FOUND)
 
 
-class UserChangePasswordView(generics.UpdateAPIView):
+# class UserChangePasswordView(generics.UpdateAPIView):
 
-    queryset = User.objects.all()
-    serializer_class = UserChangePasswordSerializer
+#     queryset = User.objects.all()
+#     serializer_class = UserChangePasswordSerializer
 
 
 class ValidateTokenView(APIView):
@@ -166,25 +167,25 @@ class UsersView(APIView):
         serializer = UserDetailSerializer(users, many=True)
         return Response(serializer.data)
 
+# link to reset password in email
+# class PasswordResetAPIView(APIView):
+#     permission_classes = [AllowAny]
 
-class PasswordResetAPIView(APIView):
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        email = request.data.get('email')
-        user = User.objects.filter(email=email).first()
-        if user:
-            # Send password reset email (Django will handle token generation)
-            # You could also use the built-in Django mechanism here
-            send_mail(
-                'Password Reset Request',
-                'Click the link to reset your password...',
-                'from@example.com',
-                [email],
-                fail_silently=False,
-            )
-            return Response({"message": "Password reset email sent."}, status=status.HTTP_200_OK)
-        return Response({"error": "User with this email does not exist."}, status=status.HTTP_400_BAD_REQUEST)
+#     def post(self, request):
+#         email = request.data.get('email')
+#         user = User.objects.filter(email=email).first()
+#         if user:
+#             # Send password reset email (Django will handle token generation)
+#             # You could also use the built-in Django mechanism here
+#             send_mail(
+#                 'Password Reset Request',
+#                 'Click the link to reset your password...',
+#                 'from@example.com',
+#                 [email],
+#                 fail_silently=False,
+#             )
+#             return Response({"message": "Password reset email sent."}, status=status.HTTP_200_OK)
+#         return Response({"error": "User with this email does not exist."}, status=status.HTTP_400_BAD_REQUEST)
 
 class RoleListCreateAPIView(APIView):
     renderer_classes = [UserRenderer]
@@ -203,6 +204,8 @@ class RoleListCreateAPIView(APIView):
     #     # return Response({'message':'Registration Successful', "data": serializer.data}, status=status.HTTP_201_CREATED)
 
     def get(self, request):
+        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
+            return Response({"message": "Access Denied"})
         roles = Role.objects.all()
         serializer = RoleSerializers(roles, many=True)
         return Response(serializer.data)
@@ -240,17 +243,13 @@ class RoleListCreateAPIView(APIView):
 class RoleDetailAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
-    def get_object(self, request, pk):
-        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
-            return Response({"message": "Access Denied"})
+    def get_object(self, pk):
         try:
             return Role.objects.get(pk=pk)
         except Role.DoesNotExist:
             return None
 
     def get(self, request, pk):
-        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
-            return Response({"message": "Access Denied"})
         role = self.get_object(pk)
         if role is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
@@ -272,7 +271,7 @@ class RoleDetailAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
-        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
+        if request.user.user_role is not None and request.user.user_role.role != 'admin':
             return Response({"message": "Access Denied"})
         # if request.user.is_authenticated and request.user.user_role and not request.user.user_role.role == 'admin' and not request.user.user_role.role == 'manager' and not request.user.user_role.role == 'seller':
         #     return Response({"message": "Access Denied"})
@@ -281,6 +280,56 @@ class RoleDetailAPIView(APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
         role.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+# profile
+class ProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', ProfileSerializer)},
+    )
+    def get(self, request, format=None):
+        # Get the current user's profile
+        try:
+            profile = Profile.objects.get(user=request.user)
+        except Profile.DoesNotExist:
+            return Response({"detail": "Profile not found."}, status=404)
+        
+        serializer = ProfileSerializer(profile)
+        return Response(serializer.data)
+
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', ProfileSerializer)},
+    )
+    def put(self, request, format=None):
+        # Get the current user's profile
+        try:
+            profile = Profile.objects.get(user=request.user)
+        except Profile.DoesNotExist:
+            return Response({"detail": "Profile not found."}, status=404)
+        
+        # Deserialize the data and update the profile
+        serializer = ProfileSerializer(profile, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=400)
+# end profile
+
+
+# This is a DRF view defined as a Python function using the @api_view decorator.
+# @api_view(['GET'])
+# def getRoutes(request):
+#     # It defines a list of API routes that can be accessed.
+#     routes = [
+#         '/api/token/',
+#         '/api/register/',
+#         '/api/token/refresh/',
+#         '/api/test/'
+#     ]
+#     # It returns a DRF Response object containing the list of routes.
+#     return Response(routes)
+
 
 
 # from django.contrib.auth import authenticate, get_user_model

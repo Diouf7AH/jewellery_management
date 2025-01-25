@@ -1,12 +1,12 @@
 from rest_framework import serializers
 
-from .models import Role, User
+from .models import Profile, Role, User
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields=['email', 'username', 'firstname', 'lastname', 'phone', 'address', 'password', 'user_role']
+        fields=['email', 'username', 'first_name', 'last_name', 'phone', 'password', 'user_role']
         extra_kwargs={
             'password':{'write_only':True}
         }
@@ -45,7 +45,7 @@ class UserChangePasswordSerializer(serializers.ModelSerializer):
 class UserDetailSerializer(serializers.ModelSerializer):
   class Meta:
     model = User
-    fields = ['id', 'email', 'username', 'firstname', 'lastname', 'phone', 'address', 'user_role']
+    fields = '__all__'
 
   def get_role(self, obj):
     role = {}
@@ -65,6 +65,23 @@ class RoleSerializers(serializers.ModelSerializer):
     class Meta:
         model = Role
         fields = '__all__'
+        
+
+# for profile
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = '__all__'
+
+class ProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Profile
+        fields = '__all__'
+        
+    def to_representation(self, instance):
+        response = super().to_representation(instance)
+        response['user'] = UserSerializer(instance.user).data
+        return response
 
 
 # from django.contrib.auth import get_user_model

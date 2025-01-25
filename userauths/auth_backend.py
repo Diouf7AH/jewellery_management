@@ -10,6 +10,7 @@ class EmailPhoneUsernameAuthenticationBackend(object):
         try:
             user = User.objects.get(
                 Q(phone=email) | Q(email=email) | Q(username=username)
+                
             )
 
         except User.DoesNotExist:
