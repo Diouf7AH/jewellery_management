@@ -10,8 +10,8 @@ urlpatterns = [
     # Store API Endpoints
     # path('', userauths_views.getRoutes),
     
-    path('register/', userauths_views.UserRegistrationView.as_view(), name='register'),
-    path('login/', userauths_views.UserLoginView.as_view(), name='login'),
+    path('register', userauths_views.UserRegistrationView.as_view(), name='register'),
+    path('login', userauths_views.UserLoginView.as_view(), name='login'),
     # path('changepassword/<int:pk>', userauths_views.UserChangePasswordView.as_view(), name='changepassword'),
     path('user/<int:pk>',userauths_views.UserDetailUpdateView.as_view(),name="detail"),
     path('user/list',userauths_views.UsersView.as_view(),name="users"),
@@ -19,9 +19,9 @@ urlpatterns = [
     path('role/get-or-create',userauths_views.RoleListCreateAPIView.as_view(),name="role_get_create"),
     path('role/deatail/<int:pk>', userauths_views.RoleDetailAPIView.as_view(), name='role_detail'),
     
-    path('user/profile/<user_id>/', userauths_views.ProfileView.as_view(), name='profile'),
+    path('user/profile/<user_id>', userauths_views.ProfileView.as_view(), name='profile'),
     
-    path('password_reset/', include('django_rest_passwordreset.urls', namespace='password_reset')),
+    path('password_reset', include('django_rest_passwordreset.urls', namespace='password_reset')),
     
     # Validate Token
     path('validate-token',userauths_views.ValidateTokenView.as_view(),name="validate_token"),

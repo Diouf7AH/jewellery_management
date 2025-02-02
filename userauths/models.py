@@ -91,11 +91,11 @@ class User(AbstractUser):
     #     # Simplest possible answer: Yes, always
     #     return True
 
-    @property
-    def is_staff(self):
-        "Is the user a member of staff?"
-        # Simplest possible answer: All admins are staff
-        return self.user_role.role == 'admin'
+    # @property
+    # def is_staff(self):
+    #     "Is the user a member of staff?"
+    #     # Simplest possible answer: All admins are staff
+    #     return self.user_role.role == 'admin'
 
 
 # path for image

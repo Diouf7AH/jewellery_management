@@ -1,9 +1,15 @@
 from django.contrib import admin
 
-from store.models import Categorie, Marque, Modele, Produit, Purete
+from store.models import Bijouterie, Categorie, Marque, Modele, Produit, Purete
 
 
 # Register your models here.
+@admin.register(Bijouterie)
+class CategorieAdmin(admin.ModelAdmin):
+    list_display = ('id', 'telephone_portable_1','nom', 'adresse')
+    exclude = ("id",)
+    search_fields = ('id','nom',)
+
 @admin.register(Categorie)
 class CategorieAdmin(admin.ModelAdmin):
     list_display = ('id', 'slug','nom', 'image', 'active',)

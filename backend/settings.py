@@ -31,9 +31,9 @@ SECRET_KEY = 'django-insecure-l0_vam@=nmq2gy4b7+=8izmh(h==!hmp=e^+0_97b&m(&#z77@
 # DEBUG = False
 DEBUG = True
 
-# ALLOWED_HOSTS = [''127.0.0.1, 'localhost', '51.222.110.64', '.rio-gold.com']
+# ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '147.79.100.245', 'rio-gold.com']
 # ALLOWED_HOSTS = ['*']
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+# ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 
 # Application definition
@@ -78,9 +78,11 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOWED_ORIGINS = ['http://rio-gold.com/',]
+# CORS_ALLOWED_ORIGINS = ['http://127.0.0.1:4200',] 
+# CORS_ALLOWED_ORIGINS = ['http://localhost:4200',  'http://rio-gold.com/']
 # CORS_ALLOWED_ORIGINS = ['http://rio-gold.com/',]
 # CORS_ALLOWED_ORIGINS = ['"http://127.0.0.1:8000",',]
+CORS_ORIGIN_ALLOW_ALL = True  # For development only, restrict in production
 
 
 
@@ -122,7 +124,7 @@ REST_FRAMEWORK = {
     )
 }   
 
-KNOX_TOKEN_TTL = timedelta(hours=1)
+# KNOX_TOKEN_TTL = timedelta(hours=1)
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
@@ -260,8 +262,8 @@ AUTHENTICATION_BACKENDS = [
 ]
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=1000000),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=60),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': False,
     'UPDATE_LAST_LOGIN': False,
@@ -282,11 +284,15 @@ SIMPLE_JWT = {
 MEDIA_ROOT = os.path.join(BASE_DIR,'media')
 MEDIA_URL = '/media/'
 
-CORS_ALLOW_CREDENTIALS = True
+# CORS_ALLOW_CREDENTIALS = True
 
 # CORS_ORIGIN_WHITELIST = [
-#     'http://localhost:3000',
+#     'http://rio-gold.com/',
 # ]
+
+# CORS_ORIGIN_STRICT_WHITELIST = True
+
+CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOW_METHODS = [
     'GET',
