@@ -79,10 +79,10 @@ MIDDLEWARE = [
 ]
 
 # CORS_ALLOWED_ORIGINS = ['http://127.0.0.1:4200',] 
-CORS_ALLOWED_ORIGINS = ['http://localhost:4200',  'http://rio-gold.com/']
+# CORS_ALLOWED_ORIGINS = ['http://localhost:4200',  'http://rio-gold.com/']
 # CORS_ALLOWED_ORIGINS = ['http://rio-gold.com/',]
 # CORS_ALLOWED_ORIGINS = ['"http://127.0.0.1:8000",',]
-# CORS_ORIGIN_ALLOW_ALL = True  # For development only, restrict in production
+CORS_ORIGIN_ALLOW_ALL = True  # For development only, restrict in production
 
 
 
