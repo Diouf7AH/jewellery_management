@@ -31,7 +31,7 @@ SECRET_KEY = 'django-insecure-l0_vam@=nmq2gy4b7+=8izmh(h==!hmp=e^+0_97b&m(&#z77@
 # DEBUG = False
 DEBUG = True
 
-# ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '147.79.100.245', 'rio-gold.com']
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '147.79.100.245', 'rio-gold.com']
 # ALLOWED_HOSTS = ['*']
 # ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
@@ -79,10 +79,10 @@ MIDDLEWARE = [
 ]
 
 # CORS_ALLOWED_ORIGINS = ['http://127.0.0.1:4200',] 
-# CORS_ALLOWED_ORIGINS = ['http://localhost:4200',  'http://rio-gold.com/']
+CORS_ALLOWED_ORIGINS = ['http://localhost:4200',  'http://rio-gold.com/']
 # CORS_ALLOWED_ORIGINS = ['http://rio-gold.com/',]
 # CORS_ALLOWED_ORIGINS = ['"http://127.0.0.1:8000",',]
-CORS_ORIGIN_ALLOW_ALL = True  # For development only, restrict in production
+# CORS_ORIGIN_ALLOW_ALL = True  # For development only, restrict in production
 
 
 
