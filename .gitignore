@@ -1,8 +1,35 @@
+# Environnements virtuels
 venv/
-media/
-static/
-node/
+ENV/
+env/
+.VENV/
+
+# Fichiers Python compilés
+*.pyc
+*.pyo
+*.pyd
 __pycache__/
-.env
-.DS_Store
+
+# Base de données locale
 db.sqlite3
+
+# Django media & static
+/media/
+static/
+staticfiles/
+
+# Environnement local / secrets
+.env
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+
+# Node.js si applicable
+node/
+node_modules/
+
+# Fichiers log ou temporaires
+*.log
+*.tmp
+*.swp

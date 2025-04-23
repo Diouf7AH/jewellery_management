@@ -13,25 +13,41 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 import os
 from datetime import timedelta
 from pathlib import Path
+from decouple import config, Csv
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+SECRET_KEY = config('SECRET_KEY')
+DEBUG = config('DEBUG', cast=bool)
+# DEBUG = config('DEBUG', default=False, cast=bool)
+# ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv)
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
+EMAIL_HOST = config('EMAIL_HOST')
+EMAIL_PORT = config('EMAIL_PORT', cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
+EMAIL_TOKEN_EXPIRATION = config('EMAIL_TOKEN_EXPIRATION', cast=int)
 
-# SECURITY WARNING: keep the secret key used in production secret!
-# Sécuriser le SECRET_KEY
-SECRET_KEY = 'django-insecure-l0_vam@=nmq2gy4b7+=8izmh(h==!hmp=e^+0_97b&m(&#z77@'
-# SECRET_KEY = config('SECRET_KEY')
-# SECRET_KEY = os.environ.get('SECRET_KEY')
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': config('DB_NAME'),
+        'USER': config('DB_USER'),
+        'PASSWORD': config('DB_PASSWORD'),
+        'HOST': config('DB_HOST'),
+        'PORT': config('DB_PORT'),
+        'OPTIONS': {
+            'sql_mode': 'STRICT_ALL_TABLES',
+        },
+    }
+}
 
-# SECURITY WARNING: don't run with debug turned on in production!
-# DEBUG = False
-DEBUG = True
+TIME_ZONE = config('TIME_ZONE', default='UTC')
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '147.79.100.245', 'rio-gold.com']
+# ALLOWED_HOSTS = ['147.79.100.245', 'rio-gold.com', 'www.rio-gold.com']
+# ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '147.79.100.245', 'rio-gold.com', 'www.rio-gold.com']
 # ALLOWED_HOSTS = ['*']
 # ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
@@ -53,6 +69,8 @@ INSTALLED_APPS = [
     'sale',
     'api',
     'vendor',
+    'employee',
+    'purchase',
     
     #Third Party App
     'rest_framework',
@@ -61,6 +79,7 @@ INSTALLED_APPS = [
     'drf_yasg',
     'django_rest_passwordreset',
     # 'qrcode'
+    'rest_framework_simplejwt.token_blacklist',
 ]
 
 MIDDLEWARE = [
@@ -78,21 +97,8 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-# CORS_ALLOWED_ORIGINS = ['http://127.0.0.1:4200',] 
-# CORS_ALLOWED_ORIGINS = ['http://localhost:4200',  'http://rio-gold.com/']
-# CORS_ALLOWED_ORIGINS = ['http://rio-gold.com/',]
-# CORS_ALLOWED_ORIGINS = ['"http://127.0.0.1:8000",',]
 CORS_ORIGIN_ALLOW_ALL = True  # For development only, restrict in production
 
-
-
-# AUTHENTICATION_BACKENDS = [
-#     # 'users.authback.EmailBackend',
-#     "django.contrib.auth.backends.ModelBackend", # this line fixed my problem
-#     'userauths.auth_backend.EmailPhoneUsernameAuthenticationBackend',
-# ]
-
-# ROOT_URLCONF = 'api.urls'
 
 ROOT_URLCONF = 'backend.urls'
 
@@ -114,9 +120,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'backend.wsgi.application'
 
-# REST_FRAMEWORK = {
-#     'DEFAULT_AUTHENTICATION_CLASSES': ('knox.auth.TokenAuthentication',),
-# }
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -124,36 +127,6 @@ REST_FRAMEWORK = {
     )
 }   
 
-# KNOX_TOKEN_TTL = timedelta(hours=1)
-
-# Database
-# https://docs.djangoproject.com/en/5.1/ref/settings/#databases
-
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'jewellery_management',
-#         'USER': 'root',
-#         'PASSWORD': '',
-#         'HOST':'localhost',
-#         'PORT':'3306',
-#         'OPTIONS': {
-#             'sql_mode': 'STRICT_ALL_TABLES',
-#         },
-#     }
-# }
-
-# U2ymRZYjZCAk
-
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
-}
-
-# Password validation
-# https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -170,39 +143,11 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-# the email settings
-#EMAIL configuration
-# EMAIL_USE_TLS = True
-# EMAIL_HOST = 'smtp.gmail.com'
-# EMAIL_PORT = 587
-# EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER')
-# EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD')
-
-EMAIL_HOST ='smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_HOST_USER = 'lamzooo555@gmail.com'
-EMAIL_HOST_PASSWORD = 'zyzruylpncztuqrn'
-EMAIL_USE_TLS = True
-
-# DEFAULT_FROM_EMAIL = 'no-reply@yourdomain.com'
-# EMAIL_HOST_USER = os.environ.get('EMAIL_USER')
-# EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_PASSWORD')
-# DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
-# EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-# EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
-# DEFAULT_FROM_EMAIL = 'Diouf7AH'
 
 
-# FROM_EMAIL = "'bijouterieriogold@gmail.com'"   
-# EMAIL_BACKEND = "anymail.backends.mailgun.EmailBackend"
-# DEFAULT_FROM_EMAIL = "'bijouterieriogold@gmail.com'"
-# SERVER_EMAIL = "'bijouterieriogold@gmail.com'"
+EMAIL_TOKEN_EXPIRATION = 60
 
-# Internationalization
-# https://docs.djangoproject.com/en/4.2/topics/i18n/
 
-# Internationalization
-# https://docs.djangoproject.com/en/5.1/topics/i18n/
 
 LANGUAGE_CODE = 'en-us'
 
@@ -212,64 +157,47 @@ USE_I18N = True
 
 USE_TZ = True
 
+STATIC_URL = '/static/'
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.1/howto/static-files/
-
-# STATIC_URL = 'static/'
-# STATICFILES_DIRS = [BASE_DIR / 'static']
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-STATIC_URL = 'static/'
 
-# MEDIA_URL = 'media/'
-# MEDIA_ROOT = BASE_DIR / 'media'
-
-# STATICFILES_STORAGE = "whitenoise.storage.CompresseManiStaticFilesStorage"
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
-# Default primary key field type
-# https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# SWAGGER_SETTINGS = {
-#     'LOGIN_URL' : '/api/login/',
-#     'SECURITY_DEFINITIONS': {
-#         'Bearer': {
-#             'type': 'apiKey',
-#             'name': 'Authorization',
-#             'in': 'header'
-#         }
-#     }
-# }
 
 SWAGGER_SETTINGS = {
-   'SECURITY_DEFINITIONS': {
-      'Bearer': {
+    'USE_SESSION_AUTH': False,
+    'SECURITY_DEFINITIONS': {
+        'Bearer': {
             'type': 'apiKey',
             'name': 'Authorization',
-            'in': 'header'
-      }
-   }
+            'in': 'header',
+        }
+    },
 }
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'userauths.User'
 AUTHENTICATION_BACKENDS = [
-    "django.contrib.auth.backends.ModelBackend", # this line fixed my problem
     'userauths.auth_backend.EmailPhoneUsernameAuthenticationBackend',
+    "django.contrib.auth.backends.ModelBackend", # this line fixed my problem
 ]
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
-    'ROTATE_REFRESH_TOKENS': False,
-    'BLACKLIST_AFTER_ROTATION': False,
+    
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    
     'UPDATE_LAST_LOGIN': False,
 
     'AUTH_HEADER_TYPES': ('Bearer',),
     'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
+    
     'USER_ID_FIELD': 'id',
     'USER_ID_CLAIM': 'user_id',
     'USER_AUTHENTICATION_RULE': 'rest_framework_simplejwt.authentication.default_user_authentication_rule',
@@ -283,14 +211,6 @@ SIMPLE_JWT = {
 
 MEDIA_ROOT = os.path.join(BASE_DIR,'media')
 MEDIA_URL = '/media/'
-
-# CORS_ALLOW_CREDENTIALS = True
-
-# CORS_ORIGIN_WHITELIST = [
-#     'http://rio-gold.com/',
-# ]
-
-# CORS_ORIGIN_STRICT_WHITELIST = True
 
 CORS_ALLOW_ALL_ORIGINS = True
 

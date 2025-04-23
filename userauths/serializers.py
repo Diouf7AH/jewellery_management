@@ -1,29 +1,108 @@
 from rest_framework import serializers
+from .models import Profile, Role
+from django.contrib.auth import get_user_model
+import re
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.contrib.auth.password_validation import validate_password
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.core.mail import send_mail
+from django.conf import settings
+from userauths.utils import send_confirmation_email
 
-from .models import Profile, Role, User
-
+User = get_user_model()
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=6)
+    password2 = serializers.CharField(write_only=True, label="Confirmer le mot de passe", min_length=6)
+
     class Meta:
         model = User
-        fields=['email', 'username', 'first_name', 'last_name', 'phone', 'password', 'user_role']
-        extra_kwargs={
-            'password':{'write_only':True}
+        fields = ['email', 'username', 'phone', 'password', 'password2']
+
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Cet email est déjà utilisé.")
+        return value
+
+    def validate_phone(self, value):
+        if value and User.objects.filter(phone=value).exists():
+            raise serializers.ValidationError("Ce numéro de téléphone est déjà utilisé.")
+        return value
+
+    def validate_username(self, value):
+        if value and User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("Ce nom d'utilisateur est déjà pris.")
+        return value
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['password2']:
+            raise serializers.ValidationError({"password2": "Les mots de passe ne correspondent pas."})
+        try:
+            validate_password(attrs['password'])
+        except DjangoValidationError as e:
+            raise serializers.ValidationError({"password": e.messages})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.pop('password2')
+        password = validated_data.pop('password')
+        user = User(**validated_data)
+        user.set_password(password)
+        user.is_active = True  # ou False si tu veux bloquer l’accès avant confirmation
+        # user.is_active = False  # 🔐 bloqué jusqu'à validation email
+        user.is_email_verified = False  # 🔐 bloqué jusqu'à validation email
+        user.save()
+
+        request = self.context.get('request')
+        if request:
+            send_confirmation_email(user, request)
+
+        refresh = RefreshToken.for_user(user)
+        self.tokens = {
+            'access': str(refresh.access_token),
+            'refresh': str(refresh)
         }
 
-    # def get_username(self, obj):
-    #     return obj.user.username
+        return user
+
+
+# class ResendConfirmationSerializer(serializers.Serializer):
+#     email = serializers.EmailField()
+
+#     def validate_email(self, value):
+#         try:
+#             user = User.objects.get(email=value)
+#         except User.DoesNotExist:
+#             raise serializers.ValidationError("Aucun utilisateur avec cet email.")
+
+#         if user.is_email_verified:
+#             raise serializers.ValidationError("Cet utilisateur a déjà confirmé son email.")
+
+#         self.user = user  # on garde pour plus tard
+#         return value
+
+
+# class UserRegistrationSerializer(serializers.ModelSerializer):
+#     password = serializers.CharField(write_only=True, min_length=6)
+#     class Meta:
+#         model = User
+#         fields=['email', 'username', 'first_name', 'last_name', 'phone', 'password', 'user_role']
+#         extra_kwargs={
+#             'password':{'write_only':True}
+#         }
     
-    def create(self, validate_data):
-        return User.objects.create_user(**validate_data)
+#     def create(self, validated_data):
+#         password = validated_data.pop('password')
+#         user = User(**validated_data)
+#         user.set_password(password)
+#         user.save()
+#         return user
 
+        
 
-class UserLoginSerializer(serializers.ModelSerializer):
-    # email = serializers.EmailField(max_length=255)
-    user = serializers.CharField(max_length=100)
-    class Meta:
-        model = User
-        fields = ['user', 'password']
+class UserLoginSerializer(serializers.Serializer):
+    user = serializers.CharField()  # peut être email, username ou phone
+    password = serializers.CharField()
 
 
 # change password
@@ -61,10 +140,10 @@ class UserDetailSerializer(serializers.ModelSerializer):
     data['user_role'] = self.get_role(instance)
     return data
 
-class RoleSerializers(serializers.ModelSerializer):
+class RoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Role
-        fields = '__all__'
+        fields = ['id', 'role']
         
 
 # for profile
@@ -83,52 +162,3 @@ class ProfileSerializer(serializers.ModelSerializer):
         response['user'] = UserSerializer(instance.user).data
         return response
 
-
-# from django.contrib.auth import get_user_model
-# from rest_framework import serializers
-
-# from .models import *
-
-# User = get_user_model()
-
-
-
-# class LoginSerializer(serializers.Serializer):
-#     email = serializers.EmailField()
-#     password = serializers.CharField()
-
-#     def to_representation(self, instance):
-#         ret = super().to_representation(instance)
-#         ret.pop('password', None)
-#         return ret
-
-
-# class RegisterSerializer(serializers.ModelSerializer):
-#     class Meta: 
-#         model = User
-#         fields = ('id','email','password')
-#         extra_kwargs = { 'password': {'write_only':True}}
-    
-#     def create(self, validated_data):
-#         user = User.objects.create_user(**validated_data)
-#         return user
-    
-    
-# class UserDetailSerializer(serializers.ModelSerializer):
-#   class Meta:
-#     model = User
-#     fields = ['id', 'email', 'dateNaiss', 'username', 'first_name', 'last_name', 'phone', 'address', 'user_role', 'is_active', 'is_admin', 'created_at', 'updated_at', 'updated_at']
-
-#   def get_role(self, obj):
-#     role = {}
-#     if obj.user_role:
-#         role = {
-#             "id": obj.user_role.id,
-#             "name": obj.user_role.role,
-#         }
-#     return role
-
-#   def to_representation(self, instance):
-#     data = super().to_representation(instance)
-#     data['user_role'] = self.get_role(instance)
-#     return data

@@ -1,20 +1,20 @@
 from rest_framework import serializers
 
 from store.models import (Bijouterie, Categorie, Gallery, HistoriquePrix,
-                          Marque, Modele, Produit, Purete)
+                        Marque, Modele, Produit, Purete)
 
 
 # Define a serializer for the Category model
 class BijouterieSerializer(serializers.ModelSerializer):
     class Meta:
         model = Bijouterie
-        fields = ['id', 'nom', 'telephone_portable_1', 'telephone_portable_2', 'telephone_portable_3', 'telephone_portable_4', 'telephone_portable_5', 'telephone_fix', 'adresse', 'logo_blanc', 'logo_noir', 'nom_de_domaine', 'tiktok', 'facebook', 'intagram']
+        fields = ['id', 'nom', 'telephone_portable_1', 'telephone_portable_2', 'telephone_portable_3', 'telephone_portable_4', 'telephone_portable_5', 'telephone_fix', 'adresse', 'logo_blanc', 'logo_noir', 'nom_de_domaine', 'tiktok', 'facebook', 'instagram']
         
 
 class CategorieSerializer(serializers.ModelSerializer):
     class Meta:
         model = Categorie
-        fields = ['id', 'nom', 'image', 'active', 'slug']
+        fields = ['id', 'nom', 'image',]
 
 
 # class TypeSerializer(serializers.ModelSerializer):
@@ -61,21 +61,21 @@ class ModeleSerializer(serializers.ModelSerializer):
     #     }
     #     return type
     
-    def get_categorie(self, obj):
-        categorie = {
-            "id": obj.categorie.id,
-            "nom": obj.categorie.nom,
-            "image": obj.categorie.image.url,
-            "active": obj.categorie.active,
-            "slug": obj.categorie.slug,
-        }
-        return categorie
+    # def get_categorie(self, obj):
+    #     categorie = {
+    #         "id": obj.categorie.id,
+    #         "nom": obj.categorie.nom,
+    #         "image": obj.categorie.image.url,
+    #         "active": obj.categorie.active,
+    #         "slug": obj.categorie.slug,
+    #     }
+    #     return categorie
 
     
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        data['categorie'] = self.get_categorie(instance)
-        return data
+    # def to_representation(self, instance):
+    #     data = super().to_representation(instance)
+    #     data['categorie'] = self.get_categorie(instance)
+    #     return data
 
 
 class PureteSerializer(serializers.ModelSerializer):
@@ -105,22 +105,12 @@ class MarqueSerializer(serializers.ModelSerializer):
         return data
 
 
-
-        # Define a serializer for the Gallery model
-class GallerySerializer(serializers.ModelSerializer):
-    # Serialize the related Product model
-
-    class Meta:
-        model = Gallery
-        fields = '__all__'
-
-
 class ProduitSerializer(serializers.ModelSerializer):
     # prix_vente = serializers.DecimalField(max_digits=12, decimal_places=2)
     # prix_vente = serializers.DecimalField(max_digits=12, decimal_places=2)
     class Meta:
         model = Produit
-        fields = ( "id", "nom", "image", "prix_vente_grammes", "prix_avec_tax", "description", "status", "genre", "marque", "modele", "purete", "matiere", "poids", "quantite_en_stock", "taille", 'categorie' ) 
+        fields = ( "id", 'categorie' , "nom", "sku", "image", "description", "status", "genre", "marque", "modele", "purete", "matiere", "poids", "taille", "etat") 
         # fields = '__all__'
         
         #JSON
@@ -186,6 +176,37 @@ class ProduitSerializer(serializers.ModelSerializer):
         #     data['modele'] = self.get_modele(instance)
         #     return data
         
+
+
+class GallerySerializer(serializers.ModelSerializer):
+    produit_nom = serializers.CharField(source='produit.nom', read_only=True)
+    image_url = serializers.SerializerMethodField()
+    class Meta:
+        model = Gallery
+        fields = ['id', 'produit_nom', 'image', 'active', 'image_url', 'date']
+        
+    def get_image_url(self, obj):
+        request = self.context.get('request')
+        if request is not None and obj.image:
+            return request.build_absolute_uri(obj.image.url)
+        return obj.image.url if obj.image else None
+
+class ProduitWithGallerySerializer(serializers.ModelSerializer):
+    galleries = GallerySerializer(source='produit_gallery', many=True, read_only=True)
+    categorie_nom = serializers.CharField(source='categorie.nom', read_only=True)
+    marque_nom = serializers.CharField(source='marque.marque', read_only=True)
+    modele_nom = serializers.CharField(source='modele.modele', read_only=True)
+    purete_valeur = serializers.CharField(source='purete.purete', read_only=True)
+
+    class Meta:
+        model = Produit
+        fields = [
+            'id', 'nom', 'sku', 'etat', 'status',
+            'poids', 'taille',
+            'categorie_nom', 'marque_nom', 'modele_nom', 'purete_valeur',
+            'image', 'description', 'date_ajout', 'date_modification',
+            'galleries'
+        ]
 
 class HistoriquePrixSerializer(serializers.ModelSerializer):
     marque = MarqueSerializer()

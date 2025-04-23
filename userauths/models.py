@@ -21,12 +21,16 @@ GENDER = (
 def create_default_instances(sender, **kwargs):
     Role.objects.get_or_create(id=1, defaults={'role': 'admin'})
     Role.objects.get_or_create(id=2, defaults={'role': 'manager'})
-    Role.objects.get_or_create(id=3, defaults={'role': 'vendeur'})
-    Role.objects.get_or_create(id=4, defaults={'role': 'caissier'})
+    Role.objects.get_or_create(id=3, defaults={'role': 'vendor'})
+    Role.objects.get_or_create(id=4, defaults={'role': 'cashier'})
+    # Role.objects.get_or_create(id=5, defaults={'role': 'simple-user'})
+    
+# def get_default_role():
+#     return Role.objects.get_or_create(id=5, defaults={'role': 'simple-user'})[0].id
 
 
 class Role(models.Model):
-    role = models.CharField(max_length=50)
+    role = models.CharField(max_length=50, unique=True)
     
     def __str__(self):  
         return f"{self.role}"
@@ -45,29 +49,34 @@ class UserManager(BaseUserManager):
         return user
 
     def create_superuser(self,email, password=None, **extra_fields): 
-        # extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         # return self.create_user(email, password, **extra_fields)
         user = self.create_user(email, password, **extra_fields)
         role = Role.objects.get(role='admin')
         user.user_role = role
+        user.is_email_verified=True
         user.save()
         return user
 
 class User(AbstractUser):
-    email = models.EmailField(max_length=200, unique=True)
+    email = models.EmailField(max_length=100, unique=True)
     dateNaiss = models.DateField(null=True, blank=True)
-    username = models.CharField(max_length=200, null=True, blank=True)
-    first_name =  models.CharField(max_length=200, blank=True, null=True)
-    last_name =  models.CharField(max_length=200, blank=True, null=True)
-    phone =  models.CharField(max_length=20,unique=True,null=True)
+    username = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    first_name =  models.CharField(max_length=100, blank=True, null=True)
+    last_name =  models.CharField(max_length=100, blank=True, null=True)
+    phone =  models.CharField(max_length=20,unique=True,null=True,blank=True)
     is_active = models.BooleanField(default=True)
+    # is_validate = models.BooleanField(default=False)
     # is_admin = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    bijouterie = models.ForeignKey(Bijouterie, on_delete=models.SET_NULL, null=True, related_name="user_bijouterie")
+    # bijouterie = models.ForeignKey(Bijouterie, on_delete=models.SET_NULL, null=True, related_name="user_bijouterie")
+    # user_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, default=get_default_role)
     user_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
-
+    is_email_verified = models.BooleanField(default=False)
+    last_confirmation_email_sent = models.DateTimeField(null=True, blank=True)
+    
     objects = UserManager()
 
     USERNAME_FIELD = 'email'
@@ -164,7 +173,6 @@ class Profile(models.Model):
     state = models.CharField(max_length=255, null=True, blank=True)
     address = models.CharField(max_length=255, null=True, blank=True)
     # newsletter = models.BooleanField(default=False)
-    # wishlist = models.ManyToManyField("store.Product", blank=True)
     # type = models.CharField(max_length=500, choices=GENDER, null=True, blank=True)
     date = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     # pid = ShortUUIDField(unique=True, length=10, max_length=20, alphabet="abcdefghijklmnopqrstuvxyz")

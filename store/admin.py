@@ -1,19 +1,18 @@
 from django.contrib import admin
 
-from store.models import Bijouterie, Categorie, Marque, Modele, Produit, Purete
+from store.models import Bijouterie, Categorie, Marque, Modele, Produit, Purete, Gallery
 
 
 # Register your models here.
 @admin.register(Bijouterie)
-class CategorieAdmin(admin.ModelAdmin):
+class BijouterieAdmin(admin.ModelAdmin):
     list_display = ('id', 'telephone_portable_1','nom', 'adresse')
     exclude = ("id",)
     search_fields = ('id','nom',)
 
 @admin.register(Categorie)
 class CategorieAdmin(admin.ModelAdmin):
-    list_display = ('id', 'slug','nom', 'image', 'active',)
-    exclude = ("slug",)
+    list_display = ('id', 'nom', 'image',)
     search_fields = ('slug','nom',)
     
 @admin.register(Purete)
@@ -36,6 +35,13 @@ class MarqueAdmin(admin.ModelAdmin):
 
 @admin.register(Produit)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ("id", "quantite_en_stock", "slug", "nom", "sku", "image", "marque__prix", "prix_vente_grammes", "prix_avec_tax", "categorie", "marque", "modele", "purete", "matiere", "poids", "taille", "description",)
+    list_display = ("id", "nom", "sku", "image", "categorie", "marque", "modele", "purete", "matiere", "poids", "taille", "description",)
     search_fields = ('nom',)
-    exclude = ("qr_code", "slug", "prix_avec_tax", "sku", "prix_vente_reel", "pid", )
+    # exclude = ("qr_code", "slug", "prix_achat_avec_tax", "sku", "prix_vente_reel", "pid", )
+
+
+@admin.register(Gallery)
+class GalleryAdmin(admin.ModelAdmin):
+    list_display = ("id", "produit", "image", "date",)
+    search_fields = ('',)
+    # exclude = ("qr_code", "slug", "prix_achat_avec_tax", "sku", "prix_vente_reel", "pid", )

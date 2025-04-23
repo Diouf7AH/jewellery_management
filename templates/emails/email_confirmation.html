@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Email confirmé</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f4f4f4; text-align: center; padding: 50px; }
+        .card {
+            background: white; padding: 30px; border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1); display: inline-block;
+        }
+        h1 { color: #28a745; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <p>{{ message }}</p>
+        <p>Bonjour {{ user.username|default:user.email }},</p>
+        <p>Merci pour votre inscription ! Cliquez ci-dessous pour confirmer votre adresse email :</p>
+        {% comment %} <h1>✅ Email confirmé !</h1>
+        <p>Merci d'avoir confirmé votre adresse. Votre compte est maintenant actif.</p> {% endcomment %}
+        {% comment %} <p><a href="/">Retourner à l'accueil</a></p> {% endcomment %}
+        <a href="{{ confirm_url }}" style="
+        display: inline-block;
+        background-color: #28a745;
+        color: white;
+        padding: 10px 20px;
+        border-radius: 5px;
+        text-decoration: none;
+        font-weight: bold;">
+        Confirmer mon email
+        </a>
+        <p>Ce lien expirera dans 1 minute.</p>
+    </div>
+</body>
+</html>

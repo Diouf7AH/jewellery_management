@@ -5,40 +5,45 @@ from django.db import models
 from django.utils.html import mark_safe
 from django.utils.text import slugify
 
+from employee.models import Employee
+from store.models import Bijouterie, Produit
 from userauths.models import User, user_directory_path
 
 
 # Create your models here.
-class Vendor(models.Model):
-    user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, related_name="vendor")
-    image = models.ImageField(upload_to=user_directory_path, default="shop-image.jpg", blank=True)
-    nom = models.CharField(max_length=100, help_text="Shop Name", null=True, blank=True)
-    # email = models.EmailField(max_length=100, help_text="Shop Email", null=True, blank=True)
-    description = models.TextField(null=True, blank=True)
-    # mobile = models.CharField(max_length = 150, null=True, blank=True)
-    # verified = models.BooleanField(default=False)
-    # active = models.BooleanField(default=True)
-    # date = models.DateTimeField(auto_now_add=True)
+class Vendor(Employee):
+    user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, related_name="user_vendor")
+    bijouterie = models.ForeignKey(Bijouterie, related_name="bijouterie", on_delete=models.SET_NULL, null=True, blank=True)
+    verifie = models.BooleanField(default=True)
+    raison_desactivation = models.TextField(null=True, blank=True)
     slug = models.SlugField(unique=True, max_length=50, null=True, blank=True)
+    
+    def __str__(self):
+        return f"{self.user.first_name} {self.user.last_name}" if self.user else "Vendeur inconnu"
 
     def save(self, *args, **kwargs):
-        self.nom = f"{self.user.firstname} {self.user.lastname}"
-        if self.slug == "" or self.slug is None:
+        if not self.slug:
             rand_letters = ''.join(SystemRandom().choices(string.ascii_letters + string.digits, k=15))
             self.slug = slugify(rand_letters)
-        super(Vendor, self).save(*args, **kwargs) 
+        super().save(*args, **kwargs) 
+
+
+# VendorProduct is a many-to-many relationship between Product and Vendor 
+# that includes the quantity
+class VendorProduit(models.Model):
+    # related_name='vendor_produits'vous permet d'accéder à tous les produits 
+    # liés à un fournisseur à partir du Vendormodèle (c'est-à-dire vendor.products.all()).
+    vendor = models.ForeignKey(Vendor, related_name="vendor_produits", on_delete=models.SET_NULL, null=True, blank=True)
+    # related_name='vendor_vendors'vous permet d'accéder à tous les vendeur 
+    # liés à un produit à partir du Productmodèle (c'est-à-dire product.vendors.all())
+    produit = models.ForeignKey(Produit, related_name="vendor_vendors", on_delete=models.SET_NULL, null=True, blank=True)
+    quantite = models.PositiveIntegerField()
+    # stock_out = models.PositiveIntegerField()
     
     class Meta:
-        verbose_name_plural = "Vendors"
-
-    def vendor_image(self):
-        return mark_safe('  <img src="%s" width="50" height="50" style="object-fit:cover; border-radius: 6px;" />' % (self.shop_image.url))
-
+        unique_together = ('vendor', 'produit')  # Prevents duplicate entries of the same product for the same vendor
+    
     def __str__(self):
-        return str(self.name)
-        
-
-    def save(self, *args, **kwargs):
-        if self.slug == "" or self.slug == None:
-            self.slug = slugify(self.name)
-        super(Vendor, self).save(*args, **kwargs) 
+        if self.vendor and self.vendor.user:
+            return f'{self.vendor.bijouterie} - {self.vendor.user.first_name} - {self.vendor.user.last_name} - {self.quantite}'
+        return f"Produit de vendeur inconnu ({self.produit})"
