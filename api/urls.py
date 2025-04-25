@@ -83,7 +83,7 @@ urlpatterns = [
     path('produit/update/<int:pk>', store_views.ProduitUpdateAPIView.as_view(), name='product_update'),
     path('produit/delete/<int:pk>', store_views.ProduitDeleteAPIView.as_view(), name='product_delete'),
     # path('gallery/by-produit/', store_views.GetGalleryByProduitAPIView.as_view(), name='get-gallery-by-produit'),
-    path('produit/produit/recent-list', store_views.ProduitRecentListAPIView.as_view(), name='produit-recent-list'),
+    path('produit/recent-list', store_views.ProduitRecentListAPIView.as_view(), name='produit-recent-list'),
     
     path('produit/<int:pk>/qr', store_views.QRCodeView.as_view(), name='product-qr-code'),
     # path('produit/export/qr-codes/', store_views.ExportQRCodeExcelAPIView.as_view(), name='export-qr-codes'),
