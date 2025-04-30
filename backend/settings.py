@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     'vendor',
     'employee',
     'purchase',
+    'banque',
     
     #Third Party App
     'rest_framework',
@@ -227,3 +228,7 @@ CORS_ALLOW_HEADERS = [
     'authorization',
     'x-requested-with',
 ]
+
+# SECURE_SSL_REDIRECT = True
+# SESSION_COOKIE_SECURE = True
+# CSRF_COOKIE_SECURE = True

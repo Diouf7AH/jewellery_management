@@ -106,12 +106,27 @@ class MarqueSerializer(serializers.ModelSerializer):
 
 
 class ProduitSerializer(serializers.ModelSerializer):
-    # prix_vente = serializers.DecimalField(max_digits=12, decimal_places=2)
-    # prix_vente = serializers.DecimalField(max_digits=12, decimal_places=2)
+    categorie = serializers.SerializerMethodField()
+    marque = serializers.SerializerMethodField()
+    modele = serializers.SerializerMethodField()
+    purete = serializers.SerializerMethodField()
+    
     class Meta:
         model = Produit
         fields = ( "id", 'categorie' , "nom", "sku", "image", "description", "status", "genre", "marque", "modele", "purete", "matiere", "poids", "taille", "etat") 
         # fields = '__all__'
+        
+        def get_categorie(self, obj):
+            return obj.categorie.nom if obj.categorie else None
+
+        def get_marque(self, obj):
+            return obj.marque.nom if obj.marque else None
+
+        def get_modele(self, obj):
+            return obj.modele.nom if obj.modele else None
+
+        def get_purete(self, obj):
+            return obj.purete.purete if obj.purete else None
         
         #JSON
         # def get_categorie(self, obj):

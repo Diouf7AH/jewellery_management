@@ -811,32 +811,55 @@ class ProduitCreateAPIView(APIView):
     parser_classes = [MultiPartParser, FormParser]
 
     @swagger_auto_schema(
-        operation_summary="Créer un produit avec images (formulaire)",
-        manual_parameters=[
-            openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
-            openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
-            openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, description="F: Femme, H: Homme ou E: Enfant", default='F'),
-            openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
-            openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
-            openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
-            openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="purete ID 1 = 21 OU ID 2 = 18", default='2'),
-            openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, description="or, ar(argent) ou mixte", default='or'),
-            openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
-            openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_STRING),
-            openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Statut du produit: publié, desactive ...", default='publié'),
-            openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, description="État du produit", default='N'),
-            openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Plusieurs fichiers", required=False, multiple=True),
-        ],
-        responses={
-            201: openapi.Response('Produit créé', ProduitSerializer),
-            400: 'Erreur de validation'
-        }
-    )
+    operation_summary="Créer un produit avec images (formulaire)",
+    manual_parameters=[
+        openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
+        openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
+        openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, description="F: Femme, H: Homme ou E: Enfant", default='F'),
+        openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
+        openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
+        openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
+        openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="purete ID 1 = 21 OU ID 2 = 18", default='2'),
+        openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, description="or, ar(argent) ou mixte", default='or'),
+        openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
+        openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_STRING),
+        openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Statut du produit: publié, desactive ...", default='publié'),
+        openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, description="État du produit N:neuf ou R:retour", default='N'),
+        openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Plusieurs fichiers", required=False, multiple=True),
+    ],
+    responses={
+        201: openapi.Response(
+            description="Produit créé avec succès",
+            schema=ProduitSerializer(),
+            examples={
+                "application/json": {
+                    "id": 1,
+                    "nom": "Bague Or Luxe",
+                    "categorie": "Bagues",
+                    "marque": "Cartier",
+                    "modele": "Classique",
+                    "purete": "21",
+                    "matiere": "or",
+                    "genre": "F",
+                    "poids": "15.25",
+                    "taille": "56.00",
+                    "status": "publié",
+                    "etat": "N",
+                    "qr_code": "/media/qr_codes/BAGU-CASS-N-21-CAR-P15.25-T56.00.png",
+                    "date_ajout": "2025-04-29T10:00:00Z"
+                }
+            }
+        ),
+        400: openapi.Response(description="Erreur de validation")
+    }
+)
+    
     @transaction.atomic
     def post(self, request, *args, **kwargs):
         user = request.user
         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        
         
         try:
             produit_data = {

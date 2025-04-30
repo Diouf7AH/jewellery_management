@@ -34,11 +34,16 @@ class MarqueAdmin(admin.ModelAdmin):
 
 
 @admin.register(Produit)
-class ProductAdmin(admin.ModelAdmin):
-    list_display = ("id", "nom", "sku", "image", "categorie", "marque", "modele", "purete", "matiere", "poids", "taille", "description",)
-    search_fields = ('nom',)
-    # exclude = ("qr_code", "slug", "prix_achat_avec_tax", "sku", "prix_vente_reel", "pid", )
+class ProduitAdmin(admin.ModelAdmin):
+    list_display = ('sku', 'nom', 'categorie', 'marque', 'poids', 'taille', 'affiche_qr_code')
+    readonly_fields = ('affiche_qr_code',)
 
+    def affiche_qr_code(self, obj):
+        if obj.qr_code:
+            return format_html('<img src="{}" width="100" height="100" />', obj.qr_code.url)
+        return "Pas de QR code"
+
+    affiche_qr_code.short_description = "QR Code"
 
 @admin.register(Gallery)
 class GalleryAdmin(admin.ModelAdmin):
