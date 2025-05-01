@@ -6,16 +6,12 @@ User = get_user_model()
 
 class EmailPhoneUsernameAuthenticationBackend(BaseBackend):
     def authenticate(self, request, username=None, password=None, **kwargs):
-        """
-        Authentifie un utilisateur via son email, nom d'utilisateur ou téléphone.
-        """
-        if not username or not password:
+        try:
+            user = User.objects.get(
+                Q(phone=username) | Q(email=username) | Q(username=username)
+            )
+        except User.DoesNotExist:
             return None
-
-        # Cherche dans email, username, ou téléphone
-        user = User.objects.filter(
-            Q(email=username) | Q(username=username) | Q(phone=username)
-        ).first()
 
         if user and user.check_password(password) and user.is_active:
             return user
@@ -27,4 +23,3 @@ class EmailPhoneUsernameAuthenticationBackend(BaseBackend):
             return User.objects.get(pk=user_id)
         except User.DoesNotExist:
             return None
-
