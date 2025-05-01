@@ -7,7 +7,7 @@ from django.utils.text import slugify
 
 from employee.models import Employee
 from store.models import Bijouterie, Produit
-from userauths.models import User, user_directory_path
+from userauths.models import User
 
 
 # Create your models here.
@@ -16,16 +16,20 @@ class Vendor(Employee):
     bijouterie = models.ForeignKey(Bijouterie, related_name="bijouterie", on_delete=models.SET_NULL, null=True, blank=True)
     verifie = models.BooleanField(default=True)
     raison_desactivation = models.TextField(null=True, blank=True)
-    slug = models.SlugField(unique=True, max_length=50, null=True, blank=True)
+    slug = models.SlugField(unique=True, max_length=20, null=True, blank=True)
     
     def __str__(self):
         return f"{self.user.first_name} {self.user.last_name}" if self.user else "Vendeur inconnu"
 
     def save(self, *args, **kwargs):
-        if not self.slug:
-            rand_letters = ''.join(SystemRandom().choices(string.ascii_letters + string.digits, k=15))
+        if not self.slug and self.user:
+            base = slugify(f"{self.user.first_name}-{self.user.last_name}")
+            suffix = ''.join(SystemRandom().choices(string.digits, k=4))
+            self.slug = f"{base}-{suffix}"[:20]  # assure-toi que ça ne dépasse pas 20
+        elif not self.slug:
+            rand_letters = ''.join(SystemRandom().choices(string.ascii_lowercase + string.digits, k=15))
             self.slug = slugify(rand_letters)
-        super().save(*args, **kwargs) 
+        super().save(*args, **kwargs)
 
 
 # VendorProduct is a many-to-many relationship between Product and Vendor 
@@ -42,6 +46,7 @@ class VendorProduit(models.Model):
     
     class Meta:
         unique_together = ('vendor', 'produit')  # Prevents duplicate entries of the same product for the same vendor
+    
     
     def __str__(self):
         if self.vendor and self.vendor.user:

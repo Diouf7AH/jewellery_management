@@ -60,9 +60,9 @@ class UserManager(BaseUserManager):
         return user
 
 class User(AbstractUser):
-    email = models.EmailField(max_length=100, unique=True)
+    email = models.EmailField(max_length=50, unique=True)
     dateNaiss = models.DateField(null=True, blank=True)
-    username = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    username = models.CharField(max_length=30, unique=True, null=True, blank=True)
     first_name =  models.CharField(max_length=100, blank=True, null=True)
     last_name =  models.CharField(max_length=100, blank=True, null=True)
     phone =  models.CharField(max_length=20,unique=True,null=True,blank=True)
@@ -108,27 +108,27 @@ class User(AbstractUser):
 
 
 # path for image
-def user_directory_path(instance, filename):
-    user = None
+# def user_directory_path(instance, filename):
+#     user = None
     
-    if hasattr(instance, 'user') and instance.user:
-        user = instance.user
-    elif hasattr(instance, 'vendor') and hasattr(instance.vendor, 'user') and instance.vendor.user:
-        user = instance.vendor.user
-    elif hasattr(instance, 'produit') and hasattr(instance.produit.vendor, 'user') and instance.produit.vendor.user:
-        user = instance.produit.vendor.user
+#     if hasattr(instance, 'user') and instance.user:
+#         user = instance.user
+#     elif hasattr(instance, 'vendor') and hasattr(instance.vendor, 'user') and instance.vendor.user:
+#         user = instance.vendor.user
+#     elif hasattr(instance, 'produit') and hasattr(instance.produit.vendor, 'user') and instance.produit.vendor.user:
+#         user = instance.produit.vendor.user
 
-    if user:
-        ext = filename.split('.')[-1]
-        filename = "%s.%s" % (user.id, ext)
-        return 'user_{0}/{1}'.format(user.id, filename)
-    else:
-        # Handle the case when user is None
-        # You can return a default path or raise an exception, depending on your requirements.
-        # For example, return a path with 'unknown_user' as the user ID:
-        ext = filename.split('.')[-1]
-        filename = "%s.%s" % ('file', ext)
-        return 'user_{0}/{1}'.format('file', filename)
+#     if user:
+#         ext = filename.split('.')[-1]
+#         filename = "%s.%s" % (user.id, ext)
+#         return 'user_{0}/{1}'.format(user.id, filename)
+#     else:
+#         # Handle the case when user is None
+#         # You can return a default path or raise an exception, depending on your requirements.
+#         # For example, return a path with 'unknown_user' as the user ID:
+#         ext = filename.split('.')[-1]
+#         filename = "%s.%s" % ('file', ext)
+#         return 'user_{0}/{1}'.format('file', filename)
 
 
 # password

@@ -20,6 +20,7 @@ from django.core.mail import EmailMultiAlternatives
 
 from django.utils import timezone
 from datetime import timedelta
+from django.contrib.auth import authenticate
 
 from backend.renderers import UserRenderer
 
@@ -312,9 +313,7 @@ class UserLoginView(APIView):
         user_input = serializer.validated_data.get('user')
         password = serializer.validated_data.get('password')
 
-        user = EoP.authenticate(
-            request, email=user_input, username=user_input, phone=user_input, password=password
-        )
+        user = authenticate(request, username=user_input, password=password)
 
         if user:
             if not user.is_email_verified:
