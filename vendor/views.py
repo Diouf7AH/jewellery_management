@@ -43,14 +43,8 @@ class VendorDashboardView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_id="Dashboard Vendeur",
+        operation_id="Dashboard Vendeur reserver pour vendeur seulement",
         operation_description="Voir les statistiques d’un vendeur (admin, manager ou vendeur connecté).",
-        manual_parameters=[
-            openapi.Parameter('user_id', openapi.IN_QUERY, description="ID du vendeur (admin/manager uniquement)", type=openapi.TYPE_INTEGER),
-            openapi.Parameter('group_by', openapi.IN_QUERY, description="Groupement (day, week, month)", type=openapi.TYPE_STRING, enum=['day', 'week', 'month'], default='month'),
-            openapi.Parameter('start_date', openapi.IN_QUERY, description="Date de début (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-            openapi.Parameter('end_date', openapi.IN_QUERY, description="Date de fin (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-        ],
         responses={200: "Statistiques du vendeur"}
     )
     def get(self, request):
@@ -58,14 +52,20 @@ class VendorDashboardView(APIView):
         role = getattr(user.user_role, 'role', None)
         is_admin_or_manager = role in ['admin', 'manager']
 
+        # 🔎 Récupération et validation du user_id
         user_id = request.GET.get('user_id')
-        target_user = get_object_or_404(User, id=user_id) if user_id else user
+        if user_id:
+            if not user_id.isdigit():
+                return Response({"detail": "user_id invalide."}, status=400)
+            if not is_admin_or_manager:
+                return Response({"detail": "Accès refusé."}, status=403)
+            target_user = get_object_or_404(User, id=int(user_id))
+        else:
+            target_user = user
 
+        # 🔐 Vérifie que le compte est bien un vendeur
         if not target_user.user_role or target_user.user_role.role != 'vendor':
             return Response({"detail": "Ce compte n'est pas un vendeur."}, status=400)
-
-        if user_id and not is_admin_or_manager:
-            return Response({"detail": "Accès refusé."}, status=403)
 
         try:
             vendor = Vendor.objects.get(user=target_user)
@@ -74,14 +74,6 @@ class VendorDashboardView(APIView):
 
         produits = VendorProduit.objects.filter(vendor=vendor)
         ventes = VenteProduit.objects.filter(produit__in=produits.values('produit'))
-
-        # ⏱️ Filtrage par période personnalisée
-        start_date = request.GET.get('start_date')
-        end_date = request.GET.get('end_date')
-        if start_date:
-            ventes = ventes.filter(vente__created_at__date__gte=parse_date(start_date))
-        if end_date:
-            ventes = ventes.filter(vente__created_at__date__lte=parse_date(end_date))
 
         # 📊 Statistiques globales
         total_produits = produits.count()

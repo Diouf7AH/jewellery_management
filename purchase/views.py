@@ -17,6 +17,9 @@ from rest_framework.views import APIView
 
 from django.template.loader import get_template
 from xhtml2pdf import pisa
+from dateutil.relativedelta import relativedelta
+from django.utils import timezone
+
 
 from backend.renderers import UserRenderer
 from stock.models import Stock
@@ -172,49 +175,53 @@ class AchatDashboardView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Dashboard des achats filtrés par période ou fournisseur, admin manager only",
+        operation_description="Dashboard des achats filtré par période dynamique (en mois)",
         manual_parameters=[
-            openapi.Parameter('start_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de début (format YYYY-MM-DD)"),
-            openapi.Parameter('end_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de fin (format YYYY-MM-DD)"),
-            openapi.Parameter('fournisseur_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID du fournisseur")
+            openapi.Parameter(
+                'mois',
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                enum=[1, 3, 6, 12],
+                default=3,
+                description="Nombre de mois à remonter"
+            )
         ],
-        responses={200: openapi.Response(description="Statistiques des achats")}
+        responses={200: openapi.Response(description="Statistiques + achats récents")}
     )
     def get(self, request):
         user_role = getattr(request.user.user_role, 'role', None)
         if user_role not in ['admin', 'manager']:
             return Response({"message": "Access Denied"}, status=403)
 
-        achats = Achat.objects.all()
+        # Lire le paramètre "mois" dans l'URL, défaut = 3
+        try:
+            nb_mois = int(request.GET.get('mois', 3))
+            nb_mois = max(1, min(nb_mois, 12))  # sécurise entre 1 et 12
+        except ValueError:
+            nb_mois = 3
 
-        # Récupérer les filtres
-        start_date = parse_date(request.GET.get('start_date'))  # format YYYY-MM-DD
-        end_date = parse_date(request.GET.get('end_date'))
-        fournisseur_id = request.GET.get('fournisseur_id')
+        depuis = timezone.now() - relativedelta(months=nb_mois)
 
-        if start_date:
-            achats = achats.filter(created_at__date__gte=start_date)
-        if end_date:
-            achats = achats.filter(created_at__date__lte=end_date)
-        if fournisseur_id:
-            achats = achats.filter(fournisseur__id=fournisseur_id)
+        achats = Achat.objects.filter(created_at__gte=depuis)
 
-        # Statistiques
         stats = achats.aggregate(
             total_achats=Count('id'),
-            montant_total_ht=Sum('montant_total'),
-            montant_total_ttc=Sum('montant_total_tax_inclue')
+            montant_total_ht=Sum('montant_total_ht'),
+            montant_total_ttc=Sum('montant_total_ttc')
         )
 
-        return Response({
-            "filtres": {
-                "start_date": str(start_date) if start_date else None,
-                "end_date": str(end_date) if end_date else None,
-                "fournisseur_id": fournisseur_id,
-            },
-            "resultats": stats
-        })
+        achats_recents = achats.order_by('-created_at')[:10]
+        achats_serializer = AchatSerializer(achats_recents, many=True)
 
+        return Response({
+            "periode": {
+                "mois": nb_mois,
+                "depuis": depuis.date().isoformat(),
+                "jusqu_a": timezone.now().date().isoformat()
+            },
+            "statistiques": stats,
+            "achats_recents": achats_serializer.data
+        })
 
 class AchatProduitCreateView(APIView):
     renderer_classes = [UserRenderer]

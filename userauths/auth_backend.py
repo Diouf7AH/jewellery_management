@@ -1,44 +1,30 @@
+from django.contrib.auth.backends import BaseBackend
 from django.contrib.auth import get_user_model
-from django.contrib.auth.hashers import check_password
 from django.db.models import Q
 
 User = get_user_model()
 
-class EmailPhoneUsernameAuthenticationBackend:
-    @staticmethod
-    def authenticate(request, email=None, username=None, phone=None, password=None):
-        filters = Q()
+class EmailPhoneUsernameAuthenticationBackend(BaseBackend):
+    def authenticate(self, request, username=None, password=None, **kwargs):
+        """
+        Authentifie un utilisateur via son email, nom d'utilisateur ou téléphone.
+        """
+        if not username or not password:
+            return None
 
-        if phone:
-            filters |= Q(phone=phone)
-        if email:
-            filters |= Q(email=email)
-        if username:
-            filters |= Q(username=username)
-            
-        users = User.objects.filter(filters).distinct()
-        print("Utilisateurs trouvés:", users)
+        # Cherche dans email, username, ou téléphone
+        user = User.objects.filter(
+            Q(email=username) | Q(username=username) | Q(phone=username)
+        ).first()
 
-        for user in users:
-            print("Test utilisateur:", user.email)
-            if check_password(password, user.password):
-                print("Mot de passe OK")
-                return user
+        if user and user.check_password(password) and user.is_active:
+            return user
 
-        print("Mot de passe incorrect")
         return None
 
-    #     users = User.objects.filter(filters).distinct()
+    def get_user(self, user_id):
+        try:
+            return User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return None
 
-    #     for user in users:
-    #         if user.password and check_password(password, user.password):
-    #             return user
-
-    #     return None
-
-    # @staticmethod
-    # def get_user(user_id):
-    #     try:
-    #         return User.objects.get(pk=user_id)
-    #     except User.DoesNotExist:
-    #         return None

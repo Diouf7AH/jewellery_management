@@ -815,16 +815,51 @@ class ProduitCreateAPIView(APIView):
     manual_parameters=[
         openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
         openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
-        openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, description="F: Femme, H: Homme ou E: Enfant", default='F'),
+        # openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, description="F: Femme, H: Homme ou E: Enfant", default='F'),
+        openapi.Parameter(
+            'genre', openapi.IN_FORM,
+            type=openapi.TYPE_STRING,
+            enum=['F', 'H', 'E'],
+            description="F: Femme, H: Homme, E: Enfant",
+            default='F'
+        ),
         openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
         openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
         openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
-        openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="purete ID 1 = 21 OU ID 2 = 18", default='2'),
-        openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, description="or, ar(argent) ou mixte", default='or'),
+        # openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="purete ID 1 = 21 OU ID 2 = 18", default='2'),
+        openapi.Parameter(
+            'purete', openapi.IN_FORM,
+            type=openapi.TYPE_INTEGER,
+            enum=[1, 2],
+            description="1 = 21 carats, 2 = 18 carats",
+            default=2
+        ),
+        # openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, description="or, ar(argent) ou mixte", default='or'),
+        openapi.Parameter(
+            'matiere', openapi.IN_FORM,
+            type=openapi.TYPE_STRING,
+            enum=['or', 'argent', 'mixte'],
+            description="Matière du produit",
+            default='or'
+        ),
         openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
         openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_STRING),
-        openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Statut du produit: publié, desactive ...", default='publié'),
-        openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, description="État du produit N:neuf ou R:retour", default='N'),
+        # openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Statut du produit: publié, desactive ...", default='publié'),
+        openapi.Parameter(
+            'status', openapi.IN_FORM,
+            type=openapi.TYPE_STRING,
+            enum=['publié', 'désactivé', 'brouillon'],
+            description="Statut du produit",
+            default='publié'
+        ),
+        # openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, description="État du produit N:neuf ou R:retour", default='N'),
+        openapi.Parameter(
+            'etat', openapi.IN_FORM,
+            type=openapi.TYPE_STRING,
+            enum=['N', 'R'],  # N = Neuf, R = Retour par exemple
+            description="État du produit N:Neuf ou R:Retour",
+            default='N'
+        ),
         openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Plusieurs fichiers", required=False, multiple=True),
     ],
     responses={
