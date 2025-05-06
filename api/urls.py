@@ -16,6 +16,8 @@ urlpatterns = [
     path('dashboard/achat/dashboard', achat_views.AchatDashboardView.as_view(), name='dashboard-achat'),
     # path('vendor/me/', vendor_views.VendorMeView.as_view(), name='vendor-me'),
     
+    path('vendor/dashboard/profile', vendor_views.VendorProfileView.as_view(), name='vendor-profile'),
+    path('vendor/produits/', vendor_views.VendorProduitListView.as_view(), name='vendor-produits'),
     # Pour l’utilisateur connecté
     path('vendor/dashboard/profile', vendor_views.VendorProfileView.as_view(), name='vendor-profile'),
     # Pour un admin qui consulte un vendeur par ID
@@ -87,8 +89,9 @@ urlpatterns = [
     
     path('produit/<int:pk>/qr', store_views.QRCodeView.as_view(), name='product-qr-code'),
     # path('produit/export/qr-codes/', store_views.ExportQRCodeExcelAPIView.as_view(), name='export-qr-codes'),
-    path('produit/export/qr-code/<slug:sku>', store_views.ExportOneQRCodeExcelAPIView.as_view(), name='export-one-qr-code'),
+    path('produit/export/qr-code/<slug:slug>', store_views.ExportOneQRCodeExcelAPIView.as_view(), name='export-one-qr-code'),
     # path('api/products/<int:pk>/qrcode/', ProductQRCodeView.as_view(), name='product-qrcode'),
+    path("produit/<slug:slug>/", store_views.ProduitDetailSlugView.as_view(), name="produit-detail-slug"),
     
     # END STORE
     

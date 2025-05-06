@@ -31,8 +31,10 @@ class VenteProduitAdmin(admin.ModelAdmin):
 
 @admin.register(Facture)
 class FactureAdmin(admin.ModelAdmin):
-    list_display = ('id','numero_facture','montant_total', 'date_creation', 'status',)
-    # search_fields = ('nom',)
+    list_display = ('numero_facture', 'vente', 'montant_total', 'status', 'date_creation', 'est_reglee')
+    list_filter = ('status', 'date_creation')
+    search_fields = ('numero_facture', 'vente__client__nom', 'vente__client__prenom')
+    readonly_fields = ('numero_facture', 'date_creation')
     
     
 @admin.register(Paiement)

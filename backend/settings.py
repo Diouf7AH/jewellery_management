@@ -144,6 +144,8 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+SITE_URL = "https://www.rio-gold.com"
+
 EMAIL_TOKEN_EXPIRATION = 60
 
 LANGUAGE_CODE = 'en-us'
@@ -184,7 +186,7 @@ AUTHENTICATION_BACKENDS = [
 ]
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=120),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     
     'ROTATE_REFRESH_TOKENS': True,

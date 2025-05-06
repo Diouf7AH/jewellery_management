@@ -71,11 +71,19 @@ class ModeleSerializer(serializers.ModelSerializer):
     #     }
     #     return categorie
 
+    def get_categorie(self, obj):
+        if not obj.categorie:
+            return None
+        return {
+            "id": obj.categorie.id,
+            "nom": obj.categorie.nom,
+            "image": obj.categorie.image.url if obj.categorie.image else None,
+        }
     
-    # def to_representation(self, instance):
-    #     data = super().to_representation(instance)
-    #     data['categorie'] = self.get_categorie(instance)
-    #     return data
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['categorie'] = self.get_categorie(instance)
+        return data
 
 
 class PureteSerializer(serializers.ModelSerializer):
@@ -104,29 +112,97 @@ class MarqueSerializer(serializers.ModelSerializer):
         data['purete'] = self.get_purete(instance)
         return data
 
-
 class ProduitSerializer(serializers.ModelSerializer):
+    produit_url = serializers.SerializerMethodField()
+    qr_code_url = serializers.SerializerMethodField()
     categorie = serializers.SerializerMethodField()
     marque = serializers.SerializerMethodField()
     modele = serializers.SerializerMethodField()
     purete = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Produit
-        fields = ( "id", 'categorie' , "nom", "sku", "image", "description", "status", "genre", "marque", "modele", "purete", "matiere", "poids", "taille", "etat") 
-        # fields = '__all__'
-        
-        def get_categorie(self, obj):
-            return obj.categorie.nom if obj.categorie else None
+        fields = (
+            "id", "categorie", "nom", "produit_url", "sku", "qr_code_url", "image", "description",
+            "status", "genre", "marque", "modele", "purete", "matiere", "poids", "taille", "etat"
+        )
 
-        def get_marque(self, obj):
-            return obj.marque.nom if obj.marque else None
+    def get_categorie(self, obj):
+        if not obj.categorie:
+            return None
+        return {
+            "id": obj.categorie.id,
+            "nom": obj.categorie.nom,
+            "image": obj.categorie.image.url if obj.categorie.image else None,
+        }
 
-        def get_modele(self, obj):
-            return obj.modele.nom if obj.modele else None
+    def get_marque(self, obj):
+        if not obj.marque:
+            return None
+        return {
+            "id": obj.marque.id,
+            "marque": obj.marque.marque,
+            "prix": obj.marque.prix,
+            "creation_date": obj.marque.creation_date,
+            "modification_date": obj.marque.modification_date,
+            "purete": {
+                "id": obj.purete.id if obj.purete else None,
+                "purete": obj.purete.purete if obj.purete else None,
+            } if obj.purete else None
+        }
 
-        def get_purete(self, obj):
-            return obj.purete.purete if obj.purete else None
+    def get_modele(self, obj):
+        if not obj.modele:
+            return None
+        return {
+            "id": obj.modele.id,
+            "modele": obj.modele.modele,
+            "categorie": {
+                "id": obj.categorie.id if obj.categorie else None,
+                "nom": obj.categorie.nom if obj.categorie else None,
+                "image": obj.categorie.image.url if obj.categorie.image else None,
+            } if obj.categorie else None
+        }
+
+    def get_purete(self, obj):
+        if not obj.purete:
+            return None
+        return {
+            "id": obj.purete.id,
+            "purete": obj.purete.purete
+        }
+    def get_produit_url(self, obj):
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(f"/produit/{obj.slug}")
+        return f"https://www.rio-gold.com/produit/{obj.slug}" if obj.slug else None
+
+    # def get_qr_code_url(self, obj):
+    #     request = self.context.get('request')
+    #     if obj.qr_code and request:
+    #         return request.build_absolute_uri(obj.qr_code.url)
+    #     elif obj.qr_code:
+    #         return obj.qr_code.url
+    #     return None
+    
+    def get_qr_code_url(self, obj):
+        request = self.context.get('request')
+        if obj.qr_code and request:
+            return request.build_absolute_uri(obj.qr_code.url)
+        elif obj.qr_code:
+            return obj.qr_code.url
+        return None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Réassigner les champs enrichis
+        data['categorie'] = self.get_categorie(instance)
+        data['produit_url'] = self.get_produit_url(instance)
+        data['qr_code_url'] = self.get_qr_code_url(instance)
+        data['purete'] = self.get_purete(instance)
+        data['marque'] = self.get_marque(instance)
+        data['modele'] = self.get_modele(instance)
+        return data
         
         #JSON
         # def get_categorie(self, obj):
@@ -229,3 +305,4 @@ class HistoriquePrixSerializer(serializers.ModelSerializer):
     class Meta:
         model = HistoriquePrix
         fields = '__all__'
+

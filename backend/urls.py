@@ -53,8 +53,8 @@ urlpatterns = [
     path("api/", include("api.urls")),
     
     # Admin URLbackofficegold/
-    # path('admin/', admin.site.urls),
-    path('backoffice-dusite-rio-gold-/', admin.site.urls),
+    path('admin/', admin.site.urls),
+    # path('backoffice-dusite-rio-gold-/', admin.site.urls),
     
     path('resend-confirmation-form/', resend_confirmation_form, name='resend-confirmation-form'),
     path('resend-confirmation-submit/', resend_confirmation_submit, name='resend-confirmation-submit'),

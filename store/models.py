@@ -3,14 +3,16 @@ import random
 import string
 from decimal import Decimal
 from io import BytesIO
+from django.core.files import File
 from random import SystemRandom
 from django.utils import timezone
-
-# import qrcode
+import uuid
+from django.conf import settings
+import qrcode
 from django.db import models
 from django.db.models.signals import post_migrate
 from django.dispatch import receiver
-from django.template.defaultfilters import slugify
+from django.utils.text import slugify
 from django.utils import timezone
 from shortuuid.django_fields import ShortUUIDField
 
@@ -94,6 +96,7 @@ class Bijouterie(models.Model):
 class Categorie(models.Model):
     nom = models.CharField(max_length=30, unique=True, blank=True, default="")
     image = models.ImageField(upload_to='categorie/', default="category.jpg", null=True, blank=True)
+    # bijouterie = models.ForeignKey(Bijouterie, on_delete=models.CASCADE, null=True, blank=True, related_name="bijouterie_categorie")
 
     class Meta:
         verbose_name_plural = "Catégories"
@@ -177,9 +180,11 @@ class Marque(models.Model):
 
 # Model for Produits
 class Produit(models.Model):
+    # bijouterie = models.ForeignKey(Bijouterie, on_delete=models.CASCADE, null=True, blank=True, related_name="bijouterie_produit")
     nom = models.CharField(max_length=100, blank=True, default="")
     image = models.ImageField(upload_to='produits/', blank=True, null=True)
     description = models.TextField(null=True, blank=True)
+    qr_code = models.ImageField(upload_to='qr_codes/', null=True, blank=True)
     
     categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="categorie_produit")
     purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="purete_produit", default=get_default_purete)
@@ -194,8 +199,8 @@ class Produit(models.Model):
     etat = models.CharField(choices=ETAT, max_length=10, default="N", null=True, blank=True)
     
     sku = models.SlugField(unique=True, max_length=100, null=True, blank=True)
-    
-   
+    slug = models.SlugField(max_length=100, unique=True, blank=True, null=True)
+
     date_ajout = models.DateTimeField(auto_now_add=True) 
     date_modification = models.DateTimeField(auto_now=True) 
     
@@ -203,7 +208,7 @@ class Produit(models.Model):
     def skuGet(self):
         champs = [self.categorie, self.modele, self.marque, self.poids, self.taille, self.purete, self.etat]
         if not all(champs):
-            raise ValueError("Tous les champs nécessaires à la génération du SKU doivent être renseignés.")
+            return None  # <-- éviter l'erreur fatale
 
         return (
             f"{self.categorie.nom[:4].upper()}-"
@@ -214,16 +219,63 @@ class Produit(models.Model):
             f"P{self.poids}-T{self.taille}"
         )
     
-    def save(self, *args, **kwargs):
-        if not self.nom:
-            self.nom = f'{self.categorie} {self.modele}'
-        if not self.sku:
-            self.sku = self.skuGet()
-        
-        super().save(*args, **kwargs)
+    @staticmethod
+    def generate_qr_code_image(content):
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(content)
+        qr.make(fit=True)
 
-        # Générer le QR code à partir du SKU
+        img = qr.make_image(fill='black', back_color='white')
+        buffer = BytesIO()
+        
+        # Nettoyer le nom du fichier
+        safe_name = slugify(content)[:50] if content else uuid.uuid4().hex[:10]
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
+        return File(buffer, name=f'qr_{safe_name}.png')
+
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+
+        # Nom automatique
+        if not self.nom and self.categorie and self.modele and self.marque:
+            self.nom = f'{self.categorie} {self.modele} {self.marque}'
+
+        # Slug automatique
+        if not self.slug:
+            base_slug = slugify(self.nom or "produit")
+            self.slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
+
+        # SKU automatique
+        if not self.sku:
+            sku = self.skuGet()
+            if sku:
+                self.sku = sku
+
+        super().save(*args, **kwargs)  # ID nécessaire avant QR
+
+        # QR Code automatique
+        if not self.qr_code and self.slug:
+            try:
+                qr_content = self.produit_url
+                qr_file = self.generate_qr_code_image(qr_content)
+                self.qr_code.save(qr_file.name, qr_file, save=False)
+                super().save(update_fields=['qr_code'])
+            except Exception as e:
+                print(f"[QR ERROR] {e}")
             
+    @property
+    def produit_url(self):
+        base_url = getattr(settings, 'SITE_URL', 'https://www.rio-gold.com')
+        return f"{base_url}/produit/{self.slug}" if self.slug else None
+    
+    # Achiffage admin.py
+    def qr_code_url(self):
+        if self.qr_code:
+            return self.qr_code.url
+        return "Aucun QR code"
+
+    qr_code_url.short_description = "QR Code"
     
     def __str__(self):
         return f'{self.sku}'

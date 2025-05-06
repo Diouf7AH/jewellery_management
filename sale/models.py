@@ -1,7 +1,8 @@
 import random
 import string
 import uuid
-
+from django.db.models import Sum
+from decimal import Decimal
 from django.db import models
 from django.utils import timezone
 
@@ -44,8 +45,8 @@ class Vente(models.Model):
     #     raise Exception("Impossible de générer un numéro de vente unique après 10 tentatives.")
 
     def save(self, *args, **kwargs):
-        if not self.slug:
-            self.slug = uuid.uuid4().hex.upper()[:9]
+        # if not self.slug:
+        #     self.slug = uuid.uuid4().hex.upper()[:9]
         # if not self.numero_vente:
         #     self.numero_vente = self.generate_numero_vente()
         super().save(*args, **kwargs)
@@ -92,17 +93,17 @@ class VenteProduit(models.Model):
     def __str__(self):
         return f"{self.quantite} x {self.produit.nom if self.produit else 'Produit supprimé'} in Vente {self.vente.id if self.vente else 'N/A'}"
 
-    def save(self, *args, **kwargs):
-        if not self.produit:
-            raise ValueError("Produit requis pour calculer le prix.")
-        if not self.quantite or self.quantite < 1:
-            raise ValueError("Quantité invalide.")
+    # def save(self, *args, **kwargs):
+    #     if not self.produit:
+    #         raise ValueError("Produit requis pour calculer le prix.")
+    #     if not self.quantite or self.quantite < 1:
+    #         raise ValueError("Quantité invalide.")
 
-        # poids = self.produit.poids or 1
-        # prix_vente = self.prix_vente_grammes * poids
-        # self.sous_total_prix_vent = (prix_vente * self.quantite) + self.autres - self.remise
-        # self.tax_inclue = self.sous_total_prix_vent + (self.tax or 0)
-        super().save(*args, **kwargs)
+    #     # poids = self.produit.poids or 1
+    #     # prix_vente = self.prix_vente_grammes * poids
+    #     # self.sous_total_prix_vent = (prix_vente * self.quantite) + self.autres - self.remise
+    #     # self.tax_inclue = self.sous_total_prix_vent + (self.tax or 0)
+    #     super().save(*args, **kwargs)
 
     def load_produit(self):
         return self.produit
@@ -167,7 +168,23 @@ class Facture(models.Model):
     class Meta:
         ordering = ['-id']
         verbose_name_plural = "Factures"
-        
+    
+    # ✅ Méthode : total des paiements
+    @property
+    def total_paye(self):
+        total = self.paiements.aggregate(total=Sum('montant_paye'))['total']
+        return total or Decimal('0.00')
+
+    # ✅ Méthode : montant restant à payer
+    @property
+    def reste_a_payer(self):
+        return max(self.montant_total - self.total_paye, Decimal('0.00'))
+
+    # ✅ Pour l'affichage dans l'admin
+    def est_reglee(self):
+        return self.status == "Payé"
+    est_reglee.boolean = True
+    est_reglee.short_description = "Facture réglée"
 # class Facture(models.Model):
 #     numero_facture = models.CharField(max_length=20, unique=True, editable=False)
 #     vente = models.OneToOneField(Vente, on_delete=models.SET_NULL, null=True, blank=True, related_name="facture_vente")
@@ -262,47 +279,40 @@ class Facture(models.Model):
 
 
 class Paiement(models.Model):
-    facture = models.OneToOneField(
-        'Facture',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="paiement_facture"
+    facture = models.ForeignKey(
+        Facture,
+        on_delete=models.CASCADE,
+        related_name="paiements"  # mieux de renommer au pluriel
     )
-    montant_paye = models.DecimalField(
-        default=0.00,
-        null=True,
-        max_digits=10,
-        decimal_places=2,
-        verbose_name="Montant payé"
-    )
-    date_paiement = models.DateTimeField(
-        auto_now_add=True,
-        verbose_name="Date du paiement"
-    )
+    montant_paye = models.DecimalField(max_digits=10, decimal_places=2)
     mode_paiement = models.CharField(
-        max_length=50,
-        choices=[
-            ('cash', 'Espèces'),
-            ('card', 'Carte'),
-            ('mobile', 'Mobile Money'),
-            ('cheque', 'Chèque'),
-        ],
-        default='cash',
-        blank=True,
-        null=True,
-        verbose_name="Mode de paiement"
+        max_length=20,
+        choices=[('cash', 'Cash'), ('mobile', 'Mobile'), ('cheque', 'Chèque')]
     )
+    date_paiement = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        facture_num = self.facture.numero_facture if self.facture else "Aucune facture"
+        facture_num = self.paiement_factures.numero_factures if self.facture else "Aucune facture"
         return f'Paiement de {self.montant_paye} FCFA - {facture_num}'
 
     class Meta:
         ordering = ['-date_paiement']
         verbose_name = "Paiement"
         verbose_name_plural = "Paiements"
-        
+
+    @property
+    def total_paye(self):
+        return self.paiement_factures.aggregate(total=models.Sum('montant_paye'))['total'] or Decimal('0.00')
+
+    @property
+    def reste_a_payer(self):
+        return max(self.montant_total - self.total_paye, Decimal('0.00'))
+
+    def est_reglee(self):
+        return self.facture.status == "Payé"
+    est_reglee.boolean = True
+    est_reglee.short_description = "Facture réglée"
+    
 # class Paiement(models.Model):
 #     facture = models.OneToOneField(Facture, on_delete=models.SET_NULL, null=True, blank=True, related_name="paiement_facture")
 #     montant_paye = models.DecimalField(default=0.00, null=True, max_digits=10, decimal_places=2)

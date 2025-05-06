@@ -19,6 +19,7 @@ from stock.models import Stock
 from userauths.serializers import UserRegistrationSerializer, UserSerializer
 from sale.models import VenteProduit
 from sale.serializers import VenteProduitSerializer
+from store.serializers import ProduitSerializer
 
 from .models import Vendor, VendorProduit
 from .serializer import (VendorProduitSerializer, VendorSerializer, CreateVendorSerializer,
@@ -263,9 +264,10 @@ class VendorProfileView(APIView):
         responses={204: "Vendeur désactivé avec succès."}
     )
     def delete(self, request, user_id=None):
+        allowed_roles_admin_manager = ['admin', 'manager']  # 🔧 ligne à ajouter
         # if not request.user.user_role or request.user.user_role.role != 'admin':
         #     return Response({"detail": "Accès refusé."}, status=403)
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
         if not user_id:
@@ -285,6 +287,34 @@ class VendorProfileView(APIView):
         except Vendor.DoesNotExist:
             return Response({"detail": "Vendeur introuvable."}, status=404)
         
+
+# Un vendeur authentifié peut appeler GET /api/vendor/produits/
+# Il recevra la liste des produits associés à son stock
+class VendorProduitListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description="Lister les produits associés au vendeur connecté",
+        responses={200: ProduitSerializer(many=True)},
+    )
+    def get(self, request):
+        user = request.user
+        role = getattr(user.user_role, 'role', None)
+
+        if role != 'vendor':
+            return Response({"error": "Seul un vendeur peut accéder à ses produits."}, status=403)
+
+        try:
+            vendor = Vendor.objects.get(user=user)
+        except Vendor.DoesNotExist:
+            return Response({"error": "Aucun vendeur associé à cet utilisateur."}, status=400)
+
+        vendor_produits = VendorProduit.objects.filter(vendor=vendor).select_related('produit')
+        produits = [vp.produit for vp in vendor_produits]
+        serializer = ProduitSerializer(produits, many=True)
+
+        return Response(serializer.data)
+    
 
 # class DashboardVendeurStatsAPIView(APIView):
 #     permission_classes = [IsAuthenticated]
@@ -339,7 +369,7 @@ class ToggleVendorStatusView(APIView):
     )
 
     def patch(self, request, user_id):
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
         try:
@@ -367,7 +397,7 @@ class ListVendorAPIView(APIView):
     def get(self, request):
         # if not request.user.user_role or request.user.user_role.role not in allowed_roles:
         #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
         vendors = Vendor.objects.all()
         serializer = VendorSerializer(vendors, many=True)
@@ -474,7 +504,7 @@ class CreateVendorView(APIView):
         # if user_role not in allowed_roles:
         #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
         
         data = request.data
@@ -557,7 +587,7 @@ class RetrieveVendorView(APIView):
         # if user_role not in allowed_roles:
         #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
         
         search = request.GET.get('search')
@@ -604,7 +634,7 @@ class UpdateVendorStatusAPIView(APIView):
         # if user_role not in allowed_roles:
         #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
         
         # Get the Vendor instance associated with the given user_id
@@ -626,21 +656,15 @@ class UpdateVendorStatusAPIView(APIView):
 class VendorProduitAssociationAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    allowed_roles_admin_manager = ['admin', 'manager']
 
     @swagger_auto_schema(
-        operation_description="""Associer des produits à un vendeur vérifié.
-        
-        - 🎯 Associe un vendeur via son `user_id`.
-        - 🧾 Utilise `produit_id` pour POST (write-only).
-        - 📦 `produit` est retourné dans les réponses avec les détails complets.
-        - ✅ Seuls les rôles `admin` et `manager` sont autorisés.
-        - ⚠️ Vérifie automatiquement le stock disponible.
-        """,
+        operation_description="Associer des produits à un vendeur et ajuster les stocks.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=["user_id", "produits"],
+            required=["email", "produits"],
             properties={
-                "user_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="ID du user lié au vendeur"),
+                "email": openapi.Schema(type=openapi.TYPE_STRING),
                 "produits": openapi.Schema(
                     type=openapi.TYPE_ARRAY,
                     items=openapi.Schema(
@@ -648,38 +672,29 @@ class VendorProduitAssociationAPIView(APIView):
                         required=["produit_id", "quantite"],
                         properties={
                             "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-                            "quantite": openapi.Schema(type=openapi.TYPE_INTEGER)
+                            "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
                         }
                     )
                 )
             }
         ),
-        responses={201: "✅ Produits associés", 400: "❌ Requête invalide", 403: "⛔ Accès refusé", 404: "❌ Vendeur/Produit introuvable"}
+        responses={201: "Produits associés", 400: "Requête invalide", 403: "Accès refusé", 404: "Ressource introuvable"}
     )
     @transaction.atomic
     def post(self, request):
-        # allowed_roles = ['admin', 'manager']
-        # role = getattr(request.user.user_role, 'role', None)
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
+            return Response({"message": "⛔ Accès refusé"}, status=403)
 
-        # if role not in allowed_roles:
-        #     return Response({"error": "⛔ Accès refusé"}, status=403)
-        
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
-            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+        email = request.data.get("email")
+        produits_data = request.data.get("produits", [])
 
-        user_id = request.data.get('user_id')
-        produits_data = request.data.get('produits', [])
-
-        if not user_id:
-            return Response({"error": "user_id requis"}, status=400)
+        if not email:
+            return Response({"error": "L'email du vendeur est requis."}, status=400)
 
         try:
-            vendor = Vendor.objects.get(user__id=user_id)
+            vendor = Vendor.objects.select_related("user").get(user__email=email)
         except Vendor.DoesNotExist:
             return Response({"error": "Vendeur introuvable."}, status=404)
-
-        if not vendor.user or vendor.user.user_role.role != 'vendor':
-            return Response({"error": "Utilisateur non autorisé ou rôle incorrect."}, status=403)
 
         if not vendor.active:
             return Response({"error": "Ce vendeur est désactivé."}, status=403)
@@ -690,52 +705,182 @@ class VendorProduitAssociationAPIView(APIView):
         produits_associes = []
 
         for produit_info in produits_data:
-            produit_id = produit_info.get('produit_id')
-            quantite = produit_info.get('quantite')
+            produit_id = produit_info.get("produit_id")
+            quantite = produit_info.get("quantite")
 
             if not produit_id or quantite is None:
-                return Response({"error": "produit_id et quantite sont requis."}, status=400)
+                return Response({"error": "Chaque produit doit avoir un `produit_id` et une `quantite`."}, status=400)
+
+            try:
+                quantite = int(quantite)
+                if quantite <= 0:
+                    return Response({"error": "Quantité doit être strictement positive."}, status=400)
+            except Exception:
+                return Response({"error": "Quantité invalide."}, status=400)
 
             try:
                 produit = Produit.objects.get(id=produit_id)
             except Produit.DoesNotExist:
                 return Response({"error": f"Produit ID {produit_id} introuvable."}, status=404)
 
-            try:
-                quantite = int(quantite)
-                if quantite <= 0:
-                    return Response({"error": "Quantité doit être > 0."}, status=400)
-            except Exception:
-                return Response({"error": "Quantité invalide."}, status=400)
-
             stock = Stock.objects.filter(produit=produit).first()
             if not stock or stock.quantite < quantite:
-                return Response(
-                    {"error": f"Stock insuffisant pour {produit.sku} qui a pour ID {produit.id}. Stock actuel : {stock.quantite if stock else 0}"},
-                    status=400
-                )
+                return Response({
+                    "error": f"Stock insuffisant pour le produit {produit.nom}. Stock actuel : {stock.quantite if stock else 0}"
+                }, status=400)
 
-            vendor_produit, created = VendorProduit.objects.update_or_create(
-                produit=produit,
+            vendor_produit, created = VendorProduit.objects.get_or_create(
                 vendor=vendor,
-                defaults={'quantite': quantite}
+                produit=produit,
+                defaults={"quantite": quantite}
             )
+
+            if not created:
+                vendor_produit.quantite += quantite
+                vendor_produit.save()
 
             stock.quantite -= quantite
             stock.save()
 
             produits_associes.append({
                 "produit_id": produit.id,
-                "produit": produit.nom,
-                "quantite": quantite,
+                "nom": produit.nom,
+                "quantite_attribuee": quantite,
+                "stock_vendeur": vendor_produit.quantite,
+                "stock_restant_global": stock.quantite,
                 "status": "créé" if created else "mis à jour"
             })
 
         return Response({
-            "message": f"✅ {len(produits_associes)} produit(s) associé(s) à {vendor.user.first_name} {vendor.user.last_name} qui a pour email {vendor.user.email}",
-            "resultat": produits_associes
+            "message": "✅ Produits associés avec succès.",
+            "vendeur": {
+                "id": vendor.id,
+                "nom_complet": vendor.user.get_full_name(),
+                "email": vendor.user.email
+            },
+            "produits": produits_associes
         }, status=201)
+
+
+# class VendorProduitAssociationAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+#     allowed_roles_admin_manager = ['admin', 'manager']  # 🔧 ligne à ajouter
+
+#     @swagger_auto_schema(
+#         operation_description="""Associer des produits à un vendeur vérifié.
         
+#         - 🎯 Associe un vendeur via son `user_id`.
+#         - 🧾 Utilise `produit_id` pour POST (write-only).
+#         - 📦 `produit` est retourné dans les réponses avec les détails complets.
+#         - ✅ Seuls les rôles `admin` et `manager` sont autorisés.
+#         - ⚠️ Vérifie automatiquement le stock disponible.
+#         """,
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["user_id", "produits"],
+#             properties={
+#                 "email": openapi.Schema(type=openapi.TYPE_STRING, description="Email du vendeur"),
+#                 "produits": openapi.Schema(
+#                     type=openapi.TYPE_ARRAY,
+#                     items=openapi.Schema(
+#                         type=openapi.TYPE_OBJECT,
+#                         required=["produit_id", "quantite"],
+#                         properties={
+#                             "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER)
+#                         }
+#                     )
+#                 )
+#             }
+#         ),
+#         responses={201: "✅ Produits associés", 400: "❌ Requête invalide", 403: "⛔ Accès refusé", 404: "❌ Vendeur/Produit introuvable"}
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+        
+#         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
+#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
+#         email = request.data.get('email')
+#         produits_data = request.data.get('produits', [])
+
+#         if not email:
+#             return Response({"error": "email requis"}, status=400)
+
+#         try:
+#             vendor = Vendor.objects.get(user__email=email)
+#         except Vendor.DoesNotExist:
+#             return Response({"error": "Vendeur introuvable."}, status=404)
+
+#         if not vendor.user or vendor.user.user_role.role != 'vendor':
+#             return Response({"error": "Utilisateur non autorisé ou rôle incorrect."}, status=403)
+
+#         if not vendor.active:
+#             return Response({"error": "Ce vendeur est désactivé."}, status=403)
+
+#         if not produits_data:
+#             return Response({"error": "La liste des produits est vide."}, status=400)
+
+#         produits_associes = []
+
+#         for produit_info in produits_data:
+#             produit_id = produit_info.get('produit_id')
+#             quantite = produit_info.get('quantite')
+
+#             if not produit_id or quantite is None:
+#                 return Response({"error": "produit_id et quantite sont requis."}, status=400)
+
+#             try:
+#                 produit = Produit.objects.get(id=produit_id)
+#             except Produit.DoesNotExist:
+#                 return Response({"error": f"Produit ID {produit_id} introuvable."}, status=404)
+
+#             try:
+#                 quantite = int(quantite)
+#                 if quantite <= 0:
+#                     return Response({"error": "Quantité doit être > 0."}, status=400)
+#             except Exception:
+#                 return Response({"error": "Quantité invalide."}, status=400)
+
+#             stock = Stock.objects.filter(produit=produit).first()
+#             if not stock or stock.quantite < quantite:
+#                 return Response(
+#                     {"error": f"Stock insuffisant pour {produit.sku} qui a pour ID {produit.id}. Stock actuel : {stock.quantite if stock else 0}"},
+#                     status=400
+#                 )
+
+#             vendor_produit, created = VendorProduit.objects.get_or_create(
+#                 vendor=vendor,
+#                 produit=produit,
+#                 defaults={"quantite": quantite}
+#             )
+
+#             if not created:
+#                 vendor_produit.quantite += quantite
+#                 vendor_produit.save()
+
+#             stock.quantite -= quantite
+#             stock.save()
+
+#             produits_associes.append({
+#                 "produit_id": produit.id,
+#                 "nom": produit.nom,
+#                 "quantite": quantite,
+#                 "status": "créé" if created else "mis à jour"
+#             })
+
+#         return Response({
+#             "message": "✅ Produits associés avec succès.",
+#             "vendeur": {
+#                 "id": vendor.id,
+#                 "nom": vendor.user.get_full_name(),
+#                 "email": vendor.user.email
+#             },
+#             "produits": produits_associes
+#         }, status=201)
+
+
 
 # class VendorProduitAssociationAPIView(APIView):
 #     @swagger_auto_schema(
@@ -838,7 +983,7 @@ class RapportVentesMensuellesPDFView(APIView):
         # if user_role not in allowed_roles:
         #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
         
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
         
         mois = request.GET.get('mois', now().strftime('%Y-%m'))  # Format: "2025-04"

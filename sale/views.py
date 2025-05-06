@@ -16,14 +16,16 @@ from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from decimal import Decimal
 
 from backend.renderers import UserRenderer
 from sale.models import Client, Facture, Paiement, Vente, VenteProduit
-from sale.serializers import (ClientSerializers, FactureSerializers,
-                            PaiementSerializers, VenteProduitSerializer,
-                            VenteSerializers)
+from sale.serializers import (ClientSerializer, FactureSerializer,
+                            PaiementSerializer, VenteProduitSerializer,
+                            VenteDetailSerializer)
+from django.db import models
 from store.models import Produit
-from vendor.models import Vendor
+from vendor.models import Vendor, VendorProduit
 
 # #PDF
 # pip install weasyprint
@@ -35,100 +37,415 @@ from vendor.models import Vendor
 
 
 # Create your views here.
+
+# class VenteProduitCreateView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer une vente avec produits, client et facture",
+#         operation_description="Créer une vente avec des produits associés (par QR code), mise à jour du stock, génération automatique de la facture.",
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["produits"],
+#             properties={
+#                 "client": openapi.Schema(
+#                     type=openapi.TYPE_OBJECT,
+#                     properties={
+#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
+#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
+#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
+#                     }
+#                 ),
+#                 "produits": openapi.Schema(
+#                     type=openapi.TYPE_ARRAY,
+#                     items=openapi.Schema(
+#                         type=openapi.TYPE_OBJECT,
+#                         required=["slug", "quantite"],
+#                         properties={
+#                             "slug": openapi.Schema(type=openapi.TYPE_STRING),
+#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "prix_vente_grammes": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                             "remise": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                             "autre": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                         }
+#                     )
+#                 )
+#             }
+#         ),
+#         responses={201: "Création réussie", 400: "Requête invalide", 403: "Accès refusé", 500: "Erreur serveur"}
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         try:
+#             user = request.user
+#             role = getattr(user.user_role, 'role', None)
+#             if role not in ['admin', 'manager', 'vendor']:
+#                 return Response({"message": "Access Denied"}, status=403)
+
+#             data = request.data
+#             client_data = data.get('client')
+#             if not client_data or 'nom' not in client_data or 'prenom' not in client_data:
+#                 return Response({"error": "Les informations du client sont incomplètes."}, status=400)
+
+#             client, _ = Client.objects.get_or_create(
+#                 nom=client_data['nom'],
+#                 prenom=client_data['prenom'],
+#                 defaults={"telephone": client_data.get("telephone", "")}
+#             )
+
+#             vente = Vente.objects.create(client=client)
+#             montant_total = 0
+#             vente_produits = []
+
+#             try:
+#                 vendor = Vendor.objects.get(user=user)
+#             except Vendor.DoesNotExist:
+#                 return Response({"error": "Vous n'êtes pas associé à un compte vendeur."}, status=400)
+
+#             for item in data.get('produits', []):
+#                 slug = item['slug']
+#                 quantite = int(item.get('quantite', 0))
+#                 if quantite <= 0:
+#                     return Response({"error": f"Quantité invalide pour le produit {slug}."}, status=400)
+
+#                 try:
+#                     produit = Produit.objects.select_related('marque').get(slug=slug)
+#                 except Produit.DoesNotExist:
+#                     return Response({"error": f"Produit avec QR code {slug} introuvable."}, status=404)
+
+#                 try:
+#                     brut = item.get('prix_vente_grammes')
+#                     # prix_vente_grammes = Decimal(str(brut)) if brut and Decimal(str(brut)) > 0 else Decimal(str(produit.marque.prix))
+#                     if brut:
+#                         prix_vente_grammes = Decimal(str(brut))
+#                     else:
+#                         prix_vente_grammes = Decimal(str(produit.marque.prix))
+#                 except (InvalidOperation, AttributeError, TypeError):
+#                     return Response({"error": f"Prix de vente invalide pour le produit {slug}."}, status=400)
+
+#                 remise = Decimal(str(item.get('remise') or 0))
+#                 autres = Decimal(str(item.get('autre') or 0))
+
+#                 try:
+#                     vendor_stock = VendorProduit.objects.get(produit=produit, vendor=vendor)
+#                 except VendorProduit.DoesNotExist:
+#                     return Response({"error": f"Produit {produit.nom} non disponible dans votre stock."}, status=400)
+
+#                 if vendor_stock.quantite < quantite:
+#                     return Response({
+#                         "error": f"Stock insuffisant pour {produit.nom}. Stock disponible : {vendor_stock.quantite}"
+#                     }, status=400)
+
+#                 poids = produit.poids or 1
+#                 prix_vente_unitaire = prix_vente_grammes * poids
+#                 prix_remise = prix_vente_unitaire - remise
+#                 sous_total = (prix_remise * quantite) + autres
+
+#                 vente_produit = VenteProduit(
+#                     vente=vente,
+#                     produit=produit,
+#                     quantite=quantite,
+#                     prix_vente_grammes=prix_vente_grammes,
+#                     sous_total_prix_vent=sous_total,
+#                     remise=remise,
+#                     autres=autres
+#                 )
+#                 vente_produits.append(vente_produit)
+#                 montant_total += sous_total
+#                 vendor_stock.quantite -= quantite
+#                 vendor_stock.save()
+
+#             VenteProduit.objects.bulk_create(vente_produits)
+#             vente.montant_total = montant_total
+#             vente.save()
+
+#             for _ in range(10):
+#                 numero = Facture().generer_numero_facture()
+#                 if not Facture.objects.filter(numero_facture=numero).exists():
+#                     break
+#             else:
+#                 raise Exception("Impossible de générer un numéro de facture unique.")
+
+#             facture = Facture.objects.create(
+#                 vente=vente,
+#                 montant_total=montant_total,
+#                 numero_facture=numero
+#             )
+
+#             vente_detail = VenteDetailSerializer(vente)
+#             return Response(vente_detail.data, status=status.HTTP_201_CREATED)
+
+#         except Exception as e:
+#             transaction.set_rollback(True)
+#             return Response({"detail": str(e)}, status=500)
+    
+# Voici la vue complète VenteProduitCreateView corrigée, avec gestion du vendor_id 
+# pour permettre aux rôles admin et manager de vendre au nom d’un vendeur :  
+# class VenteProduitCreateView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer une vente avec produits, client et facture",
+#         operation_description="Créer une vente avec des produits associés (par QR code), mise à jour du stock, génération automatique de la facture. Un admin peut spécifier un `vendor_id`.",
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 'vendor_id',
+#                 openapi.IN_QUERY,
+#                 description="ID du vendeur (optionnel, requis si admin/manager veut vendre à la place d’un vendeur)",
+#                 type=openapi.TYPE_INTEGER
+#             )
+#         ],
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["produits"],
+#             properties={
+#                 "client": openapi.Schema(
+#                     type=openapi.TYPE_OBJECT,
+#                     properties={
+#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
+#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
+#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
+#                     }
+#                 ),
+#                 "produits": openapi.Schema(
+#                     type=openapi.TYPE_ARRAY,
+#                     items=openapi.Schema(
+#                         type=openapi.TYPE_OBJECT,
+#                         required=["slug", "quantite"],
+#                         properties={
+#                             "slug": openapi.Schema(type=openapi.TYPE_STRING),
+#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "prix_vente_grammes": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                             "remise": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                             "autre": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                         }
+#                     )
+#                 )
+#             }
+#         ),
+#         responses={201: "Création réussie", 400: "Requête invalide", 403: "Accès refusé", 500: "Erreur serveur"}
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         try:
+#             user = request.user
+#             role = getattr(user.user_role, 'role', None)
+#             if role not in ['admin', 'manager', 'vendor']:
+#                 return Response({"message": "Access Denied"}, status=403)
+
+#             data = request.data
+#             client_data = data.get('client')
+#             if not client_data or 'nom' not in client_data or 'prenom' not in client_data:
+#                 return Response({"error": "Les informations du client sont incomplètes."}, status=400)
+
+#             client, _ = Client.objects.get_or_create(
+#                 nom=client_data['nom'],
+#                 prenom=client_data['prenom'],
+#                 defaults={"telephone": client_data.get("telephone", "")}
+#             )
+
+#             vente = Vente.objects.create(client=client)
+#             montant_total = 0
+#             vente_produits = []
+
+#             # 📌 Vendor selection (admin peut spécifier ?vendor_id=)
+#             vendor_id = request.query_params.get('vendor_id')
+#             if role == 'vendor':
+#                 try:
+#                     vendor = Vendor.objects.get(user=user)
+#                 except Vendor.DoesNotExist:
+#                     return Response({"error": "Vous n'êtes pas associé à un compte vendeur."}, status=400)
+#             else:
+#                 if not vendor_id:
+#                     return Response({"error": "vendor_id est requis pour les admins et managers."}, status=400)
+#                 try:
+#                     vendor = Vendor.objects.get(id=vendor_id)
+#                 except Vendor.DoesNotExist:
+#                     return Response({"error": "Vendeur introuvable avec cet ID."}, status=404)
+
+#             for item in data.get('produits', []):
+#                 slug = item['slug']
+#                 quantite = int(item.get('quantite', 0))
+#                 if quantite <= 0:
+#                     return Response({"error": f"Quantité invalide pour le produit {slug}."}, status=400)
+
+#                 try:
+#                     produit = Produit.objects.select_related('marque').get(slug=slug)
+#                 except Produit.DoesNotExist:
+#                     return Response({"error": f"Produit avec QR code {slug} introuvable."}, status=404)
+
+#                 try:
+#                     brut = item.get('prix_vente_grammes')
+#                     prix_vente_grammes = Decimal(str(brut)) if brut and Decimal(str(brut)) > 0 else Decimal(str(produit.marque.prix))
+#                 except (InvalidOperation, AttributeError, TypeError):
+#                     return Response({"error": f"Prix de vente invalide pour le produit {slug}."}, status=400)
+
+#                 remise = Decimal(str(item.get('remise') or 0))
+#                 autres = Decimal(str(item.get('autre') or 0))
+
+#                 try:
+#                     vendor_stock = VendorProduit.objects.get(produit=produit, vendor=vendor)
+#                 except VendorProduit.DoesNotExist:
+#                     return Response({"error": f"Produit {produit.nom} non disponible dans le stock du vendeur."}, status=400)
+
+#                 if vendor_stock.quantite < quantite:
+#                     return Response({
+#                         "error": f"Stock insuffisant pour {produit.nom}. Stock disponible : {vendor_stock.quantite}"
+#                     }, status=400)
+
+#                 poids = produit.poids or 1
+#                 prix_vente_unitaire = prix_vente_grammes * poids
+#                 prix_remise = prix_vente_unitaire - remise
+#                 sous_total = (prix_remise * quantite) + autres
+
+#                 vente_produit = VenteProduit(
+#                     vente=vente,
+#                     produit=produit,
+#                     quantite=quantite,
+#                     prix_vente_grammes=prix_vente_grammes,
+#                     sous_total_prix_vent=sous_total,
+#                     remise=remise,
+#                     autres=autres
+#                 )
+#                 vente_produits.append(vente_produit)
+#                 montant_total += sous_total
+#                 vendor_stock.quantite -= quantite
+#                 vendor_stock.save()
+
+#             VenteProduit.objects.bulk_create(vente_produits)
+#             vente.montant_total = montant_total
+#             vente.save()
+
+#             for _ in range(10):
+#                 numero = Facture().generer_numero_facture()
+#                 if not Facture.objects.filter(numero_facture=numero).exists():
+#                     break
+#             else:
+#                 raise Exception("Impossible de générer un numéro de facture unique.")
+
+#             facture = Facture.objects.create(
+#                 vente=vente,
+#                 montant_total=montant_total,
+#                 numero_facture=numero
+#             )
+
+#             vente_detail = VenteDetailSerializer(vente)
+#             return Response(vente_detail.data, status=status.HTTP_201_CREATED)
+
+#         except Exception as e:
+#             transaction.set_rollback(True)
+#             return Response({"detail": str(e)}, status=500)
+
+
 class VenteProduitCreateView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Créer une vente avec produits, client, et facture",
-        operation_description="Créer une vente avec produits associés (par QR code), mise à jour du stock vendeur, génération automatique de la facture.",
+        operation_summary="Créer une vente avec produits, client et facture",
+        operation_description="Créer une vente avec des produits associés (par QR code), mise à jour du stock, génération automatique de la facture. Un admin peut spécifier un `vendor_email`.",
+        manual_parameters=[
+            openapi.Parameter(
+                'vendor_email',
+                openapi.IN_QUERY,
+                description="Email du vendeur (optionnel, requis si admin/manager veut vendre à la place d’un vendeur)",
+                type=openapi.TYPE_STRING
+            )
+        ],
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["produits"],
-            # required=["client", "produits"],
             properties={
                 "client": openapi.Schema(
                     type=openapi.TYPE_OBJECT,
-                    # required=["nom", "prenom"],
                     properties={
-                        "nom": openapi.Schema(type=openapi.TYPE_STRING, description="Nom du client"),
-                        "prenom": openapi.Schema(type=openapi.TYPE_STRING, description="Prénom du client"),
-                        "telephone": openapi.Schema(type=openapi.TYPE_STRING, description="Téléphone du client", example="770000000"),
+                        "nom": openapi.Schema(type=openapi.TYPE_STRING),
+                        "prenom": openapi.Schema(type=openapi.TYPE_STRING),
+                        "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
                     }
                 ),
                 "produits": openapi.Schema(
                     type=openapi.TYPE_ARRAY,
                     items=openapi.Schema(
                         type=openapi.TYPE_OBJECT,
-                        required=["sku", "quantite"],
+                        required=["slug", "quantite"],
                         properties={
-                            "sku": openapi.Schema(type=openapi.TYPE_STRING, description="QR Code du produit via SKU"),
-                            "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, description="Quantité vendue"),
-                            "prix_vente_grammes": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", description="Prix de vente par gramme (facultatif)"),
-                            "remise": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", description="Remise en % (facultatif)"),
-                            "autre": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", description="Autre montant (facultatif)"),
+                            "slug": openapi.Schema(type=openapi.TYPE_STRING),
+                            "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
+                            "prix_vente_grammes": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+                            "remise": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+                            "autre": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
                         }
                     )
                 )
             }
         ),
-        responses={
-            201: openapi.Response(description="Vente et facture créées avec succès"),
-            400: openapi.Response(description="Requête invalide"),
-            403: openapi.Response(description="Accès refusé"),
-            500: openapi.Response(description="Erreur serveur"),
-        }
+        responses={201: "Création réussie", 400: "Requête invalide", 403: "Accès refusé", 500: "Erreur serveur"}
     )
     @transaction.atomic
-    def post(self, request, *args, **kwargs):
+    def post(self, request):
         try:
             user = request.user
             role = getattr(user.user_role, 'role', None)
-            if role not in ['admin', 'manager', 'vendeur']:
+            if role not in ['admin', 'manager', 'vendor']:
                 return Response({"message": "Access Denied"}, status=403)
 
             data = request.data
             client_data = data.get('client')
+            if not client_data or 'nom' not in client_data or 'prenom' not in client_data:
+                return Response({"error": "Les informations du client sont incomplètes."}, status=400)
+
             client, _ = Client.objects.get_or_create(
                 nom=client_data['nom'],
                 prenom=client_data['prenom'],
-                defaults=client_data
+                defaults={"telephone": client_data.get("telephone", "")}
             )
+
             vente = Vente.objects.create(client=client)
-
-            vente_produits = []
             montant_total = 0
+            vente_produits = []
 
-            try:
-                vendor = Vendor.objects.get(user=user)
-            except Vendor.DoesNotExist:
-                return Response({"error": "Vous n'êtes pas associé à un compte vendeur."}, status=400)
+            # 🔁 Vendor selection via email
+            vendor_email = request.query_params.get('vendor_email')
+            if role == 'vendor':
+                try:
+                    vendor = Vendor.objects.get(user=user)
+                except Vendor.DoesNotExist:
+                    return Response({"error": "Vous n'êtes pas associé à un compte vendeur."}, status=400)
+            else:
+                if not vendor_email:
+                    return Response({"error": "vendor_email est requis pour les admins et managers."}, status=400)
+                try:
+                    vendor = Vendor.objects.select_related('user').get(user__email=vendor_email)
+                except Vendor.DoesNotExist:
+                    return Response({"error": "Vendeur introuvable avec cet email."}, status=404)
 
             for item in data.get('produits', []):
-                sku = item['sku']
+                slug = item['slug']
                 quantite = int(item.get('quantite', 0))
-                prix_vente_grammes = item.get('prix_vente_grammes')
-                remise = float(item.get('remise', 0.0))
-                autres = Decimal(item.get('autre', 0.0))
+                if quantite <= 0:
+                    return Response({"error": f"Quantité invalide pour le produit {slug}."}, status=400)
 
                 try:
-                    if quantite <= 0:
-                        return Response({"error": f"Quantité invalide pour le QR code {sku}."}, status=400)
-                except (ValueError, TypeError):
-                    return Response({"error": f"Quantité manquante ou invalide pour le QR code {sku}."}, status=400)
-
-                try:
-                    produit = Produit.objects.select_related('marque').get(sku=sku)
+                    produit = Produit.objects.select_related('marque').get(slug=slug)
                 except Produit.DoesNotExist:
-                    return Response({"error": f"Produit avec QR code {sku} introuvable."}, status=404)
+                    return Response({"error": f"Produit avec QR code {slug} introuvable."}, status=404)
 
-                if prix_vente_grammes is None:
-                    prix_vente_grammes = Decimal(produit.marque.prix)
+                try:
+                    brut = item.get('prix_vente_grammes')
+                    prix_vente_grammes = Decimal(str(brut)) if brut and Decimal(str(brut)) > 0 else Decimal(str(produit.marque.prix))
+                except (InvalidOperation, AttributeError, TypeError):
+                    return Response({"error": f"Prix de vente invalide pour le produit {slug}."}, status=400)
+
+                remise = Decimal(str(item.get('remise') or 0))
+                autres = Decimal(str(item.get('autre') or 0))
 
                 try:
                     vendor_stock = VendorProduit.objects.get(produit=produit, vendor=vendor)
                 except VendorProduit.DoesNotExist:
-                    return Response({"error": f"Produit {produit.nom} non disponible dans votre stock."}, status=400)
+                    return Response({"error": f"Produit {produit.nom} non disponible dans le stock du vendeur."}, status=400)
 
                 if vendor_stock.quantite < quantite:
                     return Response({
@@ -138,8 +455,8 @@ class VenteProduitCreateView(APIView):
                 poids = produit.poids or 1
                 prix_vente_unitaire = prix_vente_grammes * poids
                 prix_remise = prix_vente_unitaire - remise
-                # prix_remise = prix_vente_unitaire * (1 - remise / 100)
-                sous_total = (prix_remise * quantite) + autres
+                # sous_total = (prix_remise * quantite) + autres
+                sous_total = prix_remise  + autres
 
                 vente_produit = VenteProduit(
                     vente=vente,
@@ -160,8 +477,9 @@ class VenteProduitCreateView(APIView):
             vente.montant_total = montant_total
             vente.save()
 
+            # ✅ Génération du numéro de facture
             for _ in range(10):
-                numero = Facture.generer_numero_facture()
+                numero = Facture().generer_numero_facture()
                 if not Facture.objects.filter(numero_facture=numero).exists():
                     break
             else:
@@ -172,15 +490,162 @@ class VenteProduitCreateView(APIView):
                 montant_total=montant_total,
                 numero_facture=numero
             )
-            facture.save()
 
-            facture_serializer = FactureSerializers(facture)
-            return Response(facture_serializer.data, status=status.HTTP_201_CREATED)
+            vente_detail = VenteDetailSerializer(vente)
+            return Response(vente_detail.data, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            import traceback
-            print(traceback.format_exc())
-            return Response({"detail": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            transaction.set_rollback(True)
+            return Response({"detail": str(e)}, status=500)
+
+# class VenteProduitCreateView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer une vente avec produits, client, et facture",
+#         operation_description="Créer une vente avec produits associés (par QR code), mise à jour du stock vendeur, génération automatique de la facture.",
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["produits"],
+#             # required=["client", "produits"],
+#             properties={
+#                 "client": openapi.Schema(
+#                     type=openapi.TYPE_OBJECT,
+#                     # required=["nom", "prenom"],
+#                     properties={
+#                         "nom": openapi.Schema(type=openapi.TYPE_STRING, description="Nom du client"),
+#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING, description="Prénom du client"),
+#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING, description="Téléphone du client", example="770000000"),
+#                     }
+#                 ),
+#                 "produits": openapi.Schema(
+#                     type=openapi.TYPE_ARRAY,
+#                     items=openapi.Schema(
+#                         type=openapi.TYPE_OBJECT,
+#                         required=["slug", "quantite"],
+#                         properties={
+#                             "slug": openapi.Schema(type=openapi.TYPE_STRING, description="QR Code du produit via slug"),
+#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, description="Quantité vendue"),
+#                             "prix_vente_grammes": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", description="Prix de vente par gramme (facultatif)"),
+#                             "remise": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", description="Remise en % (facultatif)"),
+#                             "autre": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", description="Autre montant (facultatif)"),
+#                         }
+#                     )
+#                 )
+#             }
+#         ),
+#         responses={
+#             201: openapi.Response(description="Vente et facture créées avec succès"),
+#             400: openapi.Response(description="Requête invalide"),
+#             403: openapi.Response(description="Accès refusé"),
+#             500: openapi.Response(description="Erreur serveur"),
+#         }
+#     )
+#     @transaction.atomic
+#     def post(self, request, *args, **kwargs):
+#         try:
+#             user = request.user
+#             role = getattr(user.user_role, 'role', None)
+#             if role not in ['admin', 'manager', 'vendor']:
+#                 return Response({"message": "Access Denied"}, status=403)
+
+#             data = request.data
+#             client_data = data.get('client')
+#             client, _ = Client.objects.get_or_create(
+#                 nom=client_data['nom'],
+#                 prenom=client_data['prenom'],
+#                 defaults={"telephone": client_data.get("telephone", "")}
+#             )
+#             if not client_data or 'nom' not in client_data or 'prenom' not in client_data:
+#                 return Response({"error": "Les informations du client sont incomplètes."}, status=400)
+#             vente = Vente.objects.create(client=client)
+
+#             vente_produits = []
+#             montant_total = 0
+
+#             try:
+#                 vendor = Vendor.objects.get(user=user)
+#             except Vendor.DoesNotExist:
+#                 return Response({"error": "Vous n'êtes pas associé à un compte vendeur."}, status=400)
+
+#             for item in data.get('produits', []):
+#                 slug = item['slug']
+#                 quantite = int(item.get('quantite', 0))
+#                 prix_vente_grammes = item.get('prix_vente_grammes')
+#                 remise = Decimal(item.get('remise', 0.0))
+#                 autres = Decimal(item.get('autre', 0.0))
+
+#                 try:
+#                     if quantite <= 0:
+#                         return Response({"error": f"Quantité invalide pour le QR code {slug}."}, status=400)
+#                 except (ValueError, TypeError):
+#                     return Response({"error": f"Quantité manquante ou invalide pour le QR code {slug}."}, status=400)
+
+#                 try:
+#                     produit = Produit.objects.select_related('marque').get(slug=slug)
+#                 except Produit.DoesNotExist:
+#                     return Response({"error": f"Produit avec QR code {slug} introuvable."}, status=404)
+
+#                 if prix_vente_grammes is None:
+#                     prix_vente_grammes = Decimal(produit.marque.prix)
+
+#                 try:
+#                     vendor_stock = VendorProduit.objects.get(produit=produit, vendor=vendor)
+#                 except VendorProduit.DoesNotExist:
+#                     return Response({"error": f"Produit {produit.nom} non disponible dans votre stock."}, status=400)
+
+#                 if vendor_stock.quantite < quantite:
+#                     return Response({
+#                         "error": f"Stock insuffisant pour {produit.nom}. Stock disponible : {vendor_stock.quantite}"
+#                     }, status=400)
+
+#                 poids = produit.poids or 1
+#                 prix_vente_unitaire = prix_vente_grammes * poids
+#                 prix_remise = prix_vente_unitaire - remise
+#                 # prix_remise = prix_vente_unitaire * (1 - remise / 100)
+#                 sous_total = (prix_remise * quantite) + autres
+
+#                 vente_produit = VenteProduit(
+#                     vente=vente,
+#                     produit=produit,
+#                     quantite=quantite,
+#                     prix_vente_grammes=prix_vente_grammes,
+#                     sous_total_prix_vent=sous_total,
+#                     remise=remise,
+#                     autres=autres
+#                 )
+#                 vente_produits.append(vente_produit)
+#                 montant_total += sous_total
+
+#                 vendor_stock.quantite -= quantite
+#                 vendor_stock.save()
+
+#             VenteProduit.objects.bulk_create(vente_produits)
+#             vente.montant_total = montant_total
+#             vente.save()
+
+#             for _ in range(10):
+#                 numero = Facture.generer_numero_facture()
+#                 if not Facture.objects.filter(numero_facture=numero).exists():
+#                     break
+#             else:
+#                 raise Exception("Impossible de générer un numéro de facture unique.")
+
+#             facture = Facture.objects.create(
+#                 vente=vente,
+#                 montant_total=montant_total,
+#                 numero_facture=numero
+#             )
+#             facture.save()
+
+#             facture_serializer = FactureSerializer(facture)
+#             return Response(facture_serializer.data, status=status.HTTP_201_CREATED)
+
+#         except Exception as e:
+#             import traceback
+#             print(traceback.format_exc())
+#             return Response({"detail": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # class VenteProduitCreateView(APIView):
@@ -318,7 +783,7 @@ class VenteProduitCreateView(APIView):
 #             )
 #             facture.save()
 
-#             facture_serializer = FactureSerializers(facture)
+#             facture_serializer = FactureSerializer(facture)
 #             return Response(facture_serializer.data, status=status.HTTP_201_CREATED)
 
 #         except Exception as e:
@@ -418,11 +883,11 @@ class VenteProduitCreateView(APIView):
 #                 try:
 #                     # quantite = int(quantite)
 #                     if quantite <= 0:
-#                         return Response({"error": f"Quantité invalide pour le produit {produit.sku}."}, status=status.HTTP_400_BAD_REQUEST)
+#                         return Response({"error": f"Quantité invalide pour le produit {produit.slug}."}, status=status.HTTP_400_BAD_REQUEST)
 #                     # if not 0 <= remise <= 100:
 #                     #     return Response({"error": f"Remise invalide pour le produit {produit_id}."}, status=400)
 #                 except (ValueError, TypeError):
-#                     return Response({"error": f"Quantité manquante ou invalide pour le produit {produit.sku}."}, status=status.HTTP_400_BAD_REQUEST)
+#                     return Response({"error": f"Quantité manquante ou invalide pour le produit {produit.slug}."}, status=status.HTTP_400_BAD_REQUEST)
                 
                 
 #                 # try:
@@ -524,8 +989,8 @@ class VenteProduitCreateView(APIView):
 #             # paiement = Paiement.objects.create(facture=facture, montant_paye=0)
 
 #             # Retourner la réponse avec la vente et la facture
-#             facture_serializer = FactureSerializers(facture)
-#             # paiement_serializer = PaiementSerializers(paiement)
+#             facture_serializer = FactureSerializer(facture)
+#             # paiement_serializer = PaiementSerializer(paiement)
 #             return Response(facture_serializer.data, status=status.HTTP_201_CREATED)
 
 #         except Exception as e:
@@ -539,13 +1004,13 @@ class ListFactureView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
     @swagger_auto_schema(
-        responses={200: openapi.Response('response description', FactureSerializers)},
+        responses={200: openapi.Response('response description', FactureSerializer)},
     )
     def get(self, request):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur' and request.user.user_role.role != 'caissier':
             return Response({"message": "Access Denied"})
         factures = Facture.objects.all()
-        serializer = FactureSerializers(factures, many=True)
+        serializer = FactureSerializer(factures, many=True)
         return Response(serializer.data)
 
 
@@ -553,7 +1018,7 @@ class RechercherFactureView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
     @swagger_auto_schema(
-        responses={200: openapi.Response('response description', FactureSerializers)},
+        responses={200: openapi.Response('response description', FactureSerializer)},
     )
     def get(self, request, numero_facture):
         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur' and request.user.user_role.role != 'caissier':
@@ -565,66 +1030,127 @@ class RechercherFactureView(APIView):
             raise NotFound("Facture non trouvé avec ce numero de facture.")
         
         # Sérialisation des données du produit
-        serializer = FactureSerializers(facture)
+        serializer = FactureSerializer(facture)
         return Response(serializer.data)
+
+# class PaiementFactureView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+    
+#     @swagger_auto_schema(
+#         operation_description="User login with email and password",
+#         request_body=PaiementSerializer,
+#         responses={
+#             200: openapi.Response("Login successful", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"token": openapi.Schema(type=openapi.TYPE_STRING)})),
+#             400: openapi.Response("Bad request", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"detail": openapi.Schema(type=openapi.TYPE_STRING)}))
+#         }
+#     )
+    
+#     def post(self, request, facture_numero):
+#         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'cashier':
+#             return Response({"message": "Access Denied"})
+#         try:
+#             # Get the facture by the facture_num
+#             facture = Facture.objects.get(numero_facture=facture_numero)
+#         except Facture.DoesNotExist:
+#             return Response({"detail": "Facture not found."}, status=status.HTTP_404_NOT_FOUND)
+
+#         if facture.status == 'Payé':
+#             return Response({'error': 'La facture est déjà payée'}, status=status.HTTP_400_BAD_REQUEST)
+
+#         paiement_data = request.data.get('paiement')
+#         montant_paye = paiement_data['montant_paye']
+#         if not montant_paye:
+#             return Response({'error': 'montant paye is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+#         # pour plusieur field
+#         # amount_paid = request.data.get('amount_paid')
+#         # payment_method = request.data.get('payment_method')
+#         # transaction_id = request.data.get('transaction_id')
+#         # if not all([amount_paid, payment_method, transaction_id]):
+#         #     return Response({'error': 'All payment fields are required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+#         # Record the payment
+#         paiement = Paiement.objects.create(
+#             facture=facture,
+#             montant_paye=montant_paye,
+#         )
+        
+#         # Check if invoice is fully paid
+#         # total_paye = facture.paiement_facture.aggregate(models.Sum('montant_paye'))['montant_paye__sum'] or 0
+#         # Check if the paiement covers the total amount
+#         if paiement.montant_paye >= facture.montant_total:
+#             facture.status = "Payé"
+#         else:
+#             facture.status = "Nom Payé"
+
+#         # Save the updated payment status
+#         facture.save()
+            
+
+#         return Response({'message': 'Paiement réussi', 'paiement': PaiementSerializer(paiement).data}, status=status.HTTP_201_CREATED)
+
 
 class PaiementFactureView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
     
     @swagger_auto_schema(
-        operation_description="User login with email and password",
-        request_body=PaiementSerializers,
+        operation_description="Effectuer un paiement pour une facture donnée par son numéro.",
+        request_body=PaiementSerializer,
         responses={
-            200: openapi.Response("Login successful", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"token": openapi.Schema(type=openapi.TYPE_STRING)})),
-            400: openapi.Response("Bad request", openapi.Schema(type=openapi.TYPE_OBJECT, properties={"detail": openapi.Schema(type=openapi.TYPE_STRING)}))
+            201: openapi.Response("Paiement enregistré avec succès"),
+            400: openapi.Response("Requête invalide"),
+            403: openapi.Response("Accès interdit"),
+            404: openapi.Response("Facture introuvable")
         }
     )
-    
     def post(self, request, facture_numero):
-        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'caissier':
-            return Response({"message": "Access Denied"})
+        role = getattr(request.user.user_role, 'role', None)
+        if role not in ['admin', 'manager', 'cashier']:
+            return Response({"message": "Access Denied"}, status=403)
+
         try:
-            # Get the facture by the facture_num
             facture = Facture.objects.get(numero_facture=facture_numero)
         except Facture.DoesNotExist:
-            return Response({"detail": "Facture not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"detail": "Facture introuvable."}, status=404)
 
         if facture.status == 'Payé':
-            return Response({'error': 'La facture est déjà payée'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'La facture est déjà réglée'}, status=400)
 
-        paiement_data = request.data.get('paiement')
-        montant_paye = paiement_data['montant_paye']
-        if not montant_paye:
-            return Response({'error': 'montant paye is required'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # pour plusieur field
-        # amount_paid = request.data.get('amount_paid')
-        # payment_method = request.data.get('payment_method')
-        # transaction_id = request.data.get('transaction_id')
-        # if not all([amount_paid, payment_method, transaction_id]):
-        #     return Response({'error': 'All payment fields are required'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Record the payment
+        montant_brut = request.data.get('montant_paye')
+        mode_paiement = request.data.get('mode_paiement', 'cash')
+
+        if not montant_brut:
+            return Response({'error': 'Le montant payé est requis'}, status=400)
+
+        try:
+            montant_paye = Decimal(str(montant_brut))
+        except Exception:
+            return Response({'error': 'Le montant payé est invalide'}, status=400)
+
+        if montant_paye <= 0:
+            return Response({'error': 'Le montant payé doit être supérieur à 0'}, status=400)
+
         paiement = Paiement.objects.create(
             facture=facture,
             montant_paye=montant_paye,
+            mode_paiement=mode_paiement
         )
-        
-        # Check if invoice is fully paid
-        # total_paye = facture.paiement_facture.aggregate(models.Sum('montant_paye'))['montant_paye__sum'] or 0
-        # Check if the paiement covers the total amount
-        if paiement.montant_paye >= facture.montant_total:
+
+        # ✅ Met à jour le statut si nécessaire
+        if facture.total_paye >= facture.montant_total and facture.status != "Payé":
             facture.status = "Payé"
-        else:
-            facture.status = "Nom Payé"
+            facture.save()
 
-        # Save the updated payment status
-        facture.save()
-            
-
-        return Response({'message': 'Paiement réussi', 'paiement': PaiementSerializers(paiement).data}, status=status.HTTP_201_CREATED)
-
+        return Response({
+            'message': 'Paiement enregistré avec succès',
+            'paiement': PaiementSerializer(paiement).data,
+            'total_paye': str(facture.total_paye),
+            'reste_a_payer': str(facture.reste_a_payer),
+            'statut_facture': facture.status
+        }, status=201)
+        
 
 # Vue API pour modifier un produit dans une vente
 # path('vente/<int:vente_id>/produit/<int:venteproduit_id>/edit', VenteProduitEditView.as_view(), name='vente-produit-edit'),
@@ -724,13 +1250,13 @@ class PaiementFactureView(APIView):
 #     #         raise NotFound("Facture not found")
 
 #     #     # Serialize the book data
-#     #     serializer = FactureSerializers(facture)
+#     #     serializer = FactureSerializer(facture)
 #     #     return Response(serializer.data)
     
 #     def get(self, request, id):
 #         try:
 #             facture = Facture.objects.get(id=id)
-#             serializer = FactureSerializers(facture)
+#             serializer = FactureSerializer(facture)
 #             return Response(serializer.data)
 #         except Facture.DoesNotExist:
 #             return Response({'detail': 'Facture non trouvé'}, status=status.HTTP_404_NOT_FOUND)
@@ -770,7 +1296,7 @@ class PaiementFactureView(APIView):
 #     #     except Paiement.DoesNotExist:
 #     #         raise NotFound(detail="Paiement non trouvé")
         
-#     #     serializer = PaiementSerializers(paiement, data=request.data, partial=True)
+#     #     serializer = PaiementSerializer(paiement, data=request.data, partial=True)
 #     #     if serializer.is_valid():
 #     #         paiement = serializer.save()
 #     #         # Update etat facture 
@@ -817,7 +1343,7 @@ class VentProduitsListAPIView(APIView):
 #     # Retour
 #     fichier_url = request.build_absolute_uri(facture.fichier_pdf.url)
 #     return Response({
-#         "facture": FactureSerializers(facture).data,
+#         "facture": FactureSerializer(facture).data,
 #         "fichier_pdf": fichier_url
 #     }, status=201)
 
