@@ -45,8 +45,13 @@ class Vente(models.Model):
     #     raise Exception("Impossible de générer un numéro de vente unique après 10 tentatives.")
 
     def save(self, *args, **kwargs):
+<<<<<<< HEAD
         # if not self.slug:
         #     self.slug = uuid.uuid4().hex.upper()[:9]
+=======
+    #    if not self.slug:
+    #        self.slug = uuid.uuid4().hex.upper()[:9]
+>>>>>>> 1827c79 (Sauvegarde locale avant pull)
         # if not self.numero_vente:
         #     self.numero_vente = self.generate_numero_vente()
         super().save(*args, **kwargs)

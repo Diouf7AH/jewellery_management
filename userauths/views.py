@@ -29,6 +29,7 @@ from django.http import Http404
 from .auth_backend import EmailPhoneUsernameAuthenticationBackend as EoP
 from .models import Profile, Role
 from .serializers import (ProfileSerializer, RoleSerializer, UserChangePasswordSerializer, UserDetailSerializer, UserLoginSerializer, UserRegistrationSerializer)
+
 from django.utils import timezone
 
 from django.conf import settings
@@ -53,69 +54,6 @@ def get_tokens_for_user(user):
         'access': str(refresh.access_token),
     }
 
-# Email-register
-# def generate_email_token(user):
-#     serializer = URLSafeTimedSerializer(settings.SECRET_KEY)
-#     return serializer.dumps(user.email, salt="email-confirmation")
-
-# Email-registrer
-# def verify_email_token(token, expiration=3600):
-#     serializer = URLSafeTimedSerializer(settings.SECRET_KEY)
-#     try:
-#         email = serializer.loads(token, salt="email-confirmation", max_age=expiration)
-#         return email
-#     except Exception:
-#         return None
-# def verify_email_token(token, expiration=86400):  # 24h
-#     serializer = URLSafeTimedSerializer(settings.SECRET_KEY)
-#     try:
-#         email = serializer.loads(token, salt="email-confirmation", max_age=expiration)
-#         return email
-#     except Exception:
-#         return None
-
-# Email-register
-# Envoi email sans rendu HTML
-# def send_confirmation_email(user, request):
-#     token = generate_email_token(user)
-#     confirm_url = request.build_absolute_uri(
-#         reverse('verify-email') + f"?token={token}"
-#     )
-#     subject = "Confirmez votre adresse email"
-#     message = f"Bonjour {user.username or user.email},\n\nCliquez sur ce lien pour confirmer votre adresse email :\n{confirm_url}"
-
-#     send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [user.email])
-
-# Email-register
-# Envoi email avec rendu HTML
-# def send_confirmation_email(user, request):
-#     token = generate_email_token(user)
-#     confirm_url = request.build_absolute_uri(reverse('verify-email') + f"?token={token}")
-
-#     subject = "Confirmez votre adresse email ✉️"
-#     from_email = settings.DEFAULT_FROM_EMAIL
-#     to_email = [user.email]
-
-#     # Render HTML template
-#     html_message = render_to_string("emails/email_confirmation.html", {
-#         "user": user,
-#         "confirm_url": confirm_url,
-#     })
-
-#     email = EmailMultiAlternatives(subject, "", from_email, to_email)
-#     email.attach_alternative(html_message, "text/html")
-#     email.send()
-
-# Crée une tâche qui relance les utilisateurs non vérifiés depuis > 24h :
-# def resend_confirmation_emails():
-#     cutoff = timezone.now() - timedelta(hours=24)
-#     users = User.objects.filter(is_email_verified=False, date_joined__lt=cutoff)
-
-#     for user in users:
-#         send_confirmation_email(user, request=None)  # tu peux injecter une fausse `request` avec ton domaine
-
-
-# Create your views here.
 class UserRegistrationView(APIView):
     permission_classes = [AllowAny]
 
@@ -137,29 +75,6 @@ class UserRegistrationView(APIView):
             'tokens': serializer.tokens
         }
         return Response(data, status=status.HTTP_201_CREATED)
-
-
-# class EmailVerificationView(APIView):
-#     permission_classes = []
-
-#     def get(self, request):
-#         token = request.GET.get('token')
-#         email = verify_email_token(token)
-
-#         if not email:
-#             return render(request, "emails/email_invalid.html", status=400)
-
-#         try:
-#             user = User.objects.get(email=email)
-#             if not user.is_email_verified:
-#                 user.is_email_verified = True
-#                 user.save()
-
-#             return render(request, "emails/email_confirmed.html")
-
-#         except User.DoesNotExist:
-#             return render(request, "emails/email_invalid.html", status=404)
-
 
 class EmailVerificationView(APIView):
     permission_classes = []
@@ -188,24 +103,6 @@ class EmailVerificationView(APIView):
 def resend_confirmation_form(request):
     return render(request, 'emails/resend_confirmation_form.html')
 
-# def resend_confirmation_submit(request):
-#     if request.method == 'POST':
-#         email = request.POST.get('email')
-#         try:
-#             user = User.objects.get(email=email)
-#             if user.is_email_verified:
-#                 messages.info(request, "Cet email est déjà vérifié.")
-#                 return redirect('resend-confirmation-form')
-#                 # return render(request, "emails/email_confirmed.html")
-#             send_confirmation_email(user, request)
-#             messages.success(request, "Lien de confirmation renvoyé avec succès.")
-#             return redirect('resend-confirmation-form')
-#         except User.DoesNotExist:
-#             messages.error(request, "Aucun utilisateur avec cet email.")
-#             return redirect('resend-confirmation-form')
-#     return redirect('resend-confirmation-form')
-
-#resend confirmation email submit 
 MIN_RESEND_INTERVAL = timedelta(minutes=5)  # ⏱️ délai entre deux renvois
 def resend_confirmation_submit(request):
     if request.method == 'POST':
@@ -225,6 +122,7 @@ def resend_confirmation_submit(request):
                     messages.warning(request, f"Veuillez attendre au moins {minutes} minutes entre deux envois.")
                     return redirect('resend-confirmation-form')
 
+
             # ✅ Envoi autorisé
             send_confirmation_email(user, request)
             user.last_confirmation_email_sent = timezone.now()
@@ -235,44 +133,6 @@ def resend_confirmation_submit(request):
             messages.error(request, "Aucun utilisateur avec cet email.")
         return redirect('resend-confirmation-form')
     return redirect('resend-confirmation-form')
-
-
-# un vue /resend-confirmation/ pour renvoyer un nouveau lien si expiré
-
-    # @swagger_auto_schema(
-    #     operation_description="Renvoyer un email de confirmation",
-    #     request_body=openapi.Schema(
-    #         type=openapi.TYPE_OBJECT,
-    #         required=['email'],
-    #         properties={
-    #             'email': openapi.Schema(type=openapi.TYPE_STRING, format='email')
-    #         }
-    #     ),
-    #     responses={
-    #         200: "Lien envoyé",
-    #         400: "Email manquant",
-    #         404: "Utilisateur introuvable"
-    #     }
-    # )
-
-# class ResendConfirmationView(APIView):
-#     permission_classes = [AllowAny]
-
-#     @swagger_auto_schema(
-#         operation_description="Renvoyer le lien de confirmation d’email",
-#         request_body=ResendConfirmationSerializer,
-#         responses={
-#             200: openapi.Response(description="Email de confirmation renvoyé avec succès"),
-#             400: openapi.Response(description="Erreur de validation")
-#         }
-#     )
-#     def post(self, request):
-#         serializer = ResendConfirmationSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-#         user = serializer.user
-#         send_confirmation_email(user, request)
-#         return Response({"message": "Lien de confirmation renvoyé avec succès."}, status=status.HTTP_200_OK)
-
 
 class UserLoginView(APIView):
     @swagger_auto_schema(
@@ -348,7 +208,6 @@ class UserLoginView(APIView):
             status=status.HTTP_401_UNAUTHORIZED
         )
 
-
 class UserLogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -380,131 +239,6 @@ class UserLogoutView(APIView):
             return Response({"error": f"Token invalide ou expiré: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
 
-# class UserLoginView(APIView):
-#     @swagger_auto_schema(
-#         operation_description="Login with email, username, or phone and password",
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=['user', 'password'],
-#             properties={
-#                 'user': openapi.Schema(type=openapi.TYPE_STRING, description='Email, username or phone'),
-#                 'password': openapi.Schema(type=openapi.TYPE_STRING, description='Password'),
-#             },
-#         ),
-#         responses={
-#             200: openapi.Response(
-#                 description="Login successful",
-#                 examples={
-#                     'application/json': {
-#                         'access': 'string',
-#                         'refresh': 'string',
-#                         'user_id': 1,
-#                         'email': 'user@example.com',
-#                         'username': 'username',
-#                         'role': 'vendeur'
-#                     }
-#                 },
-#             ),
-#             404: "Invalid credentials",
-#         },
-#     )
-#     def post(self, request, format=None):
-#         if not request.user.is_email_verified == False:
-#             return Response({"message": "Access Denied email non verifier"}, status=status.HTTP_403_FORBIDDEN)
-        
-#         serializer = UserLoginSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-
-#         user_input = serializer.validated_data.get('user')
-#         password = serializer.validated_data.get('password')
-
-#         user = EoP.authenticate(request, email=user_input, username=user_input, phone=user_input, password=password)
-
-#         if user:
-#             tokens = get_tokens_for_user(user)
-#             return Response({
-#                 'refresh': tokens['refresh'],
-#                 'access': tokens['access'],
-#                 'user_id': user.id,
-#                 'email': user.email,
-#                 'username': user.username,
-#                 'role': user.user_role.role if user.user_role else '',
-#                 'msg': 'Login successful'
-#             }, status=status.HTTP_200_OK)
-
-#         return Response(
-#             {'errors': {'non_field_errors': ['Identifiants invalides (email/téléphone/username ou mot de passe)']}},
-#             status=status.HTTP_404_NOT_FOUND
-#         )
-
-
-# class UserLoginView(APIView):
-#     @swagger_auto_schema(
-#         operation_description="Login with email, username, or phone and password",
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=['user', 'password'],
-#             properties={
-#                 'user': openapi.Schema(type=openapi.TYPE_STRING, description='Email, username or phone'),
-#                 'password': openapi.Schema(type=openapi.TYPE_STRING, description='Password'),
-#             },
-#         ),
-#         responses={
-#             200: openapi.Response(
-#                 description="Login successful",
-#                 examples={
-#                     'application/json': {
-#                         'access': 'string',
-#                         'refresh': 'string',
-#                         'user_id': 1,
-#                         'email': 'user@example.com',
-#                         'username': 'username',
-#                         'role': 'vendeur'
-#                     }
-#                 },
-#             ),
-#             403: openapi.Response(
-#                 description="Email non vérifié",
-#                 examples={'application/json': {'message': "❌ Votre adresse email n’a pas encore été confirmée."}}
-#             ),
-#             404: "Invalid credentials",
-#         },
-#     )
-#     def post(self, request, format=None):
-#         serializer = UserLoginSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-
-#         user_input = serializer.validated_data.get('user')
-#         password = serializer.validated_data.get('password')
-
-#         user = EoP.authenticate(
-#             request, email=user_input, username=user_input, phone=user_input, password=password
-#         )
-
-#         if user:
-#             if not user.is_email_verified:
-#                 return Response(
-#                     {"message": "❌ Votre adresse email n’a pas encore été confirmée."},
-#                     status=status.HTTP_403_FORBIDDEN
-#                 )
-
-#             tokens = get_tokens_for_user(user)
-#             return Response({
-#                 'refresh': tokens['refresh'],
-#                 'access': tokens['access'],
-#                 'user_id': user.id,
-#                 'email': user.email,
-#                 'username': user.username,
-#                 'role': user.user_role.role if user.user_role else '',
-#                 'msg': 'Login successful ✅'
-#                 user.last_login = timezone.now()
-#                 user.save(update_fields=["last_login"])
-#             }, status=status.HTTP_200_OK)
-
-#         return Response(
-#             {'errors': {'non_field_errors': ['❌ Identifiants invalides (email/téléphone/username ou mot de passe)']}},
-#             status=status.HTTP_401_UNAUTHORIZED
-#         )
 
 
 class ValidateTokenView(APIView):
@@ -517,7 +251,7 @@ class UserDetailUpdateView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
     def get(self,request,pk):
-        # if request.user.is_authenticated and request.user.user_role and not request.user.user_role.role == 'admin':
+        # if request.user.is_authenticated and request.user.user_role and not request.user.use>
         #     return Response({"message": "Access Denied"})
         if not request.user.user_role or request.user.user_role.role not in allowed_roles:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
@@ -535,7 +269,7 @@ class UserDetailUpdateView(APIView):
         }
     )
     def put(self,request,pk):
-        # if request.user.is_authenticated and request.user.user_role and not request.user.user_role.role == 'admin':
+        # if request.user.is_authenticated and request.user.user_role and not request.user.use>
         #     return Response({"message": "Access Denied"})
         if not request.user.user_role or request.user.user_role.role not in allowed_roles:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
@@ -555,7 +289,7 @@ class UserDetailUpdateView(APIView):
         }
     )
     def delete(self, request, pk):
-        # if request.user.is_authenticated and request.user.user_role and not request.user.user_role.role == 'admin':
+        # if request.user.is_authenticated and request.user.user_role and not request.user.use>
         #     return Response({"message": "Access Denied"})
         if not request.user.user_role or request.user.user_role.role not in allowed_roles:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
@@ -573,34 +307,13 @@ class UsersView(APIView):
         responses={200: openapi.Response('response description', UserDetailSerializer)},
     )
     def get(self, request):
-        # if request.user.is_authenticated and request.user.user_role and not request.user.user_role.role == 'admin':
+        # if request.user.is_authenticated and request.user.user_role and not request.user.use>
         #     return Response({"message": "Access Denied"})
         if not request.user.user_role or request.user.user_role.role not in allowed_roles:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
         users = User.objects.all()
         serializer = UserDetailSerializer(users, many=True)
         return Response(serializer.data)
-
-# link to reset password in email
-# class PasswordResetAPIView(APIView):
-#     permission_classes = [AllowAny]
-
-#     def post(self, request):
-#         email = request.data.get('email')
-#         user = User.objects.filter(email=email).first()
-#         if user:
-#             # Send password reset email (Django will handle token generation)
-#             # You could also use the built-in Django mechanism here
-#             send_mail(
-#                 'Password Reset Request',
-#                 'Click the link to reset your password...',
-#                 'from@example.com',
-#                 [email],
-#                 fail_silently=False,
-#             )
-#             return Response({"message": "Password reset email sent."}, status=status.HTTP_200_OK)
-#         return Response({"error": "User with this email does not exist."}, status=status.HTTP_400_BAD_REQUEST)
-
 
 class ListRolesAPIView(APIView):
     renderer_classes = [UserRenderer]
@@ -627,15 +340,6 @@ class ListRolesAPIView(APIView):
             queryset = queryset.filter(role__icontains=search)
         serializer = RoleSerializer(queryset, many=True)
         return Response(serializer.data)
-    # def get(self, request):
-    #     # if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
-    #     #     return Response({"message": "Access Denied"})
-    #     if not request.user.user_role or request.user.user_role.role not in allowed_roles:
-    #         return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-    #     roles = Role.objects.all()
-    #     serializer = RoleSerializer(roles, many=True)
-    #     return Response(serializer.data)
-    
 
 class CreateRoleAPIView(APIView):
     renderer_classes = [UserRenderer]
@@ -650,18 +354,9 @@ class CreateRoleAPIView(APIView):
         }
     )
     def post(self, request):
-        # if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
-        #     return Response({"message": "Access Denied"})
-        # if request.user.is_authenticated and request.user.user_role and not request.user.user_role.role == 'admin' and not request.user.user_role.role == 'manager' and not request.user.user_role.role == 'seller':
-        #     return Response({"message": "Access Denied"})
         if not request.user.user_role or request.user.user_role.role not in allowed_roles:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
         serializer = RoleSerializer(data=request.data)
-        # if serializer.is_valid():
-        #     serializer.save()
-        #     return Response(serializer.data, status=status.HTTP_201_CREATED)
-        # return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
         if serializer.is_valid():
             try:
                 # Saving the data
@@ -669,7 +364,7 @@ class CreateRoleAPIView(APIView):
                 return Response(serializer.data, status=status.HTTP_201_CREATED)
             except Exception as e:
                 # Log the error if something goes wrong
-                return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERRO)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -717,7 +412,7 @@ class UpdateRoleAPIView(APIView):
     )
     # PUT (mise à jour complète)
     def put(self, request, pk):
-        # if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
+        # if request.user.user_role is not None and request.user.user_role.role != 'admin' and>
         #     return Response({"message": "Access Denied"})
         if not request.user.user_role or request.user.user_role.role not in allowed_roles:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
@@ -768,7 +463,7 @@ class DeleteRoleAPIView(APIView):
         }
     )
     def delete(self, request, pk):
-        # if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
+        # if request.user.user_role is not None and request.user.user_role.role != 'admin' and>
         #     return Response({"message": "Access Denied"})
         if not request.user.user_role or request.user.user_role.role not in allowed_roles:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
@@ -777,7 +472,6 @@ class DeleteRoleAPIView(APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
         role.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
-    
 
 # profile
 class ProfileView(APIView):
@@ -829,6 +523,8 @@ class ProfileView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=400)
+
+
 
 
 

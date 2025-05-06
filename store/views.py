@@ -794,7 +794,7 @@ class ProduitListAPIView(APIView):
     )
     def get(self, request):
         user = request.user
-        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+        if not user.user_role or user.user_role.role not in ['admin', 'manager', 'vendor']:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
         
         search = request.GET.get('search')

@@ -8,8 +8,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', cast=str)
 DEBUG = config('DEBUG', cast=bool)
 # DEBUG = config('DEBUG', default=False, cast=bool)
-# ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())
+#ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv)
+#CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS').split(',')
 
 EMAIL_HOST = config('EMAIL_HOST')
 EMAIL_PORT = config('EMAIL_PORT', cast=int)
@@ -35,8 +35,8 @@ DATABASES = {
 TIME_ZONE = config('TIME_ZONE', default='UTC')
 
 # ALLOWED_HOSTS = ['147.79.100.245', 'rio-gold.com', 'www.rio-gold.com']
-# ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '147.79.100.245', 'rio-gold.com', 'www.rio-gold.com']
-# ALLOWED_HOSTS = ['*']
+#ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '147.79.100.245', 'rio-gold.com', 'www.rio-gold.com']
+ALLOWED_HOSTS = ['*']
 # ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 
@@ -86,8 +86,6 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ORIGIN_ALLOW_ALL = True  # For development only, restrict in production
-
 
 ROOT_URLCONF = 'backend.urls'
 
@@ -107,7 +105,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'backend.wsgi.application'
+# WSGI_APPLICATION = 'backend.wsgi.application'
 
 
 REST_FRAMEWORK = {
@@ -201,6 +199,13 @@ MEDIA_URL = '/media/'
 
 CORS_ALLOW_ALL_ORIGINS = True
 
+CORS_ALLOWED_ORIGINS = [
+	"http://localhost:4200",
+	"http://127.0.0.1:4200",
+	"https://rio-gold.com",
+	"http://rio-gold.com",
+]
+
 CORS_ALLOW_METHODS = [
     'GET',
     'POST',
@@ -215,6 +220,12 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
+<<<<<<< HEAD
 # SECURE_SSL_REDIRECT = True
 # SESSION_COOKIE_SECURE = True
 # CSRF_COOKIE_SECURE = True
+=======
+SECURE_SSL_REDIRECT = True
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+>>>>>>> 1827c79 (Sauvegarde locale avant pull)

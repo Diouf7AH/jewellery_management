@@ -581,12 +581,21 @@ class AchatListView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
+<<<<<<< HEAD
         operation_description="Liste tous les achats avec leurs produits. Filtrable par fournisseur et date.",
         # manual_parameters=[
         #     openapi.Parameter('start_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de début (format YYYY-MM-DD)"),
         #     openapi.Parameter('end_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de fin (format YYYY-MM-DD)"),
         #     openapi.Parameter('fournisseur_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID du fournisseur")
         # ],
+=======
+        operation_description="Liste tous les achats avec leurs produits. Filtrable par fournisseur et date.",#
+#        manual_parameters=[
+#            openapi.Parameter('start_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de début (format YYYY-MM-DD)"),
+#            openapi.Parameter('end_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de fin (format YYYY-MM-DD)"),
+#            openapi.Parameter('fournisseur_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID du fournisseur")
+#        ],
+>>>>>>> 1827c79 (Sauvegarde locale avant pull)
         responses={200: AchatSerializer(many=True)}
     )
     def get(self, request, *args, **kwargs):
@@ -597,6 +606,7 @@ class AchatListView(APIView):
         try:
             achats = Achat.objects.all().prefetch_related('produits__produit', 'fournisseur')
 
+<<<<<<< HEAD
             # # Filtres GET
             # start_date = parse_date(request.query_params.get('start_date'))
             # end_date = parse_date(request.query_params.get('end_date'))
@@ -608,6 +618,19 @@ class AchatListView(APIView):
             #     achats = achats.filter(created_at__date__lte=end_date)
             # if fournisseur_id:
             #     achats = achats.filter(fournisseur__id=fournisseur_id)
+=======
+            # Filtres GET
+#           start_date = parse_date(request.query_params.get('start_date'))
+#            end_date = parse_date(request.query_params.get('end_date'))
+#            fournisseur_id = request.query_params.get('fournisseur_id')
+
+#            if start_date:
+#                achats = achats.filter(created_at__date__gte=start_date)
+#            if end_date:
+#                achats = achats.filter(created_at__date__lte=end_date)
+#            if fournisseur_id:
+#                achats = achats.filter(fournisseur__id=fournisseur_id)
+>>>>>>> 1827c79 (Sauvegarde locale avant pull)
 
             serializer = AchatSerializer(achats, many=True)
             return Response(serializer.data, status=200)
