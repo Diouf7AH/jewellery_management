@@ -27,5 +27,3 @@ class AchatSerializer(serializers.ModelSerializer):
         fields = ['id', 'created_at', 'produits', 'fournisseur',
                 'montant_total_ht', 'montant_total_ttc']
         # fields = '__all__'
-
-
