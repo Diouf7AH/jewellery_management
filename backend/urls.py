@@ -48,12 +48,11 @@ urlpatterns = [
     path('', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
     
-    
+    # Admin URLbackofficegold/
+    path('admin/', admin.site.urls),
     # API V1 Urls
     path("api/", include("api.urls")),
     
-    # Admin URLbackofficegold/
-    path('admin/', admin.site.urls),
     # path('backoffice-dusite-rio-gold-/', admin.site.urls),
     
     path('resend-confirmation-form/', resend_confirmation_form, name='resend-confirmation-form'),

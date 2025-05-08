@@ -41,36 +41,14 @@ class CategorieSerializer(serializers.ModelSerializer):
 
 
 class ModeleSerializer(serializers.ModelSerializer):
-    
+    categorie = serializers.SlugRelatedField(
+        queryset=Categorie.objects.all(),
+        slug_field='nom'  # accepte/retourne le nom de la catégorie
+    )
     class Meta:
         model = Modele
-        fields = '__all__'
+        fields = ['id', 'modele', 'categorie']
     
-    #JSON
-    # def get_type(self, obj):
-    #     type = {
-    #         "id": obj.type.id,
-    #         "type": obj.type.type,
-    #         "categorie" : {
-    #             "id": obj.categorie.id,
-    #             "nom": obj.categorie.nom,
-    #             "image": obj.categorie.image.url,
-    #             "active": obj.categorie.active,
-    #             "slug": obj.categorie.slug,
-    #     }
-    #     }
-    #     return type
-    
-    # def get_categorie(self, obj):
-    #     categorie = {
-    #         "id": obj.categorie.id,
-    #         "nom": obj.categorie.nom,
-    #         "image": obj.categorie.image.url,
-    #         "active": obj.categorie.active,
-    #         "slug": obj.categorie.slug,
-    #     }
-    #     return categorie
-
     def get_categorie(self, obj):
         if not obj.categorie:
             return None
