@@ -1,10 +1,16 @@
 from django.urls import include, path
 
-from purchase import views as achat_views
-from sale import views as sale_views
-from stock import views as stock_views
-from store import views as store_views
+# Authentification
 from userauths import views as userauths_views
+
+
+# Vente, achat, stock
+from sale import views as sale_views
+from purchase import views as achat_views
+from stock import views as stock_views
+
+# Produits & structure
+from store import views as store_views
 from vendor import views as vendor_views
 
 urlpatterns = [
@@ -19,7 +25,6 @@ urlpatterns = [
     path('vendor/dashboard/profile', vendor_views.VendorProfileView.as_view(), name='vendor-profile'),
     path('vendor/produits/', vendor_views.VendorProduitListView.as_view(), name='vendor-produits'),
     # Pour l’utilisateur connecté
-    path('vendor/dashboard/profile', vendor_views.VendorProfileView.as_view(), name='vendor-profile'),
     # Pour un admin qui consulte un vendeur par ID
     path('vendor/<int:user_id>/', vendor_views.VendorProfileView.as_view(), name='admin-vendor-view'),
     path('vendor/<int:user_id>/toggle-status/', vendor_views.ToggleVendorStatusView.as_view(), name='toggle-vendor-status'),
@@ -47,8 +52,7 @@ urlpatterns = [
     
     path('user/profile/<user_id>', userauths_views.ProfileView.as_view(), name='profile'),
     
-    path('password_reset', include('django_rest_passwordreset.urls', namespace='password_reset')),
-    
+    path('password_reset/', include('django_rest_passwordreset.urls')),
     # Validate Token
     path('validate-token',userauths_views.ValidateTokenView.as_view(),name="validate_token"),
     
@@ -67,8 +71,8 @@ urlpatterns = [
     # Purete
     path('purete/list/', store_views.PureteListAPIView.as_view(), name='purete_list'),
     path('purete/create', store_views.PureteCreateAPIView.as_view(), name='purete_create'),
-    path('purete/delete/<int:pk>', store_views.PureteUpdateAPIView.as_view(), name='purete_Put'),
-    path('purete/delete/<int:pk>', store_views.PureteDeleteAPIView.as_view(), name='purete_Delete'),
+    path('purete/update/<int:pk>', store_views.PureteUpdateAPIView.as_view(), name='purity_update'),
+    path('purete/delete/<int:pk>', store_views.PureteDeleteAPIView.as_view(), name='purety_Delete'),
     # Marque
     path('marque/list/', store_views.MarqueListAPIView.as_view(), name='marque_list'),
     path('marque/create', store_views.MarqueCreateAPIView.as_view(), name='marque_create'),
@@ -115,7 +119,7 @@ urlpatterns = [
     #VENDOR
     path('vendor/list/', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
     path('vendor/add-vendor', vendor_views.CreateVendorView.as_view(), name='add_vendor'),
-    path('vendor/association-produit-to-vendor', vendor_views.VendorProduitAssociationAPIView.as_view(), name='add_vendor'),
+    path('vendor/association-produit-to-vendor', vendor_views.VendorProduitAssociationAPIView.as_view(), name='association-du-produit-au-vendor'),
     path('vendor/find', vendor_views.RetrieveVendorView.as_view(), name='vendor-find'),
     path('vendor/<int:user_id>/update-status', vendor_views.UpdateVendorStatusAPIView.as_view(), name='update_vendor_status'),
     # END VENDOR

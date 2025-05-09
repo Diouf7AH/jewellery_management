@@ -24,10 +24,6 @@ class AchatSerializer(serializers.ModelSerializer):
     produits = AchatProduitSerializer(many=True)
     class Meta:
         model = Achat
-<<<<<<< HEAD
-        fields = ['id', 'created_at', 'produits', 'fournisseur',
-=======
-        fields = ['id',  'produits', 'fournisseur',
->>>>>>> 1827c79 (Sauvegarde locale avant pull)
-                'montant_total_ht', 'montant_total_ttc']
+
+        fields = ['id',  'produits', 'fournisseur', 'montant_total_ht', 'montant_total_ttc']
         # fields = '__all__'

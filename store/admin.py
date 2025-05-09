@@ -35,7 +35,7 @@ class MarqueAdmin(admin.ModelAdmin):
 
 @admin.register(Produit)
 class ProduitAdmin(admin.ModelAdmin):
-    list_display = ('id', 'slug', 'nom', 'categorie', 'marque', 'poids', 'taille', 'qr_code_url')
+    list_display = ('id', 'slug', 'nom', 'categorie', 'marque', 'modele', 'poids', 'taille', 'qr_code_url')
     # readonly_fields = ('affiche_qr_code',)
 
     # def affiche_qr_code(self, obj):

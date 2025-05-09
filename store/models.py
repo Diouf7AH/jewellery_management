@@ -132,18 +132,21 @@ class Modele(models.Model):
     categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_categorie")
     
     
-    class Meta:
-        verbose_name_plural = "Models"
-    
     def __str__(self):
-        return self.modele
+        # Affiche : "Bague (Catégorie: Bijoux)" ou "Bague (Catégorie: Aucune)"
+        return f"{self.modele} (Catégorie: {self.categorie.nom if self.categorie else 'Aucune'})"
+
+    @property
+    def categorie_id(self):
+        # Permet d'accéder à modele.categorie_id directement (int ou None)
+        return self.categorie.id if self.categorie else None
 
 
 
 # Purity model
 class Purete(models.Model):
     # purete = models.IntegerField()
-    purete = models.CharField(unique=True, max_length=15, null=True, blank=True)
+    purete = models.CharField(unique=True, max_length=15)
     
     def __str__(self):  
         return f"{self.purete}K"

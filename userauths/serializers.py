@@ -17,15 +17,15 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['email', 'username', 'phone', 'password', 'password2']
+        fields = ['email', 'username', 'telephone', 'password', 'password2']
 
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
             raise serializers.ValidationError("Cet email est déjà utilisé.")
         return value
 
-    def validate_phone(self, value):
-        if value and User.objects.filter(phone=value).exists():
+    def validate_telephone(self, value):
+        if value and User.objects.filter(telephone=value).exists():
             raise serializers.ValidationError("Ce numéro de téléphone est déjà utilisé.")
         return value
 
@@ -86,7 +86,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 #     password = serializers.CharField(write_only=True, min_length=6)
 #     class Meta:
 #         model = User
-#         fields=['email', 'username', 'first_name', 'last_name', 'phone', 'password', 'user_role']
+#         fields=['email', 'username', 'first_name', 'last_name', 'telephone', 'password', 'user_role']
 #         extra_kwargs={
 #             'password':{'write_only':True}
 #         }
@@ -101,7 +101,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         
 
 class UserLoginSerializer(serializers.Serializer):
-    user = serializers.CharField()  # peut être email, username ou phone
+    user = serializers.CharField()  # peut être email, username ou telephone
     password = serializers.CharField()
 
 
@@ -122,23 +122,23 @@ class UserChangePasswordSerializer(serializers.ModelSerializer):
 
 
 class UserDetailSerializer(serializers.ModelSerializer):
-  class Meta:
-    model = User
-    fields = '__all__'
+    class Meta:
+        model = User
+        fields = '__all__'
 
-  def get_role(self, obj):
-    role = {}
-    if obj.user_role:
-        role = {
-            "id": obj.user_role.id,
-            "name": obj.user_role.role,
-        }
-    return role
+    def get_role(self, obj):
+        role = {}
+        if obj.user_role:
+            role = {
+                "id": obj.user_role.id,
+                "name": obj.user_role.role,
+            }
+        return role
 
-  def to_representation(self, instance):
-    data = super().to_representation(instance)
-    data['user_role'] = self.get_role(instance)
-    return data
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['user_role'] = self.get_role(instance)
+        return data
 
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:

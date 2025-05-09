@@ -17,10 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from decimal import Decimal
-<<<<<<< HEAD
 
-=======
->>>>>>> 1827c79 (Sauvegarde locale avant pull)
 from backend.renderers import UserRenderer
 from sale.models import Client, Facture, Paiement, Vente, VenteProduit
 from sale.serializers import (ClientSerializer, FactureSerializer,
@@ -364,15 +361,12 @@ class VenteProduitCreateView(APIView):
                 "client": openapi.Schema(
                     type=openapi.TYPE_OBJECT,
                     properties={
-<<<<<<< HEAD
                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
                         "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
-=======
                         "nom": openapi.Schema(type=openapi.TYPE_STRING, description="Nom du client"),
                         "prenom": openapi.Schema(type=openapi.TYPE_STRING, description="Prénom du client"),
-                      #  "telephone": openapi.Schema(type=openapi.TYPE_STRING, description="Téléphone du client", example="770000000"),
->>>>>>> 1827c79 (Sauvegarde locale avant pull)
+                    #  "telephone": openapi.Schema(type=openapi.TYPE_STRING, description="Téléphone du client", example="770000000"),
                     }
                 ),
                 "produits": openapi.Schema(
@@ -434,14 +428,11 @@ class VenteProduitCreateView(APIView):
             for item in data.get('produits', []):
                 slug = item['slug']
                 quantite = int(item.get('quantite', 0))
-<<<<<<< HEAD
                 if quantite <= 0:
                     return Response({"error": f"Quantité invalide pour le produit {slug}."}, status=400)
-=======
                 prix_vente_grammes = item.get('prix_vente_grammes')
                 remise = Decimal(item.get('remise', 0.0))
                 autres = Decimal(item.get('autre', 0.0))
->>>>>>> 1827c79 (Sauvegarde locale avant pull)
 
                 try:
                     produit = Produit.objects.select_related('marque').get(slug=slug)
