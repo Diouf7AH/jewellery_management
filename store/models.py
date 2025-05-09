@@ -187,7 +187,7 @@ class Produit(models.Model):
     nom = models.CharField(max_length=100, blank=True, default="")
     image = models.ImageField(upload_to='produits/', blank=True, null=True)
     description = models.TextField(null=True, blank=True)
-    qr_code = models.ImageField(upload_to='qr_codes/', null=True, blank=True)
+    # qr_code = models.ImageField(upload_to='qr_codes/', null=True, blank=True)
     
     categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="categorie_produit")
     purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="purete_produit", default=get_default_purete)
@@ -263,7 +263,6 @@ class Produit(models.Model):
                 qr_content = self.produit_url
                 qr_file = self.generate_qr_code_image(qr_content)
                 self.qr_code.save(qr_file.name, qr_file, save=False)
-                super().save(update_fields=['qr_code'])
             except Exception as e:
                 print(f"[QR ERROR] {e}")
             
