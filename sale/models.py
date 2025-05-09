@@ -45,13 +45,6 @@ class Vente(models.Model):
     #     raise Exception("Impossible de générer un numéro de vente unique après 10 tentatives.")
 
     def save(self, *args, **kwargs):
-<<<<<<< HEAD
-        # if not self.slug:
-        #     self.slug = uuid.uuid4().hex.upper()[:9]
-=======
-    #    if not self.slug:
-    #        self.slug = uuid.uuid4().hex.upper()[:9]
->>>>>>> 1827c79 (Sauvegarde locale avant pull)
         # if not self.numero_vente:
         #     self.numero_vente = self.generate_numero_vente()
         super().save(*args, **kwargs)
@@ -174,16 +167,15 @@ class Facture(models.Model):
         ordering = ['-id']
         verbose_name_plural = "Factures"
     
-    # ✅ Méthode : total des paiements
     @property
     def total_paye(self):
-        total = self.paiements.aggregate(total=Sum('montant_paye'))['total']
-        return total or Decimal('0.00')
+        return self.facture.paiements.aggregate(
+            total=models.Sum('montant_paye')
+        )['total'] or Decimal('0.00')
 
-    # ✅ Méthode : montant restant à payer
     @property
     def reste_a_payer(self):
-        return max(self.montant_total - self.total_paye, Decimal('0.00'))
+        return max(self.facture.montant_total - self.total_paye, Decimal('0.00'))
 
     # ✅ Pour l'affichage dans l'admin
     def est_reglee(self):
