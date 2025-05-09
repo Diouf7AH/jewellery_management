@@ -167,7 +167,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'userauths.User'
 AUTHENTICATION_BACKENDS = [
     'userauths.auth_backend.EmailPhoneUsernameAuthenticationBackend',
-    "django.contrib.auth.backends.ModelBackend", # this line fixed my problem
+    "django.contrib.auth.backends.ModelBackend",
 ]
 
 SIMPLE_JWT = {
