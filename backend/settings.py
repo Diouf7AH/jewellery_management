@@ -18,6 +18,7 @@ EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
 EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
 EMAIL_TOKEN_EXPIRATION = config('EMAIL_TOKEN_EXPIRATION', default=60, cast=int)
 
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
@@ -132,8 +133,6 @@ AUTH_PASSWORD_VALIDATORS = [
 
 SITE_URL = "https://www.rio-gold.com"
 
-# EMAIL_TOKEN_EXPIRATION = 60
-
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'UTC'
@@ -220,12 +219,6 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
-<<<<<<< HEAD
-# SECURE_SSL_REDIRECT = True
-# SESSION_COOKIE_SECURE = True
-# CSRF_COOKIE_SECURE = True
-=======
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
->>>>>>> 1827c79 (Sauvegarde locale avant pull)
