@@ -524,6 +524,9 @@ class MarqueCreateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
 
+    # ✅ Rôles autorisés à créer une marque
+    allowed_roles_admin_manager = ['admin', 'manager']
+
     @swagger_auto_schema(
         operation_summary="Créer une nouvelle marque",
         operation_description="Permet à un admin ou manager d'ajouter une marque avec son prix et sa pureté.",
@@ -536,7 +539,7 @@ class MarqueCreateAPIView(APIView):
     )
     def post(self, request):
         user = request.user
-        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = MarqueSerializer(data=request.data)
@@ -545,11 +548,14 @@ class MarqueCreateAPIView(APIView):
             return Response(serializer.data, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
 
 class MarqueUpdateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+
+    # ✅ Rôles autorisés à modifier une marque
+    allowed_roles_admin_manager = ['admin', 'manager']
 
     def get_object(self, pk):
         try:
@@ -570,7 +576,7 @@ class MarqueUpdateAPIView(APIView):
     )
     def put(self, request, pk):
         user = request.user
-        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
         marque = self.get_object(pk)
@@ -596,7 +602,7 @@ class MarqueUpdateAPIView(APIView):
     )
     def patch(self, request, pk):
         user = request.user
-        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
         marque = self.get_object(pk)
@@ -608,11 +614,15 @@ class MarqueUpdateAPIView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
     
 
 class MarqueDeleteAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+
+    # ✅ Rôles autorisés à supprimer une marque
+    allowed_roles_admin_manager = ['admin', 'manager']
 
     def get_object(self, pk):
         try:
@@ -621,20 +631,24 @@ class MarqueDeleteAPIView(APIView):
             return None
 
     @swagger_auto_schema(
-        operation_summary="Supprimer une marque",
-        operation_description="Permet à un administrateur de supprimer une marque spécifique par son ID.",
+        operation_summary="🗑 Supprimer une marque",
+        operation_description="Permet à un administrateur ou manager de supprimer une marque spécifique par son ID.",
         manual_parameters=[
-            openapi.Parameter('pk', openapi.IN_PATH, description="ID de la marque à supprimer", type=openapi.TYPE_INTEGER)
+            openapi.Parameter(
+                'pk', openapi.IN_PATH,
+                description="ID de la marque à supprimer",
+                type=openapi.TYPE_INTEGER
+            )
         ],
         responses={
             204: "Marque supprimée avec succès",
-            403: "Accès refusé",
-            404: "Marque non trouvée"
+            403: "⛔ Accès refusé",
+            404: "❌ Marque non trouvée"
         }
     )
     def delete(self, request, pk):
         user = request.user
-        if not user.user_role or user.user_role.role != 'admin':
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
         marque = self.get_object(pk)
@@ -643,11 +657,14 @@ class MarqueDeleteAPIView(APIView):
 
         marque.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
-
+    
 
 class ModeleListAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+
+    # ✅ Rôles autorisés
+    allowed_roles_admin_manager = ['admin', 'manager']
 
     @swagger_auto_schema(
         operation_description="Lister tous les modèles, avec possibilité de filtrer par nom ou catégorie.",
@@ -663,11 +680,14 @@ class ModeleListAPIView(APIView):
                 type=openapi.TYPE_INTEGER
             )
         ],
-        responses={200: openapi.Response("Liste des modèles", ModeleSerializer(many=True))}
+        responses={
+            200: openapi.Response("Liste des modèles", ModeleSerializer(many=True)),
+            403: "⛔ Accès refusé"
+        }
     )
     def get(self, request):
         user = request.user
-        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
         queryset = Modele.objects.all()
@@ -681,11 +701,15 @@ class ModeleListAPIView(APIView):
 
         serializer = ModeleSerializer(queryset, many=True)
         return Response(serializer.data)
+    
 
 
 class ModeleCreateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+
+    # ✅ Rôles autorisés pour créer un modèle
+    allowed_roles_admin_manager = ['admin', 'manager']
 
     @swagger_auto_schema(
         operation_description="Créer un nouveau modèle en utilisant le nom de la catégorie.",
@@ -703,57 +727,84 @@ class ModeleCreateAPIView(APIView):
         ),
         responses={
             201: openapi.Response("Modèle créé avec succès", ModeleSerializer),
-            400: "Erreur de validation"
+            400: "Erreur de validation",
+            403: "⛔ Accès refusé"
         }
     )
     def post(self, request):
         user = request.user
-        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        
+
         serializer = ModeleSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data, status=201)
-        return Response(serializer.errors, status=400)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ModeleUpdateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+
+    # ✅ Liste des rôles autorisés
+    allowed_roles_admin_manager = ['admin', 'manager']
+
     def get_object(self, pk):
         try:
             return Modele.objects.get(pk=pk)
         except Modele.DoesNotExist:
             return None
 
+    @swagger_auto_schema(
+        operation_description="🛠 Modifier complètement un modèle (PUT)",
+        request_body=ModeleSerializer,
+        responses={
+            200: openapi.Response("Modèle mis à jour avec succès", ModeleSerializer),
+            400: "Requête invalide",
+            403: "Accès refusé",
+            404: "Modèle introuvable"
+        }
+    )
     def put(self, request, pk):
         user = request.user
-        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        
-        # if request.user.is_authenticated and request.user.user_role and not request.user.user_role.role == 'admin' and not request.user.user_role.role == 'manager' and not request.user.user_role.role == 'seller':
-        #     return Response({"message": "Access Denied"})
+
         modele_instance = self.get_object(pk)
         if modele_instance is None:
             return Response(status=status.HTTP_404_NOT_FOUND)
+
         serializer = ModeleSerializer(modele_instance, data=request.data)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @swagger_auto_schema(
+        operation_description="✏️ Modifier partiellement un modèle (PATCH)",
+        request_body=ModeleSerializer,
+        responses={
+            200: openapi.Response("Modèle mis à jour partiellement", ModeleSerializer),
+            400: "Requête invalide",
+            403: "Accès refusé",
+            404: "Modèle introuvable"
+        }
+    )
     def patch(self, request, pk):
         user = request.user
-        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
         modele = self.get_object(pk)
+        if modele is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
         serializer = ModeleSerializer(modele, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
     
 class ModeleDeleteAPIView(APIView):
     renderer_classes = [UserRenderer]

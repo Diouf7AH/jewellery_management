@@ -369,6 +369,7 @@ class ToggleVendorStatusView(APIView):
     )
 
     def patch(self, request, user_id):
+        allowed_roles_admin_manager = ['admin', 'manager'] 
         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
@@ -498,7 +499,7 @@ class CreateVendorView(APIView):
         }
     )
     def post(self, request, *args, **kwargs):
-        # allowed_roles = ['admin', 'manager']
+        allowed_roles_admin_manager = ['admin', 'manager']
         # user_role = getattr(request.user.user_role, 'role', None)
 
         # if user_role not in allowed_roles:
@@ -975,6 +976,7 @@ class VendorProduitAssociationAPIView(APIView):
 class RapportVentesMensuellesPDFView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    allowed_roles_admin_manager = ['admin', 'manager'] 
 
     def get(self, request):
         # allowed_roles = ['admin', 'manager']

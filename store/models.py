@@ -187,7 +187,7 @@ class Produit(models.Model):
     nom = models.CharField(max_length=100, blank=True, default="")
     image = models.ImageField(upload_to='produits/', blank=True, null=True)
     description = models.TextField(null=True, blank=True)
-    # qr_code = models.ImageField(upload_to='qr_codes/', null=True, blank=True)
+    qr_code = models.ImageField(upload_to='qr_codes/', null=True, blank=True)
     
     categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="categorie_produit")
     purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="purete_produit", default=get_default_purete)
