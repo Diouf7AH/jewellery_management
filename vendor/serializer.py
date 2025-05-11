@@ -39,13 +39,28 @@ class VendorProduitSerializer(serializers.ModelSerializer):
 
 
 
+# class VendorSerializer(serializers.ModelSerializer):
+#     email = serializers.EmailField(source='user.email', read_only=True)
+
+#     class Meta:
+#         model = Vendor
+#         fields = ['email', 'bijouterie', 'active', 'description', 'verifie', 'raison_desactivation']
+
 class VendorSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(source='user.email', read_only=True)
+    bijouterie = serializers.SerializerMethodField()  # ✅ personnalisation
 
     class Meta:
         model = Vendor
         fields = ['email', 'bijouterie', 'active', 'description', 'verifie', 'raison_desactivation']
 
+    def get_bijouterie(self, obj):
+        if obj.bijouterie:
+            return {
+                "id": obj.bijouterie.id,
+                "nom": obj.bijouterie.nom
+            }
+        return None
 
 # Pour l'affichage du swagger
 # # avoir tous les attributs du vendeur dans swagger
@@ -55,16 +70,29 @@ class VendorSerializer(serializers.ModelSerializer):
 #     # phone = serializers.CharField(required=False)
 #     bijouterie = serializers.IntegerField(required=True)
 #     description = serializers.CharField(required=False, allow_blank=True)
+
 class CreateVendorSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    bijouterie_id = serializers.IntegerField()
+    bijouterie = serializers.CharField()
     description = serializers.CharField(required=False, allow_blank=True)
 
-    def validate_bijouterie_id(self, value):
+    def validate_bijouterie(self, value):
         from store.models import Bijouterie
-        if not Bijouterie.objects.filter(id=value).exists():
+        try:
+            return Bijouterie.objects.get(nom__iexact=value.strip())
+        except Bijouterie.DoesNotExist:
             raise serializers.ValidationError("Bijouterie introuvable.")
-        return value
+
+# class CreateVendorSerializer(serializers.Serializer):
+#     email = serializers.EmailField()
+#     bijouterie_id = serializers.IntegerField()
+#     description = serializers.CharField(required=False, allow_blank=True)
+
+#     def validate_bijouterie_id(self, value):
+#         from store.models import Bijouterie
+#         if not Bijouterie.objects.filter(id=value).exists():
+#             raise serializers.ValidationError("Bijouterie introuvable.")
+#         return value
 
 
 class UserListeSerializer(serializers.ModelSerializer):

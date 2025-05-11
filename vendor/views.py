@@ -484,15 +484,14 @@ class ListVendorAPIView(APIView):
 #                 return Response({'error': 'Vendor already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
 
-
 class CreateVendorView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
     allowed_roles_admin_manager = ['admin', 'manager']
 
     @swagger_auto_schema(
-        operation_description="Créer un vendeur via un utilisateur existant (email, username ou téléphone).",
-        request_body=CreateVendorSerializer,  # ✅ ici
+        operation_description="Créer un vendeur via un utilisateur existant (email et nom de la bijouterie).",
+        request_body=CreateVendorSerializer,
         responses={
             201: openapi.Response(description="Vendeur créé", schema=VendorSerializer),
             400: openapi.Response(description="Erreur ou données invalides"),
@@ -500,61 +499,37 @@ class CreateVendorView(APIView):
         }
     )
     def post(self, request, *args, **kwargs):
-        # user_role = getattr(request.user.user_role, 'role', None)
-
-        # if user_role not in allowed_roles:
-        #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
+        # 🔐 Vérification du rôle utilisateur
         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        
-        data = request.data
-        email = data.get('email')
-        # username = data.get('username')
-        # phone = data.get('phone')
-        # bijouterie_id = data.get('bijouterie')
-        description = data.get('description')
 
-        if not (email):
-        # if not (email or username or phone):
-            return Response({"error": "Il faut au moins un identifiant : email"}, status=status.HTTP_400_BAD_REQUEST)
-            # return Response({"error": "Il faut au moins un identifiant : email, username ou téléphone"}, status=status.HTTP_400_BAD_REQUEST)
+        # ✅ Validation via serializer
+        serializer = CreateVendorSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        # if not bijouterie_id:
-        #     return Response({"error": "Bijouterie manquante"}, status=status.HTTP_400_BAD_REQUEST)
+        validated_data = serializer.validated_data
+        email = validated_data['email']
+        bijouterie = validated_data['bijouterie']
+        description = validated_data.get('description', '')
 
-        bijouterie = Bijouterie.objects.filter(nom__iexact=bijouterie_nom.strip()).first()
-        if not bijouterie:
-            return Response({"error": f"Bijouterie '{bijouterie_nom}' introuvable."}, status=404)
-
-        # Récupération du rôle
+        # 🔍 Rôle vendeur
         role_vendor = Role.objects.filter(role='vendor').first()
         if not role_vendor:
             return Response({"error": "Le rôle 'vendor' n'existe pas."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            bijouterie = Bijouterie.objects.get(id=bijouterie_id)
-        except Bijouterie.DoesNotExist:
-            return Response({"error": "Bijouterie introuvable."}, status=status.HTTP_404_NOT_FOUND)
-
-        # 🔍 Recherche utilisateur par email, username ou phone
-        user = User.objects.filter(email=email).first()
-        # user = User.objects.filter(
-        #     Q(email__iexact=email) |
-        #     Q(username__iexact=username) |
-        #     Q(phone__iexact=phone)
-        # ).first()
-
+        # 🔍 Recherche de l'utilisateur
+        user = User.objects.filter(email__iexact=email).first()
         if not user:
             return Response({"error": "Aucun utilisateur trouvé."}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            # 🔐 Assignation du rôle si manquant
+            # 🔐 Assigner rôle vendeur si besoin
             if user.user_role != role_vendor:
                 user.user_role = role_vendor
                 user.save(update_fields=["user_role"])
 
-            # 🔁 Vérifie si déjà vendeur
+            # 🔁 Vérifie s’il est déjà vendeur
             if Vendor.objects.filter(user=user).exists():
                 return Response({"error": "Ce user est déjà enregistré comme vendeur."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -569,6 +544,92 @@ class CreateVendorView(APIView):
 
         except Exception as e:
             return Response({'error': f'Une erreur est survenue : {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# class CreateVendorView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+#     allowed_roles_admin_manager = ['admin', 'manager']
+
+#     @swagger_auto_schema(
+#         operation_description="Créer un vendeur via un utilisateur existant (email, username ou téléphone).",
+#         request_body=CreateVendorSerializer,  # ✅ ici
+#         responses={
+#             201: openapi.Response(description="Vendeur créé", schema=VendorSerializer),
+#             400: openapi.Response(description="Erreur ou données invalides"),
+#             403: openapi.Response(description="⛔ Accès refusé")
+#         }
+#     )
+#     def post(self, request, *args, **kwargs):
+#         # user_role = getattr(request.user.user_role, 'role', None)
+
+#         # if user_role not in allowed_roles:
+#         #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        
+#         data = request.data
+#         email = data.get('email')
+#         # username = data.get('username')
+#         # phone = data.get('phone')
+#         # bijouterie_id = data.get('bijouterie')
+#         description = data.get('description')
+
+#         if not (email):
+#         # if not (email or username or phone):
+#             return Response({"error": "Il faut au moins un identifiant : email"}, status=status.HTTP_400_BAD_REQUEST)
+#             # return Response({"error": "Il faut au moins un identifiant : email, username ou téléphone"}, status=status.HTTP_400_BAD_REQUEST)
+
+#         # if not bijouterie_id:
+#         #     return Response({"error": "Bijouterie manquante"}, status=status.HTTP_400_BAD_REQUEST)
+
+#         bijouterie = Bijouterie.objects.filter(nom__iexact=bijouterie_nom.strip()).first()
+#         if not bijouterie:
+#             return Response({"error": f"Bijouterie '{bijouterie_nom}' introuvable."}, status=404)
+
+#         # Récupération du rôle
+#         role_vendor = Role.objects.filter(role='vendor').first()
+#         if not role_vendor:
+#             return Response({"error": "Le rôle 'vendor' n'existe pas."}, status=status.HTTP_400_BAD_REQUEST)
+
+#         try:
+#             bijouterie = Bijouterie.objects.get(id=bijouterie_id)
+#         except Bijouterie.DoesNotExist:
+#             return Response({"error": "Bijouterie introuvable."}, status=status.HTTP_404_NOT_FOUND)
+
+#         # 🔍 Recherche utilisateur par email, username ou phone
+#         user = User.objects.filter(email=email).first()
+#         # user = User.objects.filter(
+#         #     Q(email__iexact=email) |
+#         #     Q(username__iexact=username) |
+#         #     Q(phone__iexact=phone)
+#         # ).first()
+
+#         if not user:
+#             return Response({"error": "Aucun utilisateur trouvé."}, status=status.HTTP_404_NOT_FOUND)
+
+#         try:
+#             # 🔐 Assignation du rôle si manquant
+#             if user.user_role != role_vendor:
+#                 user.user_role = role_vendor
+#                 user.save(update_fields=["user_role"])
+
+#             # 🔁 Vérifie si déjà vendeur
+#             if Vendor.objects.filter(user=user).exists():
+#                 return Response({"error": "Ce user est déjà enregistré comme vendeur."}, status=status.HTTP_400_BAD_REQUEST)
+
+#             # ✅ Création du vendeur
+#             vendor = Vendor.objects.create(user=user, bijouterie=bijouterie, description=description)
+
+#             return Response({
+#                 'vendor': VendorSerializer(vendor).data,
+#                 'user': UserSerializer(user).data,
+#                 'message': "✅ Vendeur créé avec succès"
+#             }, status=status.HTTP_201_CREATED)
+
+#         except Exception as e:
+#             return Response({'error': f'Une erreur est survenue : {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class RetrieveVendorView(APIView):
