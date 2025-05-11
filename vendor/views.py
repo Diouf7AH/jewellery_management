@@ -488,6 +488,7 @@ class ListVendorAPIView(APIView):
 class CreateVendorView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    allowed_roles_admin_manager = ['admin', 'manager']
 
     @swagger_auto_schema(
         operation_description="Créer un vendeur via un utilisateur existant (email, username ou téléphone).",
@@ -499,7 +500,6 @@ class CreateVendorView(APIView):
         }
     )
     def post(self, request, *args, **kwargs):
-        allowed_roles_admin_manager = ['admin', 'manager']
         # user_role = getattr(request.user.user_role, 'role', None)
 
         # if user_role not in allowed_roles:
@@ -512,7 +512,7 @@ class CreateVendorView(APIView):
         email = data.get('email')
         # username = data.get('username')
         # phone = data.get('phone')
-        bijouterie_id = data.get('bijouterie')
+        # bijouterie_id = data.get('bijouterie')
         description = data.get('description')
 
         if not (email):
@@ -520,8 +520,12 @@ class CreateVendorView(APIView):
             return Response({"error": "Il faut au moins un identifiant : email"}, status=status.HTTP_400_BAD_REQUEST)
             # return Response({"error": "Il faut au moins un identifiant : email, username ou téléphone"}, status=status.HTTP_400_BAD_REQUEST)
 
-        if not bijouterie_id:
-            return Response({"error": "Bijouterie manquante"}, status=status.HTTP_400_BAD_REQUEST)
+        # if not bijouterie_id:
+        #     return Response({"error": "Bijouterie manquante"}, status=status.HTTP_400_BAD_REQUEST)
+
+        bijouterie = Bijouterie.objects.filter(nom__iexact=bijouterie_nom.strip()).first()
+        if not bijouterie:
+            return Response({"error": f"Bijouterie '{bijouterie_nom}' introuvable."}, status=404)
 
         # Récupération du rôle
         role_vendor = Role.objects.filter(role='vendor').first()
