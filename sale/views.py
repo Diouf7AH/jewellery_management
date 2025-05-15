@@ -1013,7 +1013,7 @@ class ListFactureView(APIView):
         responses={200: openapi.Response('response description', FactureSerializer)},
     )
     def get(self, request):
-        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur' and request.user.user_role.role != 'caissier':
+        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendor' and request.user.user_role.role != 'cashier':
             return Response({"message": "Access Denied"})
         factures = Facture.objects.all()
         serializer = FactureSerializer(factures, many=True)
@@ -1027,7 +1027,7 @@ class RechercherFactureView(APIView):
         responses={200: openapi.Response('response description', FactureSerializer)},
     )
     def get(self, request, numero_facture):
-        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur' and request.user.user_role.role != 'caissier':
+        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendor' and request.user.user_role.role != 'cashier':
             return Response({"message": "Access Denied"})
         try:
             # Recherche du produit par son code
@@ -1348,7 +1348,7 @@ class VentListAPIView(APIView):
             return Response({"message": "Access Denied"}, status=403)
 
         if role == 'vendor':
-            ventes = Vente.objects.filter(vendeur=request.user)
+            ventes = Vente.objects.filter(vendor=request.user)
         else:
             ventes = Vente.objects.all()
 
