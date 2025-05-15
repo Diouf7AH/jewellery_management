@@ -20,7 +20,7 @@ from decimal import Decimal
 
 from backend.renderers import UserRenderer
 from sale.models import Client, Facture, Paiement, Vente, VenteProduit
-from sale.serializers import (ClientSerializer, FactureSerializer,
+from sale.serializers import (ClientSerializer, VenteSerializer, FactureSerializer,
                             PaiementSerializer, VenteProduitSerializer,
                             VenteDetailSerializer)
 from django.db import models
@@ -1338,8 +1338,8 @@ class VentProduitsListAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Liste des produits vendus. Le vendeur voit uniquement ses ventes, le caissier et les autres rôles voient tout.",
-        responses={200: openapi.Response('Liste des ventes', VenteProduitSerializer(many=True))},
+        operation_description="Liste des produits vendus. Le vendeur voit uniquement ses ventes, le caissier, l'admin et le manager voient tout.",
+        responses={200: openapi.Response('Liste des ventes', VenteSerializer(many=True))},
     )
     def get(self, request):
         role = getattr(request.user.user_role, 'role', None)
@@ -1347,14 +1347,14 @@ class VentProduitsListAPIView(APIView):
         if role not in ['admin', 'manager', 'vendor', 'cashier']:
             return Response({"message": "Access Denied"}, status=403)
 
-        if role == 'vendeur':
-            venteproduits = VenteProduit.objects.filter(vendeur=request.user)
+        if role == 'vendor':
+            ventes = Vente.objects.filter(vendeur=request.user)
         else:
-            venteproduits = VenteProduit.objects.all()
+            ventes = Vente.objects.all()
 
-        serializer = VenteProduitSerializer(venteproduits, many=True)
+        serializer = VenteSerializer(ventes, many=True)
         return Response(serializer.data)
-
+    
 
 # # Fonction pour générer le PDF
 # def generer_facture_pdf(facture):

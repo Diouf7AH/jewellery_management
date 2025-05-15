@@ -22,7 +22,7 @@
 
 
 # class FactureSerializers(serializers.ModelSerializer):
-#     vente = VenteSerializers()
+#     vente = VenteSerializer()
 #     class Meta:
 #         model = Facture
 #         fields = ['id', 'numero_facture', 'vente', 'date_creation', 'montant_total']
@@ -79,7 +79,7 @@ class VenteProduitSerializer(serializers.ModelSerializer):
             'sous_total_prix_vent', 'tax', 'tax_inclue'
         ]
 
-class VenteSerializers(serializers.ModelSerializer):
+class VenteSerializer(serializers.ModelSerializer):
     client = ClientSerializer()
     produits = VenteProduitSerializer(many=True)
     class Meta:
