@@ -1348,7 +1348,8 @@ class VentListAPIView(APIView):
             return Response({"message": "Access Denied"}, status=403)
 
         if role == 'vendor':
-            ventes = Vente.objects.filter(vendor=request.user)
+            # ventes = Vente.objects.filter(vendor=request.user)
+            ventes = Vente.objects.filter(produits__vendor=request.user).distinct()
         else:
             ventes = Vente.objects.all()
 
