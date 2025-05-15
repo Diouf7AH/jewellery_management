@@ -500,6 +500,11 @@ class CreateVendorView(APIView):
     )
     def post(self, request, *args, **kwargs):
         # 🔐 Vérification du rôle utilisateur
+        # user_role = getattr(request.user.user_role, 'role', None)
+
+        # if user_role not in allowed_roles:
+        #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
