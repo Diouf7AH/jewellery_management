@@ -70,14 +70,27 @@ class ClientSerializer(serializers.ModelSerializer):
 
 
 class VenteProduitSerializer(serializers.ModelSerializer):
-    # produit = ProduitSerializer(read_only=True)
+    produit_id = serializers.SerializerMethodField()
+    produit_nom = serializers.SerializerMethodField()
+    produit_slug = serializers.SerializerMethodField()
 
     class Meta:
         model = VenteProduit
         fields = [
             'id', 'produit', 'quantite', 'prix_vente_grammes',
-            'sous_total_prix_vent', 'tax', 'tax_inclue'
+            'sous_total_prix_vent', 'tax', 'tax_inclue',
+            'produit_id', 'produit_nom', 'produit_slug',
         ]
+
+    def get_produit_id(self, obj):
+        return obj.produit.id if obj.produit else None
+    
+    def get_produit_nom(self, obj):
+        return obj.produit.nom if obj.produit else None
+
+    def get_produit_slug(self, obj):
+        return obj.produit.slug if obj.produit else None
+
 
 class VenteSerializer(serializers.ModelSerializer):
     client = ClientSerializer()

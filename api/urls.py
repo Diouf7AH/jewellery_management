@@ -138,7 +138,7 @@ urlpatterns = [
     # SALE
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
     
-    path('vente/list-produit', sale_views.VentProduitsListAPIView.as_view(), name='vente-produit-list'),
+    path('vente/list-produit', sale_views.VentListAPIView.as_view(), name='vente-produit-list'),
     
     path('facture/recherche-facture/<str:numero_facture>', sale_views.RechercherFactureView.as_view(), name='Recherche-facture-par-numero'),
     path('facture/List-factures-a-payer', sale_views.ListFactureView.as_view(), name='list-factures-a-payer'),

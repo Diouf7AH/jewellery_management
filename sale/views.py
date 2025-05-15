@@ -1333,7 +1333,7 @@ class PaiementFactureView(APIView):
 
 # ✅ Le vendeur connecté ne peut voir que les produits qu’il a vendus.
 # ✅ Le caissier (ou admin/manager) peut voir tous les produits vendus.
-class VentProduitsListAPIView(APIView):
+class VentListAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
 
