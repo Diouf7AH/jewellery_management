@@ -1078,7 +1078,7 @@ class ProduitCreateAPIView(APIView):
         operation_summary="Créer un produit avec images et QR code",
         manual_parameters=[
             openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
-            # openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
+            openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
             openapi.Parameter('description', openapi.IN_FORM, type=openapi.TYPE_STRING),
             openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['F', 'H', 'E'], default='F'),
             openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Nom de la catégorie"),

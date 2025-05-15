@@ -1318,16 +1318,40 @@ class PaiementFactureView(APIView):
     
 
 
+# class VentProduitsListAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+#     @swagger_auto_schema(
+#         responses={200: openapi.Response('response description', VenteProduitSerializer)},
+#     )
+#     def get(self, request):
+#         if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur' and request.user.user_role.role != 'caissier':
+#             return Response({"message": "Access Denied"})
+#         venteproduits = VenteProduit.objects.all()
+#         serializer = VenteProduitSerializer(venteproduits, many=True)
+#         return Response(serializer.data)
+
+# ✅ Le vendeur connecté ne peut voir que les produits qu’il a vendus.
+# ✅ Le caissier (ou admin/manager) peut voir tous les produits vendus.
 class VentProduitsListAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+
     @swagger_auto_schema(
-        responses={200: openapi.Response('response description', VenteProduitSerializer)},
+        operation_description="Liste des produits vendus. Le vendeur voit uniquement ses ventes, le caissier et les autres rôles voient tout.",
+        responses={200: openapi.Response('Liste des ventes', VenteProduitSerializer(many=True))},
     )
     def get(self, request):
-        if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager' and request.user.user_role.role != 'vendeur' and request.user.user_role.role != 'caissier':
-            return Response({"message": "Access Denied"})
-        venteproduits = VenteProduit.objects.all()
+        role = getattr(request.user.user_role, 'role', None)
+
+        if role not in ['admin', 'manager', 'vendor', 'cashier']:
+            return Response({"message": "Access Denied"}, status=403)
+
+        if role == 'vendeur':
+            venteproduits = VenteProduit.objects.filter(vendeur=request.user)
+        else:
+            venteproduits = VenteProduit.objects.all()
+
         serializer = VenteProduitSerializer(venteproduits, many=True)
         return Response(serializer.data)
 

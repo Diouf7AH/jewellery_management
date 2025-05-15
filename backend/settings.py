@@ -219,6 +219,10 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
-SECURE_SSL_REDIRECT = True
-SESSION_COOKIE_SECURE = True
-CSRF_COOKIE_SECURE = True
+# password_reset
+# FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173/')
+# DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@rio-gold.com')
+
+# SECURE_SSL_REDIRECT = True
+# SESSION_COOKIE_SECURE = True
+# CSRF_COOKIE_SECURE = True

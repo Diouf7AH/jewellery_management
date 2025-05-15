@@ -12,18 +12,6 @@ from store.models import Produit
 
 
 
-# Create your models here.
-# class Fournisseur(models.Model):
-#     nom = models.CharField(max_length=100)
-#     prenom = models.CharField(max_length=100)
-#     address = models.CharField(max_length=100, blank=True, null=True)
-#     telephone = models.CharField(max_length=15, unique=True, blank=True, null=True)
-#     slug = models.SlugField(max_length=30, null=True, blank=True, unique=True)
-#     date_ajout = models.DateTimeField(auto_now_add=True) 
-#     date_modification = models.DateTimeField(auto_now=True) 
-    
-#     def __str__(self):
-#         return f'{self.nom} {self.prenom} {self.telephone}'
     
 class Stock(models.Model):
     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True)

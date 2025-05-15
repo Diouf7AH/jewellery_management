@@ -176,7 +176,7 @@ class ProduitSerializer(serializers.ModelSerializer):
     class Meta:
         model = Produit
         fields = (
-            "id", "categorie", "categorie_detail", "nom", "produit_url", "sku", "qr_code_url", "image", "description",
+            "id", "slug", "categorie", "categorie_detail", "nom", "produit_url", "sku", "qr_code_url", "image", "description",
             "status", "genre", "marque", "marque_detail", "modele", "modele_detail", "purete", "purete_detail", "matiere", "poids", "taille", "etat"
         )
 

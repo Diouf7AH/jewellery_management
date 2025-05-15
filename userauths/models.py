@@ -36,28 +36,62 @@ class Role(models.Model):
         return f"{self.role}"
 # END Creation
 
-
-class UserManager(BaseUserManager): 
-    def create_user(self, email, password=None, **extra_fields ): 
-        if not email: 
+class UserManager(BaseUserManager):
+    def create_user(self, email, password=None, **extra_fields):
+        if not email:
             raise ValueError('Email is a required field')
-        
+
         email = self.normalize_email(email)
+        extra_fields.setdefault('is_active', True)
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self,email, password=None, **extra_fields): 
+    def create_superuser(self, email, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
-        # return self.create_user(email, password, **extra_fields)
+        extra_fields.setdefault('is_active', True)
+
+        if extra_fields.get('is_staff') is not True:
+            raise ValueError('Superuser must have is_staff=True.')
+
+        if extra_fields.get('is_superuser') is not True:
+            raise ValueError('Superuser must have is_superuser=True.')
+
         user = self.create_user(email, password, **extra_fields)
-        role = Role.objects.get(role='admin')
+
+        try:
+            role = Role.objects.get(role='admin')
+        except Role.DoesNotExist:
+            raise ValueError("Le rôle 'admin' n'existe pas dans la table Role.")
+
         user.user_role = role
-        user.is_email_verified=True
-        user.save()
+        user.is_email_verified = True
+        user.save(using=self._db)
         return user
+    
+# class UserManager(BaseUserManager): 
+#     def create_user(self, email, password=None, **extra_fields ): 
+#         if not email: 
+#             raise ValueError('Email is a required field')
+        
+#         email = self.normalize_email(email)
+#         user = self.model(email=email, **extra_fields)
+#         user.set_password(password)
+#         user.save(using=self._db)
+#         return user
+
+#     def create_superuser(self,email, password=None, **extra_fields): 
+#         extra_fields.setdefault('is_staff', True)
+#         extra_fields.setdefault('is_superuser', True)
+#         # return self.create_user(email, password, **extra_fields)
+#         user = self.create_user(email, password, **extra_fields)
+#         role = Role.objects.get(role='admin')
+#         user.user_role = role
+#         user.is_email_verified=True
+#         user.save()
+#         return user
 
 class User(AbstractUser):
     email = models.EmailField(max_length=50, unique=True)
@@ -85,62 +119,32 @@ class User(AbstractUser):
 
     def save(self, *args, **kwargs):
         if self.user_role and self.user_role.role == 'admin':
-            self.active = True
+            self.is_active = True
         super(User, self).save(*args, **kwargs)
 
-    def __str__(self) ->str:
-        return str(self.email)
+    def __str__(self):
+        return f"{self.email} ({self.user_role.role if self.user_role else 'Aucun rôle'})"
 
-    # def has_perm(self, perm, obj=None):
-    #     "Does the user have a specific permission?"
-    #     # Simplest possible answer: Yes, always
-    #     return self.user.role.is_admin
+    def has_perm(self, perm, obj=None):
+        return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
 
-    # def has_module_perms(self, app_label):
-    #     "Does the user have permissions to view the app `app_label`?"
-    #     # Simplest possible answer: Yes, always
-    #     return True
-
+    def has_module_perms(self, app_label):
+        return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
+    
     # @property
     # def is_staff(self):
     #     "Is the user a member of staff?"
     #     # Simplest possible answer: All admins are staff
     #     return self.user_role.role == 'admin'
-
-
-# path for image
-# def user_directory_path(instance, filename):
-#     user = None
     
-#     if hasattr(instance, 'user') and instance.user:
-#         user = instance.user
-#     elif hasattr(instance, 'vendor') and hasattr(instance.vendor, 'user') and instance.vendor.user:
-#         user = instance.vendor.user
-#     elif hasattr(instance, 'produit') and hasattr(instance.produit.vendor, 'user') and instance.produit.vendor.user:
-#         user = instance.produit.vendor.user
-
-#     if user:
-#         ext = filename.split('.')[-1]
-#         filename = "%s.%s" % (user.id, ext)
-#         return 'user_{0}/{1}'.format(user.id, filename)
-#     else:
-#         # Handle the case when user is None
-#         # You can return a default path or raise an exception, depending on your requirements.
-#         # For example, return a path with 'unknown_user' as the user ID:
-#         ext = filename.split('.')[-1]
-#         filename = "%s.%s" % ('file', ext)
-#         return 'user_{0}/{1}'.format('file', filename)
+    # @property
+    # def is_staff(self):
+    #     return self.user_role and self.user_role.role == 'admin'
 
 
-# password
-@receiver(reset_password_token_created)
-def password_reset_token_created(reset_password_token, *args, **kwargs):
-    sitelink = "http://localhost:5173/"
-    token = "{}".format(reset_password_token.key)
-    full_link = str(sitelink)+str("password-reset/")+str(token)
-
-    print(token)
-    print(full_link)
+def send_password_reset_email(reset_password_token):
+    sitelink = getattr(settings, "FRONTEND_URL", "http://localhost:5173/")
+    full_link = f"{sitelink}password-reset/{reset_password_token.key}"
 
     context = {
         'full_link': full_link,
@@ -150,15 +154,47 @@ def password_reset_token_created(reset_password_token, *args, **kwargs):
     html_message = render_to_string("backend/email.html", context=context)
     plain_message = strip_tags(html_message)
 
-    msg = EmailMultiAlternatives(
-        subject = "Request for resetting password for {title}".format(title=reset_password_token.user.email), 
-        body=plain_message,
-        from_email = "sender@example.com", 
-        to=[reset_password_token.user.email]
-    )
+    try:
+        msg = EmailMultiAlternatives(
+            subject="Réinitialisation de votre mot de passe",
+            body=plain_message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=[reset_password_token.user.email]
+        )
+        msg.attach_alternative(html_message, "text/html")
+        msg.send()
+        print("Email envoyé avec succès.")
+    except Exception as e:
+        print(f"Erreur d'envoi de l'email : {e}")
+        
 
-    msg.attach_alternative(html_message, "text/html")
-    msg.send()
+# password
+# @receiver(reset_password_token_created)
+# def password_reset_token_created(reset_password_token, *args, **kwargs):
+#     sitelink = "http://localhost:5173/"
+#     token = "{}".format(reset_password_token.key)
+#     full_link = str(sitelink)+str("password-reset/")+str(token)
+
+#     print(token)
+#     print(full_link)
+
+#     context = {
+#         'full_link': full_link,
+#         'email_adress': reset_password_token.user.email
+#     }
+
+#     html_message = render_to_string("backend/email.html", context=context)
+#     plain_message = strip_tags(html_message)
+
+#     msg = EmailMultiAlternatives(
+#         subject = "Request for resetting password for {title}".format(title=reset_password_token.user.email), 
+#         body=plain_message,
+#         from_email = "sender@example.com", 
+#         to=[reset_password_token.user.email]
+#     )
+
+#     msg.attach_alternative(html_message, "text/html")
+#     msg.send()
 
 
 # # Profile

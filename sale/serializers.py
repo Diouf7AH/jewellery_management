@@ -19,14 +19,6 @@
 #     class Meta:
 #         model = VenteProduit
 #         fields = ['id', 'produit', 'produit_id', 'quantite', 'prix_vente_grammes', 'sous_total_prix_vent', 'tax', 'tax_inclue']
-    
-    
-# class VenteSerializers(serializers.ModelSerializer):
-#     client = ClientSerializers()
-#     produits = VenteProduitSerializer(many=True)
-#     class Meta:
-#         model = Vente
-#         fields = ['id', 'client', 'produits', 'created_at', 'montant_total',]
 
 
 # class FactureSerializers(serializers.ModelSerializer):
@@ -70,6 +62,30 @@ from store.serializers import ProduitSerializer
 #     class Meta:
 #         model = Produit
 #         fields = ['id', 'nom', 'slug', 'poids']
+
+class ClientSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Client
+        fields = ['id', 'nom', 'prenom',]
+
+
+class VenteProduitSerializer(serializers.ModelSerializer):
+    # produit = ProduitSerializer(read_only=True)
+
+    class Meta:
+        model = VenteProduit
+        fields = [
+            'id', 'produit', 'quantite', 'prix_vente_grammes',
+            'sous_total_prix_vent', 'tax', 'tax_inclue'
+        ]
+
+class VenteSerializers(serializers.ModelSerializer):
+    client = ClientSerializer()
+    produits = VenteProduitSerializer(many=True)
+    class Meta:
+        model = Vente
+        fields = ['id', 'client', 'produits', 'created_at', 'montant_total',]
+
 
 class VenteProduitSerializer(serializers.ModelSerializer):
     produit = ProduitSerializer()
