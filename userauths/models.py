@@ -49,12 +49,12 @@ class UserManager(BaseUserManager):
         return user
 
     def create_superuser(self, email, password=None, **extra_fields):
-        extra_fields.setdefault('is_staff', True)
+        # extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('is_active', True)
 
-        if extra_fields.get('is_staff') is not True:
-            raise ValueError('Superuser must have is_staff=True.')
+        # if extra_fields.get('is_staff') is not True:
+        #     raise ValueError('Superuser must have is_staff=True.')
 
         if extra_fields.get('is_superuser') is not True:
             raise ValueError('Superuser must have is_superuser=True.')
@@ -136,10 +136,9 @@ class User(AbstractUser):
     #     "Is the user a member of staff?"
     #     # Simplest possible answer: All admins are staff
     #     return self.user_role.role == 'admin'
-    
-    # @property
-    # def is_staff(self):
-    #     return self.user_role and self.user_role.role == 'admin'
+    @property
+    def is_staff(self):
+        return self.user_role and self.user_role.role == 'admin'
 
 
 def send_password_reset_email(reset_password_token):
