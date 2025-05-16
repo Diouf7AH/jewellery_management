@@ -406,7 +406,7 @@ class VenteProduitCreateView(APIView):
                 defaults={"telephone": client_data.get("telephone", "")}
             )
 
-            vente = Vente.objects.create(client=client)
+            vente = Vente.objects.create(client=client, created_by=request.user)
             montant_total = 0
             vente_produits = []
 
@@ -471,7 +471,8 @@ class VenteProduitCreateView(APIView):
                     prix_vente_grammes=prix_vente_grammes,
                     sous_total_prix_vent=sous_total,
                     remise=remise,
-                    autres=autres
+                    autres=autres,
+                    vendor=vendor
                 )
                 vente_produits.append(vente_produit)
                 montant_total += sous_total

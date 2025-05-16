@@ -5,9 +5,9 @@ from django.db.models import Sum
 from decimal import Decimal
 from django.db import models
 from django.utils import timezone
-
+from django.conf import settings    
 from store.models import Categorie, Marque, Modele, Produit, Purete
-
+from vendor.models import Vendor
 
 # Create your models here.
 # Client Model
@@ -27,37 +27,20 @@ class Client(models.Model):
 
 # Vente (Sale) Model
 class Vente(models.Model):
-    # slug = models.CharField(max_length=50, unique=True, editable=False)
-    # numero_vente = models.CharField(max_length=25, unique=True, null=True, blank=True)
     client = models.ForeignKey('Client', on_delete=models.SET_NULL, null=True, blank=True, related_name="ventes")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="ventes_creees")
     created_at = models.DateTimeField(auto_now_add=True)
     montant_total = models.DecimalField(default=0.00, null=True, max_digits=12, decimal_places=2)
-
-    # def generate_numero_vente(self):
-    #     """Génère un numéro de vente du type VENT-YYYYMMDD-XXXX"""
-    #     today = timezone.now().strftime('%Y%m%d')
-    #     prefix = f"VENT-{today}"
-    #     for _ in range(10):  # Jusqu'à 10 tentatives pour éviter les doublons
-    #         suffix = ''.join(random.choices('0123456789', k=4))
-    #         numero = f"{prefix}-{suffix}"
-    #         if not Vente.objects.filter(numero_vente=numero).exists():
-    #             return numero
-    #     raise Exception("Impossible de générer un numéro de vente unique après 10 tentatives.")
-
-    def save(self, *args, **kwargs):
-        # if not self.numero_vente:
-        #     self.numero_vente = self.generate_numero_vente()
-        super().save(*args, **kwargs)
-
+    
     def __str__(self):
-        # return f"Vente {self.numero_vente or self.slug} - Client: {self.client.full_name if self.client else 'N/A'}"
         return f"Vente Client: {self.client.full_name if self.client else 'N/A'}"
 
     class Meta:
         ordering = ['-created_at']
         verbose_name = "Vente"
         verbose_name_plural = "Ventes"
-        
+
+
 # class Vente(models.Model):
 #     # slug = models.CharField(max_length=50, unique=True)
 #     numero_vente = models.CharField(max_length=25, unique=True, null=True, blank=True)
@@ -78,37 +61,29 @@ class Vente(models.Model):
 
 # VenteProduit (Product in Sale) Model
 class VenteProduit(models.Model):
-    vente = models.ForeignKey('Vente',on_delete=models.SET_NULL,null=True,blank=True,related_name="produits")
+    vente = models.ForeignKey('Vente', on_delete=models.SET_NULL, null=True, blank=True, related_name="produits")
     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True, related_name="venteProduit_produit")
+    vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True, related_name="venteproduits_vendor")
+
     quantite = models.PositiveIntegerField(default=1)
     prix_vente_grammes = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
     sous_total_prix_vent = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
     tax = models.DecimalField(null=True, blank=True, default=0.00, decimal_places=2, max_digits=12)
     tax_inclue = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12)
-    remise = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Remise", null=True, blank=True)
-    autres = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Informations supplémentaires")
-    
+    remise = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Discount", null=True, blank=True)
+    autres = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Additional info")
+
     def __str__(self):
-        return f"{self.quantite} x {self.produit.nom if self.produit else 'Produit supprimé'} in Vente {self.vente.id if self.vente else 'N/A'}"
-
-    # def save(self, *args, **kwargs):
-    #     if not self.produit:
-    #         raise ValueError("Produit requis pour calculer le prix.")
-    #     if not self.quantite or self.quantite < 1:
-    #         raise ValueError("Quantité invalide.")
-
-    #     # poids = self.produit.poids or 1
-    #     # prix_vente = self.prix_vente_grammes * poids
-    #     # self.sous_total_prix_vent = (prix_vente * self.quantite) + self.autres - self.remise
-    #     # self.tax_inclue = self.sous_total_prix_vent + (self.tax or 0)
-    #     super().save(*args, **kwargs)
+        return f"{self.quantite} x {self.produit.nom if self.produit else 'Deleted Product'} in Sale {self.vente.id if self.vente else 'N/A'}"
 
     def load_produit(self):
         return self.produit
 
     def load_client(self):
         return self.vente.client if self.vente else None
-    
+
+
+
 # class VenteProduit(models.Model):
 #     vente = models.ForeignKey(Vente, on_delete=models.SET_NULL, null=True, blank=True, related_name="produits")
 #     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True, related_name="venteProduit_produit")

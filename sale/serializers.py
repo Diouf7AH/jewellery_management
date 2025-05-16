@@ -94,7 +94,7 @@ class VenteSerializer(serializers.ModelSerializer):
     produits = VenteProduitSerializer(many=True)
     class Meta:
         model = Vente
-        fields = ['id', 'client', 'produits', 'created_at', 'montant_total',]
+        fields = ['id', 'client', 'created_by', 'produits', 'created_at', 'montant_total',]
 
 
 class VenteProduitSerializer(serializers.ModelSerializer):
@@ -119,9 +119,25 @@ class FactureSerializer(serializers.ModelSerializer):
     total_paye = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
     reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
     date_creation = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+    client = serializers.SerializerMethodField()
+
     class Meta:
         model = Facture
-        fields = ['numero_facture', 'montant_total', 'total_paye', 'reste_a_payer', 'status', 'date_creation']
+        fields = [
+            'numero_facture', 'montant_total', 'total_paye',
+            'reste_a_payer', 'status', 'date_creation', 'client'
+        ]
+
+    def get_client(self, obj):
+        if obj.vente and obj.vente.client:
+            client = obj.vente.client
+            return {
+                "nom": client.nom,
+                "prenom": client.prenom,
+                "telephone": client.telephone
+            }
+        return None
+
 
 class ClientSerializer(serializers.ModelSerializer):
     class Meta:
