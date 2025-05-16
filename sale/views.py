@@ -1339,8 +1339,8 @@ class VentListAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Liste des produits vendus. Le vendeur voit uniquement ses ventes, le caissier, l'admin et le manager voient tout.",
-        responses={200: openapi.Response('Liste des ventes', VenteSerializer(many=True))},
+        operation_description="Liste des ventes. Le vendeur voit ses ventes, les autres voient toutes les ventes.",
+        responses={200: openapi.Response('Liste des ventes', VenteSerializer(many=True))}
     )
     def get(self, request):
         role = getattr(request.user.user_role, 'role', None)
@@ -1349,14 +1349,17 @@ class VentListAPIView(APIView):
             return Response({"message": "Access Denied"}, status=403)
 
         if role == 'vendor':
-            # ventes = Vente.objects.filter(vendor=request.user)
-            ventes = Vente.objects.filter(produits__vendor=request.user).distinct()
+            try:
+                vendor = Vendor.objects.get(user=request.user)
+                ventes = Vente.objects.filter(produits__vendor=vendor).distinct()
+            except Vendor.DoesNotExist:
+                return Response({"error": "Aucun vendeur associé à cet utilisateur."}, status=400)
         else:
             ventes = Vente.objects.all()
 
         serializer = VenteSerializer(ventes, many=True)
         return Response(serializer.data)
-    
+
 
 # # Fonction pour générer le PDF
 # def generer_facture_pdf(facture):
