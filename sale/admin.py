@@ -1,7 +1,7 @@
 # Register your models here.
 from django.contrib import admin
 
-from sale.models import Client, Vente, VenteProduit, Facture, Paiement
+from sale.models import Client, Facture, Paiement, Vente, VenteProduit
 
 @admin.register(Client)
 class ClientAdmin(admin.ModelAdmin):
@@ -11,7 +11,7 @@ class ClientAdmin(admin.ModelAdmin):
 
 @admin.register(Vente)
 class VenteAdmin(admin.ModelAdmin):
-    list_display = ('id','client_full_name', 'created_at', 'montant_total',)
+    list_display = ('id', 'numero_vente', 'client_full_name', 'created_at', 'montant_total',)
     # search_fields = ('nom',)
     # Concatenate the desired fields, e.g. first_name and last_name
     def client_full_name(self, obj):
@@ -20,13 +20,14 @@ class VenteAdmin(admin.ModelAdmin):
 
 @admin.register(VenteProduit)
 class VenteProduitAdmin(admin.ModelAdmin):
-    list_display = ('id','client_full_name', 'produit', 'quantite', 'prix_vente_grammes', 'sous_total_prix_vent', 'tax', 'tax_inclue')
     # search_fields = ('nom',)
 
     # Concatenate the desired fields, e.g. first_name and last_name
     def client_full_name(self, obj):
         return f"{obj.vente.client.prenom} - {obj.vente.client.nom}"
     # client_full_name.short_description = 'Full Name' # Optional: Set the column header
+    list_display = ('produit', 'quantite', 'prix_vente_grammes', 'remise', 'autres', 'sous_total_prix_vente_ht',)
+    search_fields = ("numero_vente", "client__nom", "client__prenom")
 
 
 @admin.register(Facture)

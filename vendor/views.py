@@ -82,6 +82,7 @@ class VendorDashboardView(APIView):
         total_qte_vendue = ventes.aggregate(total=Sum('quantite'))['total'] or 0
         total_montant = ventes.aggregate(total=Sum('sous_total_prix_vent'))['total'] or 0
         stock_total = produits.aggregate(stock=Sum('quantite'))['stock'] or 0
+        total_remise = ventes.aggregate(remise=Sum('remise'))['remise'] or 0
 
         # 📆 Regroupement par période
         group_by = request.GET.get('group_by', 'month')
@@ -106,6 +107,17 @@ class VendorDashboardView(APIView):
             .annotate(total_qte=Sum('quantite'))
             .order_by('-total_qte')[:5]
         )
+        
+        # Générer un tableau de produit
+        produits_tableau = (
+            ventes.values('produit__id', 'produit__slug',  'produit__nom')
+            .annotate(
+                quantite_vendue=Sum('quantite'),
+                montant_total=Sum('sous_total_prix_vent'),
+                remise_totale=Sum('remise')
+            )
+            .order_by('-quantite_vendue')
+        )
 
         return Response({
             "vendeur": VendorSerializer(vendor).data,
@@ -116,11 +128,13 @@ class VendorDashboardView(APIView):
                 "quantite_totale_vendue": total_qte_vendue,
                 "stock_restant": stock_total,
                 "montant_total_ventes": total_montant,
+                "remise_totale": total_remise,
             },
             "stats_groupées": stats_grouped,
             "top_produits": top_produits,
             "produits": VendorProduitSerializer(produits, many=True).data,
             "ventes": VenteProduitSerializer(ventes, many=True).data,
+            "produits_tableau": produits_tableau,
         })
 
 # Un endpoint PATCH pour que le vendeur mette à jour son profil et son compte

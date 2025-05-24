@@ -8,6 +8,7 @@ from django.utils import timezone
 from django.conf import settings    
 from store.models import Categorie, Marque, Modele, Produit, Purete
 from vendor.models import Vendor
+from django.core.exceptions import ValidationError  
 
 # Create your models here.
 # Client Model
@@ -27,24 +28,30 @@ class Client(models.Model):
 
 # Vente (Sale) Model
 class Vente(models.Model):
-    numero_vente = models.CharField(max_length=30, unique=True, editable=False, blank=True, null=True)
+    numero_vente = models.CharField(max_length=20, unique=True, editable=False, blank=True, null=True)
     client = models.ForeignKey('Client', on_delete=models.SET_NULL, null=True, blank=True, related_name="ventes")
-    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="ventes_creees")
+    created_by = models.ForeignKey(
+        'userauths.User',  # Ou settings.AUTH_USER_MODEL si importé
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ventes_creees"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     montant_total = models.DecimalField(default=0.00, null=True, max_digits=12, decimal_places=2)
-    
-    def __str__(self):
-        return f"Vente #{self.numero_vente or 'N/A'} - Client: {self.client.full_name if self.client else 'Inconnu'}"
 
     class Meta:
         ordering = ['-created_at']
         verbose_name = "Vente"
         verbose_name_plural = "Ventes"
-    
+
+    def __str__(self):
+        return f"Vente - {self.numero_vente or 'en cours'} ({self.client.full_name if self.client else 'N/A'})"
+
     def generer_numero_vente(self):
         now = timezone.now()
         suffixe = ''.join(random.choices('0123456789', k=4))
-        return f"VENTE-{now.strftime('%m%d%Y%H%M%S')}-{suffixe}"
+        return f"VNT-{now.strftime('%m%d%Y')}-{suffixe}"
 
     def save(self, *args, **kwargs):
         if not self.numero_vente:
@@ -57,14 +64,12 @@ class Vente(models.Model):
                 raise Exception("Impossible de générer un numéro de vente unique.")
         super().save(*args, **kwargs)
 
-    def mettre_a_jour_montant_total(self, commit=True):
+    def mettre_a_jour_montant_total(self):
         total = self.produits.aggregate(
-            total=models.Sum('sous_total_prix_vente_ht')
+            total=models.Sum('sous_total_prix_vent')
         )['total'] or Decimal('0.00')
         self.montant_total = total
-        if commit:
-            self.save(update_fields=['montant_total'])
-
+        self.save(update_fields=['montant_total'])
 
 
 # class Vente(models.Model):
@@ -86,6 +91,28 @@ class Vente(models.Model):
 
 
 # VenteProduit (Product in Sale) Model
+# class VenteProduit(models.Model):
+#     vente = models.ForeignKey('Vente', on_delete=models.SET_NULL, null=True, blank=True, related_name="produits")
+#     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True, related_name="venteProduit_produit")
+#     vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True, related_name="venteproduits_vendor")
+
+#     quantite = models.PositiveIntegerField(default=1)
+#     prix_vente_grammes = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
+#     sous_total_prix_vent = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
+#     tax = models.DecimalField(null=True, blank=True, default=0.00, decimal_places=2, max_digits=12)
+#     tax_inclue = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12)
+#     remise = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Discount", null=True, blank=True)
+#     autres = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Additional info")
+
+#     def __str__(self):
+#         return f"{self.quantite} x {self.produit.nom if self.produit else 'Deleted Product'} in Sale {self.vente.id if self.vente else 'N/A'}"
+
+#     def load_produit(self):
+#         return self.produit
+
+#     def load_client(self):
+#         return self.vente.client if self.vente else None
+
 class VenteProduit(models.Model):
     vente = models.ForeignKey('Vente', on_delete=models.CASCADE, related_name="produits")
     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True, related_name="venteProduit_produit")
@@ -93,33 +120,29 @@ class VenteProduit(models.Model):
 
     quantite = models.PositiveIntegerField(default=1)
     prix_vente_grammes = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
-    sous_total_prix_vente_ht = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
+    sous_total_prix_vent = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
     tax = models.DecimalField(null=True, blank=True, default=0.00, decimal_places=2, max_digits=12)
     prix_ttc = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12)
-    remise = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Discount", null=True, blank=True)
-    autres = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Additional info")
+    remise = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Remise (%)", null=True, blank=True)
+    autres = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Autres frais")
 
     def save(self, *args, **kwargs):
         prix_base = self.prix_vente_grammes * self.quantite
-        remise_valeur = self.remise or Decimal('0.00')     # remise en FCFA
+        remise_valeur = self.remise or Decimal('0.00')  # ← Montant direct
         autres_valeur = self.autres or Decimal('0.00')
         tax = self.tax or Decimal('0.00')
-        self.sous_total_prix_vente_ht = prix_base - remise_valeur + autres_valeur
-        self.prix_ttc = self.sous_total_prix_vente_ht + tax
+
+        self.sous_total_prix_vent = prix_base - remise_valeur + autres_valeur
+        self.prix_ttc = self.sous_total_prix_vent + tax
 
         super().save(*args, **kwargs)
 
         # Mise à jour du total de la vente liée
-        if self.vente_id:  # plus léger qu'un accès à self.vente
-            try:
-                self.vente.mettre_a_jour_montant_total()
-            except Exception:
-                pass
-            
+        if self.vente:
+            self.vente.mettre_a_jour_montant_total()
+
     def __str__(self):
-        produit_nom = self.produit.nom if self.produit else "Produit supprimé"
-        vente_id = self.vente_id or "N/A"
-        return f"{self.quantite} x {produit_nom} in Vente {vente_id}"
+        return f"{self.quantite} x {self.produit.nom if self.produit else 'Deleted Product'} in Vente {self.vente.id if self.vente else 'N/A'}"
 
     def load_produit(self):
         return self.produit
@@ -153,13 +176,29 @@ class VenteProduit(models.Model):
 #     def load_produit(self):
 #         return self.produit
 
+# Ajout d’un clean() pour garantir l'intégrité métier
+# Par exemple, empêcher une facture marquée "Payé" s’il reste un solde :
+def clean(self):
+    if self.status == "Payé" and self.reste_a_payer > 0:
+        raise ValidationError("La facture ne peut pas être marquée comme payée si elle n'est pas entièrement réglée.")
+
 # Facture (Invoice) Model
 class Facture(models.Model):
     numero_facture = models.CharField(max_length=20, unique=True, editable=False)
-    vente = models.OneToOneField('Vente', on_delete=models.SET_NULL, null=True, blank=True, related_name="facture_vente")
+    vente = models.OneToOneField(
+        'Vente',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="facture_vente"
+    )
     date_creation = models.DateTimeField(auto_now_add=True)
-    montant_total = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12)
-    status = models.CharField(max_length=20, choices=[('Non Payé', 'Non Payé'), ('Payé', 'Payé')], default='Non Payé')
+    montant_total = models.DecimalField(default=0.00, null=False, decimal_places=2, max_digits=12)
+    status = models.CharField(
+        max_length=20,
+        choices=[('Non Payé', 'Non Payé'), ('Payé', 'Payé')],
+        default='Non Payé'
+    )
     fichier_pdf = models.FileField(upload_to='factures/', null=True, blank=True)
 
     class Meta:
@@ -168,32 +207,11 @@ class Facture(models.Model):
 
     def __str__(self):
         return f'{self.numero_facture}'
-    
-    @staticmethod
-    def generer_numero_unique():
-        for _ in range(10):
-            now = timezone.now()
-            suffixe = ''.join(random.choices(string.digits, k=4))
-            numero = f"FAC-{now.strftime('%m%d%Y')}-{suffixe}"
-            if not Facture.objects.filter(numero_facture=numero).exists():
-                return numero
-        raise Exception("Impossible de générer un numéro de facture unique après 10 tentatives.")
 
-    def save(self, *args, **kwargs):
-        if not self.numero_facture:
-            self.numero_facture = self.generer_numero_unique()
-        super().save(*args, **kwargs)
-    
-    # def save(self, *args, **kwargs):
-    #     if not self.numero_facture:
-    #         for _ in range(10):
-    #             numero = self.generer_numero_facture()
-    #             if not Facture.objects.filter(numero_facture=numero).exists():
-    #                 self.numero_facture = numero
-    #                 break
-    #         else:
-    #             raise Exception("Impossible de générer un numéro de facture unique après 10 tentatives.")
-    #     super().save(*args, **kwargs)
+    def generer_numero_facture(self):
+        now = timezone.now()
+        suffixe = ''.join(random.choices(string.digits, k=4))
+        return f"FAC-{now.strftime('%m%d%Y')}-{suffixe}"
 
     @property
     def total_paye(self):
@@ -209,8 +227,28 @@ class Facture(models.Model):
         return self.status == "Payé"
     est_reglee.boolean = True
     est_reglee.short_description = "Facture réglée"
-    
-    
+
+    def clean(self):
+        if self.status == "Payé" and self.reste_a_payer > 0:
+            raise ValidationError("Impossible de marquer cette facture comme payée si le montant n'est pas réglé.")
+
+    def save(self, *args, **kwargs):
+        if not self.numero_facture:
+            for _ in range(10):
+                numero = self.generer_numero_facture()
+                if not Facture.objects.filter(numero_facture=numero).exists():
+                    self.numero_facture = numero
+                    break
+            else:
+                raise Exception("Impossible de générer un numéro de facture unique après 10 tentatives.")
+
+        # 🔄 Statut automatique
+        if self.reste_a_payer <= 0 and self.status != "Payé":
+            self.status = "Payé"
+
+        self.full_clean()  # vérifie les règles métier
+        super().save(*args, **kwargs)
+        
 # class Facture(models.Model):
 #     numero_facture = models.CharField(max_length=20, unique=True, editable=False)
 #     vente = models.OneToOneField(Vente, on_delete=models.SET_NULL, null=True, blank=True, related_name="facture_vente")
@@ -305,9 +343,16 @@ class Facture(models.Model):
 
 
 class Paiement(models.Model):
-    facture = models.ForeignKey('Facture', on_delete=models.CASCADE, related_name="paiements")
+    facture = models.ForeignKey(
+        Facture,
+        on_delete=models.CASCADE,
+        related_name="paiements"
+    )
     montant_paye = models.DecimalField(max_digits=10, decimal_places=2)
-    mode_paiement = models.CharField(max_length=20, choices=[('cash', 'Cash'), ('mobile', 'Mobile')])
+    mode_paiement = models.CharField(
+        max_length=20,
+        choices=[('cash', 'Cash'), ('mobile', 'Mobile'), ('cheque', 'Chèque')]
+    )
     date_paiement = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -323,8 +368,6 @@ class Paiement(models.Model):
         return self.facture.status == "Payé"
     est_reglee.boolean = True
     est_reglee.short_description = "Facture réglée"
-    
-    
 # class Paiement(models.Model):
 #     facture = models.OneToOneField(Facture, on_delete=models.SET_NULL, null=True, blank=True, related_name="paiement_facture")
 #     montant_paye = models.DecimalField(default=0.00, null=True, max_digits=10, decimal_places=2)
