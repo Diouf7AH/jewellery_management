@@ -10,6 +10,7 @@ from django.template.loader import render_to_string
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
+from rest_framework import status
 # import phonenumbers
 # from phonenumbers import PhoneNumber
 from rest_framework.exceptions import NotFound
@@ -1244,9 +1245,72 @@ class RechercherFactureView(APIView):
 #         return Response({'message': 'Paiement réussi', 'paiement': PaiementSerializer(paiement).data}, status=status.HTTP_201_CREATED)
 
 
+# class PaiementFactureView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_description="Effectuer un paiement pour une facture donnée par son numéro.",
+#         request_body=PaiementSerializer,
+#         responses={
+#             201: openapi.Response("Paiement enregistré avec succès"),
+#             400: openapi.Response("Requête invalide"),
+#             403: openapi.Response("Accès interdit"),
+#             404: openapi.Response("Facture introuvable")
+#         }
+#     )
+#     def post(self, request, facture_numero):
+#         role = getattr(request.user.user_role, 'role', None)
+#         if role not in ['admin', 'manager', 'cashier']:
+#             return Response({"message": "Access Denied"}, status=403)
+
+#         try:
+#             facture = Facture.objects.get(numero_facture=facture_numero)
+#         except Facture.DoesNotExist:
+#             return Response({"detail": "Facture introuvable."}, status=404)
+
+#         if facture.status == 'Payé':
+#             return Response({'error': 'La facture est déjà réglée'}, status=400)
+
+#         montant_brut = request.data.get('montant_paye')
+#         mode_paiement = request.data.get('mode_paiement', 'cash')
+
+#         if not montant_brut:
+#             return Response({'error': 'Le montant payé est requis'}, status=400)
+
+#         try:
+#             montant_paye = Decimal(str(montant_brut))
+#         except Exception:
+#             return Response({'error': 'Le montant payé est invalide'}, status=400)
+
+#         if montant_paye <= 0:
+#             return Response({'error': 'Le montant payé doit être supérieur à 0'}, status=400)
+
+#         paiement = Paiement.objects.create(
+#             facture=facture,
+#             montant_paye=montant_paye,
+#             mode_paiement=mode_paiement
+#         )
+
+#         # ✅ Met à jour le statut si nécessaire
+#         if facture.total_paye >= facture.montant_total and facture.status != "Payé":
+#             facture.status = "Payé"
+#             facture.save()
+
+#         return Response({
+#             'message': 'Paiement enregistré avec succès',
+#             'paiement': PaiementSerializer(paiement).data,
+#             'total_paye': str(facture.total_paye),
+#             'reste_a_payer': str(facture.reste_a_payer),
+#             'statut_facture': facture.status
+#         }, status=201)
+
+
 class PaiementFactureView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
+    
+    ROLES_AUTORISES_COMME_CAISSIER = ['admin', 'manager', 'cashier']
 
     @swagger_auto_schema(
         operation_description="Effectuer un paiement pour une facture donnée par son numéro.",
@@ -1260,7 +1324,7 @@ class PaiementFactureView(APIView):
     )
     def post(self, request, facture_numero):
         role = getattr(request.user.user_role, 'role', None)
-        if role not in ['admin', 'manager', 'cashier']:
+        if role not in self.ROLES_AUTORISES_COMME_CAISSIER:
             return Response({"message": "Access Denied"}, status=403)
 
         try:
@@ -1271,16 +1335,13 @@ class PaiementFactureView(APIView):
         if facture.status == 'Payé':
             return Response({'error': 'La facture est déjà réglée'}, status=400)
 
-        montant_brut = request.data.get('montant_paye')
-        mode_paiement = request.data.get('mode_paiement', 'cash')
+        # ✅ UTILISATION DE validated_data
+        serializer = PaiementSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
 
-        if not montant_brut:
-            return Response({'error': 'Le montant payé est requis'}, status=400)
-
-        try:
-            montant_paye = Decimal(str(montant_brut))
-        except Exception:
-            return Response({'error': 'Le montant payé est invalide'}, status=400)
+        montant_paye = serializer.validated_data['montant_paye']
+        mode_paiement = serializer.validated_data.get('mode_paiement', 'cash')
 
         if montant_paye <= 0:
             return Response({'error': 'Le montant payé doit être supérieur à 0'}, status=400)
@@ -1291,7 +1352,7 @@ class PaiementFactureView(APIView):
             mode_paiement=mode_paiement
         )
 
-        # ✅ Met à jour le statut si nécessaire
+        # ✅ Mise à jour du statut de la facture
         if facture.total_paye >= facture.montant_total and facture.status != "Payé":
             facture.status = "Payé"
             facture.save()
