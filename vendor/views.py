@@ -385,7 +385,7 @@ class ToggleVendorStatusView(APIView):
     def patch(self, request, user_id):
         allowed_roles_admin_manager = ['admin', 'manager'] 
         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             target_user = User.objects.get(id=user_id)
@@ -405,18 +405,20 @@ class ToggleVendorStatusView(APIView):
 class ListVendorAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
-    
+
     @swagger_auto_schema(
-        responses={200: openapi.Response('response description', VendorSerializer)},
-        )
+        responses={200: openapi.Response('Liste des vendeurs', VendorSerializer(many=True))},
+    )
     def get(self, request):
-        # if not request.user.user_role or request.user.user_role.role not in allowed_roles:
-        #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        allowed_roles = ['admin', 'manager']
+        role = getattr(request.user.user_role, 'role', None)
+
+        if role not in allowed_roles:
+            return Response({"message": "Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
         vendors = Vendor.objects.all()
         serializer = VendorSerializer(vendors, many=True)
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 # class CreateVendorView(APIView):
 #     renderer_classes = [UserRenderer]

@@ -5,7 +5,7 @@ from django.db.models import Sum
 from decimal import Decimal
 from django.db import models
 from django.utils import timezone
-from django.conf import settings    
+from django.conf import settings
 from store.models import Categorie, Marque, Modele, Produit, Purete
 from vendor.models import Vendor
 
@@ -32,19 +32,28 @@ class Vente(models.Model):
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="ventes_creees")
     created_at = models.DateTimeField(auto_now_add=True)
     montant_total = models.DecimalField(default=0.00, null=True, max_digits=12, decimal_places=2)
-    
+
     def __str__(self):
-        return f"Vente #{self.numero_vente or 'N/A'} - Client: {self.client.full_name if self.client else 'Inconnu'}"
+        return f"Vente #{self.numero_vente or 'N/A'} - Client: {self.client.full_name if self.client else 'Inconnu'} - {self.created_at.strftime('%d/%m/%Y')}"
 
     class Meta:
         ordering = ['-created_at']
         verbose_name = "Vente"
         verbose_name_plural = "Ventes"
-    
+
     def generer_numero_vente(self):
         now = timezone.now()
         suffixe = ''.join(random.choices('0123456789', k=4))
-        return f"VENTE-{now.strftime('%m%d%Y%H%M%S')}-{suffixe}"
+        return f"VENTE-{now.strftime('%m%d%Y%H%M%S')}-{suffixe}".upper()
+
+    @property
+    def produits(self):
+        return self.produits.all()
+
+    # Utile pour les formats lisibles dans l’admin, Swagger, ou les PDF
+    @property
+    def date_str(self):
+        return self.created_at.strftime('%d/%m/%Y à %H:%M')
 
     def save(self, *args, **kwargs):
         if not self.numero_vente:
@@ -54,7 +63,7 @@ class Vente(models.Model):
                     self.numero_vente = numero
                     break
             else:
-                raise Exception("Impossible de générer un numéro de vente unique.")
+                raise ValueError("Impossible de générer un numéro de vente unique après 10 tentatives.")
         super().save(*args, **kwargs)
 
     def mettre_a_jour_montant_total(self, commit=True):
@@ -115,7 +124,7 @@ class VenteProduit(models.Model):
                 self.vente.mettre_a_jour_montant_total()
             except Exception:
                 pass
-            
+
     def __str__(self):
         produit_nom = self.produit.nom if self.produit else "Produit supprimé"
         vente_id = self.vente_id or "N/A"
@@ -133,23 +142,23 @@ class VenteProduit(models.Model):
 #     vente = models.ForeignKey(Vente, on_delete=models.SET_NULL, null=True, blank=True, related_name="produits")
 #     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True, related_name="venteProduit_produit")
 #     quantite = models.IntegerField()
-#     prix_vente_grammes = models.DecimalField(default=0.00, decimal_places=2, max_digits=12) 
-#     # prix_vente_reel_gramme = models.DecimalField(default=0.00, decimal_places=2, max_digits=12) 
-#     sous_total_prix_vent = models.DecimalField(default=0.00, decimal_places=2, max_digits=12) 
+#     prix_vente_grammes = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
+#     # prix_vente_reel_gramme = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
+#     sous_total_prix_vent = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
 #     tax = models.IntegerField(null=True, blank=True)
-#     tax_inclue = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12) 
+#     tax_inclue = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12)
 #     # total_prix_vente = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
-        
+
 #     def __str__(self):
 #         return f"{self.quantite} x {self.produit.nom} in Vente {self.vente.id}"
-    
+
 #     # def save(self, *args, **kwargs):
 #     #     self.sous_total_prix_vent = self.produit.prix_vente * self.quantite
 #     #     super().save(*args, **kwargs)
-    
+
 #     def load_client(self):
 #         return self.client
-    
+
 #     def load_produit(self):
 #         return self.produit
 
@@ -168,7 +177,7 @@ class Facture(models.Model):
 
     def __str__(self):
         return f'{self.numero_facture}'
-    
+
     @staticmethod
     def generer_numero_unique():
         for _ in range(10):
@@ -183,7 +192,7 @@ class Facture(models.Model):
         if not self.numero_facture:
             self.numero_facture = self.generer_numero_unique()
         super().save(*args, **kwargs)
-    
+
     # def save(self, *args, **kwargs):
     #     if not self.numero_facture:
     #         for _ in range(10):
@@ -209,8 +218,8 @@ class Facture(models.Model):
         return self.status == "Payé"
     est_reglee.boolean = True
     est_reglee.short_description = "Facture réglée"
-    
-    
+
+
 # class Facture(models.Model):
 #     numero_facture = models.CharField(max_length=20, unique=True, editable=False)
 #     vente = models.OneToOneField(Vente, on_delete=models.SET_NULL, null=True, blank=True, related_name="facture_vente")
@@ -232,11 +241,11 @@ class Facture(models.Model):
 #     #     random_digits = ''.join(random.choices(string.digits, k=7))  # Générer è chiffres aléatoires
 #     #     numero = f"FAC-{date_str}-{random_digits}"
 #     #     return numero
-    
+
 #     # def save(self, *args, **kwargs):
 #     #     self.numero = self.generate_facture_numero()
 #     #     super(Facture, self).save(*args, **kwargs)
-    
+
 
 #     # def generer_numero_facture(self):
 #     #     # Format de la date : YYYYMMDD
@@ -252,7 +261,7 @@ class Facture(models.Model):
 #     #     # else:
 #     #     #     # Sinon commencer à 1
 #     #     #     new_num = 1
-        
+
 #     #     new_num_chaine = ''.join(random.choices(string.digits, k=7))  # Générer è chiffres aléatoires
 #     #     new_num = int(new_num_chaine)
 #     #     # print(date_part_heure)
@@ -261,7 +270,7 @@ class Facture(models.Model):
 #     #     # return f"FAC-{date_part}-{new_num:04d}"
 #     #     # return f"FAC-{date_part}-{new_num}"
 #     #     return f"FAC-{new_num}"
-    
+
 #     def generer_numero_facture(self):
 #         # Format de la date (séparé)
 #         jour = timezone.now().strftime('%d')
@@ -273,7 +282,7 @@ class Facture(models.Model):
 
 #         # Format final : FAC-MMDDYYYY-12345
 #         return f"FAC-{mois}{jour}{annee}-{suffixe}"
-    
+
 #     def save(self, *args, **kwargs):
 #     if not self.numero_facture:
 #         for _ in range(10):  # On essaie 10 fois
@@ -283,9 +292,9 @@ class Facture(models.Model):
 #                 break
 #         else:
 #             raise Exception("Impossible de générer un numéro de facture unique après 10 tentatives.")
-    
+
 #     super(Facture, self).save(*args, **kwargs)
-    
+
 #     # def save(self, *args, **kwargs):
 #     #     if not self.numero_facture:
 #     #         while True:
@@ -294,11 +303,11 @@ class Facture(models.Model):
 #     #                 self.numero_facture = numero
 #     #                 break
 #     #     super(Facture, self).save(*args, **kwargs)
-    
-    
+
+
 #     def __str__(self):
 #         return f'{self.numero_facture}'
-    
+
 #     class Meta:
 #         ordering = ['-id']
 #         verbose_name_plural = "Factures"
@@ -323,17 +332,17 @@ class Paiement(models.Model):
         return self.facture.status == "Payé"
     est_reglee.boolean = True
     est_reglee.short_description = "Facture réglée"
-    
-    
+
+
 # class Paiement(models.Model):
 #     facture = models.OneToOneField(Facture, on_delete=models.SET_NULL, null=True, blank=True, related_name="paiement_facture")
 #     montant_paye = models.DecimalField(default=0.00, null=True, max_digits=10, decimal_places=2)
 #     date_paiement = models.DateTimeField(auto_now_add=True)
 #     # mode_paiement = models.CharField(max_length=50)
-    
+
 #     def __str__(self):
 #         return f'{self.facture.numero_facture}'
-    
+
 #     class Meta:
 #         ordering = ['-id']
-#         verbose_name_plural = "Paiements" 
+#         verbose_name_plural = "Paiements"
