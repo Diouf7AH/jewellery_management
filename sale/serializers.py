@@ -258,23 +258,37 @@ class PaiementSerializer(serializers.ModelSerializer):
     
     def validate_montant_paye(self, value):
         if value <= 0:
-            raise serializers.ValidationError("Le montant payé doit être supérieur à 0.")
+            raise serializers.ValidationError("Le montant payé doit être un montant positif.")
+        return value
+
+    def validate_mode_paiement(self, value):
+        MODES_VALIDES = ['cash', 'mobile', 'virement']
+        if value not in MODES_VALIDES:
+            raise serializers.ValidationError(f"Mode de paiement invalide. Choix valides : {', '.join(MODES_VALIDES)}")
         return value
     
     def get_facture(self, obj):
-        if not obj.facture:
+        facture = obj.facture
+        if not facture:
             return None
+
         return {
-            "id": obj.facture.id,
-            "numero_facture": obj.facture.numero_facture,
-            "vente": obj.facture.vente,
-            "montant_total": obj.facture.montant_total,
-            "status": obj.facture.status,
-            "date_creation": obj.facture.date_creation,
+            "id": facture.id,
+            "numero_facture": facture.numero_facture,
+            "vente": {
+                "id": facture.vente.id,
+                "numero_vente": facture.vente.numero_vente,
+                "client": facture.vente.client.full_name if facture.vente.client else None,
+            } if facture.vente else None,
+            "montant_total": facture.montant_total,
+            "status": facture.status,
+            "date_creation": facture.date_creation,
         }
-        
+    
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        # Réassigner les champs enrichis
-        data['facture'] = self.get_facture(instance)
+        data['created_by'] = {
+            "id": instance.created_by.id,
+            "nom": instance.created_by.get_full_name() or instance.created_by.username
+        } if instance.created_by else None
         return data
