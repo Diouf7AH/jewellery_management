@@ -1316,7 +1316,7 @@ class PaiementFactureView(APIView):
         operation_description="Effectuer un paiement pour une facture donnée par son numéro.",
         request_body=PaiementSerializer,
         responses={
-            201: openapi.Response("Paiement enregistré avec succès"),
+            201: openapi.Response("Paiement enregistré avec succès", PaiementSerializer),
             400: openapi.Response("Requête invalide"),
             403: openapi.Response("Accès interdit"),
             404: openapi.Response("Facture introuvable")
@@ -1337,19 +1337,21 @@ class PaiementFactureView(APIView):
 
         # ✅ UTILISATION DE validated_data
         serializer = PaiementSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=400)
+        serializer.is_valid(raise_exception=True)  # ➜ ça appelle automatiquement validate_montant_paye du serializer
 
         montant_paye = serializer.validated_data['montant_paye']
         mode_paiement = serializer.validated_data.get('mode_paiement', 'cash')
-
-        if montant_paye <= 0:
-            return Response({'error': 'Le montant payé doit être supérieur à 0'}, status=400)
+        
+        if facture.total_paye + montant_paye > facture.montant_total:
+            return Response({
+                'error': f"Le solde restant est de {facture.reste_a_payer}. Veuillez saisir un montant inférieur ou égal."
+            }, status=400)
 
         paiement = Paiement.objects.create(
             facture=facture,
             montant_paye=montant_paye,
-            mode_paiement=mode_paiement
+            mode_paiement=mode_paiement,
+            created_by=request.user  # optionnel
         )
 
         # ✅ Mise à jour du statut de la facture

@@ -254,8 +254,13 @@ class PaiementSerializer(serializers.ModelSerializer):
     facture = serializers.SerializerMethodField()
     class Meta:
         model = Paiement
-        fields = ("id", "facture", "montant_paye", "mode_paiement", "date_paiement")
-        
+        fields = ("id", "facture", "montant_paye", "mode_paiement", "date_paiement", 'created_by')
+    
+    def validate_montant_paye(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Le montant payé doit être supérieur à 0.")
+        return value
+    
     def get_facture(self, obj):
         if not obj.facture:
             return None
