@@ -254,7 +254,7 @@ class PaiementSerializer(serializers.ModelSerializer):
     facture = serializers.SerializerMethodField()
     class Meta:
         model = Paiement
-        fields = ("id", "facture", "montant_paye", "mode_paiement", "date_paiement", 'created_by')
+        fields = ("id", "facture", "montant_paye", "mode_paiement", "date_paiement")
     
     def validate_montant_paye(self, value):
         if value <= 0:

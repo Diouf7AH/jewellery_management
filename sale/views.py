@@ -1328,7 +1328,9 @@ class PaiementFactureView(APIView):
             return Response({"message": "Access Denied"}, status=403)
 
         try:
-            facture = Facture.objects.get(numero_facture=facture_numero)
+            # facture = Facture.objects.get(numero_facture=facture_numero)
+            facture_numero = facture_numero.strip()
+            facture = Facture.objects.get(numero_facture__iexact=facture_numero)
         except Facture.DoesNotExist:
             return Response({"detail": "Facture introuvable."}, status=404)
 
@@ -1366,6 +1368,25 @@ class PaiementFactureView(APIView):
             'reste_a_payer': str(facture.reste_a_payer),
             'statut_facture': facture.status
         }, status=201)
+        
+
+# note
+
+# 🎁 Propositions bonus (facultatives mais pros)
+# Tu veux aller plus loin ? Voici ce que tu peux ajouter facilement :
+
+# Fonction	Avantage
+# ✅ Générer un PDF de reçu	Professionnel, utile pour clients
+# ✅ Envoyer la confirmation WhatsApp/SMS	Direct, engageant
+# ✅ Journaliser le paiement dans un historique	Pour audit / stats
+# ✅ Lister les paiements d’une facture	Transparence + récapitulatif
+# ✅ Décorateur @role_required(...) réutilisable	Pour alléger toutes tes vues sécurisées
+
+# 🧾 Un reçu PDF avec logo + infos facture + paiement ?
+
+# 📱 Un lien ou bouton WhatsApp avec message auto au client ?
+
+# 🔄 Un endpoint GET /api/factures/<numero>/paiements/ pour voir tous les paiements associés ?
 
 
 # Vue API pour modifier un produit dans une vente

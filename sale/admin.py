@@ -40,5 +40,5 @@ class FactureAdmin(admin.ModelAdmin):
     
 @admin.register(Paiement)
 class PaiementAdmin(admin.ModelAdmin):
-    list_display = ('id','facture', 'montant_paye', 'date_paiement', 'created_by')
+    list_display = ('id','facture', 'montant_paye', 'date_paiement')
     # search_fields = ('nom',)
