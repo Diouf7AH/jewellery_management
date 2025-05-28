@@ -255,7 +255,7 @@ class PaiementSerializer(serializers.ModelSerializer):
     facture = serializers.SerializerMethodField()
     class Meta:
         model = Paiement
-        fields = ("id", "facture", "montant_paye", "mode_paiement", "date_paiement", "created_by", "reste_a_payer")
+        fields = ("id", "facture", "montant_paye", "mode_paiement", "date_paiement", "reste_a_payer")
         read_only_fields = ("created_by",)  # 👈 NE PAS inclure dans Swagger POST
         
     def validate_montant_paye(self, value):
