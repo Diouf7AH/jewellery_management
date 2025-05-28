@@ -251,18 +251,20 @@ class VenteDetailSerializer(serializers.ModelSerializer):
     
         
 class PaiementSerializer(serializers.ModelSerializer):
+    reste_a_payer = serializers.SerializerMethodField()
     facture = serializers.SerializerMethodField()
     class Meta:
         model = Paiement
-        fields = ("id", "facture", "montant_paye", "mode_paiement", "date_paiement", 'created_by')
-    
+        fields = ("id", "facture", "montant_paye", "mode_paiement", "date_paiement", "created_by", "reste_a_payer")
+        read_only_fields = ("created_by",)  # 👈 NE PAS inclure dans Swagger POST
+        
     def validate_montant_paye(self, value):
         if value <= 0:
             raise serializers.ValidationError("Le montant payé doit être un montant positif.")
         return value
 
     def validate_mode_paiement(self, value):
-        MODES_VALIDES = ['cash', 'mobile', 'virement']
+        MODES_VALIDES = dict(Paiement._meta.get_field('mode_paiement').choices).keys()
         if value not in MODES_VALIDES:
             raise serializers.ValidationError(f"Mode de paiement invalide. Choix valides : {', '.join(MODES_VALIDES)}")
         return value
@@ -284,11 +286,21 @@ class PaiementSerializer(serializers.ModelSerializer):
             "status": facture.status,
             "date_creation": facture.date_creation,
         }
+        
+    def get_reste_a_payer(self, obj):
+        facture = obj.facture
+        return facture.reste_a_payer if facture else None
     
+    def get_created_by(self, obj):
+        user = obj.created_by
+        if not user:
+            return None
+        return {
+            "id": user.id,
+            "nom": user.get_full_name() or user.username
+        }
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data['created_by'] = {
-            "id": instance.created_by.id,
-            "nom": instance.created_by.get_full_name() or instance.created_by.username
-        } if instance.created_by else None
+        data['created_by'] = self.get_created_by(instance)
         return data
