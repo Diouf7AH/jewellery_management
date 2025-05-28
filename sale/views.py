@@ -1353,7 +1353,7 @@ class PaiementFactureView(APIView):
             facture=facture,
             montant_paye=montant_paye,
             mode_paiement=mode_paiement,
-            created_by=request.user  # optionnel
+            created_by=request.user
         )
 
         # ✅ Mise à jour du statut de la facture

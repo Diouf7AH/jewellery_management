@@ -318,6 +318,7 @@ class Paiement(models.Model):
     montant_paye = models.DecimalField(max_digits=10, decimal_places=2)
     mode_paiement = models.CharField(max_length=20, choices=[('cash', 'Cash'), ('mobile', 'Mobile')])
     date_paiement = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="paiements_validation")
 
     def __str__(self):
         facture_num = self.facture.numero_facture if self.facture else "Aucune facture"
