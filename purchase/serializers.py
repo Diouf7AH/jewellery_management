@@ -25,5 +25,5 @@ class AchatSerializer(serializers.ModelSerializer):
     class Meta:
         model = Achat
 
-        fields = ['id',  'produits', 'fournisseur', 'montant_total_ht', 'montant_total_ttc']
+        fields = ['id', 'created_at',  'produits', 'fournisseur', 'montant_total_ht', 'montant_total_ttc']
         # fields = '__all__'

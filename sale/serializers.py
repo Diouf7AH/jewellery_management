@@ -181,7 +181,7 @@ class VenteDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Vente
-        fields = ['id', 'client', 'produits', 'vente', 'facture', 'montant_total', 'totaux']
+        fields = ['id', 'client', 'produits', 'vente', 'facture', 'montant_total', 'total_autres', 'totaux']
 
     def get_client(self, obj):
         client = obj.client
