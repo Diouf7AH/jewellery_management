@@ -3,7 +3,7 @@ import string
 import uuid
 
 from django.db import models
-
+from decimal import Decimal
 from store.models import Produit
 import datetime
 from django.core.validators import MinValueValidator
