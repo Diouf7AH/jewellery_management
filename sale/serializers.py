@@ -71,6 +71,8 @@ class ClientSerializer(serializers.ModelSerializer):
 
 
 class VenteProduitSerializer(serializers.ModelSerializer):
+    produit_nom = serializers.SerializerMethodField()
+    produit_slug = serializers.SerializerMethodField()
     # produit = ProduitSerializer()
     # prix_vente_grammes = serializers.DecimalField(max_digits=12, decimal_places=2)
     # remise = serializers.DecimalField(max_digits=5, decimal_places=2)
@@ -81,15 +83,22 @@ class VenteProduitSerializer(serializers.ModelSerializer):
         model = VenteProduit
         fields = [
             'produit',
+            'produit_nom',
             'vendor',
             'quantite',
             'prix_vente_grammes',
-            # 'tax',
+            'tax',
             'prix_ttc',
             'remise',
             'autres',
             'sous_total_prix_vente_ht',
         ]
+    
+    def get_produit_nom(self, obj):
+        return obj.produit.nom if obj.produit else None
+    
+    def get_produit_slug(self, obj):
+        return obj.produit.slug if obj.produit else None
 
 
 # class VenteProduitSerializer(serializers.ModelSerializer):
