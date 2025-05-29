@@ -84,6 +84,7 @@ class VenteProduitSerializer(serializers.ModelSerializer):
         fields = [
             'produit',
             'produit_nom',
+            'produit_slug',
             'vendor',
             'quantite',
             'prix_vente_grammes',
