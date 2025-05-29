@@ -262,7 +262,7 @@ class Produit(models.Model):
             try:
                 qr_content = self.produit_url
                 qr_file = self.generate_qr_code_image(qr_content)
-                self.qr_code.save(qr_file.name, qr_file, save=False)
+                self.qr_code.save(qr_file.name, qr_file, save=True)
             except Exception as e:
                 print(f"[QR ERROR] {e}")
             

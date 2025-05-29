@@ -13,10 +13,19 @@ class FournisseurSerializer(serializers.ModelSerializer):
 
 class AchatProduitSerializer(serializers.ModelSerializer):
     # produit = ProduitSerializer()
+    prix_achat_total_ttc = serializers.SerializerMethodField()
+    produit_nom = serializers.SerializerMethodField()
+    
     class Meta:
         model = AchatProduit
-        fields = ['id', 'produit', 'quantite', 'prix_achat_gramme', 'tax', 'sous_total_prix_achat']
+        fields = ['id', 'produit', 'produit_nom', 'quantite', 'prix_achat_gramme', 'tax', 'sous_total_prix_achat', 'prix_achat_total_ttc']
         read_only_fields = ['sous_total_prix_achat'] 
+        
+    def get_prix_achat_total_ttc(self, obj):
+        return obj.prix_achat_total_ttc
+    
+    def get_produit_nom(self, obj):
+        return obj.produit.nom if obj.produit else None
 
 
 class AchatSerializer(serializers.ModelSerializer):
