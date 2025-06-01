@@ -1,5 +1,6 @@
 import threading
 from django.core.mail import EmailMessage
+import logging
 
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
 from django.core.mail import EmailMultiAlternatives
@@ -7,7 +8,12 @@ from django.template.loader import render_to_string
 from django.urls import reverse
 from django.conf import settings
 from datetime import datetime
+from django.dispatch import receiver
 from django.utils.html import strip_tags
+from django.core.mail import EmailMultiAlternatives
+from django_rest_passwordreset.signals import reset_password_token_created
+
+logger = logging.getLogger(__name__)
 
 # class EmailThread(threading.Thread):
 
@@ -127,13 +133,14 @@ def send_confirmation_email(user, request):
     email.send()
 
 
-def send_password_reset_email(reset_password_token):
+@receiver(reset_password_token_created)
+def send_password_reset_email(sender, instance, reset_password_token, *args, **kwargs):
     sitelink = getattr(settings, "FRONTEND_URL", "http://localhost:5173/")
-    full_link = f"{sitelink}password-reset/{reset_password_token.key}"
+    full_link = f"{sitelink.rstrip('/')}/password-reset/{reset_password_token.key}"
 
     context = {
         'full_link': full_link,
-        'email_adress': reset_password_token.user.email
+        'email_address': reset_password_token.user.email,
     }
 
     html_message = render_to_string("backend/email.html", context=context)
@@ -147,7 +154,33 @@ def send_password_reset_email(reset_password_token):
             to=[reset_password_token.user.email]
         )
         msg.attach_alternative(html_message, "text/html")
-        msg.send()
-        print("Email envoyé avec succès.")
+        msg.send(fail_silently=False)
+        logger.info("Email de réinitialisation envoyé.")
     except Exception as e:
-        print(f"Erreur d'envoi de l'email : {e}")
+        logger.error(f"Erreur d'envoi de l'email de réinitialisation : {e}")
+
+
+# def send_password_reset_email(reset_password_token):
+#     sitelink = getattr(settings, "FRONTEND_URL", "http://localhost:5173/")
+#     full_link = f"{sitelink}password-reset/{reset_password_token.key}"
+
+#     context = {
+#         'full_link': full_link,
+#         'email_adress': reset_password_token.user.email
+#     }
+
+#     html_message = render_to_string("backend/email.html", context=context)
+#     plain_message = strip_tags(html_message)
+
+#     try:
+#         msg = EmailMultiAlternatives(
+#             subject="Réinitialisation de votre mot de passe",
+#             body=plain_message,
+#             from_email=settings.DEFAULT_FROM_EMAIL,
+#             to=[reset_password_token.user.email]
+#         )
+#         msg.attach_alternative(html_message, "text/html")
+#         msg.send()
+#         print("Email envoyé avec succès.")
+#     except Exception as e:
+#         print(f"Erreur d'envoi de l'email : {e}")
