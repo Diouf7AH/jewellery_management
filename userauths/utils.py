@@ -135,7 +135,7 @@ def send_confirmation_email(user, request):
 
 @receiver(reset_password_token_created)
 def send_password_reset_email(sender, instance, reset_password_token, *args, **kwargs):
-    sitelink = getattr(settings, "FRONTEND_URL", "http://localhost:5173/")
+    sitelink = getattr(settings, "FRONTEND_URL", "https://rio-gold.com/")
     full_link = f"{sitelink.rstrip('/')}/password-reset/{reset_password_token.key}"
 
     context = {
