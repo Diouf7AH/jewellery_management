@@ -6,11 +6,11 @@ from .models import Vendor, VendorProduit
 # Register your models here.
 @admin.register(Vendor)
 class VendorAdmin(admin.ModelAdmin):
-    list_display = ('user', 'bijouterie', 'verifie', 'raison_desactivation')
+    list_display = ('id', 'user', 'bijouterie', 'verifie', 'raison_desactivation')
     list_editable = ('raison_desactivation',)  # 👈 rend le champ modifiable directement dans la liste
     list_filter = ('verifie',)
     search_fields = ('user__email', 'user__first_name', 'user__last_name')
-    fields = ('id', 'user', 'bijouterie', 'verifie', 'raison_desactivation', 'description')  # 👈 dans la fiche détaillée
+    fields = ('user', 'bijouterie', 'verifie', 'raison_desactivation', 'description')  # 👈 dans la fiche détaillée
 
 
 @admin.register(VendorProduit)

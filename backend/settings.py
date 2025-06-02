@@ -220,6 +220,7 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # password_reset
+FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:5173/")
 # FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173/')
 # DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@rio-gold.com')
 

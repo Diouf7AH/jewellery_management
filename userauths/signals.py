@@ -5,4 +5,4 @@ from userauths.utils import send_password_reset_email  # ← import depuis utils
     
 @receiver(reset_password_token_created)
 def password_reset_token_created_handler(sender, instance, reset_password_token, *args, **kwargs):
-    send_password_reset_email(reset_password_token)
+    send_password_reset_email(sender, instance, reset_password_token, *args, **kwargs)
