@@ -227,3 +227,8 @@ FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:5173/")
 # SECURE_SSL_REDIRECT = True
 # SESSION_COOKIE_SECURE = True
 # CSRF_COOKIE_SECURE = True
+
+# changer le montant minimum du dépôt sans modifier le code source
+COMPTE_SOLDE_MINIMUM = 5000  # montant en FCFA
+DEPOT_MINIMUM = 5000  # Montant minimal pour un dépôt
+RETRAIT_MINIMUM = 5000  # Retrait minimal pour un compte

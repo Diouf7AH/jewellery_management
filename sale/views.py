@@ -10,7 +10,6 @@ from django.template.loader import render_to_string
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
-from rest_framework import status
 # import phonenumbers
 # from phonenumbers import PhoneNumber
 from rest_framework.exceptions import NotFound

@@ -1,23 +1,48 @@
 from django.db import models
 from userauths.models import User
 from sale.models import Client
+from django.conf import settings
 
 # Create your models here.
 class ClientBanque(Client):
-    # telephone = models.CharField(max_length=100, unique=True)
     CNI = models.CharField(max_length=100, blank=True, null=True)
+    address = models.CharField(max_length=255, null=True, blank=True)
     photo = models.ImageField(upload_to='client/', default="client.jpg", null=True, blank=True)    
 
 class CompteBancaire(models.Model):
-    client_banque  = models.ForeignKey('ClientBanque', on_delete=models.SET_NULL, null=True, blank=True, related_name="client_banque")
-    # user = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'client'})
-    numero_compte = models.CharField(max_length=20, unique=True)
+    client = models.ForeignKey('ClientBanque', on_delete=models.SET_NULL, null=True, blank=True, related_name="client_banque")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True,blank=True,related_name='comptes_crees')
+    numero_compte = models.CharField(max_length=50, unique=True)
     solde = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     date_creation = models.DateTimeField(auto_now_add=True)
+    
+    def __str__(self):
+        return f"{self.numero_compte} - {self.client.nom_complet() if self.client else 'Sans client'}"
 
 class Transaction(models.Model):
-    compte = models.ForeignKey(CompteBancaire, on_delete=models.CASCADE, related_name='transactions')
-    type_transaction = models.CharField(max_length=10, choices=(("Depot", "Dépôt"), ("Retrait", "Retrait")))
-    montant = models.DecimalField(max_digits=12, decimal_places=2)
+    TYPE_CHOICES = (
+        ("Depot", "Dépôt"),
+        ("Retrait", "Retrait"),
+    )
+
+    STATUT_CHOICES = (
+        ("Terminé", "Terminé"),
+        ("Échoué", "Échoué"),
+        ("En attente", "En attente"),
+    )
+
+    compte = models.ForeignKey( CompteBancaire,on_delete=models.CASCADE,related_name='transactions')
+    type_transaction = models.CharField(max_length=10,choices=TYPE_CHOICES)
+    montant = models.DecimalField(max_digits=12,decimal_places=2)
     date_transaction = models.DateTimeField(auto_now_add=True)
-    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True,blank=True,related_name='transactions_effectuees')
+    statut = models.CharField(max_length=20,choices=STATUT_CHOICES,default="Terminé")
+    # commentaire = models.TextField(null=True,blank=True,help_text="Optionnel : commentaire ou note liée à la transaction")
+
+    class Meta:
+        ordering = ['-date_transaction']
+        verbose_name = "Transaction"
+        verbose_name_plural = "Transactions"
+
+    def __str__(self):
+        return f"{self.type_transaction} de {self.montant} FCFA sur {self.compte.numero_compte}"

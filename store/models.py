@@ -207,7 +207,6 @@ class Produit(models.Model):
     date_ajout = models.DateTimeField(auto_now_add=True) 
     date_modification = models.DateTimeField(auto_now=True) 
     
-    
     def skuGet(self):
         champs = [self.categorie, self.modele, self.marque, self.poids, self.taille, self.purete, self.etat]
         if not all(champs):
@@ -236,40 +235,57 @@ class Produit(models.Model):
         img.save(buffer, format='PNG')
         buffer.seek(0)
         return File(buffer, name=f'qr_{safe_name}.png')
+    
+    def regenerate_qr_code(self):
+        try:
+            qr_content = self.produit_url
+            qr_file = self.generate_qr_code_image(qr_content)
+            self.qr_code.save(qr_file.name, qr_file, save=True)
+            return True
+        except Exception as e:
+            print(f"[QR ERROR] {e}")
+            return False
 
     def save(self, *args, **kwargs):
+        self.full_clean()  # 🔁 Appelle clean() et valide les champs
         is_new = self.pk is None
+        generer_qr = False
 
-        # Nom automatique
         if not self.nom and self.categorie and self.modele and self.marque:
             self.nom = f'{self.categorie} {self.modele} {self.marque}'
 
-        # Slug automatique
         if not self.slug:
             base_slug = slugify(self.nom or "produit")
             self.slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
+            generer_qr = True  # 🔄 Générer QR uniquement si nouveau slug
 
-        # SKU automatique
         if not self.sku:
             sku = self.skuGet()
             if sku:
                 self.sku = sku
 
-        super().save(*args, **kwargs)  # ID nécessaire avant QR
+        super().save(*args, **kwargs)
 
-        # QR Code automatique
-        if not self.qr_code and self.slug:
+        if not self.qr_code and generer_qr:
             try:
                 qr_content = self.produit_url
                 qr_file = self.generate_qr_code_image(qr_content)
-                self.qr_code.save(qr_file.name, qr_file, save=True)
+                self.qr_code.save(qr_file.name, qr_file, save=False)
+                super().save(update_fields=["qr_code"])  # ✅ évite double save complet
             except Exception as e:
                 print(f"[QR ERROR] {e}")
-            
+                
     @property
     def produit_url(self):
         base_url = getattr(settings, 'SITE_URL', 'https://www.rio-gold.com')
         return f"{base_url}/produit/{self.slug}" if self.slug else None
+    
+    def clean(self):
+        if self.poids < 0:
+            raise ValidationError("Le poids ne peut pas être négatif.")
+        if self.taille is not None and self.taille < 0:
+            raise ValidationError("La taille ne peut pas être négative.")
+    
     
     # Achiffage admin.py
     def qr_code_url(self):

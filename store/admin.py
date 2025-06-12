@@ -32,10 +32,16 @@ class MarqueAdmin(admin.ModelAdmin):
     exclude = ('creation_date', 'modification_date',)
     search_fields = ('categorie',)
 
+@admin.action(description="Regénérer le QR Code")
+def regenerer_qr_code_action(modeladmin, request, queryset):
+    for produit in queryset:
+        produit.regenerate_qr_code()
 
+# pouvoir regénérer un QR code manuellement depuis l’admin Django
 @admin.register(Produit)
 class ProduitAdmin(admin.ModelAdmin):
-    list_display = ('id', 'slug', 'nom', 'categorie', 'marque', 'modele', 'poids', 'taille', 'qr_code_url')
+    list_display = ('id', 'slug', 'nom', 'categorie', 'marque', 'modele', 'poids', 'taille', 'sku', 'qr_code_url')
+    actions = [regenerer_qr_code_action]
     # readonly_fields = ('affiche_qr_code',)
 
     # def affiche_qr_code(self, obj):
@@ -44,6 +50,7 @@ class ProduitAdmin(admin.ModelAdmin):
     #     return "Pas de QR code"
 
     # affiche_qr_code.short_description = "QR Code"
+    
 
 @admin.register(Gallery)
 class GalleryAdmin(admin.ModelAdmin):

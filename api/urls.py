@@ -12,6 +12,7 @@ from stock import views as stock_views
 # Produits & structure
 from store import views as store_views
 from vendor import views as vendor_views
+from banque import views as banque_views
 
 urlpatterns = [
     
@@ -143,8 +144,15 @@ urlpatterns = [
     path('facture/recherche-facture/<str:numero_facture>', sale_views.RechercherFactureView.as_view(), name='Recherche-facture-par-numero'),
     path('facture/List-factures-a-payer', sale_views.ListFactureView.as_view(), name='list-factures-a-payer'),
     path('facture/paiement-facture/<str:facture_numero>', sale_views.PaiementFactureView.as_view(), name='Paiement-facture-par-numero'),
-    
     # END STOCK
+    
+    # BANK
+    path('banque/lister-tous-comptes-depot', banque_views.ListerTousComptesAPIView.as_view(), name='lister-tous-comptes-depot'),
+    path('banque/client-compte-depot/create/', banque_views.CreateClientAndCompteView.as_view(), name='create-client-compte-depot'),
+    path('banque/get-sold-view', banque_views.GetSoldeAPIView.as_view(), name='get-sold-view'),
+    path('banque/depot-view', banque_views.DepotView.as_view(), name='depot-view'),
+    path('banque/retrait-view', banque_views.RetraitView.as_view(), name='retrait-view'),
+    # END BANK
     
     # path('', include('userauths.urls')),
     # path('', include('store.urls')),
