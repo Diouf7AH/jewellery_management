@@ -12,6 +12,8 @@ from rest_framework.views import APIView
 from django.db.models import Q
 from backend.renderers import UserRenderer
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import Sum
+
 
 from store.models import Produit, Bijouterie
 from userauths.models import Role
@@ -26,7 +28,6 @@ from .serializer import (VendorProduitSerializer, VendorSerializer, CreateVendor
                         VendorUpdateStatusSerializer)
 
 from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
-from django.db.models import Sum
 
 # Create your views here.
 User = get_user_model()
@@ -1057,64 +1058,4 @@ class VendorProduitAssociationAPIView(APIView):
 
 #         except Vendor.DoesNotExist:
 #             return Response({"error": "Vendor not found."}, status=status.HTTP_404_NOT_FOUND)
-
-
-class RapportVentesMensuellesPDFView(APIView):
-    renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
-    allowed_roles_admin_manager = ['admin', 'manager'] 
-
-    def get(self, request):
-        # allowed_roles = ['admin', 'manager']
-        # user_role = getattr(request.user.user_role, 'role', None)
-
-        # if user_role not in allowed_roles:
-        #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        
-        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        
-        mois = request.GET.get('mois', now().strftime('%Y-%m'))  # Format: "2025-04"
-        vendor_id = request.GET.get('vendor_id')
-
-        # Parse les dates
-        try:
-            annee, mois_num = map(int, mois.split('-'))
-        except ValueError:
-            return Response({"detail": "Format de mois invalide. Exemple attendu : 2025-04"}, status=400)
-
-        ventes = VenteProduit.objects.filter(
-            vente__created_at__year=annee,
-            vente__created_at__month=mois_num
-        )
-
-        if vendor_id:
-            vendor = get_object_or_404(Vendor, id=vendor_id)
-            ventes = ventes.filter(produit__in=vendor.vendor_produits.values('produit'))
-            vendeur_nom = f"{vendor.user.first_name} {vendor.user.last_name}"
-        else:
-            vendeur_nom = "Tous les vendeurs"
-
-        montant_total = ventes.aggregate(total=Sum('sous_total_prix_vent'))['total'] or 0
-
-        context = {
-            'mois': mois,
-            'vendeur': vendeur_nom,
-            'ventes': [{
-                'date': v.vente.created_at.strftime('%d/%m/%Y'),
-                'produit': v.produit.nom,
-                'quantite': v.quantite,
-                'montant': v.sous_total_prix_vent
-            } for v in ventes],
-            'total_ventes': ventes.count(),
-            'montant_total': montant_total
-        }
-
-        html = render_to_string("reports/rapport_ventes.html", context)
-        pdf_file = BytesIO()
-        HTML(string=html).write_pdf(pdf_file)
-
-        response = HttpResponse(pdf_file.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="rapport_ventes_{mois}.pdf"'
-        return response
 

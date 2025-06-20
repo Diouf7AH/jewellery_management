@@ -30,7 +30,6 @@ urlpatterns = [
     # Pour un admin qui consulte un vendeur par ID
     path('vendor/<int:user_id>/', vendor_views.VendorProfileView.as_view(), name='admin-vendor-view'),
     path('vendor/<int:user_id>/toggle-status/', vendor_views.ToggleVendorStatusView.as_view(), name='toggle-vendor-status'),
-    path('api/ventes/rapport-pdf/', vendor_views.RapportVentesMensuellesPDFView.as_view(), name='rapport-ventes-pdf'),
     
     # path('register', userauths_views.UserRegistrationView.as_view(), name='register'),
     path('login', userauths_views.UserLoginView.as_view(), name='login'),
@@ -141,6 +140,7 @@ urlpatterns = [
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
     
     path('vente/list-produit', sale_views.VentListAPIView.as_view(), name='vente-produit-list'),
+    path('vente/rapport-mensuel/', sale_views.RapportVentesMensuelAPIView.as_view(), name='rapport-ventes-mensuel'),
     
     path('facture/recherche-facture/<str:numero_facture>', sale_views.RechercherFactureView.as_view(), name='Recherche-facture-par-numero'),
     path('facture/List-factures-a-payer', sale_views.ListFactureView.as_view(), name='list-factures-a-payer'),

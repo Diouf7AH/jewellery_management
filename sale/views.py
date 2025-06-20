@@ -28,6 +28,13 @@ from store.models import Produit
 from vendor.models import Vendor, VendorProduit
 from decimal import Decimal, InvalidOperation
 
+from django.db.models import Sum
+from django.utils.timezone import now
+from django.shortcuts import get_object_or_404
+
+from sale.models import VenteProduit
+from vendor.models import Vendor
+
 # #PDF
 # pip install weasyprint
 # from django.template.loader import render_to_string
@@ -1703,3 +1710,71 @@ class VentListAPIView(APIView):
     #     response['Content-Disposition'] = f'attachment; filename="facture_{facture.numero_facture}.pdf"'
 
     #     return response
+
+
+class RapportVentesMensuelAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+    allowed_roles = ['admin', 'manager']
+
+    @swagger_auto_schema(
+        operation_description="Rapport des ventes mensuelles, avec option de filtrage par téléphone du vendeur.",
+        manual_parameters=[
+            openapi.Parameter(
+                'mois', openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description="Mois à filtrer au format YYYY-MM (ex: 2025-06)",
+                required=False
+            ),
+            openapi.Parameter(
+                'vendor_telephone', openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description="Téléphone exact du vendeur à filtrer",
+                required=False
+            ),
+        ],
+        responses={200: openapi.Response(description="Rapport JSON des ventes mensuelles")}
+    )
+    def get(self, request):
+        user_role = getattr(request.user.user_role, 'role', None)
+        if user_role not in self.allowed_roles:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        mois = request.GET.get('mois', now().strftime('%Y-%m'))
+        vendor_telephone = request.GET.get('vendor_telephone')
+
+        try:
+            annee, mois_num = map(int, mois.split('-'))
+        except ValueError:
+            return Response({"detail": "Format de mois invalide. Format attendu : YYYY-MM"}, status=400)
+
+        ventes = VenteProduit.objects.filter(
+            vente__created_at__year=annee,
+            vente__created_at__month=mois_num
+        )
+
+        vendeur_nom = "Tous les vendeurs"
+        if vendor_telephone:
+            vendor = get_object_or_404(Vendor, user__telephone=vendor_telephone)
+            ventes = ventes.filter(produit__in=vendor.vendor_produits.values('produit'))
+            vendeur_nom = f"{vendor.user.first_name} {vendor.user.last_name}".strip()
+
+        montant_total = ventes.aggregate(total=Sum('sous_total_prix_vent'))['total'] or 0
+
+        ventes_list = [
+            {
+                "date": v.vente.created_at.strftime("%Y-%m-%d"),
+                "produit": v.produit.nom,
+                "quantite": v.quantite,
+                "montant": float(v.sous_total_prix_vent),
+            }
+            for v in ventes
+        ]
+
+        return Response({
+            "mois": mois,
+            "vendeur": vendeur_nom,
+            "total_ventes": ventes.count(),
+            "montant_total": float(montant_total),
+            "ventes": ventes_list
+        }, status=200)
+
