@@ -60,7 +60,8 @@ INSTALLED_APPS = [
     'vendor',
     'employee',
     'purchase',
-    'banque',
+    'compte_depot',
+    'order',
     
     #Third Party App
     'rest_framework',

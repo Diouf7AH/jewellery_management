@@ -28,11 +28,20 @@ class Client(models.Model):
 # Vente (Sale) Model
 class Vente(models.Model):
     numero_vente = models.CharField(max_length=30, unique=True, editable=False, blank=True, null=True)
-    client = models.ForeignKey('Client', on_delete=models.SET_NULL, null=True, blank=True, related_name="ventes")
+    client = models.ForeignKey('sale.Client', on_delete=models.SET_NULL, null=True, blank=True, related_name="ventes")
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="ventes_creees")
     created_at = models.DateTimeField(auto_now_add=True)
     montant_total = models.DecimalField(default=0.00, null=True, max_digits=12, decimal_places=2)
-
+    # (champ optionnel)
+    # explication
+    # Vente directe -> Le client achète directement -> la commande_source est null
+    # Vente issue d’une commande -> La commande est validée → vente -> commande
+    # Avantages
+    # Tu peux gérer les deux cas (avec ou sans commande) facilement.
+    # Tu peux suivre le cycle : commande → vente, ou vente directe.
+    # Tu peux afficher l’historique du client complet : ventes + commandes.
+    commande_source = models.ForeignKey('order.CommandeClient', on_delete=models.SET_NULL, null=True, blank=True,related_name='commend_en_ventes')
+    
     def __str__(self):
         return f"Vente #{self.numero_vente or 'N/A'} - Client: {self.client.full_name if self.client else 'Inconnu'} - {self.created_at.strftime('%d/%m/%Y')}"
 
@@ -107,7 +116,7 @@ class VenteProduit(models.Model):
     prix_ttc = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12)
     remise = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Discount", null=True, blank=True)
     autres = models.DecimalField(default=0.00, decimal_places=2, max_digits=5, help_text="Additional info")
-
+    
     def save(self, *args, **kwargs):
         prix_base = self.prix_vente_grammes * self.quantite
         remise_valeur = self.remise or Decimal('0.00')     # remise en FCFA

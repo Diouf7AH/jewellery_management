@@ -120,6 +120,15 @@ class UserChangePasswordSerializer(serializers.ModelSerializer):
         return instance
 
 
+class UserMiniSerializer(serializers.ModelSerializer):
+    fullname = serializers.SerializerMethodField()
+    class Meta:
+        model = User
+        fields = ['id', 'fullname']
+
+    def get_fullname(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip()
+        
 
 class UserDetailSerializer(serializers.ModelSerializer):
     class Meta:
@@ -161,4 +170,5 @@ class ProfileSerializer(serializers.ModelSerializer):
         response = super().to_representation(instance)
         response['user'] = UserSerializer(instance.user).data
         return response
+
 

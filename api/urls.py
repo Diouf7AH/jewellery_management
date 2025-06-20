@@ -12,7 +12,8 @@ from stock import views as stock_views
 # Produits & structure
 from store import views as store_views
 from vendor import views as vendor_views
-from banque import views as banque_views
+from compte_depot import views as compte_depot_views
+from order import views as order_views
 
 urlpatterns = [
     
@@ -147,12 +148,18 @@ urlpatterns = [
     # END STOCK
     
     # BANK
-    path('banque/lister-tous-comptes-depot', banque_views.ListerTousComptesAPIView.as_view(), name='lister-tous-comptes-depot'),
-    path('banque/client-compte-depot/create/', banque_views.CreateClientAndCompteView.as_view(), name='create-client-compte-depot'),
-    path('banque/get-sold-view', banque_views.GetSoldeAPIView.as_view(), name='get-sold-view'),
-    path('banque/depot-view', banque_views.DepotView.as_view(), name='depot-view'),
-    path('banque/retrait-view', banque_views.RetraitView.as_view(), name='retrait-view'),
+    path('compte-depot/lister-tous-comptes-depot', compte_depot_views.ListerTousComptesAPIView.as_view(), name='lister-tous-comptes-depot'),
+    path('compte-depot/Lister-toutes-transactions', compte_depot_views.ListerToutesTransactionsAPIView.as_view(), name='Lister-toutes-transactions'),
+    path('compte-depot/client-compte-depot/create/', compte_depot_views.CreateClientAndCompteView.as_view(), name='create-client-compte-depot'),
+    path('compte-depot/get-sold-view', compte_depot_views.GetSoldeAPIView.as_view(), name='get-sold-view'),
+    path('compte-depot/depot-view', compte_depot_views.DepotView.as_view(), name='depot-view'),
+    path('compte-depot/retrait-view', compte_depot_views.RetraitView.as_view(), name='retrait-view'),
     # END BANK
+    
+    path('commande-client/create/', order_views.CreateCommandeClientView.as_view(), name='create-commande-client'),
+    path('commandes/', order_views.ListCommandeClientView.as_view(), name='liste-commandes'),
+    path('commandes/<str:numero_commande>/modifier/', order_views.UpdateCommandeByNumeroView.as_view(), name='modifier-commande-par-numero'),
+    path('commandes/<str:numero_commande>/changer-statut/', order_views.ChangeCommandeStatusView.as_view(), name='changer-statut-commande'),
     
     # path('', include('userauths.urls')),
     # path('', include('store.urls')),
