@@ -84,6 +84,11 @@ urlpatterns = [
     path('modele/create', store_views.ModeleCreateAPIView.as_view(), name='modele_create'),
     path('modele/update/<int:pk>', store_views.ModeleUpdateAPIView.as_view(), name='modele_put'),
     path('modele/delete/<int:pk>', store_views.ModeleDeleteAPIView.as_view(), name='modele_delete'),
+    
+    # selecte option
+    path('marques-par-categorie/', store_views.MarqueParCategorieAPIView.as_view(), name='marques-par-categorie'),
+    path('modeles-par-marque/', store_views.ModeleParMarqueAPIView.as_view(), name='modeles-par-marque'),
+    
     # Product
     path('produit/list/', store_views.ProduitListAPIView.as_view(), name='product_list'),
     path('produit/create', store_views.ProduitCreateAPIView.as_view(), name='product_create'),

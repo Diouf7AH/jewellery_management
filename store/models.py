@@ -126,23 +126,6 @@ class Categorie(models.Model):
 #         return self.type
 
 
-# Type model
-class Modele(models.Model):
-    modele = models.CharField(max_length=55, unique=True, null=True)
-    categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_categorie")
-    
-    
-    def __str__(self):
-        # Affiche : "Bague (Catégorie: Bijoux)" ou "Bague (Catégorie: Aucune)"
-        return f"{self.modele} (Catégorie: {self.categorie.nom if self.categorie else 'Aucune'})"
-
-    @property
-    def categorie_id(self):
-        # Permet d'accéder à modele.categorie_id directement (int ou None)
-        return self.categorie.id if self.categorie else None
-
-
-
 # Purity model
 class Purete(models.Model):
     # purete = models.IntegerField()
@@ -155,7 +138,8 @@ class Purete(models.Model):
 # Brand model
 class Marque(models.Model):
     marque = models.CharField(unique=True, max_length=25, null=True, blank=True)
-    purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="purete_marque", default=get_default_purete)
+    categorie = models.ForeignKey('Categorie',on_delete=models.SET_NULL,null=True,blank=True,related_name='marques_categorie')
+    purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="marques_purete", default=get_default_purete)
     prix = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
     creation_date = models.DateTimeField(auto_now_add=True)
     modification_date = models.DateTimeField(auto_now=True)
@@ -170,7 +154,22 @@ class Marque(models.Model):
     
     def __str__(self):
         return f"{self.marque} - {self.purete.purete if self.purete else 'N/A'}"
+
+
+# Type model
+class Modele(models.Model):
+    modele = models.CharField(max_length=55, unique=True, null=True)
+    # categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_categorie")
+    marque = models.ForeignKey(Marque, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_marque")
     
+    def __str__(self):
+        # Affiche : "Bague (Catégorie: Bijoux)" ou "Bague (Catégorie: Aucune)"
+        return f"{self.modele} (Catégorie: {self.categorie.nom if self.categorie else 'Aucune'})"
+
+    @property
+    def categorie_id(self):
+        # Permet d'accéder à modele.categorie_id directement (int ou None)
+        return self.categorie.id if self.categorie else None
 
 # # Model model
 # class Model(models.Model):

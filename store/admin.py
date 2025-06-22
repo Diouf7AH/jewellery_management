@@ -22,15 +22,15 @@ class PureteAdmin(admin.ModelAdmin):
     
 @admin.register(Modele)
 class ModeleAdmin(admin.ModelAdmin):
-    list_display = ('id','modele', 'categorie',)
-    search_fields = ('categorie',)
+    list_display = ('id','modele', 'marque',)
+    search_fields = ('modele',)
     
 
 @admin.register(Marque)
 class MarqueAdmin(admin.ModelAdmin):
     list_display = ('marque', 'purete', 'prix',)
     exclude = ('creation_date', 'modification_date',)
-    search_fields = ('categorie',)
+    search_fields = ('marque',)
 
 @admin.action(description="Regénérer le QR Code")
 def regenerer_qr_code_action(modeladmin, request, queryset):
