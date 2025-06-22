@@ -233,14 +233,80 @@ class CategorieCreateAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 
-class CategorieUpdateAPIView(APIView):
+# class CategorieUpdateAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+#     parser_classes = (FormParser, MultiPartParser, FileUploadParser)
+
+#     def get_object(self, pk):
+#         try:
+#             return Categorie.objects.get(pk=pk)
+#         except Categorie.DoesNotExist:
+#             return None
+
+#     def has_access(self, user):
+#         return user.user_role and user.user_role.role in ['admin', 'manager']
+
+#     @swagger_auto_schema(
+#         operation_summary="Modifier une catégorie (PUT)",
+#         operation_description="Remplace complètement une catégorie existante.",
+#         request_body=CategorieSerializer,
+#         responses={
+#             200: openapi.Response("Catégorie mise à jour avec succès", CategorieSerializer),
+#             400: "Erreur de validation",
+#             403: "Accès refusé",
+#             404: "Catégorie non trouvée"
+#         }
+#     )
+#     def put(self, request, pk):
+#         if not self.has_access(request.user):
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         categorie = self.get_object(pk)
+#         if not categorie:
+#             return Response({"message": "Catégorie non trouvée"}, status=status.HTTP_404_NOT_FOUND)
+
+#         serializer = CategorieSerializer(categorie, data=request.data)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data, status=status.HTTP_200_OK)
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+#     @swagger_auto_schema(
+#         operation_summary="Modifier partiellement une catégorie (PATCH)",
+#         operation_description="Met à jour partiellement les champs d'une catégorie existante.",
+#         request_body=CategorieSerializer,
+#         responses={
+#             200: openapi.Response("Catégorie mise à jour avec succès", CategorieSerializer),
+#             400: "Erreur de validation",
+#             403: "Accès refusé",
+#             404: "Catégorie non trouvée"
+#         }
+#     )
+#     def patch(self, request, pk):
+#         if not self.has_access(request.user):
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         categorie = self.get_object(pk)
+#         if not categorie:
+#             return Response({"message": "Catégorie non trouvée"}, status=status.HTTP_404_NOT_FOUND)
+
+#         serializer = CategorieSerializer(categorie, data=request.data, partial=True)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data, status=status.HTTP_200_OK)
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+
+
+class CategorieUpdateByNameAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
     parser_classes = (FormParser, MultiPartParser, FileUploadParser)
 
-    def get_object(self, pk):
+    def get_object(self, nom):
         try:
-            return Categorie.objects.get(pk=pk)
+            return Categorie.objects.get(nom__iexact=nom)
         except Categorie.DoesNotExist:
             return None
 
@@ -248,8 +314,15 @@ class CategorieUpdateAPIView(APIView):
         return user.user_role and user.user_role.role in ['admin', 'manager']
 
     @swagger_auto_schema(
-        operation_summary="Modifier une catégorie (PUT)",
-        operation_description="Remplace complètement une catégorie existante.",
+        operation_summary="Remplacer une catégorie par son nom (PUT)",
+        operation_description="Remplace entièrement une catégorie identifiée par son nom.",
+        manual_parameters=[
+            openapi.Parameter(
+                'nom', openapi.IN_PATH,
+                description="Nom exact de la catégorie (insensible à la casse)",
+                type=openapi.TYPE_STRING
+            )
+        ],
         request_body=CategorieSerializer,
         responses={
             200: openapi.Response("Catégorie mise à jour avec succès", CategorieSerializer),
@@ -258,11 +331,11 @@ class CategorieUpdateAPIView(APIView):
             404: "Catégorie non trouvée"
         }
     )
-    def put(self, request, pk):
+    def put(self, request, nom):
         if not self.has_access(request.user):
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        categorie = self.get_object(pk)
+        categorie = self.get_object(nom)
         if not categorie:
             return Response({"message": "Catégorie non trouvée"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -273,21 +346,28 @@ class CategorieUpdateAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @swagger_auto_schema(
-        operation_summary="Modifier partiellement une catégorie (PATCH)",
-        operation_description="Met à jour partiellement les champs d'une catégorie existante.",
+        operation_summary="Mettre à jour partiellement une catégorie par son nom (PATCH)",
+        operation_description="Met à jour partiellement une catégorie identifiée par son nom.",
+        manual_parameters=[
+            openapi.Parameter(
+                'nom', openapi.IN_PATH,
+                description="Nom exact de la catégorie (insensible à la casse)",
+                type=openapi.TYPE_STRING
+            )
+        ],
         request_body=CategorieSerializer,
         responses={
-            200: openapi.Response("Catégorie mise à jour avec succès", CategorieSerializer),
+            200: openapi.Response("Catégorie mise à jour partiellement", CategorieSerializer),
             400: "Erreur de validation",
             403: "Accès refusé",
             404: "Catégorie non trouvée"
         }
     )
-    def patch(self, request, pk):
+    def patch(self, request, nom):
         if not self.has_access(request.user):
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        categorie = self.get_object(pk)
+        categorie = self.get_object(nom)
         if not categorie:
             return Response({"message": "Catégorie non trouvée"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -340,11 +420,11 @@ class PureteListAPIView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Lister les puretés",
-        operation_description="Retourne la liste de toutes les puretés, avec option de filtrage par valeur partielle (`?search=`).",
+        operation_description="Retourne la liste de toutes les puretés, avec option de filtrage par valeur partielle (`?purete=`).",
         manual_parameters=[
             openapi.Parameter(
-                'search', openapi.IN_QUERY,
-                description="Recherche partielle par valeur de pureté (ex: 18 ou 24K)",
+                'purete', openapi.IN_QUERY,
+                description="Recherche partielle par valeur de pureté (ex: 18 ou 21K)",
                 type=openapi.TYPE_STRING
             )
         ],
@@ -355,12 +435,13 @@ class PureteListAPIView(APIView):
         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        search = request.query_params.get('search', None)
-        queryset = Purete.objects.all()
-        if search:
-            queryset = queryset.filter(Q(purete__icontains=search))
+        search = request.query_params.get('purete')
+        puretes = Purete.objects.all()
 
-        serializer = PureteSerializer(queryset, many=True)
+        if search:
+            puretes = puretes.filter(purete__icontains=search)
+
+        serializer = PureteSerializer(puretes, many=True)
         return Response(serializer.data)
 
 

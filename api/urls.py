@@ -67,7 +67,8 @@ urlpatterns = [
     #Categorie
     path('categorie/list/', store_views.CategorieListAPIView.as_view(), name='categorie-list'),
     path('categorie/create', store_views.CategorieCreateAPIView.as_view(), name='categorie-create'),
-    path('categorie/update/<int:pk>', store_views.CategorieUpdateAPIView.as_view(), name='categorie_put'),
+    # path('categorie/update/<int:pk>', store_views.CategorieUpdateAPIView.as_view(), name='categorie_put'),
+    path('categorie/update-par-nom/<str:nom>/', store_views.CategorieUpdateByNameAPIView.as_view(), name='update_categorie_par_nom'),
     path('categorie/delete/<int:pk>', store_views.CategorieDeleteAPIView.as_view(), name='categorie_delete'),
     # Purete
     path('purete/list/', store_views.PureteListAPIView.as_view(), name='purete_list'),
