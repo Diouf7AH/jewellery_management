@@ -516,8 +516,9 @@ class RetraitView(APIView):
                 raise ValidationError(f"Le montant minimum de retrait est de {montant_minimum} FCFA.")
 
             with db_transaction.atomic():
-                compte = CompteDepot.objects.select_for_update().get(telephone=telephone)
-
+                # compte = CompteDepot.objects.select_for_update().get(telephone=telephone)
+                compte = CompteDepot.objects.select_for_update().get(client__telephone=telephone)
+                
                 if compte.solde < montant:
                     return Response({"error": "Solde insuffisant"}, status=status.HTTP_400_BAD_REQUEST)
 

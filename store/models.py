@@ -15,7 +15,7 @@ from django.dispatch import receiver
 from django.utils.text import slugify
 from django.utils import timezone
 from shortuuid.django_fields import ShortUUIDField
-
+from django.core.exceptions import ValidationError
 
 @receiver(post_migrate)
 def create_default_instances(sender, **kwargs):
