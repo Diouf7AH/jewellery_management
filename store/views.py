@@ -575,44 +575,15 @@ class PureteDeleteAPIView(APIView):
             return None
 
 
-# class MarqueListAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les marques",
-#         operation_description="Récupère la liste de toutes les marques disponibles.",
-#         manual_parameters=[
-#             openapi.Parameter('search', openapi.IN_QUERY, description="Filtrer par nom de marque", type=openapi.TYPE_STRING)
-#         ],
-#         responses={200: openapi.Response('Liste des marques', MarqueSerializer(many=True))}
-#     )
-#     def get(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         search_query = request.GET.get('search')
-#         marques = Marque.objects.all()
-
-#         if search_query:
-#             marques = marques.filter(marque__icontains=search_query)
-
-#         serializer = MarqueSerializer(marques, many=True)
-#         return Response(serializer.data, status=status.HTTP_200_OK)
-
-
 class MarqueListAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Lister les marques",
-        operation_description="Récupère la liste des marques avec filtres : nom, catégorie, pureté.",
+        operation_description="Récupère la liste de toutes les marques disponibles.",
         manual_parameters=[
-            openapi.Parameter('search', openapi.IN_QUERY, description="Filtrer par nom de marque", type=openapi.TYPE_STRING),
-            openapi.Parameter('categorie_id', openapi.IN_QUERY, description="Filtrer par ID de la catégorie", type=openapi.TYPE_INTEGER),
-            openapi.Parameter('purete_id', openapi.IN_QUERY, description="Filtrer par ID de la pureté", type=openapi.TYPE_INTEGER),
+            openapi.Parameter('search', openapi.IN_QUERY, description="Filtrer par nom de marque", type=openapi.TYPE_STRING)
         ],
         responses={200: openapi.Response('Liste des marques', MarqueSerializer(many=True))}
     )
@@ -622,20 +593,41 @@ class MarqueListAPIView(APIView):
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
         search_query = request.GET.get('search')
-        categorie_id = request.GET.get('categorie_id')
-        purete_id = request.GET.get('purete_id')
-
         marques = Marque.objects.all()
 
         if search_query:
             marques = marques.filter(marque__icontains=search_query)
-        if categorie_id:
-            marques = marques.filter(categorie_id=categorie_id)
-        if purete_id:
-            marques = marques.filter(purete_id=purete_id)
 
         serializer = MarqueSerializer(marques, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+# class MarqueListAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les marques",
+#         operation_description="Récupère la liste des marques avec filtres : nom, catégorie, pureté.",
+#         manual_parameters=[
+#             openapi.Parameter('search', openapi.IN_QUERY, description="Filtrer par nom de marque", type=openapi.TYPE_STRING),
+#         ],
+#         responses={200: openapi.Response('Liste des marques', MarqueSerializer(many=True))}
+#     )
+#     def get(self, request):
+#         user = request.user
+#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         search_query = request.GET.get('search')
+
+#         marques = Marque.objects.all()
+
+#         if search_query:
+#             marques = marques.filter(marque__icontains=search_query)
+
+#         serializer = MarqueSerializer(marques, many=True)
+#         return Response(serializer.data, status=status.HTTP_200_OK)
     
 
 # class MarqueCreateAPIView(APIView):
@@ -1528,7 +1520,36 @@ class ModeleParMarqueAPIView(APIView):
         modeles = Modele.objects.filter(marque=marque)
         serializer = ModeleSerializer(modeles, many=True)
         return Response(serializer.data)
-    
+
+
+# b. Lister les purete par marque
+class PureteParMarqueAPIView(APIView):
+    @swagger_auto_schema(
+        operation_summary="Lister les purete d'une marque (par purete)",
+        manual_parameters=[
+            openapi.Parameter(
+                'marque', openapi.IN_QUERY,
+                description="Nom exact de la marque",
+                type=openapi.TYPE_STRING,
+                required=True
+            ),
+        ],
+        responses={200: openapi.Response("Liste des purete", PureteSerializer(many=True))}
+    )
+    def get(self, request):
+        nom_marque = request.GET.get('marque')
+        if not nom_marque:
+            return Response({"error": "Le paramètre 'marque' est requis."}, status=400)
+
+        try:
+            marque = Marque.objects.get(marque__iexact=nom_marque)
+        except Marque.DoesNotExist:
+            return Response({"error": "Marque non trouvée."}, status=404)
+
+        puretes = Purete.objects.filter(marque=marque)
+        serializer = PureteSerializer(puretes, many=True)
+        return Response(serializer.data)
+
 
 class ProduitCreateAPIView(APIView):
     parser_classes = [MultiPartParser, FormParser]
