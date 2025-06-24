@@ -159,17 +159,16 @@ class Marque(models.Model):
 # Type model
 class Modele(models.Model):
     modele = models.CharField(max_length=55, unique=True, null=True)
-    # categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_categorie")
     marque = models.ForeignKey(Marque, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_marque")
     
     def __str__(self):
-        # Affiche : "Bague (Catégorie: Bijoux)" ou "Bague (Catégorie: Aucune)"
-        return f"{self.modele} (Catégorie: {self.categorie.nom if self.categorie else 'Aucune'})"
+        # Affiche : "Bague (marque: Nocal)" ou "Bague (Marque: Aucune)"
+        return f"{self.modele} (Marque: {self.marque.nom if self.marque else 'Aucune'})"
 
     @property
-    def categorie_id(self):
-        # Permet d'accéder à modele.categorie_id directement (int ou None)
-        return self.categorie.id if self.categorie else None
+    def marque_id(self):
+        # Permet d'accéder à modele.marque_id directement (int ou None)
+        return self.marque.id if self.marque else None
 
 # # Model model
 # class Model(models.Model):

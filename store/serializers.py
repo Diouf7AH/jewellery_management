@@ -58,7 +58,7 @@ class ModeleSerializer(serializers.ModelSerializer):
             return None
         return {
             "id": obj.marque.id,
-            "marque": obj.marque.nom,
+            "marque": obj.marque.marque,
             # "image": obj.marque.image.url if obj.marque.image else None,
         }
 
