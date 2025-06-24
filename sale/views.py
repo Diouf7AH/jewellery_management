@@ -513,32 +513,181 @@ from vendor.models import Vendor
 #             return Response({"detail": str(e)}, status=500)
 
 
+# class VenteProduitCreateView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer une vente avec produits, client et facture",
+#         operation_description="Créer une vente avec des produits associés (par QR code), mise à jour du stock, génération automatique de la facture. Un admin peut spécifier un `vendor_email`.",
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 'vendor_email',
+#                 openapi.IN_QUERY,
+#                 description="Email du vendeur (optionnel, requis si admin/manager veut vendre à la place d’un vendeur)",
+#                 type=openapi.TYPE_STRING
+#             )
+#         ],
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["produits"],
+#             properties={
+#                 "client": openapi.Schema(
+#                     type=openapi.TYPE_OBJECT,
+#                     properties={
+#                         "nom": openapi.Schema(type=openapi.TYPE_STRING, description="Nom du client"),
+#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING, description="Prénom du client"),
+#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000")
+#                     }
+#                 ),
+#                 "produits": openapi.Schema(
+#                     type=openapi.TYPE_ARRAY,
+#                     items=openapi.Schema(
+#                         type=openapi.TYPE_OBJECT,
+#                         required=["slug", "quantite"],
+#                         properties={
+#                             "slug": openapi.Schema(type=openapi.TYPE_STRING),
+#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "prix_vente_grammes": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                             "remise": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                             "autres": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                             "tax": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+#                         }
+#                     )
+#                 )
+#             }
+#         ),
+#         responses={201: "Création réussie", 400: "Requête invalide", 403: "Accès refusé", 500: "Erreur serveur"}
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         try:
+#             user = request.user
+#             role = getattr(user.user_role, 'role', None)
+#             if role not in ['admin', 'manager', 'vendor']:
+#                 return Response({"message": "Access Denied"}, status=403)
+
+#             data = request.data
+#             client_data = data.get('client')
+#             if not client_data or 'nom' not in client_data or 'prenom' not in client_data:
+#                 return Response({"error": "Les informations du client sont incomplètes."}, status=400)
+
+#             client, _ = Client.objects.get_or_create(
+#                 nom=client_data['nom'],
+#                 prenom=client_data['prenom'],
+#                 defaults={"telephone": client_data.get("telephone", "")}
+#             )
+
+#             vente = Vente.objects.create(client=client, created_by=user)
+#             vente_produits = []
+
+#             # 🔁 Vendor selection
+#             vendor_email = request.query_params.get('vendor_email')
+#             if role == 'vendor':
+#                 try:
+#                     vendor = Vendor.objects.get(user=user)
+#                 except Vendor.DoesNotExist:
+#                     return Response({"error": "Vous n'êtes pas associé à un compte vendeur."}, status=400)
+#             else:
+#                 if not vendor_email:
+#                     return Response({"error": "vendor_email est requis pour les admins et managers."}, status=400)
+#                 try:
+#                     vendor = Vendor.objects.select_related('user').get(user__email=vendor_email)
+#                 except Vendor.DoesNotExist:
+#                     return Response({"error": "Vendeur introuvable avec cet email."}, status=404)
+
+#             for item in data.get('produits', []):
+#                 slug = item['slug']
+#                 quantite = int(item.get('quantite', 0))
+#                 if quantite <= 0:
+#                     return Response({"error": f"Quantité invalide pour le produit {slug}."}, status=400)
+
+#                 try:
+#                     produit = Produit.objects.select_related('marque').get(slug=slug)
+#                 except Produit.DoesNotExist:
+#                     return Response({"error": f"Produit avec QR code {slug} introuvable."}, status=404)
+
+#                 try:
+#                     brut = item.get('prix_vente_grammes')
+#                     prix_vente_grammes = Decimal(str(brut)) if brut and Decimal(str(brut)) > 0 else Decimal(str(produit.marque.prix))
+#                 except (InvalidOperation, AttributeError, TypeError):
+#                     return Response({"error": f"Prix de vente invalide pour le produit {slug}."}, status=400)
+
+#                 remise = Decimal(str(item.get('remise') or 0))
+#                 autres = Decimal(str(item.get('autres') or 0))
+#                 tax = Decimal(str(item.get('tax') or 0))
+
+#                 try:
+#                     vendor_stock = VendorProduit.objects.get(produit=produit, vendor=vendor)
+#                 except VendorProduit.DoesNotExist:
+#                     return Response({"error": f"Produit {produit.nom} non disponible dans le stock du vendeur."}, status=400)
+
+#                 if vendor_stock.quantite < quantite:
+#                     return Response({
+#                         "error": f"Stock insuffisant pour {produit.nom}. Stock disponible : {vendor_stock.quantite}"
+#                     }, status=400)
+
+#                 vente_produit = VenteProduit(
+#                     vente=vente,
+#                     produit=produit,
+#                     quantite=quantite,
+#                     prix_vente_grammes=prix_vente_grammes,
+#                     remise=remise,
+#                     autres=autres,
+#                     tax=tax,
+#                     vendor=vendor
+#                 )
+#                 vente_produit.save()  # ✅ calcul automatique du HT/TTC ici
+#                 vente_produits.append(vente_produit)
+#                 vendor_stock.quantite -= quantite
+#                 vendor_stock.save()
+
+
+#             # ✅ Génération du numéro de facture
+#             numero = Facture.generer_numero_unique()
+#             facture = Facture.objects.create(
+#                 vente=vente,
+#                 montant_total=vente.montant_total,
+#                 numero_facture=numero
+#             )
+
+#             vente_detail = VenteDetailSerializer(vente)
+#             return Response(vente_detail.data, status=status.HTTP_201_CREATED)
+
+#         except Exception as e:
+#             transaction.set_rollback(True)
+#             return Response({"detail": str(e)}, status=500)
+
+
 class VenteProduitCreateView(APIView):
-    renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Créer une vente avec produits, client et facture",
-        operation_description="Créer une vente avec des produits associés (par QR code), mise à jour du stock, génération automatique de la facture. Un admin peut spécifier un `vendor_email`.",
+        operation_summary="Créer une vente (directe ou via commande)",
+        operation_description="Gère une vente directe ou issue d’une commande client.",
         manual_parameters=[
             openapi.Parameter(
                 'vendor_email',
                 openapi.IN_QUERY,
-                description="Email du vendeur (optionnel, requis si admin/manager veut vendre à la place d’un vendeur)",
+                description="Email du vendeur (obligatoire pour admin/manager)",
                 type=openapi.TYPE_STRING
             )
         ],
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=["produits"],
+            required=["produits", "client"],
             properties={
                 "client": openapi.Schema(
                     type=openapi.TYPE_OBJECT,
                     properties={
-                        "nom": openapi.Schema(type=openapi.TYPE_STRING, description="Nom du client"),
-                        "prenom": openapi.Schema(type=openapi.TYPE_STRING, description="Prénom du client"),
-                        "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000")
+                        "nom": openapi.Schema(type=openapi.TYPE_STRING),
+                        "prenom": openapi.Schema(type=openapi.TYPE_STRING),
+                        "telephone": openapi.Schema(type=openapi.TYPE_STRING),
                     }
+                ),
+                                "numero_commande": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    description="Numéro de la commande client source (optionnel)"
                 ),
                 "produits": openapi.Schema(
                     type=openapi.TYPE_ARRAY,
@@ -548,16 +697,16 @@ class VenteProduitCreateView(APIView):
                         properties={
                             "slug": openapi.Schema(type=openapi.TYPE_STRING),
                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
-                            "prix_vente_grammes": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-                            "remise": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-                            "autres": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-                            "tax": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
+                            "prix_vente_grammes": openapi.Schema(type=openapi.TYPE_NUMBER),
+                            "remise": openapi.Schema(type=openapi.TYPE_NUMBER),
+                            "autres": openapi.Schema(type=openapi.TYPE_NUMBER),
+                            "tax": openapi.Schema(type=openapi.TYPE_NUMBER),
                         }
                     )
                 )
             }
         ),
-        responses={201: "Création réussie", 400: "Requête invalide", 403: "Accès refusé", 500: "Erreur serveur"}
+        responses={201: "Création réussie", 400: "Erreur", 403: "Accès refusé"}
     )
     @transaction.atomic
     def post(self, request):
@@ -565,12 +714,12 @@ class VenteProduitCreateView(APIView):
             user = request.user
             role = getattr(user.user_role, 'role', None)
             if role not in ['admin', 'manager', 'vendor']:
-                return Response({"message": "Access Denied"}, status=403)
+                return Response({"message": "⛔ Accès refusé"}, status=403)
 
             data = request.data
             client_data = data.get('client')
-            if not client_data or 'nom' not in client_data or 'prenom' not in client_data:
-                return Response({"error": "Les informations du client sont incomplètes."}, status=400)
+            if not client_data:
+                return Response({"error": "Les informations du client sont requises."}, status=400)
 
             client, _ = Client.objects.get_or_create(
                 nom=client_data['nom'],
@@ -578,56 +727,65 @@ class VenteProduitCreateView(APIView):
                 defaults={"telephone": client_data.get("telephone", "")}
             )
 
-            vente = Vente.objects.create(client=client, created_by=user)
-            vente_produits = []
+            commande_source = None
+            numero_commande = data.get("numero_commande")
+            if commande_source:
+                from order.models import CommandeClient
+                try:
+                    commande_source = CommandeClient.objects.get(numero_commande=numero_commande)
+                except CommandeClient.DoesNotExist:
+                    return Response({"error": "Commande client source introuvable."}, status=404)
 
-            # 🔁 Vendor selection
-            vendor_email = request.query_params.get('vendor_email')
-            if role == 'vendor':
+            # 🔁 Vendor (vendeur concerné)
+            vendor_email = request.query_params.get("vendor_email")
+            if role == "vendor":
                 try:
                     vendor = Vendor.objects.get(user=user)
                 except Vendor.DoesNotExist:
-                    return Response({"error": "Vous n'êtes pas associé à un compte vendeur."}, status=400)
+                    return Response({"error": "Aucun compte vendeur lié."}, status=404)
             else:
                 if not vendor_email:
-                    return Response({"error": "vendor_email est requis pour les admins et managers."}, status=400)
+                    return Response({"error": "vendor_email requis pour admin/manager."}, status=400)
                 try:
-                    vendor = Vendor.objects.select_related('user').get(user__email=vendor_email)
+                    vendor = Vendor.objects.get(user__email=vendor_email)
                 except Vendor.DoesNotExist:
-                    return Response({"error": "Vendeur introuvable avec cet email."}, status=404)
+                    return Response({"error": "Vendeur introuvable."}, status=404)
 
-            for item in data.get('produits', []):
-                slug = item['slug']
-                quantite = int(item.get('quantite', 0))
-                if quantite <= 0:
-                    return Response({"error": f"Quantité invalide pour le produit {slug}."}, status=400)
+            vente = Vente.objects.create(
+                client=client,
+                created_by=user,
+                commande_source=commande_source
+            )
+
+            produits_data = data.get("produits", [])
+            if not produits_data:
+                return Response({"error": "Aucun produit fourni."}, status=400)
+
+            for item in produits_data:
+                slug = item.get("slug")
+                quantite = int(item.get("quantite", 0))
+                if not slug or quantite <= 0:
+                    return Response({"error": f"Produit ou quantité invalide : {slug}"}, status=400)
 
                 try:
-                    produit = Produit.objects.select_related('marque').get(slug=slug)
+                    produit = Produit.objects.get(slug=slug)
                 except Produit.DoesNotExist:
-                    return Response({"error": f"Produit avec QR code {slug} introuvable."}, status=404)
+                    return Response({"error": f"Produit introuvable: {slug}"}, status=404)
+
+                prix_vente_grammes = Decimal(str(item.get("prix_vente_grammes", produit.marque.prix)))
+                remise = Decimal(str(item.get("remise", 0)))
+                autres = Decimal(str(item.get("autres", 0)))
+                tax = Decimal(str(item.get("tax", 0)))
 
                 try:
-                    brut = item.get('prix_vente_grammes')
-                    prix_vente_grammes = Decimal(str(brut)) if brut and Decimal(str(brut)) > 0 else Decimal(str(produit.marque.prix))
-                except (InvalidOperation, AttributeError, TypeError):
-                    return Response({"error": f"Prix de vente invalide pour le produit {slug}."}, status=400)
-
-                remise = Decimal(str(item.get('remise') or 0))
-                autres = Decimal(str(item.get('autres') or 0))
-                tax = Decimal(str(item.get('tax') or 0))
-
-                try:
-                    vendor_stock = VendorProduit.objects.get(produit=produit, vendor=vendor)
+                    stock_vendeur = VendorProduit.objects.get(vendor=vendor, produit=produit)
                 except VendorProduit.DoesNotExist:
-                    return Response({"error": f"Produit {produit.nom} non disponible dans le stock du vendeur."}, status=400)
+                    return Response({"error": f"{produit.nom} non disponible pour ce vendeur."}, status=400)
 
-                if vendor_stock.quantite < quantite:
-                    return Response({
-                        "error": f"Stock insuffisant pour {produit.nom}. Stock disponible : {vendor_stock.quantite}"
-                    }, status=400)
+                if stock_vendeur.quantite < quantite:
+                    return Response({"error": f"Stock insuffisant pour {produit.nom}."}, status=400)
 
-                vente_produit = VenteProduit(
+                VenteProduit.objects.create(
                     vente=vente,
                     produit=produit,
                     quantite=quantite,
@@ -637,26 +795,22 @@ class VenteProduitCreateView(APIView):
                     tax=tax,
                     vendor=vendor
                 )
-                vente_produit.save()  # ✅ calcul automatique du HT/TTC ici
-                vente_produits.append(vente_produit)
-                vendor_stock.quantite -= quantite
-                vendor_stock.save()
 
+                stock_vendeur.quantite -= quantite
+                stock_vendeur.save()
 
-            # ✅ Génération du numéro de facture
-            numero = Facture.generer_numero_unique()
             facture = Facture.objects.create(
                 vente=vente,
-                montant_total=vente.montant_total,
-                numero_facture=numero
+                numero_facture=Facture.generer_numero_unique(),
+                montant_total=vente.montant_total
             )
 
-            vente_detail = VenteDetailSerializer(vente)
-            return Response(vente_detail.data, status=status.HTTP_201_CREATED)
+            return Response(VenteDetailSerializer(vente).data, status=201)
 
         except Exception as e:
             transaction.set_rollback(True)
             return Response({"detail": str(e)}, status=500)
+
 
 # class VenteProduitCreateView(APIView):
 #     renderer_classes = [UserRenderer]

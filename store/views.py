@@ -687,94 +687,23 @@ class MarqueCreateAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# class MarqueUpdateAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     # ✅ Rôles autorisés à modifier une marque
-#     allowed_roles_admin_manager = ['admin', 'manager']
-
-#     def get_object(self, pk):
-#         try:
-#             return Marque.objects.get(pk=pk)
-#         except Marque.DoesNotExist:
-#             return None
-
-#     @swagger_auto_schema(
-#         operation_summary="Mettre à jour une marque (PUT)",
-#         operation_description="Permet de remplacer complètement une marque avec les nouvelles données.",
-#         request_body=MarqueSerializer,
-#         responses={
-#             200: openapi.Response(description="Marque mise à jour avec succès", schema=MarqueSerializer),
-#             400: "Erreur de validation",
-#             403: "Accès refusé",
-#             404: "Marque non trouvée"
-#         }
-#     )
-#     def put(self, request, pk):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         marque = self.get_object(pk)
-#         if not marque:
-#             return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
-
-#         serializer = MarqueSerializer(marque, data=request.data)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#     @swagger_auto_schema(
-#         operation_summary="Modifier une marque partiellement (PATCH)",
-#         operation_description="Permet de mettre à jour certains champs d'une marque.",
-#         request_body=MarqueSerializer,
-#         responses={
-#             200: openapi.Response(description="Marque partiellement mise à jour", schema=MarqueSerializer),
-#             400: "Erreur de validation",
-#             403: "Accès refusé",
-#             404: "Marque non trouvée"
-#         }
-#     )
-#     def patch(self, request, pk):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         marque = self.get_object(pk)
-#         if not marque:
-#             return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
-
-#         serializer = MarqueSerializer(marque, data=request.data, partial=True)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
 class MarqueUpdateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
 
+    # ✅ Rôles autorisés à modifier une marque
     allowed_roles_admin_manager = ['admin', 'manager']
 
-    def get_object(self, nom_marque):
+    def get_object(self, pk):
         try:
-            return Marque.objects.get(marque__iexact=nom_marque.strip())
+            return Marque.objects.get(pk=pk)
         except Marque.DoesNotExist:
             return None
 
     @swagger_auto_schema(
         operation_summary="Mettre à jour une marque (PUT)",
-        operation_description="Met à jour une marque en utilisant son nom.",
+        operation_description="Permet de remplacer complètement une marque avec les nouvelles données.",
         request_body=MarqueSerializer,
-        manual_parameters=[
-            openapi.Parameter(
-                'nom_marque', openapi.IN_PATH, type=openapi.TYPE_STRING,
-                description="Nom exact de la marque à mettre à jour"
-            )
-        ],
         responses={
             200: openapi.Response(description="Marque mise à jour avec succès", schema=MarqueSerializer),
             400: "Erreur de validation",
@@ -782,12 +711,12 @@ class MarqueUpdateAPIView(APIView):
             404: "Marque non trouvée"
         }
     )
-    def put(self, request, nom_marque):
+    def put(self, request, pk):
         user = request.user
         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        marque = self.get_object(nom_marque)
+        marque = self.get_object(pk)
         if not marque:
             return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -799,27 +728,21 @@ class MarqueUpdateAPIView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Modifier une marque partiellement (PATCH)",
-        operation_description="Met à jour certains champs d'une marque via son nom.",
+        operation_description="Permet de mettre à jour certains champs d'une marque.",
         request_body=MarqueSerializer,
-        manual_parameters=[
-            openapi.Parameter(
-                'nom_marque', openapi.IN_PATH, type=openapi.TYPE_STRING,
-                description="Nom exact de la marque à mettre à jour"
-            )
-        ],
         responses={
-            200: openapi.Response(description="Marque mise à jour partiellement", schema=MarqueSerializer),
+            200: openapi.Response(description="Marque partiellement mise à jour", schema=MarqueSerializer),
             400: "Erreur de validation",
             403: "Accès refusé",
             404: "Marque non trouvée"
         }
     )
-    def patch(self, request, nom_marque):
+    def patch(self, request, pk):
         user = request.user
         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        marque = self.get_object(nom_marque)
+        marque = self.get_object(pk)
         if not marque:
             return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -828,6 +751,83 @@ class MarqueUpdateAPIView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# class MarqueUpdateAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+
+#     allowed_roles_admin_manager = ['admin', 'manager']
+
+#     def get_object(self, nom_marque):
+#         try:
+#             return Marque.objects.get(marque__iexact=nom_marque.strip())
+#         except Marque.DoesNotExist:
+#             return None
+
+#     @swagger_auto_schema(
+#         operation_summary="Mettre à jour une marque (PUT)",
+#         operation_description="Met à jour une marque en utilisant son nom.",
+#         request_body=MarqueSerializer,
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 'nom_marque', openapi.IN_PATH, type=openapi.TYPE_STRING,
+#                 description="Nom exact de la marque à mettre à jour"
+#             )
+#         ],
+#         responses={
+#             200: openapi.Response(description="Marque mise à jour avec succès", schema=MarqueSerializer),
+#             400: "Erreur de validation",
+#             403: "Accès refusé",
+#             404: "Marque non trouvée"
+#         }
+#     )
+#     def put(self, request, nom_marque):
+#         user = request.user
+#         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         marque = self.get_object(nom_marque)
+#         if not marque:
+#             return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
+
+#         serializer = MarqueSerializer(marque, data=request.data)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data)
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+#     @swagger_auto_schema(
+#         operation_summary="Modifier une marque partiellement (PATCH)",
+#         operation_description="Met à jour certains champs d'une marque via son nom.",
+#         request_body=MarqueSerializer,
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 'nom_marque', openapi.IN_PATH, type=openapi.TYPE_STRING,
+#                 description="Nom exact de la marque à mettre à jour"
+#             )
+#         ],
+#         responses={
+#             200: openapi.Response(description="Marque mise à jour partiellement", schema=MarqueSerializer),
+#             400: "Erreur de validation",
+#             403: "Accès refusé",
+#             404: "Marque non trouvée"
+#         }
+#     )
+#     def patch(self, request, nom_marque):
+#         user = request.user
+#         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         marque = self.get_object(nom_marque)
+#         if not marque:
+#             return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
+
+#         serializer = MarqueSerializer(marque, data=request.data, partial=True)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data)
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 # class MarqueDeleteAPIView(APIView):
