@@ -946,12 +946,12 @@ class ModeleListAPIView(APIView):
 
         queryset = Modele.objects.all()
         nom = request.GET.get('nom')
-        categorie_id = request.GET.get('categorie_id')
+        marque_id = request.GET.get('marque_id')
 
         if nom:
             queryset = queryset.filter(modele__icontains=nom)
-        if categorie_id:
-            queryset = queryset.filter(categorie_id=categorie_id)
+        if marque_id:
+            queryset = queryset.filter(marque_id=marque_id)
 
         serializer = ModeleSerializer(queryset, many=True)
         return Response(serializer.data)
