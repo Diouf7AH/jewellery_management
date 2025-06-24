@@ -913,61 +913,26 @@ class MarqueDeleteAPIView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# class ModeleListAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     # ✅ Rôles autorisés
-#     allowed_roles_admin_manager = ['admin', 'manager']
-
-#     @swagger_auto_schema(
-#         operation_description="Lister tous les modèles, avec possibilité de filtrer par nom ou catégorie.",
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 'nom', openapi.IN_QUERY,
-#                 description="Nom du modèle (recherche partielle)",
-#                 type=openapi.TYPE_STRING
-#             ),
-#             openapi.Parameter(
-#                 'categorie_id', openapi.IN_QUERY,
-#                 description="ID de la catégorie",
-#                 type=openapi.TYPE_INTEGER
-#             )
-#         ],
-#         responses={
-#             200: openapi.Response("Liste des modèles", ModeleSerializer(many=True)),
-#             403: "⛔ Accès refusé"
-#         }
-#     )
-#     def get(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         queryset = Modele.objects.all()
-#         nom = request.GET.get('nom')
-#         categorie_id = request.GET.get('categorie_id')
-
-#         if nom:
-#             queryset = queryset.filter(modele__icontains=nom)
-#         if categorie_id:
-#             queryset = queryset.filter(categorie_id=categorie_id)
-
-#         serializer = ModeleSerializer(queryset, many=True)
-#         return Response(serializer.data)
-
 class ModeleListAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
 
+    # ✅ Rôles autorisés
     allowed_roles_admin_manager = ['admin', 'manager']
 
     @swagger_auto_schema(
-        operation_description="Lister tous les modèles avec filtre par nom, catégorie et marque.",
+        operation_description="Lister tous les modèles, avec possibilité de filtrer par nom ou catégorie.",
         manual_parameters=[
-            openapi.Parameter('nom', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Recherche par nom de modèle"),
-            openapi.Parameter('categorie_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID de la catégorie"),
-            openapi.Parameter('marque_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID de la marque"),
+            openapi.Parameter(
+                'nom', openapi.IN_QUERY,
+                description="Nom du modèle (recherche partielle)",
+                type=openapi.TYPE_STRING
+            ),
+            openapi.Parameter(
+                'marque_id', openapi.IN_QUERY,
+                description="ID de la marque",
+                type=openapi.TYPE_INTEGER
+            )
         ],
         responses={
             200: openapi.Response("Liste des modèles", ModeleSerializer(many=True)),
@@ -982,17 +947,51 @@ class ModeleListAPIView(APIView):
         queryset = Modele.objects.all()
         nom = request.GET.get('nom')
         categorie_id = request.GET.get('categorie_id')
-        marque_id = request.GET.get('marque_id')  # 🆕
 
         if nom:
             queryset = queryset.filter(modele__icontains=nom)
         if categorie_id:
             queryset = queryset.filter(categorie_id=categorie_id)
-        if marque_id:
-            queryset = queryset.filter(marque_id=marque_id)
 
         serializer = ModeleSerializer(queryset, many=True)
         return Response(serializer.data)
+
+# class ModeleListAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+
+#     allowed_roles_admin_manager = ['admin', 'manager']
+
+#     @swagger_auto_schema(
+#         operation_description="Lister tous les modèles avec filtre par nom, catégorie et marque.",
+#         manual_parameters=[
+#             openapi.Parameter('nom', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Recherche par nom de modèle"),
+#             openapi.Parameter('marque_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID de la marque"),
+#         ],
+#         responses={
+#             200: openapi.Response("Liste des modèles", ModeleSerializer(many=True)),
+#             403: "⛔ Accès refusé"
+#         }
+#     )
+#     def get(self, request):
+#         user = request.user
+#         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         queryset = Modele.objects.all()
+#         nom = request.GET.get('nom')
+#         categorie_id = request.GET.get('categorie_id')
+#         marque_id = request.GET.get('marque_id')  # 🆕
+
+#         if nom:
+#             queryset = queryset.filter(modele__icontains=nom)
+#         if categorie_id:
+#             queryset = queryset.filter(categorie_id=categorie_id)
+#         if marque_id:
+#             queryset = queryset.filter(marque_id=marque_id)
+
+#         serializer = ModeleSerializer(queryset, many=True)
+#         return Response(serializer.data)
 
 
 class ModeleCreateAPIView(APIView):
