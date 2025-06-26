@@ -1118,46 +1118,46 @@ class ModeleDeleteAPIView(APIView):
 
 
 # a. Lister les purete par catégorie
-class PureteParCategorieAPIView(APIView):
+# class PureteParCategorieAPIView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les puretés d'une catégorie",
+#         operation_description="Retourne toutes les puretés associées à une catégorie spécifiée par son nom (insensible à la casse).",
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 'categorie', openapi.IN_QUERY,
+#                 description="Nom exact de la catégorie (insensible à la casse)",
+#                 type=openapi.TYPE_STRING,
+#                 required=True
+#             ),
+#         ],
+#         responses={200: openapi.Response("Liste des puretés", PureteSerializer(many=True))}
+#     )
+#     def get(self, request):
+#         nom_categorie = request.GET.get('categorie')
+#         if not nom_categorie:
+#             return Response({"error": "Le paramètre 'categorie' est requis."}, status=400)
+
+#         try:
+#             categorie = Categorie.objects.get(nom__iexact=nom_categorie.strip())
+#         except Categorie.DoesNotExist:
+#             return Response({"error": "Catégorie non trouvée."}, status=404)
+
+#         puretes = Purete.objects.filter(categorie=categorie)
+#         serializer = PureteSerializer(puretes, many=True)
+#         return Response(serializer.data)
+
+# b. Lister les marque par purete
+class MarqueParCategorieAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Lister les puretés d'une catégorie",
-        operation_description="Retourne toutes les puretés associées à une catégorie spécifiée par son nom (insensible à la casse).",
+        operation_summary="Lister les marques selon le nom du categorie",
         manual_parameters=[
             openapi.Parameter(
                 'categorie', openapi.IN_QUERY,
-                description="Nom exact de la catégorie (insensible à la casse)",
-                type=openapi.TYPE_STRING,
-                required=True
-            ),
-        ],
-        responses={200: openapi.Response("Liste des puretés", PureteSerializer(many=True))}
-    )
-    def get(self, request):
-        nom_categorie = request.GET.get('categorie')
-        if not nom_categorie:
-            return Response({"error": "Le paramètre 'categorie' est requis."}, status=400)
-
-        try:
-            categorie = Categorie.objects.get(nom__iexact=nom_categorie.strip())
-        except Categorie.DoesNotExist:
-            return Response({"error": "Catégorie non trouvée."}, status=404)
-
-        puretes = Purete.objects.filter(categorie=categorie)
-        serializer = PureteSerializer(puretes, many=True)
-        return Response(serializer.data)
-
-# b. Lister les marque par purete
-class MarqueParPureteAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Lister les marques selon le nom de la pureté",
-        manual_parameters=[
-            openapi.Parameter(
-                'purete', openapi.IN_QUERY,
-                description="Nom exact de la pureté (ex: 18K)",
+                description="Nom exact de categorie (ex: bague)",
                 type=openapi.TYPE_STRING,
                 required=True
             ),
@@ -1165,16 +1165,16 @@ class MarqueParPureteAPIView(APIView):
         responses={200: openapi.Response("Liste des marques", MarqueSerializer(many=True))}
     )
     def get(self, request):
-        nom_purete = request.GET.get('purete')
-        if not nom_purete:
-            return Response({"error": "Le paramètre 'purete' est requis."}, status=400)
+        nom_categorie = request.GET.get('categorie')
+        if not nom_categorie:
+            return Response({"error": "Le paramètre 'categorie' est requis."}, status=400)
 
         try:
-            purete = Purete.objects.get(purete__iexact=nom_purete)
-        except Purete.DoesNotExist:
-            return Response({"error": "Pureté non trouvée."}, status=404)
+            categorie = Categorie.objects.get(categorie__iexact=nom_categorie)
+        except Categorie.DoesNotExist:
+            return Response({"error": "Categorie non trouvée."}, status=404)
 
-        marques = Marque.objects.filter(purete=purete)
+        marques = Marque.objects.filter(categorie=categorie)
         serializer = MarqueSerializer(marques, many=True)
         return Response(serializer.data)
 

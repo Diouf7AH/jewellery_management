@@ -87,8 +87,8 @@ urlpatterns = [
     path('modele/delete/<int:pk>', store_views.ModeleDeleteAPIView.as_view(), name='modele_delete'),
     
     # selecte option
-    path('puretes-par-categorie/', store_views.PureteParCategorieAPIView.as_view(), name='puretes-par-categorie'),
-    path('marques-par-purete/', store_views.MarqueParPureteAPIView.as_view(), name='marques-par-purete'),
+    # path('marque-par-categorie/', store_views.PureteParCategorieAPIView.as_view(), name='puretes-par-categorie'),
+    path('marques-par-categorie/', store_views.MarqueParCategorieAPIView.as_view(), name='marques-par-categorie'),
     path('modeles-par-marque/', store_views.ModeleParMarqueAPIView.as_view(), name='modeles-par-marque'),
     
     # Product
