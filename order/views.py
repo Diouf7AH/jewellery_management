@@ -11,11 +11,45 @@ from order.serializers import CommandeClientSerializer, CommandeProduitClientSer
 from order.models import CommandeClient, CommandeProduitClient
 from userauths.models import User  # si nécessaire pour created_by
 
+# class CreateCommandeClientView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_description="Créer une commande client avec ses produits.",
+#         request_body=CommandeClientSerializer,
+#         responses={201: openapi.Response(description="Commande créée", schema=CommandeClientSerializer())}
+#     )
+#     def post(self, request):
+#         data = request.data.copy()
+#         produits_data = data.pop('produits', [])
+
+#         serializer = CommandeClientSerializer(data=data, context={"request": request})
+#         if serializer.is_valid():
+#             try:
+#                 with transaction.atomic():
+#                     commande = serializer.save(created_by=request.user)
+
+#                     for produit_data in produits_data:
+#                         produit_data['commande'] = commande.id
+#                         produit_serializer = CommandeProduitClientSerializer(data=produit_data)
+#                         produit_serializer.is_valid(raise_exception=True)
+#                         produit_serializer.save()
+
+#                 return Response({
+#                     "message": "Commande créée avec succès.",
+#                     "commande": CommandeClientSerializer(commande, context={"request": request}).data
+#                 }, status=status.HTTP_201_CREATED)
+
+#             except Exception as e:
+#                 return Response({"error": f"Une erreur est survenue : {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 class CreateCommandeClientView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Créer une commande client avec ses produits.",
+        operation_description="Créer une commande client avec produits officiels et personnalisés.",
         request_body=CommandeClientSerializer,
         responses={201: openapi.Response(description="Commande créée", schema=CommandeClientSerializer())}
     )
@@ -24,27 +58,27 @@ class CreateCommandeClientView(APIView):
         produits_data = data.pop('produits', [])
 
         serializer = CommandeClientSerializer(data=data, context={"request": request})
-        if serializer.is_valid():
-            try:
-                with transaction.atomic():
-                    commande = serializer.save(created_by=request.user)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-                    for produit_data in produits_data:
-                        produit_data['commande'] = commande.id
-                        produit_serializer = CommandeProduitClientSerializer(data=produit_data)
-                        produit_serializer.is_valid(raise_exception=True)
-                        produit_serializer.save()
+        try:
+            with transaction.atomic():
+                commande = serializer.save(created_by=request.user)
 
-                return Response({
-                    "message": "Commande créée avec succès.",
-                    "commande": CommandeClientSerializer(commande, context={"request": request}).data
-                }, status=status.HTTP_201_CREATED)
+                for index, produit_data in enumerate(produits_data, start=1):
+                    produit_data['commande_client'] = commande.id
+                    produit_serializer = CommandeProduitClientSerializer(data=produit_data)
+                    produit_serializer.is_valid(raise_exception=True)
+                    produit_serializer.save()
 
-            except Exception as e:
-                return Response({"error": f"Une erreur est survenue : {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({
+                "message": "✅ Commande créée avec succès.",
+                "commande": CommandeClientSerializer(commande, context={"request": request}).data
+            }, status=status.HTTP_201_CREATED)
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+        except Exception as e:
+            return Response({"error": f"❌ Erreur lors de la création des produits (produit #{index}): {str(e)}"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class ListCommandeClientView(APIView):

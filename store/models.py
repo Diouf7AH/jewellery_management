@@ -130,6 +130,8 @@ class Categorie(models.Model):
 class Purete(models.Model):
     # purete = models.IntegerField()
     purete = models.CharField(unique=True, max_length=15)
+    categorie = models.ForeignKey('Categorie',on_delete=models.SET_NULL,null=True,blank=True,related_name='puretes_categorie')
+    
     
     def __str__(self):  
         return f"{self.purete}K"
@@ -169,15 +171,17 @@ class Modele(models.Model):
     def marque_id(self):
         # Permet d'accéder à modele.marque_id directement (int ou None)
         return self.marque.id if self.marque else None
+    
+    class Meta:
+        ordering = ['modele']
+        verbose_name = "Modèle"
+        verbose_name_plural = "Modèles"
+        
+    def save(self, *args, **kwargs):
+        if self.modele:
+            self.modele = self.modele.strip().title()
+        super().save(*args, **kwargs)
 
-# # Model model
-# class Model(models.Model):
-#     nom = models.CharField(max_length=255)
-#     type = models.ForeignKey(Type, on_delete=models.SET_NULL, null=True, blank=True, related_name="type_model")
-#     description = models.TextField(blank=True)
-
-# def generate_sku(length=7):
-#     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 # Model for Produits
 class Produit(models.Model):

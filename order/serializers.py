@@ -3,14 +3,21 @@ from .models import CommandeClient, CommandeProduitClient
 from store.models import Produit
 from sale.models import Client
 from userauths.serializers import UserMiniSerializer
-
+from rest_framework import serializers
 class ClientCommandeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Client
         fields = ['nom', 'prenom', 'telephone']
 
+    def validate_telephone(self, value):
+        if not value:
+            raise serializers.ValidationError("Le numéro de téléphone est requis.")
+        return value
 
 class CommandeProduitClientSerializer(serializers.ModelSerializer):
+    commande_client = serializers.PrimaryKeyRelatedField(
+        queryset=CommandeClient.objects.all(), write_only=True
+    )
     nom_produit = serializers.ReadOnlyField()
     sous_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
@@ -18,11 +25,11 @@ class CommandeProduitClientSerializer(serializers.ModelSerializer):
         model = CommandeProduitClient
         fields = [
             'id',
+            'commande_client',
             'produit',
             'produit_libre',
             'quantite',
             'prix_prevue',
-            'remise',
             'sous_total',
             'nom_produit',
         ]
