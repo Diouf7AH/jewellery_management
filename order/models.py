@@ -8,7 +8,7 @@ from django.core.exceptions import ValidationError
 # Create your models here.
 class CommandeClient(models.Model):
     numero_commande = models.CharField(max_length=30, unique=True, editable=False)
-    client = models.ForeignKey('sale.Client', on_delete=models.SET_NULL, null=True, related_name="client_commandes")
+    client = models.ForeignKey('sale.Client', on_delete=models.SET_NULL, null=True, related_name="commandes_client")
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     statut = models.CharField(max_length=20, choices=[
         ('en_attente', 'En attente'),
@@ -86,7 +86,7 @@ class CommandeClient(models.Model):
 # Pas de casse si le Produit est supprimé (car SET_NULL)
 # Tu peux migrer un produit_libre vers un vrai Produit plus tard
 class CommandeProduitClient(models.Model):
-    commande_client = models.ForeignKey(CommandeClient, on_delete=models.CASCADE, related_name='commande-produits-client')
+    commande_client = models.ForeignKey(CommandeClient, on_delete=models.CASCADE, related_name='commandes_produits_client')
     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True)
     produit_libre = models.CharField(max_length=255, blank=True, null=True)
 
