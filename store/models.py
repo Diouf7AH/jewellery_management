@@ -129,9 +129,7 @@ class Categorie(models.Model):
 # Purity model
 class Purete(models.Model):
     # purete = models.IntegerField()
-    purete = models.CharField(unique=True, max_length=15)
-    categorie = models.ForeignKey('Categorie',on_delete=models.SET_NULL,null=True,blank=True,related_name='puretes_categorie')
-    
+    purete = models.CharField(unique=True, max_length=5)    
     
     def __str__(self):  
         return f"{self.purete}K"

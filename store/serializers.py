@@ -16,25 +16,25 @@ class CategorieSerializer(serializers.ModelSerializer):
         model = Categorie
         fields = ['id', 'nom', 'image',]
 
-class PureteSerializer(serializers.ModelSerializer):
-    categorie = serializers.SlugRelatedField(
-        queryset=Categorie.objects.all(),
-        slug_field='nom',
-        write_only=True
-    )
-    categorie_detail = serializers.SerializerMethodField(read_only=True)
+# class PureteSerializer(serializers.ModelSerializer):
+#     categorie = serializers.SlugRelatedField(
+#         queryset=Categorie.objects.all(),
+#         slug_field='nom',
+#         write_only=True
+#     )
+#     categorie_detail = serializers.SerializerMethodField(read_only=True)
 
-    class Meta:
-        model = Purete
-        fields = ['id', 'purete', 'categorie', 'categorie_detail']
+#     class Meta:
+#         model = Purete
+#         fields = ['id', 'purete', 'categorie', 'categorie_detail']
 
-    def get_categorie_detail(self, obj):
-        if obj.categorie:
-            return {
-                "id": obj.categorie.id,
-                "nom": obj.categorie.nom
-            }
-        return None
+#     def get_categorie_detail(self, obj):
+#         if obj.categorie:
+#             return {
+#                 "id": obj.categorie.id,
+#                 "nom": obj.categorie.nom
+#             }
+#         return None
 
 # class TypeSerializer(serializers.ModelSerializer):
     
@@ -128,22 +128,10 @@ class ModeleSerializer(serializers.ModelSerializer):
         return None
 
 
-    
-# class ModeleSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = Modele
-#         fields = ['id', 'modele', 'categorie']
-    
-#     def get_categorie(self, obj):
-#         if not obj.categorie:
-#             return None
-#         return {
-#             "id": obj.categorie.id,
-#             "nom": obj.categorie.nom,
-#             "image": obj.categorie.image.url if obj.categorie.image else None,
-#         }
-
-
+class PureteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Purete
+        fields = '__all__'
 
 
 class ProduitSerializer(serializers.ModelSerializer):
