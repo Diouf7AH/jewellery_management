@@ -1149,15 +1149,44 @@ class ModeleDeleteAPIView(APIView):
 #         return Response(serializer.data)
 
 # b. Lister les marque par purete
+# class MarqueParCategorieAPIView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les marques selon le nom du categorie",
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 'categorie', openapi.IN_QUERY,
+#                 description="Nom exact de categorie (ex: bague)",
+#                 type=openapi.TYPE_STRING,
+#                 required=True
+#             ),
+#         ],
+#         responses={200: openapi.Response("Liste des marques", MarqueSerializer(many=True))}
+#     )
+#     def get(self, request):
+#         nom_categorie = request.GET.get('categorie')
+#         if not nom_categorie:
+#             return Response({"error": "Le paramètre 'categorie' est requis."}, status=400)
+
+#         try:
+#             categorie = Categorie.objects.get(categorie__iexact=nom_categorie)
+#         except Categorie.DoesNotExist:
+#             return Response({"error": "Categorie non trouvée."}, status=404)
+
+#         marques = Marque.objects.filter(categorie=categorie)
+#         serializer = MarqueSerializer(marques, many=True)
+#         return Response(serializer.data)
+
 class MarqueParCategorieAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Lister les marques selon le nom du categorie",
+        operation_summary="Lister les marques selon le nom de la catégorie",
         manual_parameters=[
             openapi.Parameter(
                 'categorie', openapi.IN_QUERY,
-                description="Nom exact de categorie (ex: bague)",
+                description="Nom exact de la catégorie (ex: bague)",
                 type=openapi.TYPE_STRING,
                 required=True
             ),
@@ -1170,14 +1199,13 @@ class MarqueParCategorieAPIView(APIView):
             return Response({"error": "Le paramètre 'categorie' est requis."}, status=400)
 
         try:
-            categorie = Categorie.objects.get(categorie__iexact=nom_categorie)
+            categorie = Categorie.objects.get(nom__iexact=nom_categorie)
         except Categorie.DoesNotExist:
-            return Response({"error": "Categorie non trouvée."}, status=404)
+            return Response({"error": "Catégorie non trouvée."}, status=404)
 
         marques = Marque.objects.filter(categorie=categorie)
         serializer = MarqueSerializer(marques, many=True)
         return Response(serializer.data)
-
 
 # b. Lister les modèles par marque
 class ModeleParMarqueAPIView(APIView):
