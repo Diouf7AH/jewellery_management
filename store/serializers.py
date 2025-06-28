@@ -240,27 +240,27 @@ class PureteSerializer(serializers.ModelSerializer):
 #         return None
 
 
-class ProduitSerializer(serializers.ModelSerializer):
-    # Création via nom, mais stockage sous forme d'ID
-    categorie = serializers.SlugRelatedField(queryset=Categorie.objects.all(), slug_field='nom', write_only=True)
-    categorie_detail = serializers.SerializerMethodField(read_only=True)
+# class ProduitSerializer(serializers.ModelSerializer):
+#     # Création via nom, mais stockage sous forme d'ID
+#     categorie = serializers.SlugRelatedField(queryset=Categorie.objects.all(), slug_field='nom', write_only=True)
+#     categorie_detail = serializers.SerializerMethodField(read_only=True)
 
-    marque = serializers.SlugRelatedField(queryset=Marque.objects.all(), slug_field='marque', write_only=True)
-    marque_detail = serializers.SerializerMethodField(read_only=True)
+#     marque = serializers.SlugRelatedField(queryset=Marque.objects.all(), slug_field='marque', write_only=True)
+#     marque_detail = serializers.SerializerMethodField(read_only=True)
 
-    modele = serializers.SlugRelatedField(queryset=Modele.objects.all(), slug_field='modele', write_only=True)
-    modele_detail = serializers.SerializerMethodField(read_only=True)
+#     modele = serializers.SlugRelatedField(queryset=Modele.objects.all(), slug_field='modele', write_only=True)
+#     modele_detail = serializers.SerializerMethodField(read_only=True)
 
-    purete = serializers.SlugRelatedField(queryset=Purete.objects.all(), slug_field='purete', write_only=True)
-    purete_detail = serializers.SerializerMethodField(read_only=True)
+#     purete = serializers.SlugRelatedField(queryset=Purete.objects.all(), slug_field='purete', write_only=True)
+#     purete_detail = serializers.SerializerMethodField(read_only=True)
 
-    class Meta:
-        model = Produit
-        fields = (
-            "id", "slug", "nom", "categorie", "categorie_detail",
-            "marque", "marque_detail", "modele", "modele_detail", "purete", "purete_detail",
-            "description", "image", "poids", "taille", "matiere", "genre", "status", "etat", "sku"
-        )
+#     class Meta:
+#         model = Produit
+#         fields = (
+#             "id", "slug", "nom", "categorie", "categorie_detail",
+#             "marque", "marque_detail", "modele", "modele_detail", "purete", "purete_detail",
+#             "description", "image", "poids", "taille", "matiere", "genre", "status", "etat", "sku"
+#         )
 
     
 
@@ -392,6 +392,89 @@ class ProduitSerializer(serializers.ModelSerializer):
 #         data['modele'] = self.get_modele(instance)
 #         return data
 
+
+class ProduitSerializer(serializers.ModelSerializer):
+    # Ecriture (POST via nom)
+    categorie = serializers.SlugRelatedField(queryset=Categorie.objects.all(), slug_field='nom', write_only=True)
+    marque = serializers.SlugRelatedField(queryset=Marque.objects.all(), slug_field='marque', write_only=True)
+    modele = serializers.SlugRelatedField(queryset=Modele.objects.all(), slug_field='modele', write_only=True)
+    purete = serializers.SlugRelatedField(queryset=Purete.objects.all(), slug_field='purete', write_only=True)
+
+    # Lecture enrichie (GET)
+    categorie_detail = serializers.SerializerMethodField(read_only=True)
+    marque_detail = serializers.SerializerMethodField(read_only=True)
+    modele_detail = serializers.SerializerMethodField(read_only=True)
+    purete_detail = serializers.SerializerMethodField(read_only=True)
+    produit_url = serializers.SerializerMethodField()
+    qr_code_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Produit
+        fields = (
+            "id", "slug", "nom", "categorie", "categorie_detail", "marque", "marque_detail",
+            "modele", "modele_detail", "purete", "purete_detail",
+            "description", "image", "poids", "taille", "matiere",
+            "genre", "status", "etat", "sku", "produit_url", "qr_code_url"
+        )
+
+    def get_categorie_detail(self, obj):
+        if not obj.categorie:
+            return None
+        return {
+            "id": obj.categorie.id,
+            "nom": obj.categorie.nom,
+            "image": obj.categorie.image.url if obj.categorie.image else None,
+        }
+
+    def get_marque_detail(self, obj):
+        if not obj.marque:
+            return None
+        return {
+            "id": obj.marque.id,
+            "marque": obj.marque.marque,
+            "prix": obj.marque.prix,
+            "creation_date": obj.marque.creation_date,
+            "modification_date": obj.marque.modification_date,
+            "purete": {
+                "id": obj.marque.purete.id if obj.marque.purete else None,
+                "purete": obj.marque.purete.purete if obj.marque.purete else None,
+            } if obj.marque.purete else None
+        }
+
+    def get_modele_detail(self, obj):
+        if not obj.modele:
+            return None
+        return {
+            "id": obj.modele.id,
+            "modele": obj.modele.modele,
+            "categorie": {
+                "id": obj.modele.categorie.id if obj.modele.categorie else None,
+                "nom": obj.modele.categorie.nom if obj.modele.categorie else None,
+                "image": obj.modele.categorie.image.url if obj.modele.categorie and obj.modele.categorie.image else None,
+            } if obj.modele.categorie else None
+        }
+
+    def get_purete_detail(self, obj):
+        if not obj.purete:
+            return None
+        return {
+            "id": obj.purete.id,
+            "purete": obj.purete.purete
+        }
+
+    def get_produit_url(self, obj):
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(f"/produit/{obj.slug}")
+        return f"https://www.rio-gold.com/produit/{obj.slug}" if obj.slug else None
+
+    def get_qr_code_url(self, obj):
+        request = self.context.get('request')
+        if obj.qr_code and request:
+            return request.build_absolute_uri(obj.qr_code.url)
+        elif obj.qr_code:
+            return obj.qr_code.url
+        return None
 
 
 class GallerySerializer(serializers.ModelSerializer):
