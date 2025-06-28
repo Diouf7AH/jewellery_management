@@ -241,25 +241,26 @@ class PureteSerializer(serializers.ModelSerializer):
 
 
 class ProduitSerializer(serializers.ModelSerializer):
-    categorie = serializers.PrimaryKeyRelatedField(queryset=Categorie.objects.all(), write_only=True)
+    # Création via nom, mais stockage sous forme d'ID
+    categorie = serializers.SlugRelatedField(queryset=Categorie.objects.all(), slug_field='nom', write_only=True)
+    categorie_detail = serializers.SerializerMethodField(read_only=True)
 
-    marque = serializers.PrimaryKeyRelatedField(queryset=Marque.objects.all(), write_only=True)
+    marque = serializers.SlugRelatedField(queryset=Marque.objects.all(), slug_field='marque', write_only=True)
+    marque_detail = serializers.SerializerMethodField(read_only=True)
 
-    modele = serializers.PrimaryKeyRelatedField(queryset=Modele.objects.all(), write_only=True)
+    modele = serializers.SlugRelatedField(queryset=Modele.objects.all(), slug_field='modele', write_only=True)
+    modele_detail = serializers.SerializerMethodField(read_only=True)
 
-    purete = serializers.PrimaryKeyRelatedField(queryset=Purete.objects.all(), write_only=True)
+    purete = serializers.SlugRelatedField(queryset=Purete.objects.all(), slug_field='purete', write_only=True)
+    purete_detail = serializers.SerializerMethodField(read_only=True)
 
-    produit_url = serializers.SerializerMethodField()
-    qr_code_url = serializers.SerializerMethodField()
-    
     class Meta:
         model = Produit
         fields = (
-            "id", "slug", "categorie", "nom", "produit_url", "sku", "qr_code_url", "image", "description",
-            "status", "genre", "marque", "modele", "purete",
-            "matiere", "poids", "taille", "etat"
+            "id", "slug", "nom", "categorie", "categorie_detail",
+            "marque", "marque_detail", "modele", "modele_detail", "purete", "purete_detail",
+            "description", "image", "poids", "taille", "matiere", "genre", "status", "etat", "sku"
         )
-
 
     
 
