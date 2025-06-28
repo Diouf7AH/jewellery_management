@@ -14,6 +14,7 @@ from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
+from rest_framework.exceptions import ValidationError
 
 from django.http import Http404 
 
@@ -1338,98 +1339,14 @@ class ProduitListAPIView(APIView):
 
 
 
-# def get_instance_by_id_or_name(model, value, name_field):
-#     if not value:
-#         raise ValueError(f"Valeur manquante pour {name_field}")
-
-#     try:
-#         if str(value).isdigit():
-#             return model.objects.get(id=int(value))
-#         else:
-#             return model.objects.get(**{f"{name_field}__iexact": value})
-#     except model.DoesNotExist:
-#         raise
 
 
 
-# class ProduitCreateAPIView(APIView):
-#     parser_classes = [MultiPartParser, FormParser]
-#     permission_classes = [IsAuthenticated]
-#     renderer_classes = [UserRenderer]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un produit avec images et QR code",
-#         operation_description="Crée un produit en utilisant les noms de la catégorie, pureté, marque et modèle.",
-#         manual_parameters=[
-#             openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
-#             openapi.Parameter('description', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['F', 'H', 'E'], default='F'),
-#             openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['or', 'argent', 'mixte'], default='or'),
-#             openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
-#             openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
-#             openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['publié', 'désactivé', 'rejetée'], default='publié'),
-#             openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['N', 'R'], default='N'),
-#             openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, required=False, multiple=True),
-#         ],
-#         responses={
-#             201: openapi.Response("Produit créé avec succès", ProduitSerializer),
-#             400: "Erreur de validation"
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         data = request.data.copy()
-
-#         try:
-#             # Liaison par nom → ID
-#             # data['categorie'] = Categorie.objects.get(nom__iexact=data.get('categorie')).id
-#             # data['purete'] = Purete.objects.get(purete__iexact=data.get('purete')).id
-#             # data['marque'] = Marque.objects.get(marque__iexact=data.get('marque')).id
-#             # data['modele'] = Modele.objects.get(modele__iexact=data.get('modele')).id
-#             # data['categorie'] = get_instance_by_id_or_name(Categorie, data.get('categorie'), 'nom').id
-#             # data['purete'] = get_instance_by_id_or_name(Purete, data.get('purete'), 'purete').id
-#             # data['marque'] = get_instance_by_id_or_name(Marque, data.get('marque'), 'marque').id
-#             # data['modele'] = get_instance_by_id_or_name(Modele, data.get('modele'), 'modele').id
-
-#             # Création du produit
-#             serializer = ProduitSerializer(data=data, context={"request": request})
-#             if serializer.is_valid():
-#                 produit = serializer.save()
-
-#                 # Ajout des images
-#                 images = request.FILES.getlist("gallery")
-#                 for image in images:
-#                     Gallery.objects.create(produit=produit, image=image)
-
-#                 produit.refresh_from_db()
-
-#                 return Response({
-#                     "message": f"Produit créé avec succès avec {len(images)} image(s)",
-#                     "produit": ProduitSerializer(produit, context={"request": request}).data
-#                 }, status=201)
-#             else:
-#                 return Response(serializer.errors, status=400)
-
-#         except Categorie.DoesNotExist:
-#             return Response({"error": "Catégorie introuvable"}, status=400)
-#         except Purete.DoesNotExist:
-#             return Response({"error": "Pureté introuvable"}, status=400)
-#         except Marque.DoesNotExist:
-#             return Response({"error": "Marque introuvable"}, status=400)
-#         except Modele.DoesNotExist:
-#             return Response({"error": "Modèle introuvable"}, status=400)
-#         except Exception as e:
-#             return Response({"error": f"Une erreur est survenue : {str(e)}"}, status=500)
-
+def get_object_id_or_error(model, field, value, label):
+    try:
+        return model.objects.get(**{f"{field}__iexact": value}).id
+    except model.DoesNotExist:
+        raise ValidationError({label: f"{label.capitalize()} '{value}' introuvable."})
 
 class ProduitCreateAPIView(APIView):
     parser_classes = [MultiPartParser, FormParser]
@@ -1438,24 +1355,25 @@ class ProduitCreateAPIView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Créer un produit avec images et QR code",
+        operation_description="Crée un produit en utilisant les noms de la catégorie, pureté, marque et modèle.",
         manual_parameters=[
-            openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
             openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
+            openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
             openapi.Parameter('description', openapi.IN_FORM, type=openapi.TYPE_STRING),
             openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['F', 'H', 'E'], default='F'),
-            openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID de la catégorie"),
-            openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID de la marque"),
-            openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID du modèle"),
-            openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID de la pureté"),
+            openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_STRING),
+            openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_STRING),
+            openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_STRING),
+            openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_STRING),
             openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['or', 'argent', 'mixte'], default='or'),
             openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
             openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
             openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['publié', 'désactivé', 'rejetée'], default='publié'),
             openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['N', 'R'], default='N'),
-            openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Fichiers galerie", required=False, multiple=True),
+            openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, required=False, multiple=True),
         ],
         responses={
-            201: openapi.Response("Produit créé", ProduitSerializer),
+            201: openapi.Response("Produit créé avec succès", ProduitSerializer),
             400: "Erreur de validation"
         }
     )
@@ -1465,20 +1383,31 @@ class ProduitCreateAPIView(APIView):
         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        try:
-            data = request.data.copy()
+        data = request.data.copy()
 
-            # Crée le produit avec les données POST
+        try:
+            # Liaison par nom → ID
+            # data['categorie'] = Categorie.objects.get(nom__iexact=data.get('categorie')).id
+            # data['purete'] = Purete.objects.get(purete__iexact=data.get('purete')).id
+            # data['marque'] = Marque.objects.get(marque__iexact=data.get('marque')).id
+            # data['modele'] = Modele.objects.get(modele__iexact=data.get('modele')).id
+            # data['categorie'] = get_instance_by_id_or_name(Categorie, data.get('categorie'), 'nom').id
+            # data['purete'] = get_instance_by_id_or_name(Purete, data.get('purete'), 'purete').id
+            # data['marque'] = get_instance_by_id_or_name(Marque, data.get('marque'), 'marque').id
+            # data['modele'] = get_instance_by_id_or_name(Modele, data.get('modele'), 'modele').id
+
+            # Création du produit
             serializer = ProduitSerializer(data=data, context={"request": request})
             if serializer.is_valid():
                 produit = serializer.save()
 
-                # Ajouter les images dans la galerie
+                # Ajout des images
                 images = request.FILES.getlist("gallery")
                 for image in images:
                     Gallery.objects.create(produit=produit, image=image)
 
                 produit.refresh_from_db()
+
                 return Response({
                     "message": f"Produit créé avec succès avec {len(images)} image(s)",
                     "produit": ProduitSerializer(produit, context={"request": request}).data
@@ -1486,8 +1415,75 @@ class ProduitCreateAPIView(APIView):
             else:
                 return Response(serializer.errors, status=400)
 
+        except Categorie.DoesNotExist:
+            return Response({"error": "Catégorie introuvable"}, status=400)
+        except Purete.DoesNotExist:
+            return Response({"error": "Pureté introuvable"}, status=400)
+        except Marque.DoesNotExist:
+            return Response({"error": "Marque introuvable"}, status=400)
+        except Modele.DoesNotExist:
+            return Response({"error": "Modèle introuvable"}, status=400)
         except Exception as e:
             return Response({"error": f"Une erreur est survenue : {str(e)}"}, status=500)
+
+
+# class ProduitCreateAPIView(APIView):
+#     parser_classes = [MultiPartParser, FormParser]
+#     permission_classes = [IsAuthenticated]
+#     renderer_classes = [UserRenderer]
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer un produit avec images et QR code",
+#         manual_parameters=[
+#             openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
+#             openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
+#             openapi.Parameter('description', openapi.IN_FORM, type=openapi.TYPE_STRING),
+#             openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['F', 'H', 'E'], default='F'),
+#             openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID de la catégorie"),
+#             openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID de la marque"),
+#             openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID du modèle"),
+#             openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID de la pureté"),
+#             openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['or', 'argent', 'mixte'], default='or'),
+#             openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
+#             openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
+#             openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['publié', 'désactivé', 'rejetée'], default='publié'),
+#             openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['N', 'R'], default='N'),
+#             openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Fichiers galerie", required=False, multiple=True),
+#         ],
+#         responses={
+#             201: openapi.Response("Produit créé", ProduitSerializer),
+#             400: "Erreur de validation"
+#         }
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         user = request.user
+#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         try:
+#             data = request.data.copy()
+
+#             # Crée le produit avec les données POST
+#             serializer = ProduitSerializer(data=data, context={"request": request})
+#             if serializer.is_valid():
+#                 produit = serializer.save()
+
+#                 # Ajouter les images dans la galerie
+#                 images = request.FILES.getlist("gallery")
+#                 for image in images:
+#                     Gallery.objects.create(produit=produit, image=image)
+
+#                 produit.refresh_from_db()
+#                 return Response({
+#                     "message": f"Produit créé avec succès avec {len(images)} image(s)",
+#                     "produit": ProduitSerializer(produit, context={"request": request}).data
+#                 }, status=201)
+#             else:
+#                 return Response(serializer.errors, status=400)
+
+#         except Exception as e:
+#             return Response({"error": f"Une erreur est survenue : {str(e)}"}, status=500)
         
 
 class ProduitDetailSlugView(APIView):
