@@ -454,10 +454,10 @@ class ProduitSerializer(serializers.ModelSerializer):
             "modele": obj.modele.modele,
             "marque": {
                 "id": obj.modele.marque.id if obj.modele.marque else None,
-                "nom": obj.modele.marque.marque if obj.modele.marque else None,
-                "nom": obj.modele.marque.prix if obj.modele.prix else None,
-                "nom": obj.modele.marque.creation_date if obj.modele.creation_date else None,
-                "nom": obj.modele.marque.categorie if obj.modele.categorie else None,
+                "marque": obj.modele.marque.marque if obj.modele.marque else None,
+                "prix": obj.modele.marque.prix if obj.modele.prix else None,
+                "creation_date": obj.modele.marque.creation_date if obj.modele.creation_date else None,
+                "categorie": obj.modele.marque.categorie.nom if obj.modele.marque.categorie else None,
             } if obj.modele.marque else None
         }
 
@@ -470,18 +470,17 @@ class ProduitSerializer(serializers.ModelSerializer):
         }
 
     def get_produit_url(self, obj):
+        slug = obj.slug or ""
         request = self.context.get('request')
         if request:
-            return request.build_absolute_uri(f"/produit/{obj.slug}")
-        return f"https://www.rio-gold.com/produit/{obj.slug}" if obj.slug else None
+            return request.build_absolute_uri(f"/produit/{slug}")
+        return f"https://www.rio-gold.com/produit/{slug}" if slug else None
 
     def get_qr_code_url(self, obj):
+        if not obj.qr_code:
+            return None
         request = self.context.get('request')
-        if obj.qr_code and request:
-            return request.build_absolute_uri(obj.qr_code.url)
-        elif obj.qr_code:
-            return obj.qr_code.url
-        return None
+        return request.build_absolute_uri(obj.qr_code.url) if request else obj.qr_code.url
 
 
 class GallerySerializer(serializers.ModelSerializer):
