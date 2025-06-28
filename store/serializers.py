@@ -435,6 +435,11 @@ class ProduitSerializer(serializers.ModelSerializer):
             "prix": obj.marque.prix,
             "creation_date": obj.marque.creation_date,
             "modification_date": obj.marque.modification_date,
+            "categorie": {
+                "id": obj.modele.categorie.id if obj.modele.categorie else None,
+                "nom": obj.modele.categorie.nom if obj.modele.categorie else None,
+                "image": obj.modele.categorie.image.url if obj.modele.categorie and obj.modele.categorie.image else None,
+            },
             "purete": {
                 "id": obj.marque.purete.id if obj.marque.purete else None,
                 "purete": obj.marque.purete.purete if obj.marque.purete else None,
@@ -447,11 +452,13 @@ class ProduitSerializer(serializers.ModelSerializer):
         return {
             "id": obj.modele.id,
             "modele": obj.modele.modele,
-            "categorie": {
-                "id": obj.modele.categorie.id if obj.modele.categorie else None,
-                "nom": obj.modele.categorie.nom if obj.modele.categorie else None,
-                "image": obj.modele.categorie.image.url if obj.modele.categorie and obj.modele.categorie.image else None,
-            } if obj.modele.categorie else None
+            "marque": {
+                "id": obj.modele.marque.id if obj.modele.marque else None,
+                "nom": obj.modele.marque.marque if obj.modele.marque else None,
+                "nom": obj.modele.marque.prix if obj.modele.prix else None,
+                "nom": obj.modele.marque.creation_date if obj.modele.creation_date else None,
+                "nom": obj.modele.marque.categorie if obj.modele.categorie else None,
+            } if obj.modele.marque else None
         }
 
     def get_purete_detail(self, obj):
