@@ -426,40 +426,58 @@ class ProduitSerializer(serializers.ModelSerializer):
             "image": obj.categorie.image.url if obj.categorie.image else None,
         }
 
+    # def get_marque_detail(self, obj):
+    #     if not obj.marque:
+    #         return None
+    #     return {
+    #         "id": obj.marque.id,
+    #         "marque": obj.marque.marque,
+    #         "prix": obj.marque.prix,
+    #         "creation_date": obj.marque.creation_date,
+    #         "modification_date": obj.marque.modification_date,
+    #         "categorie": {
+    #             "id": obj.modele.categorie.id if obj.modele.categorie else None,
+    #             "nom": obj.modele.categorie.nom if obj.modele.categorie else None,
+    #             "image": obj.modele.categorie.image.url if obj.modele.categorie and obj.modele.categorie.image else None,
+    #         },
+    #         "purete": {
+    #             "id": obj.marque.purete.id if obj.marque.purete else None,
+    #             "purete": obj.marque.purete.purete if obj.marque.purete else None,
+    #         } if obj.marque.purete else None
+    #     }
+    
     def get_marque_detail(self, obj):
-        if not obj.marque:
-            return None
-        return {
-            "id": obj.marque.id,
-            "marque": obj.marque.marque,
-            "prix": obj.marque.prix,
-            "creation_date": obj.marque.creation_date,
-            "modification_date": obj.marque.modification_date,
-            "categorie": {
-                "id": obj.modele.categorie.id if obj.modele.categorie else None,
-                "nom": obj.modele.categorie.nom if obj.modele.categorie else None,
-                "image": obj.modele.categorie.image.url if obj.modele.categorie and obj.modele.categorie.image else None,
-            },
-            "purete": {
-                "id": obj.marque.purete.id if obj.marque.purete else None,
+        if obj.marque:
+            return {
+                "id": obj.marque.id,
+                "marque": obj.marque.marque,
                 "purete": obj.marque.purete.purete if obj.marque.purete else None,
-            } if obj.marque.purete else None
-        }
+                "categorie": obj.marque.categorie.nom if obj.marque.categorie else None,
+            }
+        return None
+
+    # def get_modele_detail(self, obj):
+    #     if not obj.modele:
+    #         return None
+    #     return {
+    #         "id": obj.modele.id,
+    #         "modele": obj.modele.modele,
+    #         "marque": {
+    #             "id": obj.modele.marque.id if obj.modele.marque else None,
+    #             "marque": obj.modele.marque.marque if obj.modele.marque else None,
+    #             "prix": obj.modele.marque.prix if obj.modele.prix else None,
+    #             "creation_date": obj.modele.marque.creation_date if obj.modele.creation_date else None,
+    #         } if obj.modele.marque else None
+    #     }
 
     def get_modele_detail(self, obj):
         if not obj.modele:
             return None
         return {
             "id": obj.modele.id,
-            "modele": obj.modele.modele,
-            "marque": {
-                "id": obj.modele.marque.id if obj.modele.marque else None,
-                "marque": obj.modele.marque.marque if obj.modele.marque else None,
-                "prix": obj.modele.marque.prix if obj.modele.prix else None,
-                "creation_date": obj.modele.marque.creation_date if obj.modele.creation_date else None,
-            } if obj.modele.marque else None
+            "modele": obj.modele.modele
         }
-
+    
     def get_purete_detail(self, obj):
         if not obj.purete:
             return None
