@@ -247,7 +247,7 @@ class Produit(models.Model):
             return False
 
     def save(self, *args, **kwargs):
-        self.full_clean()  # 🔁 Appelle clean() et valide les champs
+        self.full_clean()
         is_new = self.pk is None
         generer_qr = False
 
@@ -257,12 +257,17 @@ class Produit(models.Model):
         if not self.slug:
             base_slug = slugify(self.nom or "produit")
             self.slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
-            generer_qr = True  # 🔄 Générer QR uniquement si nouveau slug
+            generer_qr = True
 
         if not self.sku:
-            sku = self.skuGet()
-            if sku:
-                self.sku = sku
+            base_sku = self.skuGet()
+            if base_sku:
+                final_sku = base_sku
+                suffix = 1
+                while Produit.objects.filter(sku=final_sku).exists():
+                    final_sku = f"{base_sku}-{suffix}"
+                    suffix += 1
+                self.sku = final_sku
 
         super().save(*args, **kwargs)
 
@@ -271,7 +276,7 @@ class Produit(models.Model):
                 qr_content = self.produit_url
                 qr_file = self.generate_qr_code_image(qr_content)
                 self.qr_code.save(qr_file.name, qr_file, save=False)
-                super().save(update_fields=["qr_code"])  # ✅ évite double save complet
+                super().save(update_fields=["qr_code"])
             except Exception as e:
                 print(f"[QR ERROR] {e}")
                 
