@@ -163,11 +163,7 @@ class ProduitSerializer(serializers.ModelSerializer):
     modele_detail = serializers.SerializerMethodField(read_only=True)
     
     # Utilisé pour la création via le nom de marque
-    purete = serializers.SlugRelatedField(
-        queryset=Purete.objects.all(),
-        slug_field='purete',
-        write_only=True
-    )
+    purete = serializers.SlugRelatedField(queryset=Purete.objects.all(),slug_field='purete',write_only=True)
     # Affichage détaillé de la catégorie
     purete_detail = serializers.SerializerMethodField(read_only=True)
     

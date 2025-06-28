@@ -1338,17 +1338,17 @@ class ProduitListAPIView(APIView):
 
 
 
-def get_instance_by_id_or_name(model, value, name_field):
-    if not value:
-        raise ValueError(f"Valeur manquante pour {name_field}")
+# def get_instance_by_id_or_name(model, value, name_field):
+#     if not value:
+#         raise ValueError(f"Valeur manquante pour {name_field}")
 
-    try:
-        if str(value).isdigit():
-            return model.objects.get(id=int(value))
-        else:
-            return model.objects.get(**{f"{name_field}__iexact": value})
-    except model.DoesNotExist:
-        raise
+#     try:
+#         if str(value).isdigit():
+#             return model.objects.get(id=int(value))
+#         else:
+#             return model.objects.get(**{f"{name_field}__iexact": value})
+#     except model.DoesNotExist:
+#         raise
 
 
 
@@ -1395,10 +1395,10 @@ class ProduitCreateAPIView(APIView):
             # data['purete'] = Purete.objects.get(purete__iexact=data.get('purete')).id
             # data['marque'] = Marque.objects.get(marque__iexact=data.get('marque')).id
             # data['modele'] = Modele.objects.get(modele__iexact=data.get('modele')).id
-            data['categorie'] = get_instance_by_id_or_name(Categorie, data.get('categorie'), 'nom').id
-            data['purete'] = get_instance_by_id_or_name(Purete, data.get('purete'), 'purete').id
-            data['marque'] = get_instance_by_id_or_name(Marque, data.get('marque'), 'marque').id
-            data['modele'] = get_instance_by_id_or_name(Modele, data.get('modele'), 'modele').id
+            # data['categorie'] = get_instance_by_id_or_name(Categorie, data.get('categorie'), 'nom').id
+            # data['purete'] = get_instance_by_id_or_name(Purete, data.get('purete'), 'purete').id
+            # data['marque'] = get_instance_by_id_or_name(Marque, data.get('marque'), 'marque').id
+            # data['modele'] = get_instance_by_id_or_name(Modele, data.get('modele'), 'modele').id
 
             # Création du produit
             serializer = ProduitSerializer(data=data, context={"request": request})
