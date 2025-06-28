@@ -242,16 +242,12 @@ class PureteSerializer(serializers.ModelSerializer):
 
 class ProduitSerializer(serializers.ModelSerializer):
     categorie = serializers.PrimaryKeyRelatedField(queryset=Categorie.objects.all(), write_only=True)
-    categorie_detail = serializers.SerializerMethodField(read_only=True)
 
     marque = serializers.PrimaryKeyRelatedField(queryset=Marque.objects.all(), write_only=True)
-    marque_detail = serializers.SerializerMethodField(read_only=True)
 
     modele = serializers.PrimaryKeyRelatedField(queryset=Modele.objects.all(), write_only=True)
-    modele_detail = serializers.SerializerMethodField(read_only=True)
 
     purete = serializers.PrimaryKeyRelatedField(queryset=Purete.objects.all(), write_only=True)
-    purete_detail = serializers.SerializerMethodField(read_only=True)
 
     produit_url = serializers.SerializerMethodField()
     qr_code_url = serializers.SerializerMethodField()
@@ -259,8 +255,8 @@ class ProduitSerializer(serializers.ModelSerializer):
     class Meta:
         model = Produit
         fields = (
-            "id", "slug", "categorie", "categorie_detail", "nom", "produit_url", "sku", "qr_code_url", "image", "description",
-            "status", "genre", "marque", "marque_detail", "modele", "modele_detail", "purete", "purete_detail",
+            "id", "slug", "categorie", "nom", "produit_url", "sku", "qr_code_url", "image", "description",
+            "status", "genre", "marque", "modele", "modele_detail", "purete",
             "matiere", "poids", "taille", "etat"
         )
 
