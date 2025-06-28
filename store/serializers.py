@@ -457,7 +457,6 @@ class ProduitSerializer(serializers.ModelSerializer):
                 "marque": obj.modele.marque.marque if obj.modele.marque else None,
                 "prix": obj.modele.marque.prix if obj.modele.prix else None,
                 "creation_date": obj.modele.marque.creation_date if obj.modele.creation_date else None,
-                "categorie": obj.modele.marque.categorie.nom if obj.modele.marque.categorie else None,
             } if obj.modele.marque else None
         }
 
