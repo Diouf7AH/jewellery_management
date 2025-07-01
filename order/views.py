@@ -51,7 +51,29 @@ class CreateCommandeClientView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Créer une commande client avec produits officiels et personnalisés",
-        operation_description="Cette API permet de créer une commande en ajoutant un nouveau client si nécessaire. Elle gère à la fois les produits existants (via ID) et les produits personnalisés (avec nom, poids, etc.).",
+        # operation_description="Cette API permet de créer une commande en ajoutant un nouveau client si nécessaire. Elle gère à la fois les produits existants (via ID) et les produits personnalisés (avec nom, poids, etc.).",
+        operation_description="""
+            Cette API permet de créer une commande en ajoutant un nouveau client si nécessaire. Elle gère à la fois les produits existants (via ID) et les produits personnalisés (avec nom, poids, etc.).
+            - Exemple de payload JSON côté API :
+            
+                Pour un produit existant :
+                    {
+                        "produit": 7,
+                        "quantite": 2,
+                        "prix_prevue": 125000
+                    }
+                
+                Pour un produit personnalisé :
+                    {
+                        "produit_libre": "Bracelet sur mesure",
+                        "poids_prevu": 12.5,
+                        "marque_personnalisee": "Rio Gold",
+                        "categorie_personnalisee": "Bracelet",
+                        "type_personnalise": "Femmes",
+                        "quantite": 1,
+                        "prix_prevue": 85000
+                    }
+        """,
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=['client', 'produits'],

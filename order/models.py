@@ -127,7 +127,7 @@ class CommandeProduitClient(models.Model):
 
     @property
     def marque_affichee(self):
-        return self.produit.marque.nom if self.produit and self.produit.marque else self.marque_personnalisee
+        return self.produit.marque.marque if self.produit and self.produit.marque else self.marque_personnalisee
 
     @property
     def poids_affiche(self):
