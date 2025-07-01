@@ -40,7 +40,7 @@ class Vente(models.Model):
     # Tu peux gérer les deux cas (avec ou sans commande) facilement.
     # Tu peux suivre le cycle : commande → vente, ou vente directe.
     # Tu peux afficher l’historique du client complet : ventes + commandes.
-    commande_source = models.ForeignKey('order.CommandeClient', on_delete=models.SET_NULL, null=True, blank=True,related_name='commend_en_ventes')
+    commande_source = models.ForeignKey('order.CommandeClient', on_delete=models.SET_NULL, null=True, blank=True,related_name='command_en_ventes')
     
     def __str__(self):
         return f"Vente #{self.numero_vente or 'N/A'} - Client: {self.client.full_name if self.client else 'Inconnu'} - {self.created_at.strftime('%d/%m/%Y')}"

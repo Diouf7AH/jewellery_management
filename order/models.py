@@ -4,6 +4,8 @@ from django.utils import timezone
 from django.conf import settings
 from store.models import Produit
 from django.core.exceptions import ValidationError
+from decimal import Decimal
+
 
 # Create your models here.
 class CommandeClient(models.Model):
@@ -36,6 +38,13 @@ class CommandeClient(models.Model):
             if not CommandeClient.objects.filter(numero_commande=numero).exists():
                 return numero
 
+    @property
+    def montant_total(self):
+        total = self.commandes_produits_client.aggregate(
+            total=models.Sum('sous_total')
+        )['total'] or Decimal('0.00')
+        return total
+
     class Meta:
         indexes = [
             models.Index(fields=['date_commande']),
@@ -43,8 +52,8 @@ class CommandeClient(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.numero_commande} - {self.client.nom if self.client else 'Client inconnu'}"
-
+        client_nom = f"{self.client.prenom} {self.client.nom}" if self.client else "Client inconnu"
+        return f"{self.numero_commande} - {client_nom}"
 # Avantages de cette méthode
 # Tu peux gérer les produits officiels et les personnalisés
 # Pas de casse si le Produit est supprimé (car SET_NULL)
@@ -88,7 +97,13 @@ class CommandeClient(models.Model):
 class CommandeProduitClient(models.Model):
     commande_client = models.ForeignKey(CommandeClient, on_delete=models.CASCADE, related_name='commandes_produits_client')
     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True)
+
+    # Produit personnalisé (si produit est null)
     produit_libre = models.CharField(max_length=255, blank=True, null=True)
+    poids_prevu = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    marque_personnalisee = models.CharField(max_length=100, null=True, blank=True)
+    categorie_personnalisee = models.CharField(max_length=100, null=True, blank=True)
+    type_personnalise = models.CharField(max_length=100, null=True, blank=True)
 
     quantite = models.PositiveIntegerField()
     prix_prevue = models.DecimalField(max_digits=10, decimal_places=2)
@@ -96,41 +111,27 @@ class CommandeProduitClient(models.Model):
 
     def clean(self):
         if not self.produit and not self.produit_libre:
-            raise ValidationError("Vous devez soit sélectionner un produit existant, soit entrer un produit libre.")
-        if self.produit_libre and not self.prix_prevue:
-            raise ValidationError("Veuillez spécifier un prix pour le produit libre.")
+            raise ValidationError("Veuillez renseigner un produit existant ou saisir les détails personnalisés.")
 
     def calculer_sous_total(self):
-        if self.produit:
-            prix_prevue = (self.produit.poids or 0) * (self.produit.marque.prix or 0)
-            total = prix_prevue * self.quantite
-        else:
-            total = self.quantite * self.prix_prevue
-        return total
+        return self.quantite * self.prix_prevue
 
     def save(self, *args, **kwargs):
-        self.full_clean()  # pour valider avant sauvegarde
-        self.sous_total = self.calculer_sous_total()
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        nom = self.produit.nom if self.produit else self.produit_libre
-        return f"{self.quantite} x {nom} (Commande #{self.commande_client_id})"
-    
-
-    def save(self, *args, **kwargs):
-        self.full_clean()  # Appelle clean() avant save()
+        self.full_clean()
         self.sous_total = self.calculer_sous_total()
         super().save(*args, **kwargs)
 
     @property
     def nom_produit(self):
-        return self.produit.nom if self.produit else self.produit_libre or "Produit inconnu"
+        return self.produit.nom if self.produit else self.produit_libre or "Produit personnalisé"
+
+    @property
+    def marque_affichee(self):
+        return self.produit.marque.nom if self.produit and self.produit.marque else self.marque_personnalisee
+
+    @property
+    def poids_affiche(self):
+        return self.produit.poids if self.produit else self.poids_prevu
 
     def __str__(self):
-        return self.nom_produit
-
-    class Meta:
-        ordering = ['-id']
-        verbose_name = "Produit commandé"
-        verbose_name_plural = "Produits commandés"
+        return f"{self.quantite} x {self.nom_produit} (Commande #{self.commande_client_id})"

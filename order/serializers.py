@@ -4,22 +4,40 @@ from store.models import Produit
 from sale.models import Client
 from userauths.serializers import UserMiniSerializer
 from rest_framework import serializers
-class ClientCommandeSerializer(serializers.ModelSerializer):
+# class ClientCommandeSerializer(serializers.ModelSerializer):
+#     telephone = serializers.CharField(max_length=15, unique=True, blank=True, null=True)
+#     class Meta:
+#         model = Client
+#         fields = ['id', 'nom', 'prenom', 'telephone']
+
+    # def validate_telephone(self, value):
+    #     if not value:
+    #         raise serializers.ValidationError("Le numéro de téléphone est requis.")
+    #     return value
+    
+class InfoClientPassCommandeSerializer(serializers.ModelSerializer):
+    telephone = serializers.CharField(
+        max_length=15,
+        required=True,
+        allow_blank=False,
+        error_messages={
+            'blank': "Le numéro de téléphone est requis.",
+            'required': "Le numéro de téléphone est obligatoire.",
+        }
+    )
+
     class Meta:
         model = Client
-        fields = ['nom', 'prenom', 'telephone']
+        fields = ['id', 'nom', 'prenom', 'telephone']
+        
 
-    def validate_telephone(self, value):
-        if not value:
-            raise serializers.ValidationError("Le numéro de téléphone est requis.")
-        return value
 
 class CommandeProduitClientSerializer(serializers.ModelSerializer):
-    commande_client = serializers.PrimaryKeyRelatedField(
-        queryset=CommandeClient.objects.all(), write_only=True
-    )
+    commande_client = serializers.PrimaryKeyRelatedField(queryset=CommandeClient.objects.all(), write_only=True)
     nom_produit = serializers.ReadOnlyField()
     sous_total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    marque_affichee = serializers.SerializerMethodField()
+    poids_affiche = serializers.SerializerMethodField()
 
     class Meta:
         model = CommandeProduitClient
@@ -28,30 +46,38 @@ class CommandeProduitClientSerializer(serializers.ModelSerializer):
             'commande_client',
             'produit',
             'produit_libre',
+            'poids_prevu',
+            'marque_personnalisee',
+            'categorie_personnalisee',
+            'type_personnalise',
             'quantite',
             'prix_prevue',
             'sous_total',
             'nom_produit',
+            'marque_affichee',
+            'poids_affiche',
         ]
-        # extra_kwargs = {
-        #     'commande_client': {'write_only': True}  # ← cohérent avec le champ dans `fields`
-        # }
+
+    def get_marque_affichee(self, obj):
+        return obj.marque_affichee
+
+    def get_poids_affiche(self, obj):
+        return obj.poids_affiche
 
 
 class CommandeClientSerializer(serializers.ModelSerializer):
-    client_id = serializers.PrimaryKeyRelatedField(queryset=Client.objects.all(), source="client", write_only=True)
-    client = ClientCommandeSerializer()
-    produits = CommandeProduitClientSerializer(many=True)
+    client = InfoClientPassCommandeSerializer()
+    produits = CommandeProduitClientSerializer(source='commandes_produits_client', many=True, read_only=True)
     numero_commande = serializers.ReadOnlyField()
-    created_by = UserMiniSerializer(read_only=True)         
+    created_by = UserMiniSerializer(read_only=True)
     date_commande = serializers.DateTimeField(read_only=True)
+    montant_total = serializers.SerializerMethodField()
 
     class Meta:
         model = CommandeClient
         fields = [
             'id',
             'numero_commande',
-            'client_id',   # champ utilisé lors du POST
             'client',
             'created_by',
             'statut',
@@ -59,17 +85,8 @@ class CommandeClientSerializer(serializers.ModelSerializer):
             'image',
             'date_commande',
             'produits',
+            'montant_total',
         ]
-#  la méthode create()
-# Puisque tu gères un champ imbriqué produits, 
-# tu dois définir la méthode create() pour enregistrer correctement la commande et ses produits.
-    def create(self, validated_data):
-        produits_data = validated_data.pop('produits')
-        created_by = validated_data.pop('created_by', None)
 
-        commande = CommandeClient.objects.create(**validated_data, created_by=created_by)
-
-        for produit_data in produits_data:
-            CommandeProduitClient.objects.create(commande_client=commande, **produit_data)
-
-        return commande
+    def get_montant_total(self, obj):
+        return obj.montant_total
