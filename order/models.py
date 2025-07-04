@@ -5,7 +5,14 @@ from django.conf import settings
 from store.models import Produit
 from django.core.exceptions import ValidationError
 from decimal import Decimal
+from store.models import get_default_purete
 
+MATIERE = (
+    ("or", "Or"),
+    ("argent", "Argent"),
+    ("mixte", "Mixte")
+)
+# prise de commande en boutique
 
 # Create your models here.
 class CommandeClient(models.Model):
@@ -80,7 +87,7 @@ class CommandeClient(models.Model):
 #         if self.produit:
 #             # prix_prevue = self.produit.poids * self.produit.marque.prix
 #             prix_prevue = (self.produit.poids or 0) * (self.produit.marque.prix or 0)
-#             total =  prix_prevue * self.quantite
+#             total =  prix_prevue * self.nquantite
 #         else:
 #             total = self.quantite * self.prix_prevue
 
@@ -96,25 +103,42 @@ class CommandeClient(models.Model):
 # Tu peux migrer un produit_libre vers un vrai Produit plus tard
 class CommandeProduitClient(models.Model):
     commande_client = models.ForeignKey(CommandeClient, on_delete=models.CASCADE, related_name='commandes_produits_client')
-    produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True)
+    produit = models.CharField(max_length=255, blank=True, null=True)
+    categorie = models.ForeignKey('store.Categorie', on_delete=models.SET_NULL, null=True, blank=True)
+    marque = models.ForeignKey('store.Marque', on_delete=models.SET_NULL, null=True, blank=True)
+    modele = models.ForeignKey('store.Modele', on_delete=models.SET_NULL, null=True, blank=True)
+    genre = models.CharField(max_length=10, blank=True, null=True)
+    taille = models.CharField(max_length=7, blank=True, null=True)
+    matiere = models.CharField(choices=MATIERE, max_length=50, default="or", null=True, blank=True)
+    poids = models.DecimalField(max_digits=6, decimal_places=2)
+    purete = models.ForeignKey('store.Purete', on_delete=models.SET_NULL, null=True, blank=True, related_name="commande_produits_purete", default=get_default_purete)
+    prix_gramme = models.DecimalField(max_digits=12,decimal_places=2, default=0.00, null=False, blank=False)
+    personnalise = models.BooleanField(default=False, help_text="Cochez si ce produit est personnalisé (et non un produit officiel)")
+    creation_date = models.DateTimeField(auto_now_add=True)
+    modification_date = models.DateTimeField(auto_now=True)
 
-    # Produit personnalisé (si produit est null)
-    produit_libre = models.CharField(max_length=255, blank=True, null=True)
-    poids_prevu = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    marque_personnalisee = models.CharField(max_length=100, null=True, blank=True)
-    categorie_personnalisee = models.CharField(max_length=100, null=True, blank=True)
-    type_personnalise = models.CharField(max_length=100, null=True, blank=True)
-
+    # Quantité et prix
     quantite = models.PositiveIntegerField()
     prix_prevue = models.DecimalField(max_digits=10, decimal_places=2)
     sous_total = models.DecimalField(max_digits=12, decimal_places=2, editable=False)
 
-    def clean(self):
-        if not self.produit and not self.produit_libre:
-            raise ValidationError("Veuillez renseigner un produit existant ou saisir les détails personnalisés.")
-
+    def calculer_prix_prevue(self):
+        return self.poids * self.prix_gramme
+    
     def calculer_sous_total(self):
         return self.quantite * self.prix_prevue
+    
+    def clean(self):
+        super().clean()
+        
+        if self.poids is None:
+            raise ValidationError("Le poids ne peut pas être vide.")
+        
+        if self.prix_gramme is None:
+            raise ValidationError("Le prix par gramme ne peut pas être vide.")
+
+        if self.prix_gramme < 0:
+            raise ValidationError("Le prix par gramme ne peut pas être négatif.")
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -122,16 +146,14 @@ class CommandeProduitClient(models.Model):
         super().save(*args, **kwargs)
 
     @property
-    def nom_produit(self):
-        return self.produit.nom if self.produit else self.produit_libre or "Produit personnalisé"
+    def marque(self):
+        return self.marque.marque if self.marque else "Marque inconnue"
 
     @property
-    def marque_affichee(self):
-        return self.produit.marque.marque if self.produit and self.produit.marque else self.marque_personnalisee
-
-    @property
-    def poids_affiche(self):
-        return self.produit.poids if self.produit else self.poids_prevu
+    def poids(self):
+        return self.poids or "N/A"
 
     def __str__(self):
-        return f"{self.quantite} x {self.nom_produit} (Commande #{self.commande_client_id})"
+        return f"{self.quantite} x {self.produit()} (Commande #{self.commande_client_id})"
+
+# End prise de commande en boutique

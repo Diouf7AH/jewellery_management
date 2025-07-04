@@ -6,147 +6,305 @@ from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-
+from rest_framework.parsers import MultiPartParser, FormParser
 from sale.models import Client
 from order.serializers import InfoClientPassCommandeSerializer, CommandeClientSerializer, CommandeProduitClientSerializer
 from order.models import CommandeClient, CommandeProduitClient
 from userauths.models import User  # si nécessaire pour created_by
+import json
 
 # class CreateCommandeClientView(APIView):
 #     permission_classes = [IsAuthenticated]
+#     parser_classes = [MultiPartParser, FormParser]  # <== indispensable pour fichier image
 
 #     @swagger_auto_schema(
-#         operation_description="Créer une commande client avec ses produits.",
-#         request_body=CommandeClientSerializer,
-#         responses={201: openapi.Response(description="Commande créée", schema=CommandeClientSerializer())}
+#         operation_summary="Créer une commande client",
+#         operation_description="Créer une commande client avec ajout de produits (officiels ou personnalisés). Le client est créé automatiquement s’il n’existe pas.",
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 name="client",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_STRING,
+#                 description="Objet JSON : {nom, prenom, telephone}"
+#             ),
+#             openapi.Parameter(
+#                 name="produits",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_STRING,
+#                 description="Liste JSON de produits avec champs : produit, categorie, marque, modele, genre, taille, matiere, poids, purete, prix_gramme, quantite, prix, personnalise"
+#             ),
+#             openapi.Parameter(
+#                 name="commentaire",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="Commentaire optionnel"
+#             ),
+#             openapi.Parameter(
+#                 name="image",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_FILE,
+#                 required=False,
+#                 description="Image facultative"
+#             ),
+#         ],
+#         responses={
+#             201: openapi.Response(description="✅ Commande créée avec succès."),
+#             400: openapi.Response(description="Requête invalide."),
+#             500: openapi.Response(description="Erreur serveur."),
+#         }
 #     )
 #     def post(self, request):
-#         data = request.data.copy()
-#         produits_data = data.pop('produits', [])
+#         try:
+#             data = request.data
+#             client_data = data.get('client')
+#             produits_data = data.get('produits', [])
 
-#         serializer = CommandeClientSerializer(data=data, context={"request": request})
-#         if serializer.is_valid():
-#             try:
-#                 with transaction.atomic():
-#                     commande = serializer.save(created_by=request.user)
+#             if not client_data:
+#                 return Response({"error": "Les informations du client sont requises."}, status=400)
 
-#                     for produit_data in produits_data:
-#                         produit_data['commande'] = commande.id
-#                         produit_serializer = CommandeProduitClientSerializer(data=produit_data)
-#                         produit_serializer.is_valid(raise_exception=True)
-#                         produit_serializer.save()
+#             if not produits_data:
+#                 return Response({"error": "Au moins un produit est requis."}, status=400)
 
-#                 return Response({
-#                     "message": "Commande créée avec succès.",
-#                     "commande": CommandeClientSerializer(commande, context={"request": request}).data
-#                 }, status=status.HTTP_201_CREATED)
+#             with transaction.atomic():
+#                 telephone = client_data.get('telephone').strip()
+#                 client = Client.objects.filter(telephone=telephone).first()
 
-#             except Exception as e:
-#                 return Response({"error": f"Une erreur est survenue : {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+#                 if not client:
+#                     client_serializer = InfoClientPassCommandeSerializer(data=client_data)
+#                     client_serializer.is_valid(raise_exception=True)
+#                     client = client_serializer.save()
 
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+#                 image = request.FILES.get('image')  # ✅ récupère l'image
+
+#                 commande = CommandeClient.objects.create(
+#                     client=client,
+#                     created_by=request.user,
+#                     commentaire=data.get('commentaire'),
+#                     image=image
+#                 )
+
+#                 for produit_data in produits_data:
+#                     produit_data['commande_client'] = commande.id
+#                     produit_serializer = CommandeProduitClientSerializer(data=produit_data)
+#                     produit_serializer.is_valid(raise_exception=True)
+#                     produit_serializer.save()
+
+#             return Response({
+#                 "message": "✅ Commande créée avec succès.",
+#                 "commande": CommandeClientSerializer(commande, context={"request": request}).data
+#             }, status=201)
+
+#         except Exception as e:
+#             return Response({"error": str(e)}, status=500)
+
+
+# class CreateCommandeClientView(APIView):
+#     permission_classes = [IsAuthenticated]
+#     parser_classes = [MultiPartParser, FormParser]
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer une commande client",
+#         operation_description="Créer une commande client avec des produits (officiels ou personnalisés). Le client est créé automatiquement s’il n’existe pas.",
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 name="commentaire",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="Commentaire de la commande"
+#             ),
+#             openapi.Parameter(
+#                 name="image",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_FILE,
+#                 required=False,
+#                 description="Image facultative liée à la commande"
+#             ),
+#         ],
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["client", "produits"],
+#             properties={
+#                 "client": openapi.Schema(
+#                     type=openapi.TYPE_OBJECT,
+#                     properties={
+#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
+#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
+#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING),
+#                     },
+#                     required=["telephone"]
+#                 ),
+#                 "produits": openapi.Schema(
+#                     type=openapi.TYPE_ARRAY,
+#                     items=openapi.Schema(
+#                         type=openapi.TYPE_OBJECT,
+#                         required=["quantite", "prix_prevue"],
+#                         properties={
+#                             "produit": openapi.Schema(type=openapi.TYPE_INTEGER, description="ID produit (optionnel)"),
+#                             "categorie": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "marque": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "modele": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "genre": openapi.Schema(type=openapi.TYPE_STRING),
+#                             "taille": openapi.Schema(type=openapi.TYPE_STRING),
+#                             "matiere": openapi.Schema(type=openapi.TYPE_STRING),
+#                             "poids": openapi.Schema(type=openapi.TYPE_NUMBER),
+#                             "purete": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "prix_gramme": openapi.Schema(type=openapi.TYPE_NUMBER),
+#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "prix_prevue": openapi.Schema(type=openapi.TYPE_NUMBER),
+#                             "personnalise": openapi.Schema(type=openapi.TYPE_BOOLEAN)
+#                         }
+#                     )
+#                 )
+#             }
+#         ),
+#         responses={
+#             201: openapi.Response(description="✅ Commande créée avec succès."),
+#             400: openapi.Response(description="Requête invalide."),
+#             500: openapi.Response(description="Erreur serveur."),
+#         }
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         try:
+#             data = request.data
+#             client_data = data.get("client")
+#             produits_data = data.get("produits", [])
+
+#             if not client_data:
+#                 return Response({"error": "Les informations du client sont requises."}, status=400)
+
+#             if not produits_data:
+#                 return Response({"error": "Au moins un produit est requis."}, status=400)
+
+#             telephone = client_data.get("telephone").strip()
+#             client, _ = Client.objects.get_or_create(
+#                 telephone=telephone,
+#                 defaults={
+#                     "nom": client_data.get("nom", ""),
+#                     "prenom": client_data.get("prenom", "")
+#                 }
+#             )
+
+#             image = request.FILES.get("image")
+#             commentaire = data.get("commentaire")
+
+#             commande = CommandeClient.objects.create(
+#                 client=client,
+#                 created_by=request.user,
+#                 commentaire=commentaire,
+#                 image=image
+#             )
+
+#             for produit_data in produits_data:
+#                 produit_data["commande_client"] = commande.id
+#                 produit_serializer = CommandeProduitClientSerializer(data=produit_data)
+#                 produit_serializer.is_valid(raise_exception=True)
+#                 produit_serializer.save()
+
+#             return Response({
+#                 "message": "✅ Commande créée avec succès.",
+#                 "commande": CommandeClientSerializer(commande, context={"request": request}).data
+#             }, status=201)
+
+#         except Exception as e:
+#             transaction.set_rollback(True)
+#             return Response({"error": str(e)}, status=500)
+
 
 class CreateCommandeClientView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]  # Pour accepter l’image
 
     @swagger_auto_schema(
-        operation_summary="Créer une commande client avec produits officiels et personnalisés",
-        # operation_description="Cette API permet de créer une commande en ajoutant un nouveau client si nécessaire. Elle gère à la fois les produits existants (via ID) et les produits personnalisés (avec nom, poids, etc.).",
-        operation_description="""
-            Cette API permet de créer une commande en ajoutant un nouveau client si nécessaire. Elle gère à la fois les produits existants (via ID) et les produits personnalisés (avec nom, poids, etc.).
-            - Exemple de payload JSON côté API :
-            
-                Pour un produit existant :
-                    {
-                        "produit": 7,
-                        "quantite": 2,
-                        "prix_prevue": 125000
-                    }
-                
-                Pour un produit personnalisé :
-                    {
-                        "produit_libre": "Bracelet sur mesure",
-                        "poids_prevu": 12.5,
-                        "marque_personnalisee": "Rio Gold",
-                        "categorie_personnalisee": "Bracelet",
-                        "type_personnalise": "Femmes",
-                        "quantite": 1,
-                        "prix_prevue": 85000
-                    }
-        """,
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=['client', 'produits'],
-            properties={
-                'client': openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        'nom': openapi.Schema(type=openapi.TYPE_STRING, example="Seynabou"),
-                        'prenom': openapi.Schema(type=openapi.TYPE_STRING, example="Diouf"),
-                        'telephone': openapi.Schema(type=openapi.TYPE_STRING, example="771234567"),
-                    },
-                    required=['telephone']
-                ),
-                'produits': openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Schema(
-                        type=openapi.TYPE_OBJECT,
-                        required=['quantite', 'prix_prevue'],
-                        properties={
-                            'produit': openapi.Schema(type=openapi.TYPE_INTEGER, description="ID du produit existant (optionnel)", example=3),
-                            'produit_libre': openapi.Schema(type=openapi.TYPE_STRING, description="Nom du produit personnalisé", example="Collier personnalisé"),
-                            'poids_prevu': openapi.Schema(type=openapi.TYPE_NUMBER, format='float', description="Poids estimé en grammes", example=15.5),
-                            'marque_personnalisee': openapi.Schema(type=openapi.TYPE_STRING, example="Rio-Gold"),
-                            'categorie_personnalisee': openapi.Schema(type=openapi.TYPE_STRING, example="Collier"),
-                            'type_personnalise': openapi.Schema(type=openapi.TYPE_STRING, example="Femme"),
-                            'quantite': openapi.Schema(type=openapi.TYPE_INTEGER, example=1),
-                            'prix_prevue': openapi.Schema(type=openapi.TYPE_NUMBER, format='float', example=150000),
-                        }
-                    )
-                ),
-                'commentaire': openapi.Schema(type=openapi.TYPE_STRING, example="Commande spéciale pour cadeau"),
-                'image': openapi.Schema(type=openapi.TYPE_STRING, format='binary'),
-            }
-        ),
+        operation_summary="Créer une commande client",
+        operation_description="Créer une commande avec des produits personnalisés ou officiels. "
+                            "Le client est créé automatiquement si le téléphone est nouveau.",
+        manual_parameters=[
+            openapi.Parameter(
+                name="client",
+                in_=openapi.IN_FORM,
+                type=openapi.TYPE_STRING,
+                description="Objet JSON : {nom, prenom, telephone}"
+            ),
+            openapi.Parameter(
+                name="produits",
+                in_=openapi.IN_FORM,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Liste JSON des produits. Exemple prix_prevue, sous_total et le montant_total sont des champs calculé, :\n"
+                    '[{"categorie": 1, "marque": 2, "poids": 3.5, "quantite": 1, '
+                    ' "prix_gramme": 5500, "personnalise": true}]'
+                )
+            ),
+            openapi.Parameter(
+                name="commentaire",
+                in_=openapi.IN_FORM,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="Commentaire de la commande (facultatif)"
+            ),
+            openapi.Parameter(
+                name="image",
+                in_=openapi.IN_FORM,
+                type=openapi.TYPE_FILE,
+                required=False,
+                description="Image facultative liée à la commande"
+            ),
+        ],
         responses={
-            201: openapi.Response(description="Commande créée avec succès."),
-            400: "Requête invalide",
-            500: "Erreur serveur"
+            201: openapi.Response(description="✅ Commande créée avec succès."),
+            400: openapi.Response(description="❌ Requête invalide."),
+            500: openapi.Response(description="💥 Erreur serveur."),
         }
     )
+    @transaction.atomic
     def post(self, request):
         try:
             data = request.data
-            client_data = data.get('client')
-            produits_data = data.get('produits', [])
 
-            if not client_data:
-                return Response({"error": "Les informations du client sont requises."}, status=400)
+            client_raw = data.get("client")
+            produits_raw = data.get("produits")
 
-            with transaction.atomic():
-                # Vérifie si le client existe déjà par téléphone
-                telephone = client_data.get('telephone').strip()
-                client = Client.objects.filter(telephone=telephone).first()
+            if not client_raw:
+                return Response({"error": "Le champ client est requis."}, status=400)
+            if not produits_raw:
+                return Response({"error": "Le champ produits est requis."}, status=400)
 
-                if not client:
-                    client_serializer = InfoClientPassCommandeSerializer(data=client_data)
-                    client_serializer.is_valid(raise_exception=True)
-                    client = client_serializer.save()
+            try:
+                client_data = json.loads(client_raw)
+                produits_data = json.loads(produits_raw)
+            except json.JSONDecodeError:
+                return Response({"error": "Format JSON invalide pour client ou produits."}, status=400)
 
-                # Création de la commande
-                commande = CommandeClient.objects.create(
-                    client=client,
-                    created_by=request.user,
-                    commentaire=data.get('commentaire'),
-                    image=data.get('image')  # si tu as un champ image
-                )
+            telephone = client_data.get("telephone", "").strip()
+            if not telephone:
+                return Response({"error": "Le numéro de téléphone du client est requis."}, status=400)
 
-                # Enregistrement des produits
-                for index, produit_data in enumerate(produits_data, start=1):
-                    produit_data['commande_client'] = commande.id
-                    produit_serializer = CommandeProduitClientSerializer(data=produit_data)
-                    produit_serializer.is_valid(raise_exception=True)
-                    produit_serializer.save()
+            client, _ = Client.objects.get_or_create(
+                telephone=telephone,
+                defaults={
+                    "nom": client_data.get("nom", ""),
+                    "prenom": client_data.get("prenom", "")
+                }
+            )
+
+            image = request.FILES.get("image")
+            commentaire = data.get("commentaire")
+
+            commande = CommandeClient.objects.create(
+                client=client,
+                created_by=request.user,
+                commentaire=commentaire,
+                image=image
+            )
+
+            for produit_data in produits_data:
+                produit_data["commande_client"] = commande.id
+                serializer = CommandeProduitClientSerializer(data=produit_data)
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
 
             return Response({
                 "message": "✅ Commande créée avec succès.",
@@ -154,8 +312,9 @@ class CreateCommandeClientView(APIView):
             }, status=201)
 
         except Exception as e:
+            transaction.set_rollback(True)
             return Response({"error": str(e)}, status=500)
-        
+
 
 class ListCommandeClientView(APIView):
     permission_classes = [IsAuthenticated]

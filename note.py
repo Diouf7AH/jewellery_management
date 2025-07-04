@@ -1,3 +1,8 @@
+Connecte-toi à MySQL et exécute             
+ALTER DATABASE jewellery_management CHARACTER SET utf8 COLLATE utf8_general_ci;
+Tu peux aussi modifier la table concernée si elle existe déjà :
+ALTER TABLE token_blacklist_blacklistedtoken CONVERT TO CHARACTER SET utf8 COLLATE utf8_general_ci;
+
 dans le projet store->views.py decomonte # if role not in ['admin', 'manager']:
 et comment if role not in ['admin', 'manager', 'vendor']:
 
@@ -25,3 +30,26 @@ Catégorie : "Montres"
                             modele :
                         Casio
                         Omega
+                    
+
+
+class Categorie(models.Model):
+    nom = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.nom
+
+
+class Categorie(models.Model):
+    nom = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.nom
+
+
+class Marque(models.Model):
+    nom = models.CharField(max_length=100, unique=True)
+    categories = models.ManyToManyField(Categorie, related_name='marques')
+
+    def __str__(self):
+        return self.nom
