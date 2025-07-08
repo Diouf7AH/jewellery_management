@@ -8,10 +8,13 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework.parsers import MultiPartParser, FormParser
 from sale.models import Client
-from order.serializers import InfoClientPassCommandeSerializer, CommandeClientSerializer, CommandeProduitClientSerializer
-from order.models import CommandeClient, CommandeProduitClient
+from order.serializers import InfoClientPassCommandeSerializer, CommandeClientSerializer, CommandeProduitClientSerializer, PaiementAcompteBonCommandeViewSerializer
+from order.models import CommandeClient, CommandeProduitClient, BonCommande
 from userauths.models import User  # si nécessaire pour created_by
 import json
+from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+from rest_framework.exceptions import ValidationError
 
 # class CreateCommandeClientView(APIView):
 #     permission_classes = [IsAuthenticated]
@@ -213,14 +216,149 @@ import json
 #             return Response({"error": str(e)}, status=500)
 
 
+# class CreateCommandeClientView(APIView):
+#     permission_classes = [IsAuthenticated]
+#     parser_classes = [MultiPartParser, FormParser]  # Pour accepter l’image
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer une commande client",
+#         operation_description="Créer une commande avec des produits personnalisés ou officiels. "
+#                             "Le client est créé automatiquement si le téléphone est nouveau.",
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 name="client",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_STRING,
+#                 description="Objet JSON : {nom, prenom, telephone}"
+#             ),
+#             openapi.Parameter(
+#                 name="produits",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_STRING,
+#                 description=(
+#                     "Liste JSON des produits. Exemple prix_prevue, sous_total et le montant_total sont des champs calculé, :\n"
+#                     '[{"categorie": 1, "marque": 2, "poids": 3.5, "quantite": 1, '
+#                     ' "prix_gramme": 5500, "personnalise": true}]'
+#                 )
+#             ),
+#             openapi.Parameter(
+#                 name="commentaire",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="Commentaire de la commande (facultatif)"
+#             ),
+#             openapi.Parameter(
+#                 name="image",
+#                 in_=openapi.IN_FORM,
+#                 type=openapi.TYPE_FILE,
+#                 required=False,
+#                 description="Image facultative liée à la commande"
+#             ),
+#         ],
+#         responses={
+#             201: openapi.Response(description="✅ Commande créée avec succès."),
+#             400: openapi.Response(description="❌ Requête invalide."),
+#             500: openapi.Response(description="💥 Erreur serveur."),
+#         }
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         try:
+#             data = request.data
+
+#             client_raw = data.get("client")
+#             produits_raw = data.get("produits")
+
+#             if not client_raw:
+#                 return Response({"error": "Le champ client est requis."}, status=400)
+#             if not produits_raw:
+#                 return Response({"error": "Le champ produits est requis."}, status=400)
+
+#             try:
+#                 client_data = json.loads(client_raw)
+#                 produits_data = json.loads(produits_raw)
+#             except json.JSONDecodeError:
+#                 return Response({"error": "Format JSON invalide pour client ou produits."}, status=400)
+
+#             telephone = client_data.get("telephone", "").strip()
+#             if not telephone:
+#                 return Response({"error": "Le numéro de téléphone du client est requis."}, status=400)
+
+#             client, _ = Client.objects.get_or_create(
+#                 telephone=telephone,
+#                 defaults={
+#                     "nom": client_data.get("nom", ""),
+#                     "prenom": client_data.get("prenom", "")
+#                 }
+#             )
+
+#             image = request.FILES.get("image")
+#             commentaire = data.get("commentaire")
+
+#             commande = CommandeClient.objects.create(
+#                 client=client,
+#                 created_by=request.user,
+#                 commentaire=commentaire,
+#                 image=image
+#             )
+
+#             # for produit_data in produits_data:
+#             #     produit_data["commande_client"] = commande.id
+#             #     serializer = CommandeProduitClientSerializer(data=produit_data)
+#             #     serializer.is_valid(raise_exception=True)
+#             #     serializer.save()
+            
+#             for produit_data in produits_data:
+#                 produit_data["commande_client"] = commande.id
+
+#                 try:
+#                     poids = Decimal(str(produit_data.get("poids")))
+#                     prix_gramme = Decimal(str(produit_data.get("prix_gramme")))
+#                     if poids is None or prix_gramme is None:
+#                         raise ValueError("poids ou prix_gramme manquant.")
+#                     prix_prevue = poids * prix_gramme
+#                 except (InvalidOperation, ValueError, TypeError):
+#                     raise ValidationError("Impossible de calculer prix_prevue : poids ou prix_gramme invalide.")
+
+#                 produit_data["prix_prevue"] = prix_prevue
+
+#                 serializer = CommandeProduitClientSerializer(data=produit_data)
+#                 serializer.is_valid(raise_exception=True)
+#                 serializer.save()
+            
+#             # 💰 Calcul du montant total prévu
+#             montant_total = sum([
+#                 Decimal(p.get("prix_prevue", 0)) * int(p.get("quantite", 1))
+#                 for p in produits_data
+#             ])
+
+#             # 📦 Création du bon de commande avec numéro égal à la commande
+#             bon_command = BonCommande.objects.create(
+#                 commande=commande,
+#                 numero_bon=commande.numero_commande,
+#                 montant_total=montant_total,
+#                 acompte=Decimal("0")  # tu pourras permettre de fournir un acompte plus tard si nécessaire
+#             )
+
+#             return Response({
+#                 "message": "✅ Commande créée avec succès.",
+#                 "commande": CommandeClientSerializer(commande, context={"request": request}).data
+#             }, status=201)
+
+#         except Exception as e:
+#             transaction.set_rollback(True)
+#             return Response({"error": str(e)}, status=500)
+
+
 class CreateCommandeClientView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]  # Pour accepter l’image
+    parser_classes = [MultiPartParser, FormParser]
 
     @swagger_auto_schema(
         operation_summary="Créer une commande client",
         operation_description="Créer une commande avec des produits personnalisés ou officiels. "
-                            "Le client est créé automatiquement si le téléphone est nouveau.",
+                              "Le client est créé automatiquement si le téléphone est nouveau.",
         manual_parameters=[
             openapi.Parameter(
                 name="client",
@@ -233,9 +371,8 @@ class CreateCommandeClientView(APIView):
                 in_=openapi.IN_FORM,
                 type=openapi.TYPE_STRING,
                 description=(
-                    "Liste JSON des produits. Exemple prix_prevue, sous_total et le montant_total sont des champs calculé, :\n"
-                    '[{"categorie": 1, "marque": 2, "poids": 3.5, "quantite": 1, '
-                    ' "prix_gramme": 5500, "personnalise": true}]'
+                    "Liste JSON des produits. Les champs 'prix_prevue', 'sous_total' et 'montant_total' sont calculés automatiquement. "
+                    'Exemple : [{"categorie": "Bague", "marque": "local", "modele": "Alliance Homme Or Jaune", "purete":18, "poids": 3.5, "quantite": 1, "prix_gramme": 5500, "personnalise": true, "matiere": "or", "genre: "F"}]'
                 )
             ),
             openapi.Parameter(
@@ -300,16 +437,41 @@ class CreateCommandeClientView(APIView):
                 image=image
             )
 
+            montant_total = Decimal("0")
+
             for produit_data in produits_data:
                 produit_data["commande_client"] = commande.id
+
+                try:
+                    poids = Decimal(str(produit_data.get("poids")))
+                    prix_gramme = Decimal(str(produit_data.get("prix_gramme")))
+                    prix_prevue = poids * prix_gramme
+                except (InvalidOperation, TypeError, ValueError):
+                    raise ValidationError("Impossible de calculer 'prix_prevue' : poids ou prix_gramme invalide.")
+
+                produit_data["prix_prevue"] = prix_prevue
+
                 serializer = CommandeProduitClientSerializer(data=produit_data)
                 serializer.is_valid(raise_exception=True)
-                serializer.save()
+                produit_instance = serializer.save()
+
+                montant_total += produit_instance.sous_total
+
+            BonCommande.objects.create(
+                commande=commande,
+                numero_bon=commande.numero_commande,
+                montant_total=montant_total,
+                acompte=Decimal("0")
+            )
 
             return Response({
                 "message": "✅ Commande créée avec succès.",
                 "commande": CommandeClientSerializer(commande, context={"request": request}).data
             }, status=201)
+
+        except ValidationError as e:
+            transaction.set_rollback(True)
+            return Response({"error": e.detail if hasattr(e, "detail") else str(e)}, status=400)
 
         except Exception as e:
             transaction.set_rollback(True)
@@ -368,6 +530,85 @@ class UpdateCommandeByNumeroView(APIView):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+class PaiementAcompteBonCommandeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Mettre à jour l'acompte d’un bon de commande",
+        operation_description="Met à jour le montant de l’acompte versé, recalcule le reste à payer, et ajuste le statut de la commande (en_attente_acompte, en_attente, payee).",
+        manual_parameters=[
+            openapi.Parameter(
+                'numero_bon', openapi.IN_PATH,
+                type=openapi.TYPE_STRING,
+                required=True,
+                description="Numéro du bon de commande (même que la commande)"
+            )
+        ],
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["acompte"],
+            properties={
+                "acompte": openapi.Schema(
+                    type=openapi.TYPE_NUMBER,
+                    format='decimal',
+                    description="Nouveau montant de l’acompte versé"
+                )
+            }
+        ),
+        responses={
+            200: openapi.Response("✅ Acompte mis à jour avec succès."),
+            400: "Données invalides",
+            404: "Bon de commande introuvable",
+        }
+    )
+    def patch(self, request, numero_bon):
+        acompte_str = request.data.get("acompte")
+        if acompte_str is None:
+            return Response({"error": "Le champ 'acompte' est requis."}, status=400)
+
+        try:
+            acompte = Decimal(str(acompte_str))
+            if acompte < 0:
+                return Response({"error": "L’acompte ne peut pas être négatif."}, status=400)
+        except:
+            return Response({"error": "Montant d’acompte invalide."}, status=400)
+
+        try:
+            bon = BonCommande.objects.select_related("commande").get(numero_bon=numero_bon)
+        except BonCommande.DoesNotExist:
+            return Response({"error": "Bon de commande introuvable."}, status=404)
+
+        if acompte > bon.montant_total:
+            return Response({
+                "error": f"L’acompte ({acompte}) ne peut pas dépasser le montant total ({bon.montant_total})."
+            }, status=400)
+
+        # ✅ Mise à jour des montants
+        bon.acompte = acompte
+        bon.reste_a_payer = bon.montant_total - acompte
+        bon.save()
+
+        # ✅ Mise à jour du statut selon les règles
+        commande = bon.commande
+        seuil_moitie = bon.montant_total / Decimal("2")
+
+        if acompte == bon.montant_total:
+            commande.statut = CommandeClient.STATUT_PAYEE
+        elif acompte >= seuil_moitie:
+            commande.statut = CommandeClient.STATUT_EN_ATTENTE
+        else:
+            commande.statut = CommandeClient.STATUT_EN_ATTENTE_ACOMPTE
+        commande.save()
+
+        return Response({
+            "message": "✅ Acompte mis à jour avec succès.",
+            "numero_bon": bon.numero_bon,
+            "montant_total": str(bon.montant_total),
+            "acompte": str(bon.acompte),
+            "reste_a_payer": str(bon.reste_a_payer),
+            "statut_commande": commande.statut,
+        }, status=200)
 
 
 class ChangeCommandeStatusView(APIView):

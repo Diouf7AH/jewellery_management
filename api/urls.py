@@ -167,6 +167,7 @@ urlpatterns = [
     path('commande-client/list', order_views.ListCommandeClientView.as_view(), name='liste-commandes'),
     path('commande-client/<str:numero_commande>/modifier/', order_views.UpdateCommandeByNumeroView.as_view(), name='modifier-commande-par-numero'),
     path('commande-client/<str:numero_commande>/changer-statut/', order_views.ChangeCommandeStatusView.as_view(), name='changer-statut-commande'),
+    path("commande-client/paiement-acompte-bon/<str:numero_bon>/acompte/", order_views.PaiementAcompteBonCommandeView.as_view(), name="paiement-acompte-bon")
     
     # path('', include('userauths.urls')),
     # path('', include('store.urls')),

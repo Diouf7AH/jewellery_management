@@ -12,19 +12,29 @@ MATIERE = (
     ("argent", "Argent"),
     ("mixte", "Mixte")
 )
+
+GENRE = (
+    ("H", "Homme"),
+    ("F", "Femme"),
+    ("E", "Enfant")
+)
 # prise de commande en boutique
 
 # Create your models here.
 class CommandeClient(models.Model):
+    STATUT_EN_ATTENTE_ACOMPTE = 'en_attente_acompte'
+    STATUT_EN_ATTENTE = 'en_attente'
+    STATUT_PAYEE = 'payee'
+
+    STATUT_CHOICES = [
+        (STATUT_EN_ATTENTE_ACOMPTE, "En attente d'acompte"),
+        (STATUT_EN_ATTENTE, "En attente"),
+        (STATUT_PAYEE, "Payée"),
+    ]
     numero_commande = models.CharField(max_length=30, unique=True, editable=False)
     client = models.ForeignKey('sale.Client', on_delete=models.SET_NULL, null=True, related_name="commandes_client")
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
-    statut = models.CharField(max_length=20, choices=[
-        ('en_attente', 'En attente'),
-        ('en_preparation', 'En préparation'),
-        ('livree', 'Livrée'),
-        ('annulee', 'Annulée'),
-    ], default='en_attente')
+    statut = models.CharField(max_length=30, choices=STATUT_CHOICES, default=STATUT_EN_ATTENTE_ACOMPTE)
     date_commande = models.DateTimeField(auto_now_add=True)
     commentaire = models.TextField(blank=True, null=True)
     image = models.ImageField(upload_to='orders/client', default="order-client.jpg", null=True, blank=True)
@@ -107,7 +117,7 @@ class CommandeProduitClient(models.Model):
     categorie = models.ForeignKey('store.Categorie', on_delete=models.SET_NULL, null=True, blank=True)
     marque = models.ForeignKey('store.Marque', on_delete=models.SET_NULL, null=True, blank=True)
     modele = models.ForeignKey('store.Modele', on_delete=models.SET_NULL, null=True, blank=True)
-    genre = models.CharField(max_length=10, blank=True, null=True)
+    genre = models.CharField(choices=GENRE, default="F", max_length=2, blank=True, null=True)
     taille = models.CharField(max_length=7, blank=True, null=True)
     matiere = models.CharField(choices=MATIERE, max_length=50, default="or", null=True, blank=True)
     poids = models.DecimalField(max_digits=6, decimal_places=2)
@@ -130,15 +140,18 @@ class CommandeProduitClient(models.Model):
     
     def clean(self):
         super().clean()
-        
+
         if self.poids is None:
             raise ValidationError("Le poids ne peut pas être vide.")
         
         if self.prix_gramme is None:
             raise ValidationError("Le prix par gramme ne peut pas être vide.")
-
+        
         if self.prix_gramme < 0:
             raise ValidationError("Le prix par gramme ne peut pas être négatif.")
+        
+        if self.prix_prevue is None:
+            raise ValidationError("Le prix prévu ne peut pas être vide.")
 
     def save(self, *args, **kwargs):
         self.full_clean()
@@ -146,14 +159,27 @@ class CommandeProduitClient(models.Model):
         super().save(*args, **kwargs)
 
     @property
-    def marque(self):
+    def nom_marque(self):
         return self.marque.marque if self.marque else "Marque inconnue"
+    
+    def __str__(self):
+        return f"{self.quantite} x {self.produit} (Commande #{self.commande_client_id})"
 
-    @property
-    def poids(self):
-        return self.poids or "N/A"
+class BonCommande(models.Model):
+    commande = models.OneToOneField("CommandeClient", on_delete=models.CASCADE, related_name="bon_commande")
+    numero_bon = models.CharField(max_length=100, unique=True)  # Même que numero_commande
+    montant_total = models.DecimalField(max_digits=12, decimal_places=2)
+    acompte = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    reste_a_payer = models.DecimalField(max_digits=12, decimal_places=2)
+    date_acompte = models.DateTimeField("Date de l'acompte", auto_now_add=True)
+    modification_date_acompte = models.DateTimeField("Dernière modification", auto_now=True)
+    
+    def save(self, *args, **kwargs):
+        self.reste_a_payer = max(self.montant_total - self.acompte, 0)
+        super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.quantite} x {self.produit()} (Commande #{self.commande_client_id})"
+        return f"BonCommande #{self.numero_bon}"
+    
 
 # End prise de commande en boutique
