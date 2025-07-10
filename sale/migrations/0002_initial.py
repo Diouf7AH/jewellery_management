@@ -11,6 +11,10 @@ class Migration(migrations.Migration):
         ('order', '0003_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
 ]
+        ('order', '0003_initial'),
+        ('vendor', '0001_initial'),
+        ('sale', '0001_initial'),
+    ]
 
     operations = [
         migrations.AddField(
@@ -32,6 +36,10 @@ class Migration(migrations.Migration):
             model_name='vente',
             name='commande_source',
             ),
+            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='command_en_ventes', to='order.commandeclient'),
+            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='commend_en_ventes', to='order.commandeclient'),
+    ),
+
         migrations.AddField(
             model_name='vente',
             name='created_by',
