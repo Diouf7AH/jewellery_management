@@ -72,7 +72,7 @@ class VenteSerializer(serializers.ModelSerializer):
     produits = VenteProduitSerializer(many=True)
     class Meta:
         model = Vente
-        fields = ['id', 'numero_vente', 'client', 'created_by', 'commande_source', 'produits', 'created_at', 'montant_total',]
+        fields = ['id', 'numero_vente', 'client', 'created_by', 'produits', 'created_at', 'montant_total',]
 
 
 class FactureSerializer(serializers.ModelSerializer):
