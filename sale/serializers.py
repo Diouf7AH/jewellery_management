@@ -126,7 +126,7 @@ class VenteDetailSerializer(serializers.ModelSerializer):
     client = serializers.SerializerMethodField()
     produits = serializers.SerializerMethodField()
     vente = serializers.SerializerMethodField()
-    source_commande = serializers.SerializerMethodField()
+    # source_commande = serializers.SerializerMethodField()
     facture = serializers.SerializerMethodField()
     total_remise = serializers.SerializerMethodField()
     total_ht = serializers.SerializerMethodField()
@@ -167,8 +167,8 @@ class VenteDetailSerializer(serializers.ModelSerializer):
             "numero_vente": obj.numero_vente
         }
         
-    def get_source_commande(self, obj):
-        return obj.commande_source.numero_commande if obj.commande_source else "Vente directe"
+    # def get_source_commande(self, obj):
+    #     return obj.commande_source.numero_commande if obj.commande_source else "Vente directe"
     
     def get_facture(self, obj):
         facture = getattr(obj, "facture_vente", None)
