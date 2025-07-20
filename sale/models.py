@@ -40,7 +40,7 @@ class Vente(models.Model):
     # Tu peux gérer les deux cas (avec ou sans commande) facilement.
     # Tu peux suivre le cycle : commande → vente, ou vente directe.
     # Tu peux afficher l’historique du client complet : ventes + commandes.
-    commande_source = models.ForeignKey('order.CommandeClient', on_delete=models.SET_NULL, null=True, blank=True,related_name='command_en_ventes')
+    # commande_source = models.ForeignKey('order.CommandeClient', on_delete=models.SET_NULL, null=True, blank=True,related_name='command_en_ventes')
     
     def __str__(self):
         return f"Vente #{self.numero_vente or 'N/A'} - Client: {self.client.full_name if self.client else 'Inconnu'} - {self.created_at.strftime('%d/%m/%Y')}"
@@ -147,38 +147,25 @@ class VenteProduit(models.Model):
 
 
 
-# class VenteProduit(models.Model):
-#     vente = models.ForeignKey(Vente, on_delete=models.SET_NULL, null=True, blank=True, related_name="produits")
-#     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True, related_name="venteProduit_produit")
-#     quantite = models.IntegerField()
-#     prix_vente_grammes = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
-#     # prix_vente_reel_gramme = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
-#     sous_total_prix_vent = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
-#     tax = models.IntegerField(null=True, blank=True)
-#     tax_inclue = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12)
-#     # total_prix_vente = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
-
-#     def __str__(self):
-#         return f"{self.quantite} x {self.produit.nom} in Vente {self.vente.id}"
-
-#     # def save(self, *args, **kwargs):
-#     #     self.sous_total_prix_vent = self.produit.prix_vente * self.quantite
-#     #     super().save(*args, **kwargs)
-
-#     def load_client(self):
-#         return self.client
-
-#     def load_produit(self):
-#         return self.produit
-
 # Facture (Invoice) Model
 class Facture(models.Model):
+    
+    TYPES_FACTURE = (
+        ('vente_directe', 'Vente directe'),
+        ('acompte', 'Facture d’acompte'),
+        ('finale', 'Facture finale')
+    )
+    STATUS = (
+        ('non_payé', 'Non Payé'),
+        ('payé', 'Non Payé'),
+    )
     numero_facture = models.CharField(max_length=20, unique=True, editable=False)
     vente = models.OneToOneField('Vente', on_delete=models.SET_NULL, null=True, blank=True, related_name="facture_vente")
     date_creation = models.DateTimeField(auto_now_add=True)
     montant_total = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12)
-    status = models.CharField(max_length=20, choices=[('Non Payé', 'Non Payé'), ('Payé', 'Payé')], default='Non Payé')
+    status = models.CharField(max_length=20, choices=STATUS, default='non_payé')
     fichier_pdf = models.FileField(upload_to='factures/', null=True, blank=True)
+    type_facture = models.CharField(max_length=20, choices=TYPES_FACTURE)
 
     class Meta:
         ordering = ['-id']

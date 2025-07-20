@@ -94,7 +94,7 @@ class Bijouterie(models.Model):
 
 # Model for Product Categories
 class Categorie(models.Model):
-    nom = models.CharField(max_length=30, unique=True, blank=True, default="")
+    nom = models.CharField(max_length=30, unique=True)
     image = models.ImageField(upload_to='categorie/', default="category.jpg", null=True, blank=True)
     # bijouterie = models.ForeignKey(Bijouterie, on_delete=models.CASCADE, null=True, blank=True, related_name="bijouterie_categorie")
 
@@ -108,8 +108,13 @@ class Categorie(models.Model):
     def save(self, *args, **kwargs):
         # Optionnel : tu peux faire un nettoyage ou un formatage du nom ici si besoin
         if self.nom:
-            self.nom = self.nom.strip().title()
+            self.nom = " ".join(self.nom.strip().split()).title()
         super().save(*args, **kwargs)
+    
+    def get_image_url(self):
+        if self.image and hasattr(self.image, 'url'):
+            return self.image.url
+        return '/media/category.jpg'
 
 
     
@@ -133,12 +138,10 @@ class Purete(models.Model):
     
     def __str__(self):  
         return f"{self.purete}K"
-    
 
 # Brand model
 class Marque(models.Model):
-    marque = models.CharField(unique=True, max_length=25, null=True, blank=True)
-    categorie = models.ForeignKey('Categorie',on_delete=models.SET_NULL,null=True,blank=True,related_name='marques_categorie')
+    marque = models.CharField(unique=True, max_length=25)
     purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="marques_purete", default=get_default_purete)
     prix = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
     creation_date = models.DateTimeField(auto_now_add=True)
@@ -147,14 +150,27 @@ class Marque(models.Model):
     def save(self, *args, **kwargs):
         if not self.marque:
             raise ValueError("Le champ 'marque' ne peut pas être vide.")
+        self.marque = " ".join(self.marque.strip().split()).title()
         super().save(*args, **kwargs)
-    
+
     class Meta:
         verbose_name_plural = "Marques"
-    
+
     def __str__(self):
         return f"{self.marque} - {self.purete.purete if self.purete else 'N/A'}"
 
+
+#implémentation avec une table intermédiaire 
+class CategorieMarque(models.Model):
+    categorie = models.ForeignKey('Categorie', on_delete=models.CASCADE, related_name='categorie_marques')
+    marque = models.ForeignKey('Marque', on_delete=models.CASCADE, related_name='marque_categories')
+    date_liaison = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('categorie', 'marque')  # Empêche les doublons
+
+    def __str__(self):
+        return f"{self.categorie.nom} ↔ {self.marque.marque}"
 
 # Type model
 class Modele(models.Model):

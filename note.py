@@ -53,3 +53,8 @@ class Marque(models.Model):
 
     def __str__(self):
         return self.nom
+
+
+
+est-ce que dans une application ERP on peut avoir deux façon de facture 
+les facture pour les ventes direct et les factures pour les ventes avec commend qui doit avoir un acompte
