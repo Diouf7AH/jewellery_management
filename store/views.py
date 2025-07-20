@@ -603,7 +603,7 @@ class PureteDeleteAPIView(APIView):
 #         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class MarqueListView(APIView):
+class MarqueListAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
