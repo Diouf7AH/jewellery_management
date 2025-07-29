@@ -165,7 +165,7 @@ class Facture(models.Model):
     montant_total = models.DecimalField(default=0.00, null=True, decimal_places=2, max_digits=12)
     status = models.CharField(max_length=20, choices=STATUS, default='non_payé')
     fichier_pdf = models.FileField(upload_to='factures/', null=True, blank=True)
-    type_facture = models.CharField(max_length=20, choices=TYPES_FACTURE)
+    type_facture = models.CharField(max_length=20, choices=TYPES_FACTURE, default='vente_directe')
 
     class Meta:
         ordering = ['-id']

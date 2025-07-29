@@ -357,8 +357,15 @@ class CreateCommandeClientView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Créer une commande client",
-        operation_description="Créer une commande avec des produits personnalisés ou officiels. "
-                              "Le client est créé automatiquement si le téléphone est nouveau.",
+        operation_description="""Créer une commande avec des produits personnalisés ou officiels.
+                            Le client est créé automatiquement si le téléphone est nouveau.
+                            Commande avec acompte
+                                1.Création d’une CommandeClient → statut en_attente_acompte
+                                2.Paiement partiel → création d’une Facture(type='acompte')
+                                3.Livraison → paiement final → création Facture(type='finale')
+                                4.La facture finale peut déduire automatiquement l’acompte
+
+                                """,
         manual_parameters=[
             openapi.Parameter(
                 name="client",

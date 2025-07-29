@@ -226,7 +226,8 @@ class Produit(models.Model):
     def skuGet(self):
         champs = [self.categorie, self.modele, self.marque, self.poids, self.taille, self.purete, self.etat]
         if not all(champs):
-            return None  # <-- éviter l'erreur fatale
+            print("[SKU] Champs manquants pour SKU :", champs)
+            return None
 
         return (
             f"{self.categorie.nom[:4].upper()}-"
@@ -268,7 +269,7 @@ class Produit(models.Model):
         generer_qr = False
 
         if not self.nom and self.categorie and self.modele and self.marque:
-            self.nom = f'{self.categorie} {self.modele} {self.marque}'
+            self.nom = f'{self.categorie.nom} {self.modele.modele} {self.marque.marque}'
 
         if not self.slug:
             base_slug = slugify(self.nom or "produit")

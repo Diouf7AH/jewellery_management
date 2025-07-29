@@ -191,13 +191,14 @@ from vendor.models import Vendor
 
 
 # class VenteDirecteView(APIView):
+#vente direct lorsque le client achete directement a la boutique
 class VenteProduitCreateView(APIView):
         renderer_classes = [UserRenderer]
         permission_classes = [IsAuthenticated]
 
         @swagger_auto_schema(
-            operation_summary="Créer une vente avec produits, client et facture",
-            operation_description="Créer une vente avec des produits associés (par QR code), mise à jour du stock, génération automatique de la facture. Un admin peut spécifier un `vendor_email`.",
+            operation_summary="Vente direct créer une vente avec produits, client et facture",
+            operation_description="""Créer une vente avec des produits associés (par QR code), mise à jour du stock, génération automatique de la facture. Un admin peut spécifier un `vendor_email`.""",
             manual_parameters=[
                 openapi.Parameter(
                     'vendor_email',
@@ -243,6 +244,8 @@ class VenteProduitCreateView(APIView):
             try:
                 user = request.user
                 role = getattr(user.user_role, 'role', None)
+                user_role_obj = getattr(user, 'user_role', None)
+                role = getattr(user_role_obj, 'role', None)
                 if role not in ['admin', 'manager', 'vendor']:
                     return Response({"message": "Access Denied"}, status=403)
 
@@ -253,17 +256,25 @@ class VenteProduitCreateView(APIView):
                     return Response({"error": "Les champs 'nom' et 'prenom' du client sont obligatoires."}, status=400)
 
                 telephone = client_data.get("telephone", "").strip()
-
                 if telephone:
-                    client, _ = Client.objects.get_or_create(
-                        telephone=telephone,
-                        defaults={"nom": client_data["nom"], "prenom": client_data["prenom"]}
-                    )
+                    lookup = {"telephone": telephone}
                 else:
-                    client, _ = Client.objects.get_or_create(
-                        nom=client_data["nom"],
-                        prenom=client_data["prenom"]
-                    )
+                    lookup = {"nom": client_data["nom"], "prenom": client_data["prenom"]}
+
+                client, _ = Client.objects.get_or_create(
+                    defaults={"nom": client_data["nom"], "prenom": client_data["prenom"]},
+                    **lookup
+                )
+                # if telephone:
+                #     client, _ = Client.objects.get_or_create(
+                #         telephone=telephone,
+                #         defaults={"nom": client_data["nom"], "prenom": client_data["prenom"]}
+                #     )
+                # else:
+                #     client, _ = Client.objects.get_or_create(
+                #         nom=client_data["nom"],
+                #         prenom=client_data["prenom"]
+                #     )
 
                 vente = Vente.objects.create(client=client, created_by=user)
                 vente_produits = []
