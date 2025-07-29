@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from store.models import (Bijouterie, Categorie, Gallery, HistoriquePrix,
+from store.models import (Bijouterie, Categorie, CategorieMarque, Gallery, HistoriquePrix,
                         Marque, Modele, Produit, Purete)
 
 
@@ -99,6 +99,10 @@ class MarqueSerializer(serializers.ModelSerializer):
             }
         return None
 
+class CategorieMarqueSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CategorieMarque
+        fields = '__all__'
 
 class ModeleSerializer(serializers.ModelSerializer):
     # Pour la création via le nom de la marque (ex: "Nocal")
