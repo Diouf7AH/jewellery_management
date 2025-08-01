@@ -21,9 +21,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='marque',
             name='marque',
-            # field=models.CharField(max_length=25, unique=True),
-            field=models.CharField(default=1, max_length=25, unique=True),
-            preserve_default=False,
+            field=models.CharField(max_length=25, unique=True),
         ),
         migrations.CreateModel(
             name='CategorieMarque',
