@@ -162,12 +162,14 @@ class Marque(models.Model):
 
 #implémentation avec une table intermédiaire 
 class CategorieMarque(models.Model):
-    categorie = models.ForeignKey('Categorie', on_delete=models.CASCADE, related_name='categorie_marques')
-    marque = models.ForeignKey('Marque', on_delete=models.CASCADE, related_name='marque_categories')
+    categorie = models.ForeignKey('Categorie', on_delete=models.SET_NULL, null=True, blank=True, related_name='categorie_marques')
+    marque = models.ForeignKey('Marque', on_delete=models.SET_NULL, null=True, blank=True, related_name='marque_categories')
     date_liaison = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ('categorie', 'marque')  # Empêche les doublons
+        constraints = [
+            models.UniqueConstraint(fields=['categorie', 'marque'], name='unique_categorie_marque')
+        ]
 
     def __str__(self):
         return f"{self.categorie.nom} ↔ {self.marque.marque}"
