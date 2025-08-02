@@ -183,10 +183,6 @@ class Modele(models.Model):
         # Affiche : "Bague (marque: Nocal)" ou "Bague (Marque: Aucune)"
         return f"{self.modele} (Marque: {self.marque.nom if self.marque else 'Aucune'})"
 
-    @property
-    def marque_id(self):
-        # Permet d'accéder à modele.marque_id directement (int ou None)
-        return self.marque.id if self.marque else None
     
     class Meta:
         ordering = ['modele']
