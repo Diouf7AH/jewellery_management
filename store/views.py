@@ -6,26 +6,27 @@ from django.http import HttpResponse
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 # from knox.auth import TokenAuthentication
+from decimal import Decimal, InvalidOperation
 from rest_framework import status
 from rest_framework.parsers import (FileUploadParser, FormParser,
                                     MultiPartParser)
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.generics import ListAPIView
+
 from django.shortcuts import get_object_or_404
-from rest_framework.exceptions import ValidationError
-from decimal import Decimal, InvalidOperation
+from django.db.models import Q
 from django.http import Http404 
 
 from rest_framework.parsers import JSONParser
 
 from backend.renderers import UserRenderer
 from stock.serializers import StockSerializer
-from store.models import Bijouterie, Categorie, Marque, Modele, Produit, Gallery, Purete, CategorieMarque
+from store.models import Bijouterie, Categorie, Marque, MarquePurete, Modele, Produit, Gallery, Purete, MarquePuretePrixHistory
 from store.serializers import (BijouterieSerializer, CategorieSerializer,
-                               MarqueSerializer, ModeleSerializer,
-                               ProduitSerializer, PureteSerializer, GallerySerializer, ProduitWithGallerySerializer)
+                            MarqueSerializer, ModeleSerializer, MarquePureteSerializer,MarquePureteListSerializer,
+                            ProduitSerializer, PureteSerializer, GallerySerializer, ProduitWithGallerySerializer)
 
 #Export to excel
 import qrcode
@@ -234,80 +235,14 @@ class CategorieCreateAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 
-# class CategorieUpdateAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-#     parser_classes = (FormParser, MultiPartParser, FileUploadParser)
-
-#     def get_object(self, pk):
-#         try:
-#             return Categorie.objects.get(pk=pk)
-#         except Categorie.DoesNotExist:
-#             return None
-
-#     def has_access(self, user):
-#         return user.user_role and user.user_role.role in ['admin', 'manager']
-
-#     @swagger_auto_schema(
-#         operation_summary="Modifier une catégorie (PUT)",
-#         operation_description="Remplace complètement une catégorie existante.",
-#         request_body=CategorieSerializer,
-#         responses={
-#             200: openapi.Response("Catégorie mise à jour avec succès", CategorieSerializer),
-#             400: "Erreur de validation",
-#             403: "Accès refusé",
-#             404: "Catégorie non trouvée"
-#         }
-#     )
-#     def put(self, request, pk):
-#         if not self.has_access(request.user):
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         categorie = self.get_object(pk)
-#         if not categorie:
-#             return Response({"message": "Catégorie non trouvée"}, status=status.HTTP_404_NOT_FOUND)
-
-#         serializer = CategorieSerializer(categorie, data=request.data)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data, status=status.HTTP_200_OK)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#     @swagger_auto_schema(
-#         operation_summary="Modifier partiellement une catégorie (PATCH)",
-#         operation_description="Met à jour partiellement les champs d'une catégorie existante.",
-#         request_body=CategorieSerializer,
-#         responses={
-#             200: openapi.Response("Catégorie mise à jour avec succès", CategorieSerializer),
-#             400: "Erreur de validation",
-#             403: "Accès refusé",
-#             404: "Catégorie non trouvée"
-#         }
-#     )
-#     def patch(self, request, pk):
-#         if not self.has_access(request.user):
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         categorie = self.get_object(pk)
-#         if not categorie:
-#             return Response({"message": "Catégorie non trouvée"}, status=status.HTTP_404_NOT_FOUND)
-
-#         serializer = CategorieSerializer(categorie, data=request.data, partial=True)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data, status=status.HTTP_200_OK)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-
-
-class CategorieUpdateByNameAPIView(APIView):
+class CategorieUpdateAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
     parser_classes = (FormParser, MultiPartParser, FileUploadParser)
 
-    def get_object(self, nom):
+    def get_object(self, pk):
         try:
-            return Categorie.objects.get(nom__iexact=nom)
+            return Categorie.objects.get(pk=pk)
         except Categorie.DoesNotExist:
             return None
 
@@ -315,15 +250,8 @@ class CategorieUpdateByNameAPIView(APIView):
         return user.user_role and user.user_role.role in ['admin', 'manager']
 
     @swagger_auto_schema(
-        operation_summary="Remplacer une catégorie par son nom (PUT)",
-        operation_description="Remplace entièrement une catégorie identifiée par son nom.",
-        manual_parameters=[
-            openapi.Parameter(
-                'nom', openapi.IN_PATH,
-                description="Nom exact de la catégorie (insensible à la casse)",
-                type=openapi.TYPE_STRING
-            )
-        ],
+        operation_summary="Modifier une catégorie (PUT)",
+        operation_description="Remplace complètement une catégorie existante.",
         request_body=CategorieSerializer,
         responses={
             200: openapi.Response("Catégorie mise à jour avec succès", CategorieSerializer),
@@ -332,11 +260,11 @@ class CategorieUpdateByNameAPIView(APIView):
             404: "Catégorie non trouvée"
         }
     )
-    def put(self, request, nom):
+    def put(self, request, pk):
         if not self.has_access(request.user):
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        categorie = self.get_object(nom)
+        categorie = self.get_object(pk)
         if not categorie:
             return Response({"message": "Catégorie non trouvée"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -347,28 +275,21 @@ class CategorieUpdateByNameAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @swagger_auto_schema(
-        operation_summary="Mettre à jour partiellement une catégorie par son nom (PATCH)",
-        operation_description="Met à jour partiellement une catégorie identifiée par son nom.",
-        manual_parameters=[
-            openapi.Parameter(
-                'nom', openapi.IN_PATH,
-                description="Nom exact de la catégorie (insensible à la casse)",
-                type=openapi.TYPE_STRING
-            )
-        ],
+        operation_summary="Modifier partiellement une catégorie (PATCH)",
+        operation_description="Met à jour partiellement les champs d'une catégorie existante.",
         request_body=CategorieSerializer,
         responses={
-            200: openapi.Response("Catégorie mise à jour partiellement", CategorieSerializer),
+            200: openapi.Response("Catégorie mise à jour avec succès", CategorieSerializer),
             400: "Erreur de validation",
             403: "Accès refusé",
             404: "Catégorie non trouvée"
         }
     )
-    def patch(self, request, nom):
+    def patch(self, request, pk):
         if not self.has_access(request.user):
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        categorie = self.get_object(nom)
+        categorie = self.get_object(pk)
         if not categorie:
             return Response({"message": "Catégorie non trouvée"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -421,11 +342,11 @@ class PureteListAPIView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Lister les puretés",
-        operation_description="Retourne la liste de toutes les puretés, avec option de filtrage par valeur partielle (`?purete=`).",
+        operation_description="Retourne la liste de toutes les puretés, avec option de filtrage par valeur partielle (`?search=`).",
         manual_parameters=[
             openapi.Parameter(
-                'purete', openapi.IN_QUERY,
-                description="Recherche partielle par valeur de pureté (ex: 18 ou 21K)",
+                'search', openapi.IN_QUERY,
+                description="Recherche partielle par valeur de pureté (ex: 18 ou 24K)",
                 type=openapi.TYPE_STRING
             )
         ],
@@ -436,13 +357,12 @@ class PureteListAPIView(APIView):
         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        search = request.query_params.get('purete')
-        puretes = Purete.objects.all()
-
+        search = request.query_params.get('search', None)
+        queryset = Purete.objects.all()
         if search:
-            puretes = puretes.filter(purete__icontains=search)
+            queryset = queryset.filter(Q(purete__icontains=search))
 
-        serializer = PureteSerializer(puretes, many=True)
+        serializer = PureteSerializer(queryset, many=True)
         return Response(serializer.data)
 
 
@@ -576,370 +496,419 @@ class PureteDeleteAPIView(APIView):
             return None
 
 
-# class MarqueListAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les marques",
-#         operation_description="Récupère la liste de toutes les marques disponibles.",
-#         manual_parameters=[
-#             openapi.Parameter('search', openapi.IN_QUERY, description="Filtrer par nom de marque", type=openapi.TYPE_STRING)
-#         ],
-#         responses={200: openapi.Response('Liste des marques', MarqueSerializer(many=True))}
-#     )
-#     def get(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         search_query = request.GET.get('search')
-#         marques = Marque.objects.all()
-
-#         if search_query:
-#             marques = marques.filter(marque__icontains=search_query)
-
-#         serializer = MarqueSerializer(marques, many=True)
-#         return Response(serializer.data, status=status.HTTP_200_OK)
-
-
 class MarqueListAPIView(APIView):
+    renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Lister toutes les marques avec leurs catégories associées",
-        responses={200: "Liste des marques"}
+        operation_summary="Lister les marques",
+        operation_description="Récupère la liste de toutes les marques disponibles.",
+        manual_parameters=[
+            openapi.Parameter('search', openapi.IN_QUERY, description="Filtrer par nom de marque", type=openapi.TYPE_STRING)
+        ],
+        responses={200: openapi.Response('Liste des marques', MarqueSerializer(many=True))}
     )
     def get(self, request):
-        marques = Marque.objects.all().prefetch_related('marque_categories__categorie')
-        results = []
+        user = request.user
+        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        for marque in marques:
-            categories = [
-                {
-                    "id": cm.categorie.id,
-                    "nom": cm.categorie.nom,
-                    "image": request.build_absolute_uri(cm.categorie.get_image_url())
-                }
-                for cm in marque.marque_categories.all()
-            ]
+        search_query = request.GET.get('search')
+        marques = Marque.objects.all()
 
-            results.append({
-                "id": marque.id,
-                "marque": marque.marque,
-                "prix": float(marque.prix),
-                "purete": str(marque.purete.purete if marque.purete else ""),
-                "categories": categories
-            })
+        if search_query:
+            marques = marques.filter(marque__icontains=search_query)
 
-        return Response(results, status=200)
+        serializer = MarqueSerializer(marques, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-# class MarqueListAPIView(APIView):
+class ListMarquePureteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Lister toutes les liaisons Marque–Pureté avec prix",
+        responses={200: MarquePureteListSerializer(many=True)}
+    )
+    def get(self, request):
+        queryset = MarquePurete.objects.select_related('marque', 'purete').all()
+        serializer = MarquePureteListSerializer(queryset, many=True)
+        return Response(serializer.data, status=200)
+
+
+# class MarqueCreateAPIView(APIView):
 #     renderer_classes = [UserRenderer]
 #     permission_classes = [IsAuthenticated]
 
-#     @swagger_auto_schema(
-#         operation_summary="Lister les marques",
-#         operation_description="Récupère la liste des marques avec filtres : nom, catégorie, pureté.",
-#         manual_parameters=[
-#             openapi.Parameter('search', openapi.IN_QUERY, description="Filtrer par nom de marque", type=openapi.TYPE_STRING),
-#         ],
-#         responses={200: openapi.Response('Liste des marques', MarqueSerializer(many=True))}
-#     )
-#     def get(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         search_query = request.GET.get('search')
-
-#         marques = Marque.objects.all()
-
-#         if search_query:
-#             marques = marques.filter(marque__icontains=search_query)
-
-#         serializer = MarqueSerializer(marques, many=True)
-#         return Response(serializer.data, status=status.HTTP_200_OK)
-    
-
-# class MarqueCreateAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
-#     parser_classes = [JSONParser]
-    
 #     # ✅ Rôles autorisés à créer une marque
 #     allowed_roles_admin_manager = ['admin', 'manager']
 
 #     @swagger_auto_schema(
 #         operation_summary="Créer une nouvelle marque",
+#         operation_description="Permet à un admin ou manager d'ajouter une marque avec son prix et sa pureté.",
 #         request_body=MarqueSerializer,
 #         responses={
 #             201: openapi.Response(description="Marque créée avec succès", schema=MarqueSerializer),
-#             400: "Erreur de validation",
+#             400: openapi.Response(description="Erreur de validation"),
+#             403: openapi.Response(description="Accès refusé")
 #         }
 #     )
 #     def post(self, request):
-        
 #         user = request.user
 #         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
 #             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
 #         serializer = MarqueSerializer(data=request.data)
 #         if serializer.is_valid():
-#             marque = serializer.save()
-#             return Response(MarqueSerializer(marque).data, status=status.HTTP_201_CREATED)
+#             serializer.save()
+#             return Response(serializer.data, status=status.HTTP_201_CREATED)
+
 #         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class MarqueCreateWithCategorieView(APIView):
+# class CreateMarquePureteView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="""Créer / mettre à jour le Modèle et la liaison Marque–Pureté (avec prix)
+#                             (crée ou met à jour le prix si la liaison existe)
+#                             But : rendre l’API pratique et idempotente.
+#                             Avantages
+#                             Moins d’allers-retours client.
+#                             Très utile si les prix changent souvent.
+#                             Inconvénients
+#                             Moins strict : un POST peut modifier des données existantes.
+#                             À privilégier si : tu veux optimiser les flux et mettre à jour fréquemment les prix sans friction.""",
+#         request_body=MarquePureteSerializer,
+#         responses={201: "Créé/Mis à jour"}
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         s = MarquePureteSerializer(data=request.data)
+#         if not s.is_valid():
+#             return Response(s.errors, status=400)
+
+#         # modele_nom = s.validated_data["modele"].strip().title()
+#         marque_nom = s.validated_data["marque"].strip().title()
+#         puretes_data = s.validated_data["puretes"]
+
+#         # 0) Déduplication & validation prix >= 0
+#         latest = {}
+#         try:
+#             for e in puretes_data:
+#                 pid = int(e["purete_id"])
+#                 prix = Decimal(e["prix"])
+#                 if prix < 0:
+#                     return Response({"puretes": [{"purete_id": pid, "prix": "Doit être ≥ 0"}]}, status=400)
+#                 latest[pid] = prix  # garde le dernier prix par purete_id
+#         except (ValueError, InvalidOperation):
+#             return Response({"error": "purete_id/prix invalide."}, status=400)
+
+#         purete_ids = list(latest.keys())
+
+#         # 1) Vérifier que toutes les puretés existent en une fois
+#         found = list(Purete.objects.filter(id__in=purete_ids).values_list("id", flat=True))
+#         missing = sorted(set(purete_ids) - set(found))
+#         if missing:
+#             return Response({"error": f"Pureté(s) introuvable(s): {missing}"}, status=404)
+
+#         # 2) Upsert Modele & Marque
+#         # modele, _ = Modele.objects.get_or_create(modele=modele_nom)
+#         marque, _ = Marque.objects.get_or_create(marque=marque_nom)
+
+#         # 3) Précharger les liaisons existantes pour cette marque
+#         existing = {
+#             (mp.purete_id): mp
+#             for mp in MarquePurete.objects.filter(marque=marque, purete_id__in=purete_ids)
+#         }
+
+#         created, updated = [], []
+#         for pid, prix in latest.items():
+#             mp = existing.get(pid)
+#             if mp:
+#                 if mp.prix != prix:
+#                     mp.prix = prix
+#                     mp.save(update_fields=["prix"])
+#                 updated.append({"id": pid, "purete": mp.purete.purete, "prix": str(mp.prix)})
+#             else:
+#                 new = MarquePurete.objects.create(marque=marque, purete_id=pid, prix=prix)
+#                 created.append({"id": pid, "purete": new.purete.purete, "prix": str(new.prix)})
+
+#         status_code = 201 if created else 200
+#         return Response({
+#             "message": "✅ Enregistré.",
+#             # "modele": {"id": modele.id, "nom": modele.modele},
+#             "marque": {"id": marque.id, "nom": marque.marque},
+#             "created": created,
+#             "updated": updated
+#         }, status=status_code)
+
+
+class CreateMarquePureteView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Créer une marque avec liaison à des catégories",
-        operation_description="Crée une nouvelle marque et lie celle-ci à une ou plusieurs catégories via la table CategorieMarque.",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["marque", "purete", "prix", "categories"],
-            properties={
-                "marque": openapi.Schema(type=openapi.TYPE_STRING, description="Nom de la marque"),
-                "purete": openapi.Schema(type=openapi.TYPE_INTEGER, description="ID de la pureté"),
-                "prix": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", description="Prix de base de la marque"),
-                "categories": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="Liste des IDs de catégories"
-                )
-            }
-        ),
-        responses={
-            201: openapi.Response(description="Marque créée avec succès."),
-            400: "Requête invalide"
-        }
+        operation_summary="Créer/mettre à jour Marque–Pureté (et journaliser l'ancien prix)",
+        request_body=MarquePureteSerializer,
+        responses={201: "Créé/Mis à jour"}
     )
+    @transaction.atomic
     def post(self, request):
-        data = request.data
-        marque_nom = data.get("marque", "").strip()
-        purete_id = data.get("purete")
-        prix = data.get("prix")
-        categories_ids = data.get("categories", [])
+        s = MarquePureteSerializer(data=request.data)
+        if not s.is_valid():
+            return Response(s.errors, status=400)
 
-        # Validation de base
-        if not marque_nom:
-            return Response({"error": "Le nom de la marque est requis."}, status=400)
+        modele_nom = s.validated_data.get("modele")
+        marque_nom = s.validated_data["marque"]
+        items = s.validated_data["puretes"]  # [{purete_id, prix}...]
 
-        try:
-            prix = Decimal(str(prix))
-            if prix < 0:
-                raise InvalidOperation
-        except (InvalidOperation, TypeError):
-            return Response({"error": "Prix invalide."}, status=400)
+        # Optionnel : créer le modèle si fourni
+        if modele_nom:
+            Modele.objects.get_or_create(modele=modele_nom)
 
-        # Vérification de la pureté
-        try:
-            purete = Purete.objects.get(id=purete_id)
-        except Purete.DoesNotExist:
-            return Response({"error": "Pureté non trouvée."}, status=404)
+        marque, _ = Marque.objects.get_or_create(marque=marque_nom)
 
-        # Création de la marque
-        marque = Marque.objects.create(
-            marque=marque_nom,
-            purete=purete,
-            prix=prix
-        )
+        # Déduplication simple: dernier prix par purete_id
+        latest = {int(e["purete_id"]): Decimal(e["prix"]) for e in items}
 
-        # Liaison aux catégories
-        categories_liees = []
-        for cat_id in categories_ids:
-            try:
-                categorie = Categorie.objects.get(id=cat_id)
-                CategorieMarque.objects.get_or_create(categorie=categorie, marque=marque)
-                categories_liees.append(categorie.nom)
-            except Categorie.DoesNotExist:
-                continue
+        # Vérifier existence des puretés
+        ids = list(latest.keys())
+        found = set(Purete.objects.filter(id__in=ids).values_list("id", flat=True))
+        missing = sorted(set(ids) - found)
+        if missing:
+            return Response({"error": f"Pureté(s) introuvable(s): {missing}"}, status=404)
+
+        # Précharger existants
+        existing = {mp.purete_id: mp for mp in MarquePurete.objects.filter(marque=marque, purete_id__in=ids)}
+
+        created, updated, history = [], [], []
+        user = request.user if request.user.is_authenticated else None
+
+        for pid, new_price in latest.items():
+            mp = existing.get(pid)
+            if mp:
+                if mp.prix != new_price:
+                    # 1) Log de l’ancien prix
+                    MarquePuretePrixHistory.objects.create(
+                        marque=marque,
+                        purete=mp.purete,
+                        ancien_prix=mp.prix,
+                        nouveau_prix=new_price,
+                        modifier_par=user,
+                    )
+                    # 2) Mise à jour du prix courant
+                    mp.prix = new_price
+                    mp.save(update_fields=["prix", "date_modification"])
+
+                    updated.append({"id": pid, "purete": mp.purete.purete, "prix": str(mp.prix)})
+                    history.append({
+                        "id": pid, "purete": mp.purete.purete,
+                        "ancien_prix": str(mp.prix), "nouveau_prix": str(new_price)
+                    })
+                else:
+                    # rien à faire (prix identique)
+                    updated.append({"id": pid, "purete": mp.purete.purete, "prix": str(mp.prix)})
+            else:
+                new = MarquePurete.objects.create(marque=marque, purete_id=pid, prix=new_price)
+                created.append({"id": pid, "purete": new.purete.purete, "prix": str(new.prix)})
 
         return Response({
-            "message": "✅ Marque créée avec succès.",
-            "marque": marque.marque,
-            "prix": str(marque.prix),
-            "purete": str(marque.purete),
-            "categories_liees": categories_liees
-        }, status=201)
+            "message": "✅ Enregistré (historique conservé lors des mises à jour).",
+            "marque": {"id": marque.id, "nom": marque.marque},
+            "created": created,
+            "updated": updated,
+            "history_records": history  # traces des modifs faites pendant cet appel
+        }, status=201 if created else 200)
+        
 
 
-class MarqueUpdateWithCategoriesView(APIView):
+class MarquePureteHistoryListView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Mettre à jour une marque et ses catégories associées",
-        operation_description="""
-        Met à jour le nom, la pureté, le prix d'une marque existante et remplace ses catégories associées.
-        """,
+        operation_summary="Lister l'historique des prix Marque ↔ Pureté",
+        manual_parameters=[
+            openapi.Parameter("marque_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+                            description="Filtrer par ID de marque", required=False),
+            openapi.Parameter("purete_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+                            description="Filtrer par ID de pureté", required=False),
+            openapi.Parameter("limit", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+                            description="Nombre max de lignes (pagination simple)", required=False),
+            openapi.Parameter("offset", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+                            description="Décalage (pagination simple)", required=False),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Liste de l'historique",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        properties={
+                            "marque": openapi.Schema(type=openapi.TYPE_STRING),
+                            "purete": openapi.Schema(type=openapi.TYPE_STRING),
+                            "ancien_prix": openapi.Schema(type=openapi.TYPE_STRING),
+                            "nouveau_prix": openapi.Schema(type=openapi.TYPE_STRING),
+                            "date_modification": openapi.Schema(type=openapi.TYPE_STRING, format="date-time"),
+                            "modifier_par": openapi.Schema(type=openapi.TYPE_STRING, nullable=True),
+                        }
+                    )
+                )
+            )
+        }
+    )
+    def get(self, request):
+        # Evite le crash pendant la génération du schéma YASG
+        if getattr(self, "swagger_fake_view", False):
+            return Response([])
+
+        marque_id = request.query_params.get("marque_id")
+        purete_id = request.query_params.get("purete_id")
+        limit = request.query_params.get("limit")
+        offset = request.query_params.get("offset")
+
+        qs = (MarquePuretePrixHistory.objects
+              .select_related("marque", "purete", "modifier_par")
+              .order_by("-date_modification"))
+
+        if marque_id:
+            qs = qs.filter(marque_id=marque_id)
+        if purete_id:
+            qs = qs.filter(purete_id=purete_id)
+
+        # Pagination simple (optionnelle)
+        try:
+            if offset is not None:
+                offset = max(int(offset), 0)
+            else:
+                offset = 0
+            if limit is not None:
+                limit = max(int(limit), 1)
+                qs = qs[offset:offset + limit]
+            elif offset:
+                qs = qs[offset:]
+        except ValueError:
+            return Response({"error": "limit/offset doivent être des entiers positifs."}, status=400)
+
+        data = [{
+            "marque": h.marque.marque if h.marque else None,
+            "purete": h.purete.purete if h.purete else None,
+            "ancien_prix": str(h.ancien_prix),
+            "nouveau_prix": str(h.nouveau_prix),
+            "date_modification": h.date_modification.isoformat(),
+            "modifier_par": getattr(h.modifier_par, "username", None),
+        } for h in qs]
+
+        return Response(data, status=200)
+
+class MarqueUpdateAPIView(APIView):
+    renderer_classes = [UserRenderer]
+    permission_classes = [IsAuthenticated]
+
+    # ✅ Rôles autorisés à modifier une marque
+    allowed_roles_admin_manager = ['admin', 'manager']
+
+    def get_object(self, pk):
+        try:
+            return Marque.objects.get(pk=pk)
+        except Marque.DoesNotExist:
+            return None
+
+    @swagger_auto_schema(
+        operation_summary="Mettre à jour une marque (PUT)",
+        operation_description="Permet de remplacer complètement une marque avec les nouvelles données.",
+        request_body=MarqueSerializer,
+        responses={
+            200: openapi.Response(description="Marque mise à jour avec succès", schema=MarqueSerializer),
+            400: "Erreur de validation",
+            403: "Accès refusé",
+            404: "Marque non trouvée"
+        }
+    )
+    def put(self, request, pk):
+        user = request.user
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        marque = self.get_object(pk)
+        if not marque:
+            return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = MarqueSerializer(marque, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @swagger_auto_schema(
+        operation_summary="Modifier une marque partiellement (PATCH)",
+        operation_description="Permet de mettre à jour certains champs d'une marque.",
+        request_body=MarqueSerializer,
+        responses={
+            200: openapi.Response(description="Marque partiellement mise à jour", schema=MarqueSerializer),
+            400: "Erreur de validation",
+            403: "Accès refusé",
+            404: "Marque non trouvée"
+        }
+    )
+    def patch(self, request, pk):
+        user = request.user
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        marque = self.get_object(pk)
+        if not marque:
+            return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = MarqueSerializer(marque, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    
+
+class MarqueDeleteAPIView(APIView):
+    renderer_classes = [UserRenderer]
+    permission_classes = [IsAuthenticated]
+
+    # ✅ Rôles autorisés à supprimer une marque
+    allowed_roles_admin_manager = ['admin', 'manager']
+
+    def get_object(self, pk):
+        try:
+            return Marque.objects.get(pk=pk)
+        except Marque.DoesNotExist:
+            return None
+
+    @swagger_auto_schema(
+        operation_summary="🗑 Supprimer une marque",
+        operation_description="Permet à un administrateur ou manager de supprimer une marque spécifique par son ID.",
         manual_parameters=[
             openapi.Parameter(
-                'marque_id',
-                openapi.IN_PATH,
-                description="ID de la marque à mettre à jour",
-                type=openapi.TYPE_INTEGER,
-                required=True
+                'pk', openapi.IN_PATH,
+                description="ID de la marque à supprimer",
+                type=openapi.TYPE_INTEGER
             )
         ],
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["marque", "purete", "prix", "categories"],
-            properties={
-                "marque": openapi.Schema(type=openapi.TYPE_STRING),
-                "purete": openapi.Schema(type=openapi.TYPE_INTEGER),
-                "prix": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-                "categories": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="Liste des IDs des nouvelles catégories"
-                )
-            }
-        ),
         responses={
-            200: openapi.Response(description="Marque mise à jour avec succès"),
-            404: "Marque ou pureté introuvable",
-            400: "Requête invalide"
+            204: "Marque supprimée avec succès",
+            403: "⛔ Accès refusé",
+            404: "❌ Marque non trouvée"
         }
     )
-    def put(self, request, marque_id):
-        data = request.data
-        nom = data.get("marque", "").strip()
-        purete_id = data.get("purete")
-        prix = data.get("prix")
-        categories_ids = data.get("categories", [])
+    def delete(self, request, pk):
+        user = request.user
+        if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        try:
-            marque = Marque.objects.get(id=marque_id)
-        except Marque.DoesNotExist:
-            return Response({"error": "Marque introuvable."}, status=404)
+        marque = self.get_object(pk)
+        if not marque:
+            return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
 
-        try:
-            purete = Purete.objects.get(id=purete_id)
-        except Purete.DoesNotExist:
-            return Response({"error": "Pureté introuvable."}, status=404)
-
-        try:
-            prix = Decimal(str(prix))
-        except (InvalidOperation, TypeError):
-            return Response({"error": "Prix invalide."}, status=400)
-
-        marque.marque = nom or marque.marque
-        marque.purete = purete
-        marque.prix = prix
-        marque.save()
-
-        # ✅ On supprime les anciennes liaisons
-        CategorieMarque.objects.filter(marque=marque).delete()
-
-        # ✅ On ajoute les nouvelles liaisons
-        categories_liees = []
-        for cat_id in categories_ids:
-            try:
-                categorie = Categorie.objects.get(id=cat_id)
-                CategorieMarque.objects.create(categorie=categorie, marque=marque)
-                categories_liees.append(categorie.nom)
-            except Categorie.DoesNotExist:
-                continue
-
-        return Response({
-            "message": "✅ Marque mise à jour avec succès.",
-            "marque": marque.marque,
-            "prix": str(marque.prix),
-            "purete": str(marque.purete),
-            "categories_liees": categories_liees
-        }, status=200)
-
-
-
-# Suppression propre des liens CategorieMarque (sans supprimer la Marque)
-class SupprimerCategoriesDeMarqueView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Supprimer toutes les catégories liées à une marque",
-        manual_parameters=[
-            openapi.Parameter('marque_id', openapi.IN_PATH, description="ID de la marque", type=openapi.TYPE_INTEGER)
-        ],
-        responses={200: "✅ Liens supprimés", 404: "Marque introuvable"}
-    )
-    def delete(self, request, marque_id):
-        try:
-            marque = Marque.objects.get(id=marque_id)
-        except Marque.DoesNotExist:
-            return Response({"error": "Marque introuvable."}, status=404)
-
-        nb_deleted, _ = CategorieMarque.objects.filter(marque=marque).delete()
-
-        return Response({
-            "message": f"✅ {nb_deleted} lien(s) supprimé(s) entre la marque et ses catégories."
-        })
-
-
-class MarquePartialUpdateView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Mise à jour partielle d'une marque (PATCH)",
-        operation_description="""
-        Permet de mettre à jour certains champs de la marque (nom, prix, pureté) et/ou ses catégories associées.
-        L’envoi du champ `categories` (liste d’IDs) écrase les liaisons existantes.
-        """,
-        manual_parameters=[
-            openapi.Parameter('marque_id', openapi.IN_PATH, description="ID de la marque", type=openapi.TYPE_INTEGER)
-        ],
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            properties={
-                "marque": openapi.Schema(type=openapi.TYPE_STRING),
-                "prix": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-                "purete": openapi.Schema(type=openapi.TYPE_INTEGER),
-                "categories": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    description="Remplace les liaisons actuelles (optionnel)"
-                )
-            }
-        ),
-        responses={200: "✅ Mise à jour partielle réussie", 404: "Marque ou pureté introuvable"}
-    )
-    def patch(self, request, marque_id):
-        data = request.data
-        try:
-            marque = Marque.objects.get(id=marque_id)
-        except Marque.DoesNotExist:
-            return Response({"error": "Marque introuvable."}, status=404)
-
-        if 'marque' in data:
-            marque.marque = data['marque'].strip()
-
-        if 'prix' in data:
-            try:
-                marque.prix = Decimal(str(data['prix']))
-            except (InvalidOperation, TypeError):
-                return Response({"error": "Prix invalide."}, status=400)
-
-        if 'purete' in data:
-            try:
-                marque.purete = Purete.objects.get(id=data['purete'])
-            except Purete.DoesNotExist:
-                return Response({"error": "Pureté introuvable."}, status=404)
-
-        marque.save()
-
-        if 'categories' in data:
-            CategorieMarque.objects.filter(marque=marque).delete()
-            for cat_id in data['categories']:
-                try:
-                    categorie = Categorie.objects.get(id=cat_id)
-                    CategorieMarque.objects.get_or_create(marque=marque, categorie=categorie)
-                except Categorie.DoesNotExist:
-                    continue
-
-        return Response({"message": "✅ Mise à jour partielle réussie."})
-
-
+        marque.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
 
 class ModeleListAPIView(APIView):
     renderer_classes = [UserRenderer]
@@ -957,8 +926,8 @@ class ModeleListAPIView(APIView):
                 type=openapi.TYPE_STRING
             ),
             openapi.Parameter(
-                'marque_id', openapi.IN_QUERY,
-                description="ID de la marque",
+                'categorie_id', openapi.IN_QUERY,
+                description="ID de la catégorie",
                 type=openapi.TYPE_INTEGER
             )
         ],
@@ -974,52 +943,16 @@ class ModeleListAPIView(APIView):
 
         queryset = Modele.objects.all()
         nom = request.GET.get('nom')
-        marque_id = request.GET.get('marque_id')
+        categorie_id = request.GET.get('categorie_id')
 
         if nom:
             queryset = queryset.filter(modele__icontains=nom)
-        if marque_id:
-            queryset = queryset.filter(marque_id=marque_id)
+        if categorie_id:
+            queryset = queryset.filter(categorie_id=categorie_id)
 
         serializer = ModeleSerializer(queryset, many=True)
         return Response(serializer.data)
-
-# class ModeleListAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     allowed_roles_admin_manager = ['admin', 'manager']
-
-#     @swagger_auto_schema(
-#         operation_description="Lister tous les modèles avec filtre par nom, catégorie et marque.",
-#         manual_parameters=[
-#             openapi.Parameter('nom', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Recherche par nom de modèle"),
-#             openapi.Parameter('marque_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID de la marque"),
-#         ],
-#         responses={
-#             200: openapi.Response("Liste des modèles", ModeleSerializer(many=True)),
-#             403: "⛔ Accès refusé"
-#         }
-#     )
-#     def get(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         queryset = Modele.objects.all()
-#         nom = request.GET.get('nom')
-#         categorie_id = request.GET.get('categorie_id')
-#         marque_id = request.GET.get('marque_id')  # 🆕
-
-#         if nom:
-#             queryset = queryset.filter(modele__icontains=nom)
-#         if categorie_id:
-#             queryset = queryset.filter(categorie_id=categorie_id)
-#         if marque_id:
-#             queryset = queryset.filter(marque_id=marque_id)
-
-#         serializer = ModeleSerializer(queryset, many=True)
-#         return Response(serializer.data)
+    
 
 
 class ModeleCreateAPIView(APIView):
@@ -1033,14 +966,14 @@ class ModeleCreateAPIView(APIView):
         operation_description="Créer un nouveau modèle en utilisant le nom de la catégorie.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=["modele", "marque"],
+            required=["modele", "categorie"],
             properties={
                 "modele": openapi.Schema(type=openapi.TYPE_STRING, description="Nom du modèle"),
-                "marque": openapi.Schema(type=openapi.TYPE_STRING, description="Nom de la marque (ex: 'local')"),
+                "categorie": openapi.Schema(type=openapi.TYPE_STRING, description="Nom de la catégorie (ex: 'Bague')"),
             },
             example={
                 "modele": "Alliance homme or jaune",
-                "marque": "local"
+                "categorie": "Bague"
             }
         ),
         responses={
@@ -1145,125 +1078,6 @@ class ModeleDeleteAPIView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# a. Lister les purete par catégorie
-# class PureteParCategorieAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les puretés d'une catégorie",
-#         operation_description="Retourne toutes les puretés associées à une catégorie spécifiée par son nom (insensible à la casse).",
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 'categorie', openapi.IN_QUERY,
-#                 description="Nom exact de la catégorie (insensible à la casse)",
-#                 type=openapi.TYPE_STRING,
-#                 required=True
-#             ),
-#         ],
-#         responses={200: openapi.Response("Liste des puretés", PureteSerializer(many=True))}
-#     )
-#     def get(self, request):
-#         nom_categorie = request.GET.get('categorie')
-#         if not nom_categorie:
-#             return Response({"error": "Le paramètre 'categorie' est requis."}, status=400)
-
-#         try:
-#             categorie = Categorie.objects.get(nom__iexact=nom_categorie.strip())
-#         except Categorie.DoesNotExist:
-#             return Response({"error": "Catégorie non trouvée."}, status=404)
-
-#         puretes = Purete.objects.filter(categorie=categorie)
-#         serializer = PureteSerializer(puretes, many=True)
-#         return Response(serializer.data)
-
-# b. Lister les marque par purete
-# class MarqueParCategorieAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les marques selon le nom du categorie",
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 'categorie', openapi.IN_QUERY,
-#                 description="Nom exact de categorie (ex: bague)",
-#                 type=openapi.TYPE_STRING,
-#                 required=True
-#             ),
-#         ],
-#         responses={200: openapi.Response("Liste des marques", MarqueSerializer(many=True))}
-#     )
-#     def get(self, request):
-#         nom_categorie = request.GET.get('categorie')
-#         if not nom_categorie:
-#             return Response({"error": "Le paramètre 'categorie' est requis."}, status=400)
-
-#         try:
-#             categorie = Categorie.objects.get(categorie__iexact=nom_categorie)
-#         except Categorie.DoesNotExist:
-#             return Response({"error": "Categorie non trouvée."}, status=404)
-
-#         marques = Marque.objects.filter(categorie=categorie)
-#         serializer = MarqueSerializer(marques, many=True)
-#         return Response(serializer.data)
-
-class MarqueParCategorieAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Lister les marques selon le nom de la catégorie",
-        manual_parameters=[
-            openapi.Parameter(
-                'categorie', openapi.IN_QUERY,
-                description="Nom exact de la catégorie (ex: bague)",
-                type=openapi.TYPE_STRING,
-                required=True
-            ),
-        ],
-        responses={200: openapi.Response("Liste des marques", MarqueSerializer(many=True))}
-    )
-    def get(self, request):
-        nom_categorie = request.GET.get('categorie')
-        if not nom_categorie:
-            return Response({"error": "Le paramètre 'categorie' est requis."}, status=400)
-
-        try:
-            categorie = Categorie.objects.get(nom__iexact=nom_categorie)
-        except Categorie.DoesNotExist:
-            return Response({"error": "Catégorie non trouvée."}, status=404)
-
-        marques = Marque.objects.filter(categorie=categorie)
-        serializer = MarqueSerializer(marques, many=True)
-        return Response(serializer.data)
-
-# b. Lister les modèles par marque
-class ModeleParMarqueAPIView(APIView):
-    @swagger_auto_schema(
-        operation_summary="Lister les modèles d'une marque (par nom)",
-        manual_parameters=[
-            openapi.Parameter(
-                'marque', openapi.IN_QUERY,
-                description="Nom exact de la marque",
-                type=openapi.TYPE_STRING,
-                required=True
-            ),
-        ],
-        responses={200: openapi.Response("Liste des modèles", ModeleSerializer(many=True))}
-    )
-    def get(self, request):
-        nom_marque = request.GET.get('marque')
-        if not nom_marque:
-            return Response({"error": "Le paramètre 'marque' est requis."}, status=400)
-
-        try:
-            marque = Marque.objects.get(marque__iexact=nom_marque)
-        except Marque.DoesNotExist:
-            return Response({"error": "Marque non trouvée."}, status=404)
-
-        modeles = Modele.objects.filter(marque=marque)
-        serializer = ModeleSerializer(modeles, many=True)
-        return Response(serializer.data)
-
-
 class ProduitListAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
@@ -1294,86 +1108,217 @@ class ProduitListAPIView(APIView):
 
 
 # class ProduitCreateAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+#     parser_classes = [MultiPartParser, FormParser]
+
+#     @swagger_auto_schema(
+#     operation_summary="Créer un produit avec images (formulaire) le nom du produit est gere par le backend",
+#     manual_parameters=[
+#         # openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
+#         openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
+#         # openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, description="F: Femme, H: Homme ou E: Enfant", default='F'),
+#         openapi.Parameter(
+#             'genre', openapi.IN_FORM,
+#             type=openapi.TYPE_STRING,
+#             enum=['F', 'H', 'E'],
+#             description="F: Femme, H: Homme, E: Enfent",
+#             default='F'
+#         ),
+#         openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_STRING),
+#         openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_STRING),
+#         openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_STRING),
+#         # openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="purete ID 1 = 21 OU ID 2 = 18", default='2'),
+#         openapi.Parameter(
+#             'purete', openapi.IN_FORM,
+#             type=openapi.TYPE_STRING,
+#             enum=['21K', '18K'],
+#             description="Choisir entre 21 ou 18 carats",
+#             default='18K'
+#         ),
+#         # openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, description="or, ar(argent) ou mixte", default='or'),
+#         openapi.Parameter(
+#             'matiere', openapi.IN_FORM,
+#             type=openapi.TYPE_STRING,
+#             enum=['or', 'argent', 'mixte'],
+#             description="Matière du produit",
+#             default='or'
+#         ),
+#         openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
+#         openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_STRING),
+#         # openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Statut du produit: publié, desactive ...", default='publié'),
+#         openapi.Parameter(
+#             'status', openapi.IN_FORM,
+#             type=openapi.TYPE_STRING,
+#             enum=['publié', 'désactivé', 'brouillon'],
+#             description="Statut du produit",
+#             default='publié'
+#         ),
+#         # openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, description="État du produit N:neuf ou R:retour", default='N'),
+#         openapi.Parameter(
+#             'etat', openapi.IN_FORM,
+#             type=openapi.TYPE_STRING,
+#             enum=['N', 'R'],  # N = Neuf, R = Retour par exemple
+#             description="État du produit N:Neuf ou R:Retour",
+#             default='N'
+#         ),
+#         openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Plusieurs fichiers", required=False, multiple=True),
+#     ],
+#     responses={
+#         201: openapi.Response(
+#             description="Produit créé avec succès",
+#             schema=ProduitSerializer(),
+#             examples={
+#                 "application/json": {
+#                     "id": 1,
+#                     "nom": "Bague Alliance local",
+#                     "categorie": "Bagues",
+#                     "marque": "Cartier",
+#                     "modele": "Classique",
+#                     "purete": "21",
+#                     "matiere": "or",
+#                     "genre": "F",
+#                     "poids": "15.25",
+#                     "taille": "56.00",
+#                     "status": "publié",
+#                     "etat": "N",
+#                     "qr_code": "/media/qr_codes/BAGU-CASS-N-21-CAR-P15.25-T56.00.png",
+#                     "date_ajout": "2025-04-29T10:00:00Z"
+#                 }
+#             }
+#         ),
+#         400: openapi.Response(description="Erreur de validation")
+#     }
+# )
+    
+#     @transaction.atomic
+#     def post(self, request, *args, **kwargs):
+#         user = request.user
+#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        
+        
+#         try:
+#             produit_data = {
+#                 # 'nom': request.data.get('nom'),
+#                 'image': request.data.get('image'),
+#                 'genre': request.data.get('genre'),
+#                 'categorie': request.data.get('categorie'),
+#                 'marque': request.data.get('marque'),
+#                 'modele': request.data.get('modele'),
+#                 'purete': request.data.get('purete'),
+#                 'matiere': request.data.get('matiere'),
+#                 'poids': request.data.get('poids'),
+#                 'taille': request.data.get('taille'),
+#                 'status': request.data.get('status'),
+#                 'etat': request.data.get('etat'),
+#             }
+
+#             produit_serializer = ProduitSerializer(data=produit_data)
+#             if not produit_serializer.is_valid():
+#                 return Response(produit_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+#             produit = produit_serializer.save()
+
+#             for image_file in request.FILES.getlist('gallery'):
+#                 Gallery.objects.create(produit=produit, image=image_file)
+
+#             return Response(produit_serializer.data, status=status.HTTP_201_CREATED)
+
+#         except Exception as e:
+#             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# class ProduitCreateAPIView(APIView):
 #     parser_classes = [MultiPartParser, FormParser]
 #     permission_classes = [IsAuthenticated]
-#     renderer_classes = [UserRenderer]
 
 #     @swagger_auto_schema(
 #         operation_summary="Créer un produit avec images et QR code",
-#         operation_description="Crée un produit en utilisant les noms de la catégorie, pureté, marque et modèle.",
 #         manual_parameters=[
-#             openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
+#             # openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
 #             openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
-#             openapi.Parameter('description', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['F', 'H', 'E'], default='F'),
-#             openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Nom de la catégorie"),
-#             openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Ex: 18"),
-#             openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Nom de la marque"),
-#             openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Nom du modèle"),
-#             openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['or', 'argent', 'mixte'], default='or'),
+#             openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, description="F: Femme, H: Homme ou E: Enfant", default='F', enum=['F', 'H', 'E']),            
+#             openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
+#             openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
+#             openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
+#             openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
+#             openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Matière du produit", default='or', enum=['or', 'argent', 'mixte']),
 #             openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
 #             openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
-#             openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['publié', 'désactivé', 'rejetée'], default='publié'),
-#             openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['N', 'R'], default='N'),
+#             openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Statut du produit", default='publié', enum=['publié', 'désactivé', 'rejetée']),
+#             openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, description="État du produit N:Neuf ou R:Retour", default='N', enum=['N', 'R']),
+            
+# #             default='N'
 #             openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Fichiers galerie", required=False, multiple=True),
 #         ],
 #         responses={
-#             201: openapi.Response("Produit créé avec succès", ProduitSerializer),
+#             201: openapi.Response("Produit créé", ProduitSerializer),
 #             400: "Erreur de validation"
 #         }
 #     )
 #     @transaction.atomic
+    
 #     def post(self, request):
+#     # def post(self, request, *args, **kwargs):
 #         user = request.user
 #         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
 #             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-#         data = request.data.copy()
-
-#         # Remplacement des noms par des IDs
-#         try:
-#             data['categorie'] = Categorie.objects.get(nom__iexact=data.get('categorie')).id
-#         except Categorie.DoesNotExist:
-#             return Response({"error": "Catégorie introuvable"}, status=400)
-
-#         try:
-#             data['purete'] = Purete.objects.get(purete__iexact=data.get('purete')).id
-#         except Purete.DoesNotExist:
-#             return Response({"error": "Pureté introuvable"}, status=400)
+#         # ✅ Champs requis
+#         required_fields = ['categorie', 'marque', 'modele', 'purete', 'poids', 'taille', 'etat']
+#         missing = [field for field in required_fields if not request.data.get(field)]
+#         if missing:
+#             return Response(
+#                 {"error": f"Champs requis manquants : {', '.join(missing)}"},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
 
 #         try:
-#             data['marque'] = Marque.objects.get(marque__iexact=data.get('marque')).id
-#         except Marque.DoesNotExist:
-#             return Response({"error": "Marque introuvable"}, status=400)
+#             # ✅ Vérifie les clés étrangères
+#             try:
+#                 categorie = Categorie.objects.get(id=request.data.get('categorie'))
+#                 marque = Marque.objects.get(id=request.data.get('marque'))
+#                 modele = Modele.objects.get(id=request.data.get('modele'))
+#                 purete = Purete.objects.get(id=request.data.get('purete'))
+#             except (Categorie.DoesNotExist, Marque.DoesNotExist, Modele.DoesNotExist, Purete.DoesNotExist) as e:
+#                 return Response({"error": str(e)}, status=404)
 
-#         try:
-#             data['modele'] = Modele.objects.get(modele__iexact=data.get('modele')).id
-#         except Modele.DoesNotExist:
-#             return Response({"error": "Modèle introuvable"}, status=400)
+#             # ✅ Création du produit
+#             produit = Produit.objects.create(
+#                 # nom=request.data.get('nom', ''),
+#                 image=request.data.get('image'),
+#                 description=request.data.get('description'),
+#                 genre=request.data.get('genre', 'F'),
+#                 matiere=request.data.get('matiere', 'or'),
+#                 poids=request.data.get('poids'),
+#                 taille=request.data.get('taille'),
+#                 status=request.data.get('status', 'publié'),
+#                 etat=request.data.get('etat', 'N'),
+#                 categorie=categorie,
+#                 marque=marque,
+#                 modele=modele,
+#                 purete=purete,
+#             )
 
-#         # Création
-#         serializer = ProduitSerializer(data=data, context={"request": request})
-#         if serializer.is_valid():
-#             produit = serializer.save()
+#             # ✅ Galerie (facultative)
+#             for image_file in request.FILES.getlist('gallery'):
+#                 Gallery.objects.create(produit=produit, image=image_file)
 
-#             for image in request.FILES.getlist("gallery"):
-#                 Gallery.objects.create(produit=produit, image=image)
+#             # 🔁 Force une mise à jour pour déclencher le QR code si nécessaire
+#             produit.save()  # Appelle de nouveau le save() pour générer qr_code
 
+#             # ✅ Recharge le produit pour inclure qr_code généré après save()
 #             produit.refresh_from_db()
-#             return Response(ProduitSerializer(produit, context={"request": request}).data, status=201)
+            
+#             # ✅ Retour enrichi
+#             serializer = ProduitSerializer(produit, context={'request': request})
+#             return Response(serializer.data, status=201)
 
-#         return Response(serializer.errors, status=400)
+#         except Exception as e:
+#             return Response({'error': str(e)}, status=500)
 
 
-
-
-
-
-def get_object_id_or_error(model, field, value, label):
-    try:
-        return model.objects.get(**{f"{field}__iexact": value}).id
-    except model.DoesNotExist:
-        raise ValidationError({label: f"{label.capitalize()} '{value}' introuvable."})
 
 class ProduitCreateAPIView(APIView):
     parser_classes = [MultiPartParser, FormParser]
@@ -1382,25 +1327,24 @@ class ProduitCreateAPIView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Créer un produit avec images et QR code",
-        operation_description="Crée un produit en utilisant les noms de la catégorie, pureté, marque et modèle.",
         manual_parameters=[
-            openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
             openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
+            openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
             openapi.Parameter('description', openapi.IN_FORM, type=openapi.TYPE_STRING),
             openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['F', 'H', 'E'], default='F'),
-            openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_STRING),
-            openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_STRING),
-            openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_STRING),
-            openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_STRING),
+            openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Nom de la catégorie"),
+            openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Nom de la marque"),
+            openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Nom du modèle"),
+            openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Valeur de la pureté (ex: '18')"),
             openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['or', 'argent', 'mixte'], default='or'),
             openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
             openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
             openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['publié', 'désactivé', 'rejetée'], default='publié'),
             openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['N', 'R'], default='N'),
-            openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, required=False, multiple=True),
+            openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Fichiers galerie", required=False, multiple=True),
         ],
         responses={
-            201: openapi.Response("Produit créé avec succès", ProduitSerializer),
+            201: openapi.Response("Produit créé", ProduitSerializer),
             400: "Erreur de validation"
         }
     )
@@ -1412,97 +1356,20 @@ class ProduitCreateAPIView(APIView):
 
         data = request.data.copy()
 
-        try:
-            
-            # Création du produit
-            serializer = ProduitSerializer(data=data, context={"request": request})
-            if serializer.is_valid():
-                produit = serializer.save()
+        # Serializer utilisera les noms pour FK : categorie, marque, modele, purete
+        serializer = ProduitSerializer(data=data, context={"request": request})
+        if serializer.is_valid():
+            produit = serializer.save()
 
-                # Ajout des images
-                images = request.FILES.getlist("gallery")
-                for image in images:
-                    Gallery.objects.create(produit=produit, image=image)
+            # Sauvegarder les images de galerie si elles sont présentes
+            for image in request.FILES.getlist("gallery"):
+                Gallery.objects.create(produit=produit, image=image)
 
-                produit.refresh_from_db()
+            # Recharge et renvoie la donnée enrichie
+            produit.refresh_from_db()
+            return Response(ProduitSerializer(produit, context={"request": request}).data, status=201)
+        return Response(serializer.errors, status=400)
 
-                return Response({
-                    "message": f"Produit créé avec succès avec {len(images)} image(s)",
-                    "produit": ProduitSerializer(produit, context={"request": request}).data
-                }, status=201)
-            else:
-                return Response(serializer.errors, status=400)
-
-        except Categorie.DoesNotExist:
-            return Response({"error": "Catégorie introuvable"}, status=400)
-        except Purete.DoesNotExist:
-            return Response({"error": "Pureté introuvable"}, status=400)
-        except Marque.DoesNotExist:
-            return Response({"error": "Marque introuvable"}, status=400)
-        except Modele.DoesNotExist:
-            return Response({"error": "Modèle introuvable"}, status=400)
-        except Exception as e:
-            return Response({"error": f"Une erreur est survenue : {str(e)}"}, status=500)
-
-
-# class ProduitCreateAPIView(APIView):
-#     parser_classes = [MultiPartParser, FormParser]
-#     permission_classes = [IsAuthenticated]
-#     renderer_classes = [UserRenderer]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un produit avec images et QR code",
-#         manual_parameters=[
-#             openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
-#             openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('description', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['F', 'H', 'E'], default='F'),
-#             openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID de la catégorie"),
-#             openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID de la marque"),
-#             openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID du modèle"),
-#             openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="ID de la pureté"),
-#             openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['or', 'argent', 'mixte'], default='or'),
-#             openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
-#             openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
-#             openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['publié', 'désactivé', 'rejetée'], default='publié'),
-#             openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, enum=['N', 'R'], default='N'),
-#             openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Fichiers galerie", required=False, multiple=True),
-#         ],
-#         responses={
-#             201: openapi.Response("Produit créé", ProduitSerializer),
-#             400: "Erreur de validation"
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         try:
-#             data = request.data.copy()
-
-#             # Crée le produit avec les données POST
-#             serializer = ProduitSerializer(data=data, context={"request": request})
-#             if serializer.is_valid():
-#                 produit = serializer.save()
-
-#                 # Ajouter les images dans la galerie
-#                 images = request.FILES.getlist("gallery")
-#                 for image in images:
-#                     Gallery.objects.create(produit=produit, image=image)
-
-#                 produit.refresh_from_db()
-#                 return Response({
-#                     "message": f"Produit créé avec succès avec {len(images)} image(s)",
-#                     "produit": ProduitSerializer(produit, context={"request": request}).data
-#                 }, status=201)
-#             else:
-#                 return Response(serializer.errors, status=400)
-
-#         except Exception as e:
-#             return Response({"error": f"Une erreur est survenue : {str(e)}"}, status=500)
-        
 
 class ProduitDetailSlugView(APIView):
     permission_classes = [IsAuthenticated]

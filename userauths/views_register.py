@@ -11,6 +11,11 @@ from django.core.mail import send_mail
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from userauths.utils import verify_email_token
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from .serializers import (ProfileSerializer, RoleSerializer, UserChangePasswordSerializer, UserDetailSerializer, UserLoginSerializer, UserRegistrationSerializer)
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
+from django.shortcuts import render
 
 User = get_user_model()
 

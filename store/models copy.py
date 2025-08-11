@@ -28,7 +28,7 @@ def get_default_purete():
 
 MATIERE = (
     ("or", "Or"),
-    ("ar", "Argent"),
+    ("argent", "Argent"),
     ("mixte", "Mixte")
 )
 
@@ -94,7 +94,7 @@ class Bijouterie(models.Model):
 
 # Model for Product Categories
 class Categorie(models.Model):
-    nom = models.CharField(max_length=30, unique=True, blank=True, default="")
+    nom = models.CharField(max_length=30, unique=True)
     image = models.ImageField(upload_to='categorie/', default="category.jpg", null=True, blank=True)
     # bijouterie = models.ForeignKey(Bijouterie, on_delete=models.CASCADE, null=True, blank=True, related_name="bijouterie_categorie")
 
@@ -108,8 +108,13 @@ class Categorie(models.Model):
     def save(self, *args, **kwargs):
         # Optionnel : tu peux faire un nettoyage ou un formatage du nom ici si besoin
         if self.nom:
-            self.nom = self.nom.strip().title()
+            self.nom = " ".join(self.nom.strip().split()).title()
         super().save(*args, **kwargs)
+    
+    def get_image_url(self):
+        if self.image and hasattr(self.image, 'url'):
+            return self.image.url
+        return '/media/category.jpg'
 
 
     
@@ -126,50 +131,16 @@ class Categorie(models.Model):
 #         return self.type
 
 
-# Type model
-class Modele(models.Model):
-    modele = models.CharField(max_length=55, unique=True, null=True)
-    categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_categorie")
-    
-    
-    def __str__(self):
-        # Affiche : "Bague (Catégorie: Bijoux)" ou "Bague (Catégorie: Aucune)"
-        return f"{self.modele} (Catégorie: {self.categorie.nom if self.categorie else 'Aucune'})"
-
-    @property
-    def categorie_id(self):
-        # Permet d'accéder à modele.categorie_id directement (int ou None)
-        return self.categorie.id if self.categorie else None
-
-
-
 # Purity model
 class Purete(models.Model):
-    # purete = models.IntegerField()
-    purete = models.CharField(unique=True, max_length=15)
-    
-    def __str__(self):  
+    purete = models.CharField(unique=True, max_length=5)
+
+    def __str__(self):
         return f"{self.purete}K"
-    
 
-# Brand model
-# class Marque(models.Model):
-#     marque = models.CharField(unique=True, max_length=25, null=True, blank=True)
-#     purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="purete_marque", default=get_default_purete)
-#     prix = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
-#     creation_date = models.DateTimeField(auto_now_add=True)
-#     modification_date = models.DateTimeField(auto_now=True)
-
-#     def save(self, *args, **kwargs):
-#         if not self.marque:
-#             raise ValueError("Le champ 'marque' ne peut pas être vide.")
-#         super().save(*args, **kwargs)
-    
-#     class Meta:
-#         verbose_name_plural = "Marques"
-    
-#     def __str__(self):
-#         return f"{self.marque} - {self.purete.purete if self.purete else 'N/A'}"
+    def clean(self):
+        if not self.purete.isdigit():
+            raise ValidationError("La valeur de pureté doit être un nombre entier.")
 
 
 class Marque(models.Model):
@@ -182,67 +153,91 @@ class Marque(models.Model):
         if self.marque:
             self.marque = self.marque.strip().title()  # Ex: "strass" → "Strass"
         super().save(*args, **kwargs)
-    
 
 
 class MarquePurete(models.Model):
-    marque = models.ForeignKey("Marque", on_delete=models.CASCADE, related_name="marque_puretes")
-    purete = models.ForeignKey("Purete", on_delete=models.CASCADE, related_name="purete_marques")
+    marque = models.ForeignKey(Marque, on_delete=models.CASCADE, related_name="marque_puretes")
+    purete = models.ForeignKey(Purete, on_delete=models.CASCADE, related_name="purete_marques")
     prix = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    date_ajout = models.DateTimeField(auto_now_add=True)
-    date_modification = models.DateTimeField(auto_now=True)  # utile pour l’historiquex
-    
+
     class Meta:
-        unique_together = ('marque', 'purete')  # évite les doublons
+        unique_together = ('marque', 'purete')  # Empêche les doublons
         verbose_name = "Liaison Marque–Pureté"
         verbose_name_plural = "Liaisons Marque–Pureté"
-        indexes = [
-            models.Index(fields=["marque", "purete"]),  # filtres plus rapides
-        ]
 
     def __str__(self):
-        # Purete a un champ "purete" (ex: "18" ou "18K")
-        # Si tu stockes "18" sans K et veux afficher "18K", décommente la ligne suivante:
-        # affichage_purete = f"{self.purete.purete}K" if not self.purete.purete.endswith("K") else self.purete.purete
-        affichage_purete = self.purete.purete
-        return f"{self.marque.marque} – {affichage_purete} : {self.prix} FCFA"
+        return f"{self.marque.marque} – {self.purete.titre} : {self.prix} FCFA"
+# Brand model
+# class Marque(models.Model):
+#     marque = models.CharField(unique=True, max_length=25)
+#     purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="marques_purete", default=get_default_purete)
+#     prix = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
+#     creation_date = models.DateTimeField(auto_now_add=True)
+#     modification_date = models.DateTimeField(auto_now=True)
 
-    # Optionnel mais conseillé : empêcher un prix négatif
-    def clean(self):
-        if self.prix is not None and self.prix < 0:
-            raise ValidationError({"prix": "Le prix ne peut pas être négatif."})
+#     def save(self, *args, **kwargs):
+#         if not self.marque:
+#             raise ValueError("Le champ 'marque' ne peut pas être vide.")
+#         self.marque = " ".join(self.marque.strip().split()).title()
+#         super().save(*args, **kwargs)
 
+#     class Meta:
+#         verbose_name_plural = "Marques"
+
+#     def __str__(self):
+#         return f"{self.marque} - {self.purete.purete if self.purete else 'N/A'}"
+
+
+# #implémentation avec une table intermédiaire 
+# class CategorieMarque(models.Model):
+#     categorie = models.ForeignKey('Categorie', on_delete=models.SET_NULL, null=True, blank=True, related_name='categorie_marques')
+#     marque = models.ForeignKey('Marque', on_delete=models.SET_NULL, null=True, blank=True, related_name='marque_categories')
+#     date_liaison = models.DateTimeField(auto_now_add=True)
+
+#     class Meta:
+#         constraints = [
+#             models.UniqueConstraint(fields=['categorie', 'marque'], name='unique_categorie_marque')
+#         ]
+
+#     def __str__(self):
+#         return f"{self.categorie.nom} ↔ {self.marque.marque}"
+
+# Type model
+class Modele(models.Model):
+    modele = models.CharField(max_length=55, unique=True, null=True)
+    # marque = models.ForeignKey(Marque, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_marque")
+    
+    def __str__(self):
+        return self.modele
+    # def __str__(self):
+    #     # Affiche : "Bague (marque: Nocal)" ou "Bague (Marque: Aucune)"
+    #     return f"{self.modele} (Marque: {self.marque.nom if self.marque else 'Aucune'})"
+
+    # @property
+    # def marque_id(self):
+    #     # Permet d'accéder à modele.marque_id directement (int ou None)
+    #     return self.marque.id if self.marque else None
+    
+    class Meta:
+        ordering = ['modele']
+        verbose_name = "Modèle"
+        verbose_name_plural = "Modèles"
+        
     def save(self, *args, **kwargs):
-        self.full_clean()  # déclenche clean() + validations de champs
+        if self.modele:
+            self.modele = self.modele.strip().title()
         super().save(*args, **kwargs)
 
-
-class MarquePuretePrixHistory(models.Model):
-    marque = models.ForeignKey("Marque", on_delete=models.CASCADE)
-    purete = models.ForeignKey("Purete", on_delete=models.CASCADE)
-    ancien_prix = models.DecimalField(max_digits=10, decimal_places=2)
-    nouveau_prix = models.DecimalField(max_digits=10, decimal_places=2)
-    date_modification = models.DateTimeField(auto_now_add=True)
-    modifier_par = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
-    )
+class CategorieModele(models.Model):
+    categorie = models.ForeignKey(Categorie, on_delete=models.CASCADE, related_name='categorie_modeles')
+    modele = models.ForeignKey(Modele, on_delete=models.CASCADE, related_name='modele_categories')
+    date_liaison = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        indexes = [models.Index(fields=["marque", "purete", "date_modification"])]
-        ordering = ["-date_modification"]
+        unique_together = ('categorie', 'modele')
 
     def __str__(self):
-        return f"{self.marque} – {self.purete}: {self.old_prix} -> {self.new_prix} ({self.date_modification:%Y-%m-%d})"
-
-
-# # Model model
-# class Model(models.Model):
-#     nom = models.CharField(max_length=255)
-#     type = models.ForeignKey(Type, on_delete=models.SET_NULL, null=True, blank=True, related_name="type_model")
-#     description = models.TextField(blank=True)
-
-# def generate_sku(length=7):
-#     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+        return f"{self.categorie.nom} ↔ {self.modele.modele}"
 
 # Model for Produits
 class Produit(models.Model):
@@ -273,7 +268,8 @@ class Produit(models.Model):
     def skuGet(self):
         champs = [self.categorie, self.modele, self.marque, self.poids, self.taille, self.purete, self.etat]
         if not all(champs):
-            return None  # <-- éviter l'erreur fatale
+            print("[SKU] Champs manquants pour SKU :", champs)
+            return None
 
         return (
             f"{self.categorie.nom[:4].upper()}-"
@@ -310,22 +306,27 @@ class Produit(models.Model):
             return False
 
     def save(self, *args, **kwargs):
-        self.full_clean()  # 🔁 Appelle clean() et valide les champs
+        self.full_clean()
         is_new = self.pk is None
         generer_qr = False
 
         if not self.nom and self.categorie and self.modele and self.marque:
-            self.nom = f'{self.categorie} {self.modele} {self.marque}'
+            self.nom = f'{self.categorie.nom} {self.modele.modele} {self.marque.marque}'
 
         if not self.slug:
             base_slug = slugify(self.nom or "produit")
             self.slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
-            generer_qr = True  # 🔄 Générer QR uniquement si nouveau slug
+            generer_qr = True
 
         if not self.sku:
-            sku = self.skuGet()
-            if sku:
-                self.sku = sku
+            base_sku = self.skuGet()
+            if base_sku:
+                final_sku = base_sku
+                suffix = 1
+                while Produit.objects.filter(sku=final_sku).exists():
+                    final_sku = f"{base_sku}-{suffix}"
+                    suffix += 1
+                self.sku = final_sku
 
         super().save(*args, **kwargs)
 
@@ -334,7 +335,7 @@ class Produit(models.Model):
                 qr_content = self.produit_url
                 qr_file = self.generate_qr_code_image(qr_content)
                 self.qr_code.save(qr_file.name, qr_file, save=False)
-                super().save(update_fields=["qr_code"])  # ✅ évite double save complet
+                super().save(update_fields=["qr_code"])
             except Exception as e:
                 print(f"[QR ERROR] {e}")
                 

@@ -22,13 +22,13 @@ class PureteAdmin(admin.ModelAdmin):
     
 @admin.register(Modele)
 class ModeleAdmin(admin.ModelAdmin):
-    list_display = ('id','modele', 'marque',)
+    list_display = ('id','modele',)
     search_fields = ('modele',)
     
 
 @admin.register(Marque)
 class MarqueAdmin(admin.ModelAdmin):
-    list_display = ('marque', 'purete', 'prix',)
+    list_display = ('marque',)
     exclude = ('creation_date', 'modification_date',)
     search_fields = ('marque',)
 
@@ -50,10 +50,11 @@ class ProduitAdmin(admin.ModelAdmin):
     #     return "Pas de QR code"
 
     # affiche_qr_code.short_description = "QR Code"
-    
+
 
 @admin.register(Gallery)
 class GalleryAdmin(admin.ModelAdmin):
     list_display = ("id", "produit", "image", "date",)
     search_fields = ('',)
     # exclude = ("qr_code", "slug", "prix_achat_avec_tax", "sku", "prix_vente_reel", "pid", )
+

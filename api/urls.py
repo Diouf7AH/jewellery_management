@@ -68,7 +68,7 @@ urlpatterns = [
     path('categorie/list/', store_views.CategorieListAPIView.as_view(), name='categorie-list'),
     path('categorie/create', store_views.CategorieCreateAPIView.as_view(), name='categorie-create'),
     # path('categorie/update/<int:pk>', store_views.CategorieUpdateAPIView.as_view(), name='categorie_put'),
-    path('categorie/update-par-nom/<str:nom>/', store_views.CategorieUpdateByNameAPIView.as_view(), name='update_categorie_par_nom'),
+    path('categorie/update-par-nom/<str:nom>/', store_views.CategorieUpdateAPIView.as_view(), name='update_categorie_par_nom'),
     path('categorie/delete/<int:pk>', store_views.CategorieDeleteAPIView.as_view(), name='categorie_delete'),
     # Purete
     path('purete/list/', store_views.PureteListAPIView.as_view(), name='purete_list'),
@@ -77,19 +77,25 @@ urlpatterns = [
     path('purete/delete/<int:pk>', store_views.PureteDeleteAPIView.as_view(), name='purety_Delete'),
     # Marque
     path('marque/list/', store_views.MarqueListAPIView.as_view(), name='marque_list'),
-    path('marque/create', store_views.MarqueCreateWithCategorieView.as_view(), name='marque_create'),
-    path('marques/<int:marque_id>/partial-update/', store_views.MarquePartialUpdateView.as_view()),
-    path('marques/<int:marque_id>/delete-categories/', store_views.SupprimerCategoriesDeMarqueView.as_view()),
+    path('marque-purete/list/', store_views.ListMarquePureteView.as_view(), name='list-marque-purete'),
+    path('marque-purete/history-prix/', store_views.MarquePureteHistoryListView.as_view(), name='marque-purete-history-prix'),
+    # path('marque/create', store_views.MarqueCreateAPIView.as_view(), name='marque_create'),
+    path("marque/marque-puretes/", store_views.CreateMarquePureteView.as_view(), name="create-marque-puretes"),
+    path('marque/update/<int:pk>', store_views.MarqueUpdateAPIView.as_view(), name='marque_update'),
+    path('marque/delete/<int:pk>', store_views.MarqueDeleteAPIView.as_view(), name='marque_delete'),
     # Model
     path('modele/list/', store_views.ModeleListAPIView.as_view(), name='modele_list'),
     path('modele/create', store_views.ModeleCreateAPIView.as_view(), name='modele_create'),
     path('modele/update/<int:pk>', store_views.ModeleUpdateAPIView.as_view(), name='modele_put'),
     path('modele/delete/<int:pk>', store_views.ModeleDeleteAPIView.as_view(), name='modele_delete'),
+    #categorie-Modeles
+    # path('categorie-modeles/update-modeles/', store_views.CategorieUpdateModelesView.as_view(), name='update-modeles'),
+    # path('categorie-modeles/update-modeles/', store_views.ModeleUpdateView.as_view(), name='Ajouter-de-nouveaux-modeles'),
     
     # selecte option
     # path('marque-par-categorie/', store_views.PureteParCategorieAPIView.as_view(), name='puretes-par-categorie'),
-    path('marques-par-categorie/', store_views.MarqueParCategorieAPIView.as_view(), name='marques-par-categorie'),
-    path('modeles-par-marque/', store_views.ModeleParMarqueAPIView.as_view(), name='modeles-par-marque'),
+    # path('marques-par-categorie/', store_views.MarqueParCategorieAPIView.as_view(), name='marques-par-categorie'),
+    # path('modeles-par-marque/', store_views.ModeleParMarqueAPIView.as_view(), name='modeles-par-marque'),
     
     # Product
     path('produit/list/', store_views.ProduitListAPIView.as_view(), name='product_list'),
