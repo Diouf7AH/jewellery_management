@@ -10,13 +10,13 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('store', '0001_initial'),
-        ('sale', '0001_initial'),
+        ('stock', '0001_initial'),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='venteproduit',
+            model_name='stock',
             name='produit',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='venteProduit_produit', to='store.produit'),
+            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='store.produit'),
         ),
     ]

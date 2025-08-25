@@ -9,14 +9,14 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
+        ('employee', '0001_initial'),
         ('store', '0001_initial'),
-        ('sale', '0001_initial'),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='venteproduit',
-            name='produit',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='venteProduit_produit', to='store.produit'),
+            model_name='employee',
+            name='bijoterie',
+            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='vendor_bijoutrie', to='store.bijouterie'),
         ),
     ]
