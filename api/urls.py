@@ -129,15 +129,26 @@ urlpatterns = [
     path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatProduitPDFView.as_view(), name='achat-produit-facture-pdf'),
     # END ACHAT
     
+    # staff
+    path('staff/add-staff', vendor_views.CreateStaffMemberView.as_view(), name='add_staff'),
     
     #VENDOR
-    path('vendor/list/', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
-    path('vendor/add-vendor', vendor_views.CreateVendorView.as_view(), name='add_vendor'),
+    # path('vendor/list/', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
+    # path('vendor/add-vendor', vendor_views.CreateVendorView.as_view(), name='add_vendor'),
+    path("vendors/", vendor_views.VendorListView.as_view(), name="vendor-list"),
+    path("vendors/<int:id>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail"),
+    path("vendors/by-slug/<slug:slug>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail-by-slug"),
     path('vendor/association-produit-to-vendor', vendor_views.VendorProduitAssociationAPIView.as_view(), name='association-du-produit-au-vendor'),
     path('vendor/find', vendor_views.RetrieveVendorView.as_view(), name='vendor-find'),
     path('vendor/<int:user_id>/update-status', vendor_views.UpdateVendorStatusAPIView.as_view(), name='update_vendor_status'),
     # END VENDOR
     
+    
+    # CASHIER
+    path("cashiers/", vendor_views.CashierListView.as_view(), name="cashier-list"),
+    path("cashiers/<int:id>/", vendor_views.CashierDetailView.as_view(), name="cashier-detail"),
+    path("cashiers/by-slug/<slug:slug>/", vendor_views.CashierDetailView.as_view(), name="cashier-detail-by-slug"),
+    # END CASHIER
     
     # STOCK
     # stock endpoint
