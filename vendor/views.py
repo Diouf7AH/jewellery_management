@@ -37,9 +37,9 @@ from django.contrib.auth import get_user_model
 from userauths.models import Role
 
 # Create your views here.
-# User = get_user_model()
-# allowed_all_roles = ['admin', 'manager', 'vendeur']
-# allowed_roles_admin_manager = ['admin', 'manager',]
+User = get_user_model()
+allowed_all_roles = ['admin', 'manager', 'vendeur']
+allowed_roles_admin_manager = ['admin', 'manager',]
 
 
 # Un dashboard riche avec produits, ventes et stats
