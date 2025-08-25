@@ -1,7 +1,11 @@
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.core.mail import EmailMultiAlternatives
-from django.db import models
+import string
+from random import SystemRandom
+
+from django.db import models, transaction, IntegrityError
+from django.utils.text import slugify
 from django.db.models.signals import post_migrate, post_save
 from django.dispatch import receiver
 from django.template.loader import render_to_string
@@ -96,52 +100,136 @@ class UserManager(BaseUserManager):
 #         user.save()
 #         return user
 
+# class User(AbstractUser):
+#     email = models.EmailField(max_length=50, unique=True)
+#     dateNaiss = models.DateField(null=True, blank=True)
+#     username = models.CharField(max_length=30, unique=True, null=True, blank=True)
+#     first_name =  models.CharField(max_length=100, blank=True, null=True)
+#     last_name =  models.CharField(max_length=100, blank=True, null=True)
+#     # phone =  models.CharField(max_length=20,unique=True,null=True,blank=True)
+#     telephone = models.CharField(max_length=15, unique=True, null=True, blank=True)
+#     is_active = models.BooleanField(default=True)
+#     # is_validate = models.BooleanField(default=False)
+#     # is_admin = models.BooleanField(default=False)
+#     created_at = models.DateTimeField(auto_now_add=True)
+#     updated_at = models.DateTimeField(auto_now=True)
+#     # bijouterie = models.ForeignKey(Bijouterie, on_delete=models.SET_NULL, null=True, related_name="user_bijouterie")
+#     # user_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, default=get_default_role)
+#     user_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
+#     is_email_verified = models.BooleanField(default=False)
+#     last_confirmation_email_sent = models.DateTimeField(null=True, blank=True)
+    
+#     objects = UserManager()
+
+#     USERNAME_FIELD = 'email'
+#     REQUIRED_FIELDS = []
+
+#     def save(self, *args, **kwargs):
+#         if self.user_role and self.user_role.role == 'admin':
+#             self.is_active = True
+#         super(User, self).save(*args, **kwargs)
+
+#     def __str__(self):
+#         return f"{self.email} ({self.user_role.role if self.user_role else 'Aucun rôle'})"
+
+#     def has_perm(self, perm, obj=None):
+#         return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
+
+#     def has_module_perms(self, app_label):
+#         return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
+    
+#     # @property
+#     # def is_staff(self):
+#     #     "Is the user a member of staff?"
+#     #     # Simplest possible answer: All admins are staff
+#     #     return self.user_role.role == 'admin'
+#     @property
+#     def is_staff(self):
+#         return self.user_role and self.user_role.role == 'admin'
+
 class User(AbstractUser):
-    email = models.EmailField(max_length=50, unique=True)
+    email = models.EmailField(max_length=254, unique=True)
     dateNaiss = models.DateField(null=True, blank=True)
     username = models.CharField(max_length=30, unique=True, null=True, blank=True)
-    first_name =  models.CharField(max_length=100, blank=True, null=True)
-    last_name =  models.CharField(max_length=100, blank=True, null=True)
-    # phone =  models.CharField(max_length=20,unique=True,null=True,blank=True)
+    first_name = models.CharField(max_length=100, blank=True, null=True)
+    last_name = models.CharField(max_length=100, blank=True, null=True)
     telephone = models.CharField(max_length=15, unique=True, null=True, blank=True)
     is_active = models.BooleanField(default=True)
-    # is_validate = models.BooleanField(default=False)
-    # is_admin = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    # bijouterie = models.ForeignKey(Bijouterie, on_delete=models.SET_NULL, null=True, related_name="user_bijouterie")
-    # user_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, default=get_default_role)
-    user_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
+    user_role = models.ForeignKey("Role", on_delete=models.SET_NULL, null=True)
     is_email_verified = models.BooleanField(default=False)
     last_confirmation_email_sent = models.DateTimeField(null=True, blank=True)
-    
+
+    # ➕ Nouveau champ
+    # slug = models.SlugField(unique=True, max_length=20, null=False, blank=True)
+    slug = models.SlugField(max_length=20, unique=True)  # sans null=True / blank=True
+
     objects = UserManager()
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
 
-    def save(self, *args, **kwargs):
-        if self.user_role and self.user_role.role == 'admin':
-            self.is_active = True
-        super(User, self).save(*args, **kwargs)
-
     def __str__(self):
         return f"{self.email} ({self.user_role.role if self.user_role else 'Aucun rôle'})"
+
+    # --------------------
+    # 🔑 Génération du slug
+    # --------------------
+    def generate_slug(self):
+        """Construit un slug unique basé sur prénom/nom/email"""
+        if self.first_name or self.last_name:
+            base_txt = "-".join(filter(None, [self.first_name, self.last_name]))
+        elif self.username:
+            base_txt = self.username
+        elif self.email:
+            base_txt = self.email.split("@")[0]
+        else:
+            base_txt = "user"
+
+        base = slugify(base_txt).lower()[:14].rstrip("-") or "user"
+        suffix = ''.join(SystemRandom().choices(string.digits, k=4))
+        return f"{base}-{suffix}"[:20]
+
+    def save(self, *args, **kwargs):
+        # Règles staff/admin
+        if self.is_superuser:
+            self.is_staff = True
+        elif self.user_role and self.user_role.role == 'admin':
+            self.is_staff = True
+            self.is_active = True
+        else:
+            self.is_staff = False
+
+        # Normalisation email/téléphone
+        if self.email:
+            self.email = self.email.strip().lower()
+        if self.telephone:
+            self.telephone = self.telephone.strip()
+
+        # 🔥 Génération slug si absent
+        if not self.slug:
+            for attempt in range(10):
+                candidate = self.generate_slug()
+                self.slug = candidate
+                try:
+                    with transaction.atomic():
+                        super().save(*args, **kwargs)
+                    break
+                except IntegrityError:
+                    self.slug = None
+            else:
+                # Dernier recours : slug totalement random
+                self.slug = ''.join(SystemRandom().choices(string.ascii_lowercase + string.digits, k=20))
+                super().save(*args, **kwargs)
+        else:
+            super().save(*args, **kwargs)
 
     def has_perm(self, perm, obj=None):
         return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
 
     def has_module_perms(self, app_label):
         return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
-    
-    # @property
-    # def is_staff(self):
-    #     "Is the user a member of staff?"
-    #     # Simplest possible answer: All admins are staff
-    #     return self.user_role.role == 'admin'
-    @property
-    def is_staff(self):
-        return self.user_role and self.user_role.role == 'admin'
 
 
 # def send_password_reset_email(reset_password_token):
