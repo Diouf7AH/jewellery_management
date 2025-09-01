@@ -1,8 +1,13 @@
 from django.db.models import Sum
 from rest_framework import serializers
-from .models import Client, Vente, VenteProduit, Facture, Paiement
-from store.serializers import ProduitSerializer
+from .models import Client, Vente, VenteProduit, Facture, Paiement, Produit
 from django.db import models
+from store.models import Produit, MarquePurete
+from vendor.models import Vendor 
+from decimal import Decimal
+
+from store.serializers import ProduitSerializer
+from vendor.serializer import VendorSerializer 
 
 # class ProduitMiniSerializer(serializers.ModelSerializer):
 #     class Meta:
@@ -15,36 +20,96 @@ class ClientSerializer(serializers.ModelSerializer):
         fields = ['id', 'nom', 'prenom',]
 
 
+# class VenteProduitSerializer(serializers.ModelSerializer):
+#     produit_nom = serializers.SerializerMethodField()
+#     produit_slug = serializers.SerializerMethodField()
+#     # produit = ProduitSerializer()
+#     # prix_vente_grammes = serializers.DecimalField(max_digits=12, decimal_places=2)
+#     # remise = serializers.DecimalField(max_digits=5, decimal_places=2)
+#     # autres = serializers.DecimalField(max_digits=5, decimal_places=2)
+#     # sous_total_prix_vent = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+#     class Meta:
+#         model = VenteProduit
+#         fields = [
+#             'produit',
+#             'produit_nom',
+#             'produit_slug',
+#             'vendor',
+#             'quantite',
+#             'prix_vente_grammes',
+#             'tax',
+#             'prix_ttc',
+#             'remise',
+#             'autres',
+#             'sous_total_prix_vente_ht',
+#         ]
+    
+#     def get_produit_nom(self, obj):
+#         return obj.produit.nom if obj.produit else None
+    
+#     def get_produit_slug(self, obj):
+#         return obj.produit.slug if obj.produit else None
+
 class VenteProduitSerializer(serializers.ModelSerializer):
-    produit_nom = serializers.SerializerMethodField()
-    produit_slug = serializers.SerializerMethodField()
-    # produit = ProduitSerializer()
-    # prix_vente_grammes = serializers.DecimalField(max_digits=12, decimal_places=2)
-    # remise = serializers.DecimalField(max_digits=5, decimal_places=2)
-    # autres = serializers.DecimalField(max_digits=5, decimal_places=2)
-    # sous_total_prix_vent = serializers.DecimalField(max_digits=12, decimal_places=2)
+    # ÉCRITURE (IDs)
+    produit_id = serializers.PrimaryKeyRelatedField(
+        source="produit",
+        queryset=Produit.objects.all(),
+        write_only=True,
+    )
+    vendor_id = serializers.PrimaryKeyRelatedField(
+        source="vendor",
+        queryset=Vendor.objects.all(),
+        write_only=True,
+        required=False,
+        allow_null=True,
+    )
+
+    # LECTURE (objets imbriqués)
+    produit = ProduitSerializer(read_only=True)
+    vendor  = VendorSerializer(read_only=True)
+
+    # Alias lisible
+    sous_total_ht = serializers.DecimalField(
+        max_digits=12, decimal_places=2, read_only=True, source="sous_total_prix_vente_ht"
+    )
 
     class Meta:
         model = VenteProduit
         fields = [
-            'produit',
-            'produit_nom',
-            'produit_slug',
-            'vendor',
-            'quantite',
-            'prix_vente_grammes',
-            'tax',
-            'prix_ttc',
-            'remise',
-            'autres',
-            'sous_total_prix_vente_ht',
+            "id",
+            # écriture
+            "produit_id", "vendor_id",
+            # lecture imbriquée
+            "produit", "vendor",
+            # données de ligne
+            "quantite",
+            "prix_vente_grammes",
+            "remise", "autres", "tax",
+            # calculés (read-only)
+            "sous_total_ht",
+            "sous_total_prix_vente_ht",
+            "prix_ttc",
         ]
-    
-    def get_produit_nom(self, obj):
-        return obj.produit.nom if obj.produit else None
-    
-    def get_produit_slug(self, obj):
-        return obj.produit.slug if obj.produit else None
+        read_only_fields = ("id", "sous_total_prix_vente_ht", "prix_ttc")
+        extra_kwargs = {
+            "quantite": {"min_value": 1},
+            "prix_vente_grammes": {"required": False},  # tu fais le fallback dans la view
+            "remise": {"required": False},
+            "autres": {"required": False},
+            "tax": {"required": False},
+        }
+
+    def validate(self, attrs):
+        for f in ("prix_vente_grammes", "remise", "autres", "tax"):
+            v = attrs.get(f)
+            if v is not None and v < 0:
+                raise serializers.ValidationError({f: "Ne peut pas être négatif."})
+        q = attrs.get("quantite")
+        if q is not None and q < 1:
+            raise serializers.ValidationError({"quantite": "Doit être ≥ 1."})
+        return attrs
 
 
 # class VenteProduitSerializer(serializers.ModelSerializer):
@@ -75,18 +140,104 @@ class VenteSerializer(serializers.ModelSerializer):
         fields = ['id', 'numero_vente', 'client', 'created_by', 'produits', 'created_at', 'montant_total',]
 
 
+class VenteProduitInlineForFactureSerializer(serializers.ModelSerializer):
+    """Ligne affichée dans la facture, enrichie avec infos produit et vendeur."""
+    produit = serializers.SerializerMethodField()
+    vendor  = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VenteProduit
+        fields = [
+            "quantite",
+            "prix_vente_grammes",
+            "sous_total_prix_vente_ht",
+            "remise",
+            "autres",
+            "tax",
+            "prix_ttc",
+            "produit",
+            "vendor",
+        ]
+        read_only_fields = fields
+
+    # -- helpers privés --
+    def _get_weight(self, p):
+        # supporte p.poids ou p.poids_grammes
+        raw = getattr(p, "poids", None) or getattr(p, "poids_grammes", None)
+        try:
+            return Decimal(str(raw)) if raw not in (None, "", 0, "0") else None
+        except Exception:
+            return None
+
+    def _get_mp_price(self, p):
+        """Prix par gramme issu du couple (marque, purete) si disponible."""
+        if getattr(p, "marque_id", None) and getattr(p, "purete_id", None):
+            # MarquePurete = apps.get_model("store", "MarquePurete")
+            return MarquePurete.objects.filter(
+                marque_id=p.marque_id, purete_id=p.purete_id
+            ).values_list("prix", flat=True).first()
+        return None
+
+    def get_produit(self, obj):
+        p = obj.produit
+        if not p:
+            return None
+
+        poids = self._get_weight(p)
+        # prix au gramme utilisé: vendeur > 0 sinon tarif MP
+        prix_mp = self._get_mp_price(p)
+        prix_gramme = obj.prix_vente_grammes if (obj.prix_vente_grammes and obj.prix_vente_grammes > 0) else prix_mp
+
+        cat = getattr(p, "categorie", None)
+        mar = getattr(p, "marque", None)
+        pur = getattr(p, "purete", None)
+
+        return {
+            "id": p.id,
+            "nom": getattr(p, "nom", None),
+            "slug": getattr(p, "slug", None),
+            "poids_grammes": poids,
+            "prix_gramme": prix_gramme,  # prix au gramme réellement utilisé
+            "categorie": {
+                "id": getattr(cat, "id", None),
+                "nom": getattr(cat, "nom", getattr(cat, "name", None)),
+            } if cat else None,
+            "marque": {
+                "id": getattr(mar, "id", None),
+                "marque": getattr(mar, "marque", getattr(mar, "name", None)),
+            } if mar else None,
+            "purete": {
+                "id": getattr(pur, "id", None),
+                "purete": getattr(pur, "purete", getattr(pur, "name", None)),
+            } if pur else None,
+        }
+
+    def get_vendor(self, obj):
+        v = obj.vendor
+        if not v:
+            return None
+        u = getattr(v, "user", None)
+        return {
+            "id": v.id,
+            "email": getattr(u, "email", None),
+            "first_name": getattr(u, "first_name", None),
+            "last_name": getattr(u, "last_name", None),
+            "slug": getattr(u, "slug", None),
+        }
+
 class FactureSerializer(serializers.ModelSerializer):
     total_paye = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
     reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
     date_creation = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
     vente = serializers.SerializerMethodField()
     client = serializers.SerializerMethodField()
+    lignes = VenteProduitInlineForFactureSerializer(source="vente.produits", many=True, read_only=True)
 
     class Meta:
         model = Facture
         fields = [
             'numero_facture', 'vente', 'montant_total', 'total_paye',
-            'reste_a_payer', 'status', 'date_creation', 'client', 'fichier_pdf',
+            'reste_a_payer', 'status', 'date_creation', 'client', 'fichier_pdf', 'lignes'
         ]
 
     def get_client(self, obj):
@@ -207,59 +358,91 @@ class VenteDetailSerializer(serializers.ModelSerializer):
             "total_autres": self.get_total_autres(obj),
             "montant_total": obj.montant_total,
         }
-    
-        
+
+
+# PaiementSerializer pour l’input et l’output 
+# (mieux d’avoir un serializer d’entrée dédié + validations de montant).
+# serializer d’entrée, serializer de sortie, 
+# et vue avec verrouillage transactionnel et contrôle anti-surpaiement
+
+class PaiementCreateSerializer(serializers.Serializer):
+    montant_paye = serializers.DecimalField(max_digits=10, decimal_places=2)
+    mode_paiement = serializers.ChoiceField(choices=[('cash', 'Cash'), ('mobile', 'Mobile')], required=False)
+
+    def validate_montant_paye(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError("Le montant doit être strictement positif.")
+        return value
+
+
 class PaiementSerializer(serializers.ModelSerializer):
-    reste_a_payer = serializers.SerializerMethodField()
-    facture = serializers.SerializerMethodField()
+    facture_numero = serializers.CharField(source="facture.numero_facture", read_only=True)
+    cashier_email = serializers.EmailField(source="cashier.user.email", read_only=True)
+
     class Meta:
         model = Paiement
-        fields = ("id", "facture", "montant_paye", "mode_paiement", "date_paiement", "reste_a_payer")
-        read_only_fields = ("created_by",)  # 👈 NE PAS inclure dans Swagger POST
+        fields = [
+            "id", "facture", "facture_numero",
+            "montant_paye", "mode_paiement", "date_paiement",
+            "cashier", "cashier_email", "created_by",
+        ]
+        read_only_fields = ["id", "date_paiement", "cashier", "created_by"]
+
+
+
+
         
-    def validate_montant_paye(self, value):
-        if value <= 0:
-            raise serializers.ValidationError("Le montant payé doit être un montant positif.")
-        return value
-
-    def validate_mode_paiement(self, value):
-        MODES_VALIDES = dict(Paiement._meta.get_field('mode_paiement').choices).keys()
-        if value not in MODES_VALIDES:
-            raise serializers.ValidationError(f"Mode de paiement invalide. Choix valides : {', '.join(MODES_VALIDES)}")
-        return value
-    
-    def get_facture(self, obj):
-        facture = obj.facture
-        if not facture:
-            return None
-
-        return {
-            "id": facture.id,
-            "numero_facture": facture.numero_facture,
-            "vente": {
-                "id": facture.vente.id,
-                "numero_vente": facture.vente.numero_vente,
-                "client": facture.vente.client.full_name if facture.vente.client else None,
-            } if facture.vente else None,
-            "montant_total": facture.montant_total,
-            "status": facture.status,
-            "date_creation": facture.date_creation,
-        }
+# class PaiementSerializer(serializers.ModelSerializer):
+#     reste_a_payer = serializers.SerializerMethodField()
+#     facture = serializers.SerializerMethodField()
+#     class Meta:
+#         model = Paiement
+#         fields = ("id", "caishier", "facture", "montant_paye", "mode_paiement", "date_paiement", "reste_a_payer")
+#         read_only_fields = ("created_by",)  # 👈 NE PAS inclure dans Swagger POST
         
-    def get_reste_a_payer(self, obj):
-        facture = obj.facture
-        return facture.reste_a_payer if facture else None
-    
-    def get_created_by(self, obj):
-        user = obj.created_by
-        if not user:
-            return None
-        return {
-            "id": user.id,
-            "nom": user.get_full_name() or user.username
-        }
+#     def validate_montant_paye(self, value):
+#         if value <= 0:
+#             raise serializers.ValidationError("Le montant payé doit être un montant positif.")
+#         return value
 
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        data['created_by'] = self.get_created_by(instance)
-        return data
+#     def validate_mode_paiement(self, value):
+#         MODES_VALIDES = dict(Paiement._meta.get_field('mode_paiement').choices).keys()
+#         if value not in MODES_VALIDES:
+#             raise serializers.ValidationError(f"Mode de paiement invalide. Choix valides : {', '.join(MODES_VALIDES)}")
+#         return value
+    
+#     def get_facture(self, obj):
+#         facture = obj.facture
+#         if not facture:
+#             return None
+
+#         return {
+#             "id": facture.id,
+#             "numero_facture": facture.numero_facture,
+#             "vente": {
+#                 "id": facture.vente.id,
+#                 "numero_vente": facture.vente.numero_vente,
+#                 "client": facture.vente.client.full_name if facture.vente.client else None,
+#             } if facture.vente else None,
+#             "montant_total": facture.montant_total,
+#             "status": facture.status,
+#             "date_creation": facture.date_creation,
+#         }
+        
+#     def get_reste_a_payer(self, obj):
+#         facture = obj.facture
+#         return facture.reste_a_payer if facture else None
+    
+#     def get_created_by(self, obj):
+#         user = obj.created_by
+#         if not user:
+#             return None
+#         return {
+#             "id": user.id,
+#             "nom": user.get_full_name() or user.username
+#         }
+
+#     def to_representation(self, instance):
+#         data = super().to_representation(instance)
+#         data['created_by'] = self.get_created_by(instance)
+#         return data
