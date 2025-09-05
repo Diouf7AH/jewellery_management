@@ -1,6 +1,6 @@
 from django.db.models import Sum
 from rest_framework import serializers
-from .models import Client, Vente, VenteProduit, Facture, Paiement, Produit
+from .models import Client, Vente, VenteProduit, Facture, Paiement
 from django.db import models
 from store.models import Produit, MarquePurete
 from vendor.models import Vendor 
@@ -195,6 +195,7 @@ class VenteProduitInlineForFactureSerializer(serializers.ModelSerializer):
         return {
             "id": p.id,
             "nom": getattr(p, "nom", None),
+            "matiere": getattr(p, "matiere", None),
             "slug": getattr(p, "slug", None),
             "poids_grammes": poids,
             "prix_gramme": prix_gramme,  # prix au gramme réellement utilisé

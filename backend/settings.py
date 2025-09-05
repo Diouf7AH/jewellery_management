@@ -1,3 +1,5 @@
+# Python 3.10.5
+# python -m django --version 4.2
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -137,7 +139,7 @@ SITE_URL = "https://www.rio-gold.com"
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# TIME_ZONE = 'UTC'
 
 USE_I18N = True
 
@@ -165,7 +167,7 @@ SWAGGER_SETTINGS = {
     },
 }
 
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+# DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'userauths.User'
 AUTHENTICATION_BACKENDS = [
     'userauths.auth_backend.EmailPhoneUsernameAuthenticationBackend',

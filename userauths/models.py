@@ -163,7 +163,8 @@ class User(AbstractUser):
 
     # ➕ Nouveau champ
     # slug = models.SlugField(unique=True, max_length=20, null=False, blank=True)
-    slug = models.SlugField(max_length=20, unique=True)  # sans null=True / blank=True
+    # slug = models.SlugField(max_length=20, unique=True)  # sans null=True / blank=True
+    slug = models.SlugField(max_length=20, unique=True, null=True, blank=True)  # TEMPORAIRE
 
     objects = UserManager()
 

@@ -1,19 +1,24 @@
+# --- Standard library
+from decimal import Decimal, ROUND_HALF_UP
 import random
 import string
 import uuid
-from django.db.models import Sum
-from decimal import Decimal, ROUND_HALF_UP
-import random
-from django.conf import settings
-from django.db import models, IntegrityError, transaction
-from django.utils import timezone
-from store.models import Categorie, Marque, Modele, Produit, Purete
-from vendor.models import Vendor
-from django.core.exceptions import ValidationError
-from django.db.models import Q, CheckConstraint
+from typing import TYPE_CHECKING
 
-TWOPLACES = Decimal('0.01')
-ZERO = Decimal('0.00')
+# --- Django
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.db import models, IntegrityError, transaction
+from django.db.models import Q, Sum, CheckConstraint, F
+from django.utils import timezone
+
+# ⚠️ Ne pas importer des modèles d'autres apps ici
+# from store.models import Categorie, Marque, Modele, Produit, Purete  # ❌
+# from vendor.models import Vendor, Cashier  # ❌
+
+
+TWOPLACES = Decimal("0.01")
+ZERO = Decimal("0.00")
 
 # Create your models here.
 # Client Model
