@@ -5,19 +5,14 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from rest_framework import generics, permissions, status
+from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.db.models import F, Q, Sum
-from collections import defaultdict
+from django.db.models import Q
 from backend.renderers import UserRenderer
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Sum
-from io import BytesIO
-from datetime import datetime
-from django.utils import timezone
-import datetime
+
 from store.models import Produit, Bijouterie
 from userauths.models import Role
 from stock.models import Stock
@@ -25,17 +20,13 @@ from userauths.serializers import UserRegistrationSerializer, UserSerializer
 from sale.models import VenteProduit
 from sale.serializers import VenteProduitSerializer
 from store.serializers import ProduitSerializer
-from django.db import IntegrityError
-# from userauths.models import User
-from .models import Vendor, VendorProduit, Cashier
-from .serializer import (VendorProduitSerializer, VendorSerializer,
-                        VendorUpdateStatusSerializer,CashierSerializer, UserSerializer,
-                        CreateStaffMemberSerializer, VendorReadSerializer, VendorUpdateSerializer,
-                        CashierReadSerializer, CashierUpdateSerializer)
+
+from .models import Vendor, VendorProduit
+from .serializer import (VendorProduitSerializer, VendorSerializer, CreateVendorSerializer,
+                        VendorUpdateStatusSerializer)
 
 from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
-from django.contrib.auth import get_user_model
-from userauths.models import Role
+from django.db.models import Sum
 
 # Create your views here.
 User = get_user_model()
@@ -49,197 +40,51 @@ allowed_roles_admin_manager = ['admin', 'manager',]
 # Un admin peut voir n'importe quel vendeur (avec user_id).
 # Un manager peut aussi voir n'importe quel vendeur.
 # Un vendeur peut uniquement voir son propre dashboard.
-# class VendorDashboardView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_id="Dashboard Vendeur reserver pour vendeur seulement",
-#         operation_description="Voir les statistiques d’un vendeur (admin, manager ou vendeur connecté).",
-#         responses={200: "Statistiques du vendeur"}
-#     )
-#     def get(self, request):
-#         user = request.user
-#         role = getattr(user.user_role, 'role', None)
-#         is_admin_or_manager_or_vendor = role in ['admin', 'manager', 'vendor']
-
-#         # 🔎 Récupération et validation du user_id
-#         user_id = request.GET.get('user_id')
-#         if user_id:
-#             if not user_id.isdigit():
-#                 return Response({"detail": "user_id invalide."}, status=400)
-#             if not is_admin_or_manager_or_vendor:
-#                 return Response({"detail": "Accès refusé."}, status=403)
-#             target_user = get_object_or_404(User, id=int(user_id))
-#         else:
-#             target_user = user
-
-#         # 🔐 Vérifie que le compte est bien un vendeur
-#         if not target_user.user_role or target_user.user_role.role != 'vendor':
-#             return Response({"detail": "Ce compte n'est pas un vendeur."}, status=400)
-
-#         try:
-#             vendor = Vendor.objects.get(user=target_user)
-#         except Vendor.DoesNotExist:
-#             return Response({"detail": "Vendeur introuvable."}, status=404)
-
-#         produits = VendorProduit.objects.filter(vendor=vendor)
-#         ventes = VenteProduit.objects.filter(produit__in=produits.values('produit'))
-
-#         # 📊 Statistiques globales
-#         total_produits = produits.count()
-#         total_ventes = ventes.count()
-#         total_qte_vendue = ventes.aggregate(total=Sum('quantite'))['total'] or 0
-#         total_montant = ventes.aggregate(total=Sum('sous_total_prix_vent'))['total'] or 0
-#         stock_total = produits.aggregate(stock=Sum('quantite'))['stock'] or 0
-#         total_remise = ventes.aggregate(remise=Sum('remise'))['remise'] or 0
-
-#         # 📆 Regroupement par période
-#         group_by = request.GET.get('group_by', 'month')
-#         if group_by == 'day':
-#             trunc = TruncDay('vente__created_at')
-#         elif group_by == 'week':
-#             trunc = TruncWeek('vente__created_at')
-#         else:
-#             trunc = TruncMonth('vente__created_at')
-
-#         stats_grouped = (
-#             ventes.annotate(period=trunc)
-#             .values('period')
-#             .annotate(
-#                 total_qte=Sum('quantite'),
-#                 total_montant=Sum('sous_total_prix_vent')
-#             ).order_by('period')
-#         )
-
-#         top_produits = (
-#             ventes.values('produit__id', 'produit__nom')
-#             .annotate(total_qte=Sum('quantite'))
-#             .order_by('-total_qte')[:5]
-#         )
-        
-#         # Générer un tableau de produit
-#         produits_tableau = (
-#             ventes.values('produit__id', 'produit__slug',  'produit__nom')
-#             .annotate(
-#                 quantite_vendue=Sum('quantite'),
-#                 montant_total=Sum('sous_total_prix_vent'),
-#                 remise_totale=Sum('remise')
-#             )
-#             .order_by('-quantite_vendue')
-#         )
-
-#         return Response({
-#             "vendeur": VendorSerializer(vendor).data,
-#             "user": UserSerializer(target_user).data,
-#             "stats": {
-#                 "produits": total_produits,
-#                 "ventes": total_ventes,
-#                 "quantite_totale_vendue": total_qte_vendue,
-#                 "stock_restant": stock_total,
-#                 "montant_total_ventes": total_montant,
-#                 "remise_totale": total_remise,
-#             },
-#             "stats_groupées": stats_grouped,
-#             "top_produits": top_produits,
-#             "produits": VendorProduitSerializer(produits, many=True).data,
-#             "ventes": VenteProduitSerializer(ventes, many=True).data,
-#             "produits_tableau": produits_tableau,
-#         })
-
 class VendorDashboardView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_id="Dashboard Vendeur (vendeur / admin / manager)",
-        operation_description=(
-            "Voir les statistiques d’un vendeur. "
-            "Un vendeur voit son propre dashboard. "
-            "Admin/manager peuvent cibler via ?user_id=... ou ?vendor_email=... "
-            "Filtres: ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&group_by=day|week|month "
-            "Export Excel: ?export=excel"
-        ),
-        manual_parameters=[
-            openapi.Parameter("user_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Cibler un user vendeur (admin/manager)"),
-            openapi.Parameter("vendor_email", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Cibler un vendeur par email (admin/manager)"),
-            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Filtre début (YYYY-MM-DD)"),
-            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Filtre fin (YYYY-MM-DD)"),
-            openapi.Parameter("group_by", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="day|week|month (par défaut: month)"),
-            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="excel pour exporter en .xlsx"),
-        ],
-        responses={200: "Statistiques du vendeur ou fichier Excel"}
+        operation_id="Dashboard Vendeur reserver pour vendeur seulement",
+        operation_description="Voir les statistiques d’un vendeur (admin, manager ou vendeur connecté).",
+        responses={200: "Statistiques du vendeur"}
     )
     def get(self, request):
         user = request.user
-        role = getattr(getattr(user, 'user_role', None), 'role', None)
-        is_admin_or_manager = role in {'admin', 'manager'}
+        role = getattr(user.user_role, 'role', None)
+        is_admin_or_manager = role in ['admin', 'manager']
 
-        # -------- Sélection de la cible : vendor_email > user_id > self --------
-        vendor_email = (request.query_params.get("vendor_email") or "").strip()
-        user_id = request.query_params.get("user_id")
-
-        target_user = None
-
-        if vendor_email:
-            # Vendeur ne peut cibler que lui-même
-            if role == 'vendor' and vendor_email.lower() != user.email.lower():
-                return Response({"detail": "Accès refusé: vous ne pouvez cibler que votre propre email."}, status=403)
-
-            if not (is_admin_or_manager or user.is_superuser or role == 'vendor'):
-                return Response({"detail": "Accès refusé."}, status=403)
-
-            target_user = User.objects.filter(email__iexact=vendor_email).first()
-            if not target_user:
-                return Response({"detail": "Utilisateur introuvable pour cet email."}, status=404)
-
-        elif user_id:
+        # 🔎 Récupération et validation du user_id
+        user_id = request.GET.get('user_id')
+        if user_id:
             if not user_id.isdigit():
                 return Response({"detail": "user_id invalide."}, status=400)
-            if not (is_admin_or_manager or user.is_superuser):
+            if not is_admin_or_manager:
                 return Response({"detail": "Accès refusé."}, status=403)
             target_user = get_object_or_404(User, id=int(user_id))
-
         else:
             target_user = user
 
-        # Si les deux sont fournis, s'assurer qu'ils pointent vers le même user
-        if vendor_email and user_id:
-            if str(target_user.id) != str(user_id):
-                return Response({"detail": "vendor_email et user_id ne pointent pas vers le même utilisateur."}, status=400)
-
-        if getattr(getattr(target_user, 'user_role', None), 'role', None) != 'vendor':
+        # 🔐 Vérifie que le compte est bien un vendeur
+        if not target_user.user_role or target_user.user_role.role != 'vendor':
             return Response({"detail": "Ce compte n'est pas un vendeur."}, status=400)
 
-        vendor = Vendor.objects.select_related('user').filter(user=target_user).first()
-        if not vendor:
+        try:
+            vendor = Vendor.objects.get(user=target_user)
+        except Vendor.DoesNotExist:
             return Response({"detail": "Vendeur introuvable."}, status=404)
 
-        # --- QS de base
-        produits_qs = VendorProduit.objects.select_related('produit').filter(vendor=vendor)
-        ventes_qs = (
-            VenteProduit.objects
-            .select_related('produit', 'vente', 'vendor', 'vendor__user')
-            .filter(vendor=vendor)
-        )
+        produits = VendorProduit.objects.filter(vendor=vendor)
+        ventes = VenteProduit.objects.filter(produit__in=produits.values('produit'))
 
-        # --- Filtres temporels
-        date_from = request.query_params.get('date_from')
-        date_to   = request.query_params.get('date_to')
-        if date_from:
-            ventes_qs = ventes_qs.filter(vente__created_at__date__gte=date_from)
-        if date_to:
-            ventes_qs = ventes_qs.filter(vente__created_at__date__lte=date_to)
+        # 📊 Statistiques globales
+        total_produits = produits.count()
+        total_ventes = ventes.count()
+        total_qte_vendue = ventes.aggregate(total=Sum('quantite'))['total'] or 0
+        total_montant = ventes.aggregate(total=Sum('sous_total_prix_vent'))['total'] or 0
+        stock_total = produits.aggregate(stock=Sum('quantite'))['stock'] or 0
 
-        # --- Stats globales
-        total_produits    = produits_qs.count()
-        total_ventes      = ventes_qs.count()
-        total_qte_vendue  = ventes_qs.aggregate(s=Sum('quantite'))['s'] or 0
-        total_montant_ht  = ventes_qs.aggregate(s=Sum('sous_total_prix_vente_ht'))['s'] or 0
-        total_montant_ttc = ventes_qs.aggregate(s=Sum('prix_ttc'))['s'] or 0
-        stock_total       = produits_qs.aggregate(s=Sum('quantite'))['s'] or 0
-        total_remise      = ventes_qs.aggregate(s=Sum('remise'))['s'] or 0
-
-        # --- Regroupement (day/week/month)
-        group_by = (request.query_params.get('group_by') or 'month').lower()
+        # 📆 Regroupement par période
+        group_by = request.GET.get('group_by', 'month')
         if group_by == 'day':
             trunc = TruncDay('vente__created_at')
         elif group_by == 'week':
@@ -247,158 +92,36 @@ class VendorDashboardView(APIView):
         else:
             trunc = TruncMonth('vente__created_at')
 
-        stats_grouped = list(
-            ventes_qs.annotate(period=trunc)
+        stats_grouped = (
+            ventes.annotate(period=trunc)
             .values('period')
             .annotate(
                 total_qte=Sum('quantite'),
-                total_montant_ht=Sum('sous_total_prix_vente_ht'),
-                total_montant_ttc=Sum('prix_ttc'),
-            )
-            .order_by('period')
+                total_montant=Sum('sous_total_prix_vent')
+            ).order_by('period')
         )
 
-        # --- Top produits
-        top_produits = list(
-            ventes_qs.values('produit__id', 'produit__nom', 'produit__slug')
+        top_produits = (
+            ventes.values('produit__id', 'produit__nom')
             .annotate(total_qte=Sum('quantite'))
             .order_by('-total_qte')[:5]
         )
 
-        # --- Tableau produits synthèse
-        produits_tableau = list(
-            ventes_qs.values('produit__id', 'produit__slug', 'produit__nom')
-            .annotate(
-                quantite_vendue=Sum('quantite'),
-                montant_total_ht=Sum('sous_total_prix_vente_ht'),
-                remise_totale=Sum('remise'),
-            )
-            .order_by('-quantite_vendue')
-        )
-
-        # --- Export Excel ?
-        if (request.query_params.get("export") or "").lower() == "excel":
-            return self._export_excel(
-                vendor=vendor,
-                stats={
-                    "total_produits": total_produits,
-                    "total_ventes": total_ventes,
-                    "total_qte_vendue": total_qte_vendue,
-                    "stock_total": stock_total,
-                    "total_montant_ht": total_montant_ht,
-                    "total_montant_ttc": total_montant_ttc,
-                    "total_remise": total_remise,
-                },
-                ventes=list(ventes_qs),
-                produits_tableau=produits_tableau,
-                stats_grouped=stats_grouped,
-                group_by=group_by,
-            )
-
-        # --- JSON par défaut
-        try:
-            from sale.serializers import VenteProduitSerializer as VPSerializer
-            ventes_payload = VPSerializer(ventes_qs, many=True).data
-        except Exception:
-            ventes_payload = list(ventes_qs.values('id', 'vente_id', 'produit_id', 'quantite'))
-
         return Response({
             "vendeur": VendorSerializer(vendor).data,
-            "user": {"id": target_user.id, "email": target_user.email, "slug": getattr(target_user, "slug", None)},
+            "user": UserSerializer(target_user).data,
             "stats": {
                 "produits": total_produits,
                 "ventes": total_ventes,
                 "quantite_totale_vendue": total_qte_vendue,
                 "stock_restant": stock_total,
-                "montant_total_ht": total_montant_ht,
-                "montant_total_ttc": total_montant_ttc,
-                "remise_totale": total_remise,
+                "montant_total_ventes": total_montant,
             },
-            "stats_groupees": stats_grouped,
+            "stats_groupées": stats_grouped,
             "top_produits": top_produits,
-            "produits": VendorProduitSerializer(produits_qs, many=True).data,
-            "ventes": ventes_payload,
-            "produits_tableau": produits_tableau,
+            "produits": VendorProduitSerializer(produits, many=True).data,
+            "ventes": VenteProduitSerializer(ventes, many=True).data,
         })
-
-    # ---------- Export Excel helper (inchangé) ----------
-    # def _export_excel(self, vendor, stats, ventes, produits_tableau, stats_grouped, group_by):
-    #     try:
-    #         from openpyxl import Workbook
-    #         from openpyxl.utils import get_column_letter
-    #     except ImportError:
-    #         return Response({"detail": "openpyxl manquant. Installez-le : pip install openpyxl"}, status=500)
-
-    #     wb = Workbook()
-    #     ws = wb.active; ws.title = "Résumé"
-    #     ws.append(["Dashboard vendeur"])
-    #     ws.append(["Vendeur", getattr(getattr(vendor, "user", None), "email", "")])
-    #     ws.append(["Slug", getattr(getattr(vendor, "user", None), "slug", "")])
-    #     ws.append([])
-    #     ws.append(["Indicateur", "Valeur"])
-    #     ws.append(["Produits en stock", stats["total_produits"]])
-    #     ws.append(["Ventes (lignes)", stats["total_ventes"]])
-    #     ws.append(["Quantité totale vendue", stats["total_qte_vendue"]])
-    #     ws.append(["Stock restant", stats["stock_total"]])
-    #     ws.append(["Montant total HT", float(stats["total_montant_ht"] or 0)])
-    #     ws.append(["Montant total TTC", float(stats["total_montant_ttc"] or 0)])
-    #     ws.append(["Remise totale", float(stats["total_remise"] or 0)])
-
-    #     ws2 = wb.create_sheet(title="Ventes")
-    #     ws2.append(["Date vente", "N° vente", "Produit", "Slug", "Quantité", "Prix/gr.", "Sous-total HT", "Tax", "TTC", "Remise", "Autres", "Vendeur (email)"])
-    #     for vp in ventes:
-    #         vente = getattr(vp, "vente", None)
-    #         produit = getattr(vp, "produit", None)
-    #         vendeur = getattr(vp, "vendor", None)
-    #         ws2.append([
-    #             getattr(vente, "created_at", None).strftime("%Y-%m-%d %H:%M") if getattr(vente, "created_at", None) else "",
-    #             getattr(vente, "numero_vente", ""),
-    #             getattr(produit, "nom", "") if produit else "",
-    #             getattr(produit, "slug", "") if produit else "",
-    #             int(getattr(vp, "quantite", 0) or 0),
-    #             float(getattr(vp, "prix_vente_grammes", 0) or 0),
-    #             float(getattr(vp, "sous_total_prix_vente_ht", 0) or 0),
-    #             float(getattr(vp, "tax", 0) or 0),
-    #             float(getattr(vp, "prix_ttc", 0) or 0),
-    #             float(getattr(vp, "remise", 0) or 0),
-    #             float(getattr(vp, "autres", 0) or 0),
-    #             getattr(getattr(vendeur, "user", None), "email", "") if vendeur else "",
-    #         ])
-
-    #     ws3 = wb.create_sheet(title="Produits (agrégés)")
-    #     ws3.append(["Produit ID", "Slug", "Nom", "Quantité vendue", "Montant total HT", "Remise totale"])
-    #     for row in produits_tableau:
-    #         ws3.append([
-    #             row.get("produit__id"),
-    #             row.get("produit__slug"),
-    #             row.get("produit__nom"),
-    #             int(row.get("quantite_vendue") or 0),
-    #             float(row.get("montant_total_ht") or 0),
-    #             float(row.get("remise_totale") or 0),
-    #         ])
-
-    #     title_map = {"day": "Journalier", "week": "Hebdomadaire", "month": "Mensuel"}
-    #     ws4 = wb.create_sheet(title=f"Série {title_map.get(group_by, group_by)}")
-    #     ws4.append(["Période", "Total quantité", "Total HT", "Total TTC"])
-    #     for r in stats_grouped:
-    #         per = r.get("period")
-    #         label = per.strftime("%Y-%m-%d") if hasattr(per, "strftime") else str(per)
-    #         ws4.append([
-    #             label,
-    #             int(r.get("total_qte") or 0),
-    #             float(r.get("total_montant_ht") or 0),
-    #             float(r.get("total_montant_ttc") or 0),
-    #         ])
-
-    #     for sheet in wb.worksheets:
-    #         for col_idx, _ in enumerate(next(sheet.iter_rows(min_row=1, max_row=1)), start=1):
-    #             sheet.column_dimensions[get_column_letter(col_idx)].width = 18
-
-    #     stream = BytesIO(); wb.save(stream); stream.seek(0)
-    #     filename = f"dashboard_vendeur_{getattr(getattr(vendor, 'user', None), 'slug', 'vendeur')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    #     resp = HttpResponse(stream.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    #     resp["Content-Disposition"] = f'attachment; filename="{filename}"'
-    #     return resp
 
 # Un endpoint PATCH pour que le vendeur mette à jour son profil et son compte
 class VendorProfileView(APIView):
@@ -517,7 +240,7 @@ class VendorProfileView(APIView):
             for field in ['first_name', 'last_name', 'username', 'email', 'phone']
             if field in request.data
         }
-        user_serializer = UserSerializer(user, data=user_data, partial=True)
+        user_serializer = UserUserSerializer(user, data=user_data, partial=True)
 
         if vendor_serializer.is_valid() and user_serializer.is_valid():
             vendor_serializer.save()
@@ -648,7 +371,7 @@ class ToggleVendorStatusView(APIView):
     def patch(self, request, user_id):
         allowed_roles_admin_manager = ['admin', 'manager'] 
         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
-            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             target_user = User.objects.get(id=user_id)
@@ -665,23 +388,21 @@ class ToggleVendorStatusView(APIView):
             return Response({"detail": "Vendeur introuvable."}, status=404)
 
 
-# class ListVendorAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         responses={200: openapi.Response('Liste des vendeurs', VendorSerializer(many=True))},
-#     )
-#     def get(self, request):
-#         allowed_roles = ['admin', 'manager']
-#         role = getattr(request.user.user_role, 'role', None)
-
-#         if role not in allowed_roles:
-#             return Response({"message": "Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         vendors = Vendor.objects.all()
-#         serializer = VendorSerializer(vendors, many=True)
-#         return Response(serializer.data, status=status.HTTP_200_OK)
+class ListVendorAPIView(APIView):
+    renderer_classes = [UserRenderer]
+    permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        responses={200: openapi.Response('response description', VendorSerializer)},
+        )
+    def get(self, request):
+        # if not request.user.user_role or request.user.user_role.role not in allowed_roles:
+        #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        vendors = Vendor.objects.all()
+        serializer = VendorSerializer(vendors, many=True)
+        return Response(serializer.data)
 
 # class CreateVendorView(APIView):
 #     renderer_classes = [UserRenderer]
@@ -763,577 +484,87 @@ class ToggleVendorStatusView(APIView):
 #                 return Response({'error': 'Vendor already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
 
-# class CreateVendorView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-#     allowed_roles_admin_manager = ['admin', 'manager']
 
-#     @swagger_auto_schema(
-#         operation_description="Créer un vendeur via un utilisateur existant (email et nom de la bijouterie).",
-#         request_body=CreateVendorSerializer,
-#         responses={
-#             201: openapi.Response(description="Vendeur créé", schema=VendorSerializer),
-#             400: openapi.Response(description="Erreur ou données invalides"),
-#             403: openapi.Response(description="⛔ Accès refusé")
-#         }
-#     )
-#     def post(self, request, *args, **kwargs):
-#         # 🔐 Vérification du rôle utilisateur
-#         # user_role = getattr(request.user.user_role, 'role', None)
-
-#         # if user_role not in allowed_roles:
-#         #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         # ✅ Validation via serializer
-#         serializer = CreateVendorSerializer(data=request.data)
-#         if not serializer.is_valid():
-#             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#         validated_data = serializer.validated_data
-#         email = validated_data['email']
-#         bijouterie = validated_data['bijouterie']
-#         description = validated_data.get('description', '')
-
-#         # 🔍 Rôle vendeur
-#         role_vendor = Role.objects.filter(role='vendor').first()
-#         if not role_vendor:
-#             return Response({"error": "Le rôle 'vendor' n'existe pas."}, status=status.HTTP_400_BAD_REQUEST)
-
-#         # 🔍 Recherche de l'utilisateur
-#         user = User.objects.filter(email__iexact=email).first()
-#         if not user:
-#             return Response({"error": "Aucun utilisateur trouvé."}, status=status.HTTP_404_NOT_FOUND)
-
-#         try:
-#             # 🔐 Assigner rôle vendeur si besoin
-#             if user.user_role != role_vendor:
-#                 user.user_role = role_vendor
-#                 user.save(update_fields=["user_role"])
-
-#             # 🔁 Vérifie s’il est déjà vendeur
-#             if Vendor.objects.filter(user=user).exists():
-#                 return Response({"error": "Ce user est déjà enregistré comme vendeur."}, status=status.HTTP_400_BAD_REQUEST)
-
-#             # ✅ Création du vendeur
-#             vendor = Vendor.objects.create(user=user, bijouterie=bijouterie, description=description)
-
-#             return Response({
-#                 'vendor': VendorSerializer(vendor).data,
-#                 'user': UserSerializer(user).data,
-#                 'message': "✅ Vendeur créé avec succès"
-#             }, status=status.HTTP_201_CREATED)
-
-#         except Exception as e:
-#             return Response({'error': f'Une erreur est survenue : {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
-
-
-# class CreateVendorView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-#     allowed_roles_admin_manager = ['admin', 'manager']
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un vendeur à partir d’un utilisateur existant",
-#         operation_description=(
-#             "Associe un utilisateur existant à un profil Vendor (et une bijouterie). "
-#             "N’altère pas le rôle existant (admin/manager) du user."
-#         ),
-#         request_body=CreateVendorSerializer,
-#         responses={
-#             201: openapi.Response(description="Vendeur créé", schema=VendorSerializer),
-#             400: openapi.Response(description="Erreur ou données invalides"),
-#             403: openapi.Response(description="⛔ Accès refusé")
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request, *args, **kwargs):
-#         # Vérification du rôle appelant
-#         caller_role = getattr(getattr(request.user, "user_role", None), "role", None)
-#         if caller_role not in self.allowed_roles_admin_manager:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         # Validation
-#         serializer = CreateVendorSerializer(data=request.data)
-#         if not serializer.is_valid():
-#             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#         email = serializer.validated_data["email"]
-#         bijouterie = serializer.validated_data["bijouterie"]  # suppose que le serializer retourne une instance
-#         # description = serializer.validated_data.get("description", "")  # ⚠️ uniquement si le modèle Vendor a ce champ
-
-#         # Récupération de l'utilisateur
-#         user = User.objects.select_for_update().filter(email__iexact=email).first()
-#         if not user:
-#             return Response({"error": "Aucun utilisateur trouvé avec cet email."}, status=status.HTTP_404_NOT_FOUND)
-
-#         # Empêcher les doublons Vendor
-#         if Vendor.objects.filter(user=user).exists():
-#             return Response({"error": "Ce user est déjà enregistré comme vendeur."}, status=status.HTTP_400_BAD_REQUEST)
-
-#         # Option : si le user n’a aucun rôle, on peut lui assigner 'vendor' (sinon on ne touche pas)
-#         if not getattr(user, "user_role", None):
-#             role_vendor = Role.objects.filter(role="vendor").first()
-#             if not role_vendor:
-#                 # On peut créer le rôle si tu veux, ou bien refuser proprement
-#                 # role_vendor = Role.objects.create(role="vendor")
-#                 return Response({"error": "Le rôle 'vendor' n'existe pas. Créez-le d’abord."}, status=status.HTTP_400_BAD_REQUEST)
-#             user.user_role = role_vendor
-#             user.save(update_fields=["user_role"])
-
-#         # Création du Vendor (⚠️ pas de description si le champ n’existe pas dans le modèle)
-#         vendor = Vendor.objects.create(
-#             user=user,
-#             bijouterie=bijouterie,
-#             # description=description,  # décommente seulement si le champ existe dans Vendor
-#         )
-
-#         return Response(
-#             {
-#                 "vendor": VendorSerializer(vendor).data,
-#                 "user": UserSerializer(user).data,
-#                 "message": "✅ Vendeur créé avec succès"
-#             },
-#             status=status.HTTP_201_CREATED
-#         )
-
-
-
-# class CreateStaffMemberView(APIView):
-#     """
-#     POST /staff/create/?upsert=true|false
-#     - Crée un Vendor OU un Cashier pour un utilisateur existant.
-#     - Accès: admin/manager uniquement
-#     - upsert=true: si le staff existe déjà, renvoie 200 avec l'objet existant (idempotent)
-#     """
-#     permission_classes = [IsAuthenticated]
-#     allowed_roles_admin_manager = (ROLE_ADMIN, ROLE_MANAGER)
-#     MAP = {ROLE_VENDOR: (Vendor, VendorSerializer), ROLE_CASHIER: (Cashier, CashierSerializer)}
-
-#     upsert_param = openapi.Parameter(
-#         name="upsert", in_=openapi.IN_QUERY, type=openapi.TYPE_BOOLEAN, required=False,
-#         description="Si true, renvoie le staff existant (200) au lieu d'un 409."
-#     )
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un vendor ou un cashier (idempotent avec ?upsert=true)",
-#         request_body=CreateStaffMemberSerializer,
-#         manual_parameters=[upsert_param],
-#         responses={
-#             201: "Créé",
-#             200: "Existant (upsert)",
-#             400: "Requête invalide",
-#             403: "⛔ Accès refusé",
-#             404: "Introuvable",
-#             409: "Conflit"
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         # 1) Permissions appelant
-#         caller_role = getattr(getattr(request.user, "user_role", None), "role", None)
-#         if caller_role not in self.allowed_roles_admin_manager:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         # 2) Paramètre upsert (idempotence)
-#         TRUTHY = {"1", "true", "yes"}
-#         upsert = str(request.query_params.get("upsert", "false")).lower() in TRUTHY
-
-#         # 3) Validation payload
-#         inp = CreateStaffMemberSerializer(data=request.data)
-#         inp.is_valid(raise_exception=True)
-#         data = inp.validated_data
-
-#         wanted_role = data["role"].lower()
-#         if wanted_role not in self.MAP:
-#             return Response({"error": "role doit être 'vendor' ou 'cashier'."}, status=400)
-#         Model, OutSer = self.MAP[wanted_role]
-
-#         email = (data.get("email") or "").strip()
-#         username = (data.get("username") or "").strip()
-#         phone = (data.get("phone") or "").strip()
-
-#         # 4) Bijouterie (ID prioritaire, sinon nom)
-#         bijouterie = None
-#         if data.get("bijouterie"):
-#             bijouterie = Bijouterie.objects.select_for_update().filter(pk=data["bijouterie"]).first()
-#             if not bijouterie:
-#                 return Response({"error": "Bijouterie introuvable (ID)."}, status=404)
-#         else:
-#             bijouterie = Bijouterie.objects.select_for_update().filter(nom__iexact=data["bijouterie_nom"]).first()
-#             if not bijouterie:
-#                 return Response({"error": f"Bijouterie '{data['bijouterie_nom']}' introuvable."}, status=404)
-
-#         # 5) User sous verrou
-#         user = User.objects.select_for_update().filter(
-#             (Q(email__iexact=email) if email else Q()) |
-#             (Q(username__iexact=username) if username else Q()) |
-#             (Q(phone__iexact=phone) if phone else Q())
-#         ).first()
-#         if not user:
-#             return Response({"error": "Utilisateur introuvable avec les identifiants fournis."}, status=404)
-
-#         # 6) Rôles en base
-#         role_vendor = Role.objects.filter(role=ROLE_VENDOR).first()
-#         role_cashier = Role.objects.filter(role=ROLE_CASHIER).first()
-#         if not role_vendor or not role_cashier:
-#             return Response({"error": "Rôles 'vendor' et/ou 'cashier' manquants en base."}, status=400)
-
-#         existing_role = getattr(getattr(user, "user_role", None), "role", None)
-
-#         # 6a) Ne pas toucher aux admins/managers
-#         if existing_role in self.allowed_roles_admin_manager:
-#             return Response({"error": f"User déjà '{existing_role}', opération interdite."}, status=409)
-
-#         # 6b) Si user a un rôle différent du demandé
-#         if existing_role and existing_role != wanted_role:
-#             return Response({"error": f"User a déjà le rôle '{existing_role}'."}, status=409)
-
-#         # 7) Idempotence: staff de même type ?
-#         existing_same = Model.objects.select_for_update().filter(user_id=user.id).first()
-#         if existing_same:
-#             if upsert:
-#                 return Response(
-#                     {
-#                         "staff_type": wanted_role,
-#                         "staff": OutSer(existing_same).data,
-#                         "user": UserSerializer(user).data,
-#                         "message": "ℹ️ Déjà existant (upsert)"
-#                     },
-#                     status=200
-#                 )
-#             return Response({"error": f"User déjà {wanted_role}."}, status=409)
-
-#         # 7b) Staff de l'autre type existe ?
-#         other_model = Cashier if wanted_role == ROLE_VENDOR else Vendor
-#         if other_model.objects.select_for_update().filter(user_id=user.id).exists():
-#             return Response({"error": f"User déjà {'cashier' if wanted_role == ROLE_VENDOR else 'vendor'}."}, status=409)
-
-#         # 8) Assigner le rôle si aucun
-#         if not existing_role:
-#             user.user_role = role_vendor if wanted_role == ROLE_VENDOR else role_cashier
-#             user.save(update_fields=["user_role"])
-
-#         # 9) Créer le staff
-#         try:
-#             staff = Model.objects.create(user=user, bijouterie=bijouterie)
-#         except IntegrityError:
-#             # création concurrente → renvoyer l’existant si upsert
-#             staff = Model.objects.filter(user_id=user.id).first()
-#             if staff and upsert:
-#                 return Response(
-#                     {
-#                         "staff_type": wanted_role,
-#                         "staff": OutSer(staff).data,
-#                         "user": UserSerializer(user).data,
-#                         "message": "ℹ️ Déjà existant (création concurrente, upsert)"
-#                     },
-#                     status=200
-#                 )
-#             return Response({"error": "Conflit de création (concurrence)."}, status=409)
-
-#         return Response(
-#             {
-#                 "staff_type": wanted_role,
-#                 "staff": OutSer(staff).data,
-#                 "user": UserSerializer(user).data,
-#                 "message": "✅ Créé avec succès"
-#             },
-#             status=201
-#         )
-
-ROLE_ADMIN, ROLE_MANAGER = "admin", "manager"
-ROLE_VENDOR, ROLE_CASHIER = "vendor", "cashier"
-# class CreateStaffMemberView(APIView):
-#     permission_classes = [IsAuthenticated]
-#     allowed_roles_admin_manager = ("admin", "manager")
-#     MAP = {
-#         "vendor": (Vendor, VendorSerializer),
-#         "cashier": (Cashier, CashierSerializer),
-#     }
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un staff (vendor ou cashier) à partir d’un utilisateur existant",
-#         request_body=CreateStaffMemberSerializer,
-#         responses={201: "Créé", 400: "Erreur", 403: "Accès refusé", 404: "Introuvable", 409: "Conflit"}
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         # Vérification rôle appelant
-#         caller_role = getattr(getattr(request.user, "user_role", None), "role", None)
-#         if caller_role not in self.allowed_roles_admin_manager:
-#             return Response({"error": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         # Validation payload
-#         serializer = CreateStaffMemberSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-#         data = serializer.validated_data
-
-#         email, bijouterie, wanted_role = data["email"], data["bijouterie"], data["role"]
-#         Model, OutSer = self.MAP[wanted_role]
-
-#         # Vérifier l’utilisateur par email
-#         user = User.objects.select_for_update().filter(email__iexact=email).first()
-#         if not user:
-#             return Response({"error": f"Aucun utilisateur trouvé avec l’email {email}."}, status=404)
-
-#         # Vérifier rôles
-#         role_vendor = Role.objects.filter(role="vendor").first()
-#         role_cashier = Role.objects.filter(role="cashier").first()
-#         if not role_vendor or not role_cashier:
-#             return Response({"error": "Les rôles vendor/cashier n’existent pas en base."}, status=400)
-
-#         existing_role = getattr(getattr(user, "user_role", None), "role", None)
-#         if existing_role in self.allowed_roles_admin_manager:
-#             return Response({"error": f"User déjà {existing_role}, impossible de le transformer."}, status=409)
-#         if existing_role and existing_role != wanted_role:
-#             return Response({"error": f"User déjà {existing_role}."}, status=409)
-
-#         # Vérifier staff déjà existant
-#         if Model.objects.filter(user=user).exists():
-#             return Response({"error": f"Ce user est déjà {wanted_role}."}, status=409)
-
-#         # Si aucun rôle, assigner
-#         if not existing_role:
-#             user.user_role = role_vendor if wanted_role == "vendor" else role_cashier
-#             user.save(update_fields=["user_role"])
-
-#         # Création
-#         try:
-#             staff = Model.objects.create(
-#                 user=user,
-#                 bijouterie=bijouterie,
-#                 description=data.get("description", "")
-#             )
-#         except IntegrityError:
-#             return Response({"error": "Conflit de création (intégrité)."}, status=409)
-
-#         return Response(
-#             {
-#                 "staff_type": wanted_role,
-#                 "staff": OutSer(staff).data,
-#                 "user": UserSerializer(user).data,
-#                 "message": "✅ Staff créé avec succès"
-#             },
-#             status=201
-#         )
-
-
-class CreateStaffMemberView(APIView):
+class CreateVendorView(APIView):
+    renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
-    allowed_roles_admin_manager = (ROLE_ADMIN, ROLE_MANAGER)
-    MAP = {
-        ROLE_VENDOR: (Vendor, VendorSerializer),
-        ROLE_CASHIER: (Cashier, CashierSerializer),
-    }
+    allowed_roles_admin_manager = ['admin', 'manager']
 
     @swagger_auto_schema(
-        operation_summary="Créer un staff (vendor ou cashier) à partir d’un utilisateur existant",
-        request_body=CreateStaffMemberSerializer,
-        responses={201: "Créé", 400: "Erreur", 403: "Accès refusé", 404: "Introuvable", 409: "Conflit"}
+        operation_description="Créer un vendeur via un utilisateur existant (email, username ou téléphone).",
+        request_body=CreateVendorSerializer,  # ✅ ici
+        responses={
+            201: openapi.Response(description="Vendeur créé", schema=VendorSerializer),
+            400: openapi.Response(description="Erreur ou données invalides"),
+            403: openapi.Response(description="⛔ Accès refusé")
+        }
     )
-    @transaction.atomic
-    def post(self, request):
-        # 0) Permissions
-        caller_role = getattr(getattr(request.user, "user_role", None), "role", None)
-        if caller_role not in self.allowed_roles_admin_manager:
-            return Response({"error": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+    def post(self, request, *args, **kwargs):
+        # user_role = getattr(request.user.user_role, 'role', None)
 
-        # 1) Validation
-        serializer = CreateStaffMemberSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
+        # if user_role not in allowed_roles:
+        #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        email = data["email"].strip()
-        bijouterie = data["bijouterie"]                # instance validée par le serializer
-        wanted_role = data["role"].lower()
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        
+        data = request.data
+        email = data.get('email')
+        # username = data.get('username')
+        # phone = data.get('phone')
+        bijouterie_id = data.get('bijouterie')
+        description = data.get('description')
 
-        if wanted_role not in self.MAP:
-            return Response({"error": "role doit être 'vendor' ou 'cashier'."}, status=400)
-        Model, OutSer = self.MAP[wanted_role]
+        if not (email):
+        # if not (email or username or phone):
+            return Response({"error": "Il faut au moins un identifiant : email"}, status=status.HTTP_400_BAD_REQUEST)
+            # return Response({"error": "Il faut au moins un identifiant : email, username ou téléphone"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2) User sous verrou
-        user = User.objects.select_for_update().filter(email__iexact=email).first()
-        if not user:
-            return Response({"error": f"Aucun utilisateur trouvé avec l’email {email}."}, status=404)
+        if not bijouterie_id:
+            return Response({"error": "Bijouterie manquante"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 3) Rôles présents en base
-        role_vendor = Role.objects.filter(role=ROLE_VENDOR).first()
-        role_cashier = Role.objects.filter(role=ROLE_CASHIER).first()
-        if not role_vendor or not role_cashier:
-            return Response({"error": "Les rôles vendor/cashier n’existent pas en base."}, status=400)
+        # Récupération du rôle
+        role_vendor = Role.objects.filter(role='vendor').first()
+        if not role_vendor:
+            return Response({"error": "Le rôle 'vendor' n'existe pas."}, status=status.HTTP_400_BAD_REQUEST)
 
-        existing_role = getattr(getattr(user, "user_role", None), "role", None)
-
-        # 4) Protections rôle
-        if existing_role in self.allowed_roles_admin_manager:
-            return Response({"error": f"User déjà {existing_role}, impossible de le transformer."}, status=409)
-        if existing_role and existing_role != wanted_role:
-            return Response({"error": f"User déjà {existing_role}."}, status=409)
-
-        # 5) Déjà staff ?
-        # même type
-        if Model.objects.select_for_update().filter(user_id=user.id).exists():
-            return Response({"error": f"Ce user est déjà {wanted_role}."}, status=409)
-        # autre type
-        other_model = Cashier if wanted_role == ROLE_VENDOR else Vendor
-        if other_model.objects.select_for_update().filter(user_id=user.id).exists():
-            other_name = ROLE_CASHIER if wanted_role == ROLE_VENDOR else ROLE_VENDOR
-            return Response({"error": f"Ce user est déjà {other_name}."}, status=409)
-
-        # 6) Assigner le rôle si aucun
-        if not existing_role:
-            user.user_role = role_vendor if wanted_role == ROLE_VENDOR else role_cashier
-            user.save(update_fields=["user_role"])
-
-        # 7) Création (race-safe)
         try:
-            staff = Model.objects.create(
-                user=user,
-                bijouterie=bijouterie,
-                # description=data.get("description", "")
-            )
-        except IntegrityError:
-            # création concurrente → conflit explicite
-            return Response({"error": "Conflit de création (intégrité)."}, status=409)
+            bijouterie = Bijouterie.objects.get(id=bijouterie_id)
+        except Bijouterie.DoesNotExist:
+            return Response({"error": "Bijouterie introuvable."}, status=status.HTTP_404_NOT_FOUND)
 
-        return Response(
-            {
-                "staff_type": wanted_role,
-                "staff": OutSer(staff).data,
-                "user": UserSerializer(user).data,
-                "message": "✅ Staff créé avec succès"
-            },
-            status=201
-        )
+        # 🔍 Recherche utilisateur par email, username ou phone
+        user = User.objects.filter(email=email).first()
+        # user = User.objects.filter(
+        #     Q(email__iexact=email) |
+        #     Q(username__iexact=username) |
+        #     Q(phone__iexact=phone)
+        # ).first()
 
+        if not user:
+            return Response({"error": "Aucun utilisateur trouvé."}, status=status.HTTP_404_NOT_FOUND)
 
-# ---------- LISTE / LECTURE ----------
-class VendorListView(generics.ListAPIView):
-    """
-    GET /api/vendors/?q=&bijouterie_id=&verifie=true|false
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = VendorReadSerializer
+        try:
+            # 🔐 Assignation du rôle si manquant
+            if user.user_role != role_vendor:
+                user.user_role = role_vendor
+                user.save(update_fields=["user_role"])
 
-    def get_queryset(self):
-        qs = Vendor.objects.select_related("user", "bijouterie").all()
+            # 🔁 Vérifie si déjà vendeur
+            if Vendor.objects.filter(user=user).exists():
+                return Response({"error": "Ce user est déjà enregistré comme vendeur."}, status=status.HTTP_400_BAD_REQUEST)
 
-        q = self.request.query_params.get("q")
-        if q:
-            qs = qs.filter(
-                Q(user__email__icontains=q) |
-                Q(user__username__icontains=q) |
-                Q(user__first_name__icontains=q) |
-                Q(user__last_name__icontains=q) |
-                Q(user__telephone__icontains=q)
-            )
+            # ✅ Création du vendeur
+            vendor = Vendor.objects.create(user=user, bijouterie=bijouterie, description=description)
 
-        bijouterie_id = self.request.query_params.get("bijouterie_id")
-        if bijouterie_id:
-            qs = qs.filter(bijouterie_id=bijouterie_id)
+            return Response({
+                'vendor': VendorSerializer(vendor).data,
+                'user': UserSerializer(user).data,
+                'message': "✅ Vendeur créé avec succès"
+            }, status=status.HTTP_201_CREATED)
 
-        verifie = self.request.query_params.get("verifie")
-        if verifie is not None:
-            if verifie.lower() in ("true", "1", "yes", "oui"):
-                qs = qs.filter(verifie=True)
-            elif verifie.lower() in ("false", "0", "no", "non"):
-                qs = qs.filter(verifie=False)
-
-        return qs.order_by("-id")
-
-    # Swagger
-    @swagger_auto_schema(
-        manual_parameters=[
-            openapi.Parameter("q", openapi.IN_QUERY, description="Recherche (email, username, nom, prénom, téléphone)", type=openapi.TYPE_STRING),
-            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, description="Filtrer par bijouterie id", type=openapi.TYPE_INTEGER),
-            openapi.Parameter("verifie", openapi.IN_QUERY, description="true/false", type=openapi.TYPE_STRING),
-        ],
-        responses={200: VendorReadSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-
-# ---------- DÉTAIL / LECTURE + MÀJ ----------
-class VendorDetailView(APIView):
-    """
-    GET  /api/vendors/<int:id>/
-    GET  /api/vendors/by-slug/<slug:slug>/
-    PATCH/PUT idem (avec VendorUpdateSerializer)
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def _get_obj(self, **kwargs):
-        vendor_id = kwargs.get("id") or kwargs.get("pk")
-        slug = kwargs.get("slug") or self.request.query_params.get("slug")
-
-        if vendor_id:
-            return get_object_or_404(
-                Vendor.objects.select_related("user", "bijouterie"),
-                pk=vendor_id
-            )
-        if slug:
-            return get_object_or_404(
-                Vendor.objects.select_related("user", "bijouterie"),
-                user__slug=slug
-            )
-        # Fallback explicite
-        return get_object_or_404(
-            Vendor.objects.select_related("user", "bijouterie"),
-            pk=self.request.query_params.get("id")
-        )
-
-    def _can_update(self, request, vendor: Vendor) -> bool:
-        role = getattr(getattr(request.user, "user_role", None), "role", None)
-        is_admin_or_manager = role in {"admin", "manager"}
-        is_owner = vendor.user_id == request.user.id
-        return bool(is_admin_or_manager or is_owner)
-
-    # --- GET ---
-    @swagger_auto_schema(
-        responses={200: VendorReadSerializer},
-        manual_parameters=[
-            openapi.Parameter("slug", openapi.IN_QUERY, description="(optionnel si non fourni dans l'URL) user.slug", type=openapi.TYPE_STRING),
-            openapi.Parameter("id", openapi.IN_QUERY, description="(optionnel si non fourni dans l'URL) vendor id", type=openapi.TYPE_INTEGER),
-        ],
-    )
-    def get(self, request, *args, **kwargs):
-        vendor = self._get_obj(**kwargs)
-        return Response(VendorReadSerializer(vendor).data)
-
-    # --- PATCH ---
-    @swagger_auto_schema(
-        request_body=VendorUpdateSerializer,
-        responses={200: VendorReadSerializer, 403: "Access Denied"},
-    )
-    def patch(self, request, *args, **kwargs):
-        vendor = self._get_obj(**kwargs)
-        if not self._can_update(request, vendor):
-            return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-        s = VendorUpdateSerializer(vendor, data=request.data, partial=True)
-        s.is_valid(raise_exception=True)
-        s.save()
-        return Response(VendorReadSerializer(vendor).data, status=200)
-
-    # --- PUT (comportement identique, mais non-partial) ---
-    @swagger_auto_schema(
-        request_body=VendorUpdateSerializer,
-        responses={200: VendorReadSerializer, 403: "Access Denied"},
-    )
-    def put(self, request, *args, **kwargs):
-        vendor = self._get_obj(**kwargs)
-        if not self._can_update(request, vendor):
-            return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-        s = VendorUpdateSerializer(vendor, data=request.data, partial=False)
-        s.is_valid(raise_exception=True)
-        s.save()
-        return Response(VendorReadSerializer(vendor).data, status=200)
-
+        except Exception as e:
+            return Response({'error': f'Une erreur est survenue : {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class RetrieveVendorView(APIView):
@@ -1423,119 +654,10 @@ class UpdateVendorStatusAPIView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-# class VendorProduitAssociationAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-#     allowed_roles_admin_manager = ['admin', 'manager']
-
-#     @swagger_auto_schema(
-#         operation_description="Associer des produits à un vendeur et ajuster les stocks.",
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["email", "produits"],
-#             properties={
-#                 "email": openapi.Schema(type=openapi.TYPE_STRING),
-#                 "produits": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit_id", "quantite"],
-#                         properties={
-#                             "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                         }
-#                     )
-#                 )
-#             }
-#         ),
-#         responses={201: "Produits associés", 400: "Requête invalide", 403: "Accès refusé", 404: "Ressource introuvable"}
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
-#             return Response({"message": "⛔ Accès refusé"}, status=403)
-
-#         email = request.data.get("email")
-#         produits_data = request.data.get("produits", [])
-
-#         if not email:
-#             return Response({"error": "L'email du vendeur est requis."}, status=400)
-
-#         try:
-#             vendor = Vendor.objects.select_related("user").get(user__email=email)
-#         except Vendor.DoesNotExist:
-#             return Response({"error": "Vendeur introuvable."}, status=404)
-
-#         if not vendor.active:
-#             return Response({"error": "Ce vendeur est désactivé."}, status=403)
-
-#         if not produits_data:
-#             return Response({"error": "La liste des produits est vide."}, status=400)
-
-#         produits_associes = []
-
-#         for produit_info in produits_data:
-#             produit_id = produit_info.get("produit_id")
-#             quantite = produit_info.get("quantite")
-
-#             if not produit_id or quantite is None:
-#                 return Response({"error": "Chaque produit doit avoir un `produit_id` et une `quantite`."}, status=400)
-
-#             try:
-#                 quantite = int(quantite)
-#                 if quantite <= 0:
-#                     return Response({"error": "Quantité doit être strictement positive."}, status=400)
-#             except Exception:
-#                 return Response({"error": "Quantité invalide."}, status=400)
-
-#             try:
-#                 produit = Produit.objects.get(id=produit_id)
-#             except Produit.DoesNotExist:
-#                 return Response({"error": f"Produit ID {produit_id} introuvable."}, status=404)
-
-#             stock = Stock.objects.filter(produit=produit).first()
-#             if not stock or stock.quantite < quantite:
-#                 return Response({
-#                     "error": f"Stock insuffisant pour le produit {produit.nom}. Stock actuel : {stock.quantite if stock else 0}"
-#                 }, status=400)
-
-#             vendor_produit, created = VendorProduit.objects.get_or_create(
-#                 vendor=vendor,
-#                 produit=produit,
-#                 defaults={"quantite": quantite}
-#             )
-
-#             if not created:
-#                 vendor_produit.quantite += quantite
-#                 vendor_produit.save()
-
-#             stock.quantite -= quantite
-#             stock.save()
-
-#             produits_associes.append({
-#                 "produit_id": produit.id,
-#                 "nom": produit.nom,
-#                 "quantite_attribuee": quantite,
-#                 "stock_vendeur": vendor_produit.quantite,
-#                 "stock_restant_global": stock.quantite,
-#                 "status": "créé" if created else "mis à jour"
-#             })
-
-#         return Response({
-#             "message": "✅ Produits associés avec succès.",
-#             "vendeur": {
-#                 "id": vendor.id,
-#                 "nom_complet": vendor.user.get_full_name(),
-#                 "email": vendor.user.email
-#             },
-#             "produits": produits_associes
-#         }, status=201)
-
-
 class VendorProduitAssociationAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
-    allowed_roles_admin_manager = {"admin", "manager"}
+    allowed_roles_admin_manager = ['admin', 'manager']
 
     @swagger_auto_schema(
         operation_description="Associer des produits à un vendeur et ajuster les stocks.",
@@ -1551,7 +673,7 @@ class VendorProduitAssociationAPIView(APIView):
                         required=["produit_id", "quantite"],
                         properties={
                             "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-                            "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, description="> 0"),
+                            "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
                         }
                     )
                 )
@@ -1561,320 +683,84 @@ class VendorProduitAssociationAPIView(APIView):
     )
     @transaction.atomic
     def post(self, request):
-        # 1) Permissions
-        role = getattr(getattr(request.user, "user_role", None), "role", None)
-        if role not in self.allowed_roles_admin_manager:
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
             return Response({"message": "⛔ Accès refusé"}, status=403)
 
-        # 2) Entrées
         email = request.data.get("email")
         produits_data = request.data.get("produits", [])
 
         if not email:
             return Response({"error": "L'email du vendeur est requis."}, status=400)
-        if not isinstance(produits_data, list) or not produits_data:
-            return Response({"error": "La liste des produits est vide ou invalide."}, status=400)
 
-        # 3) Vendeur
         try:
             vendor = Vendor.objects.select_related("user").get(user__email=email)
         except Vendor.DoesNotExist:
             return Response({"error": "Vendeur introuvable."}, status=404)
 
-        # ⚠️ Correction ici : 'verifie' (pas 'active')
-        if not vendor.verifie:
+        if not vendor.active:
             return Response({"error": "Ce vendeur est désactivé."}, status=403)
 
-        # 4) Normaliser/agréger les lignes (doublons produit_id -> somme des quantités)
-        demandes = defaultdict(int)
-        for item in produits_data:
-            try:
-                pid = int(item.get("produit_id"))
-                qty = int(item.get("quantite"))
-            except Exception:
-                return Response({"error": "Chaque item doit contenir un produit_id et une quantite (entiers)."}, status=400)
-            if pid <= 0 or qty <= 0:
-                return Response({"error": "produit_id et quantite doivent être > 0."}, status=400)
-            demandes[pid] += qty
+        if not produits_data:
+            return Response({"error": "La liste des produits est vide."}, status=400)
 
-        # 5) Vérifier l’existence des produits demandés
-        produits = Produit.objects.filter(id__in=demandes.keys())
-        if produits.count() != len(demandes):
-            ids_trouves = set(produits.values_list("id", flat=True))
-            manquants = [pid for pid in demandes.keys() if pid not in ids_trouves]
-            return Response({"error": f"Produit(s) introuvable(s): {manquants}"}, status=404)
-
-        produits_by_id = {p.id: p for p in produits}
-
-        # 6) Préparer la réponse
         produits_associes = []
 
-        # 7) Traiter chaque produit avec verrouillage ligne par ligne
-        for pid, qty in demandes.items():
-            produit = produits_by_id[pid]
+        for produit_info in produits_data:
+            produit_id = produit_info.get("produit_id")
+            quantite = produit_info.get("quantite")
 
-            # 7.a Stock global verrouillé (évite les races)
-            stock = (
-                Stock.objects.select_for_update()
-                .filter(produit_id=pid)
-                .first()
+            if not produit_id or quantite is None:
+                return Response({"error": "Chaque produit doit avoir un `produit_id` et une `quantite`."}, status=400)
+
+            try:
+                quantite = int(quantite)
+                if quantite <= 0:
+                    return Response({"error": "Quantité doit être strictement positive."}, status=400)
+            except Exception:
+                return Response({"error": "Quantité invalide."}, status=400)
+
+            try:
+                produit = Produit.objects.get(id=produit_id)
+            except Produit.DoesNotExist:
+                return Response({"error": f"Produit ID {produit_id} introuvable."}, status=404)
+
+            stock = Stock.objects.filter(produit=produit).first()
+            if not stock or stock.quantite < quantite:
+                return Response({
+                    "error": f"Stock insuffisant pour le produit {produit.nom}. Stock actuel : {stock.quantite if stock else 0}"
+                }, status=400)
+
+            vendor_produit, created = VendorProduit.objects.get_or_create(
+                vendor=vendor,
+                produit=produit,
+                defaults={"quantite": quantite}
             )
-            if not stock:
-                return Response({"error": f"Aucun stock pour le produit {produit.nom}."}, status=400)
 
-            if stock.quantite < qty:
-                return Response(
-                    {"error": f"Stock insuffisant pour {produit.nom}. Stock actuel : {stock.quantite}, demandé : {qty}"},
-                    status=400,
-                )
+            if not created:
+                vendor_produit.quantite += quantite
+                vendor_produit.save()
 
-            # 7.b Décrémente atomiquement si assez de stock
-            updated = (
-                Stock.objects
-                .filter(pk=stock.pk, quantite__gte=qty)
-                .update(quantite=F("quantite") - qty)
-            )
-            if not updated:
-                # Quelqu'un a peut-être pris le stock entre-temps
-                return Response(
-                    {"error": f"Conflit de stock détecté pour {produit.nom}. Réessayez."},
-                    status=409,
-                )
-            stock.refresh_from_db()
-
-            # 7.c Associer au vendeur (verrouiller/mettre à jour la ligne VendorProduit)
-            vp = (
-                VendorProduit.objects.select_for_update()
-                .filter(vendor=vendor, produit_id=pid)
-                .first()
-            )
-            if vp:
-                vp.quantite = F("quantite") + qty
-                vp.save(update_fields=["quantite"])
-                vp.refresh_from_db()
-                status_item = "mis à jour"
-            else:
-                vp = VendorProduit.objects.create(vendor=vendor, produit_id=pid, quantite=qty)
-                status_item = "créé"
+            stock.quantite -= quantite
+            stock.save()
 
             produits_associes.append({
                 "produit_id": produit.id,
                 "nom": produit.nom,
-                "quantite_attribuee": qty,
-                "stock_vendeur": vp.quantite,
+                "quantite_attribuee": quantite,
+                "stock_vendeur": vendor_produit.quantite,
                 "stock_restant_global": stock.quantite,
-                "status": status_item,
+                "status": "créé" if created else "mis à jour"
             })
 
-        # 8) OK
         return Response({
             "message": "✅ Produits associés avec succès.",
             "vendeur": {
                 "id": vendor.id,
-                "nom_complet": vendor.user.get_full_name() if vendor.user else "",
-                "email": vendor.user.email if vendor.user else "",
+                "nom_complet": vendor.user.get_full_name(),
+                "email": vendor.user.email
             },
             "produits": produits_associes
         }, status=201)
-
-def _parse_iso_dt(s: str):
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(s)
-    except ValueError:
-        # support YYYY-MM-DD
-        try:
-            dt = datetime.strptime(s, "%Y-%m-%d")
-        except ValueError:
-            return None
-    if timezone.is_naive(dt):
-        dt = timezone.make_aware(dt, timezone.get_current_timezone())
-    return dt
-
-
-# -------- LISTE / LECTURE --------
-# class CashierListView(generics.ListAPIView):
-#     """
-#     GET /api/cashiers/?q=&bijouterie_id=&verifie=true|false&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
-#     """
-#     permission_classes = [permissions.IsAuthenticated]
-#     serializer_class = CashierReadSerializer
-
-#     @swagger_auto_schema(
-#         manual_parameters=[
-#             openapi.Parameter("q", openapi.IN_QUERY, description="Recherche (email, username, nom, prénom, téléphone)", type=openapi.TYPE_STRING),
-#             openapi.Parameter("bijouterie_id", openapi.IN_QUERY, description="Filtrer par bijouterie id", type=openapi.TYPE_INTEGER),
-#             openapi.Parameter("verifie", openapi.IN_QUERY, description="true/false", type=openapi.TYPE_STRING),
-#             openapi.Parameter("start_date", openapi.IN_QUERY, description="Filtrer total_encaisse à partir de (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-#             openapi.Parameter("end_date", openapi.IN_QUERY, description="Filtrer total_encaisse jusqu’à (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-#         ],
-#         responses={200: CashierReadSerializer(many=True)}
-#     )
-#     def get(self, request, *args, **kwargs):
-#         return super().get(request, *args, **kwargs)
-
-#     def get_queryset(self):
-#         qs = Cashier.objects.select_related("user", "bijouterie").all()
-
-#         q = self.request.query_params.get("q")
-#         if q:
-#             qs = qs.filter(
-#                 Q(user__email__icontains=q) |
-#                 Q(user__username__icontains=q) |
-#                 Q(user__first_name__icontains=q) |
-#                 Q(user__last_name__icontains=q) |
-#                 Q(user__telephone__icontains=q)
-#             )
-
-#         bijouterie_id = self.request.query_params.get("bijouterie_id")
-#         if bijouterie_id:
-#             qs = qs.filter(bijouterie_id=bijouterie_id)
-
-#         verifie = self.request.query_params.get("verifie")
-#         if verifie is not None:
-#             v = verifie.lower()
-#             if v in ("true", "1", "yes", "oui"):
-#                 qs = qs.filter(verifie=True)
-#             elif v in ("false", "0", "no", "non"):
-#                 qs = qs.filter(verifie=False)
-
-#         # Annotation du total encaissé (optionnelle)
-#         start = _parse_iso_dt(self.request.query_params.get("start_date"))
-#         end = _parse_iso_dt(self.request.query_params.get("end_date"))
-#         filt = Q()
-#         if start:
-#             filt &= Q(encaissements__created_at__gte=start)
-#         if end:
-#             filt &= Q(encaissements__created_at__lte=end)
-#         qs = qs.annotate(total_encaisse=Sum("encaissements__montant", filter=filt))
-
-#         return qs.order_by("-id")
-
-
-class CashierListView(generics.ListAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = CashierReadSerializer
-
-    @swagger_auto_schema(
-        manual_parameters=[
-            openapi.Parameter("q", openapi.IN_QUERY, description="Recherche (email, username, nom, prénom, téléphone)", type=openapi.TYPE_STRING),
-            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, description="Filtrer par bijouterie id", type=openapi.TYPE_INTEGER),
-            openapi.Parameter("verifie", openapi.IN_QUERY, description="true/false", type=openapi.TYPE_STRING),
-            openapi.Parameter("start_date", openapi.IN_QUERY, description="Filtrer total_encaisse à partir de (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-            openapi.Parameter("end_date", openapi.IN_QUERY, description="Filtrer total_encaisse jusqu’à (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-        ],
-        responses={200: CashierReadSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-    def get_queryset(self):
-        qs = Cashier.objects.select_related("user", "bijouterie").all()
-
-        q = self.request.query_params.get("q")
-        if q:
-            qs = qs.filter(
-                Q(user__email__icontains=q) |
-                Q(user__username__icontains=q) |
-                Q(user__first_name__icontains=q) |
-                Q(user__last_name__icontains=q) |
-                Q(user__telephone__icontains=q)
-            )
-
-        bijouterie_id = self.request.query_params.get("bijouterie_id")
-        if bijouterie_id:
-            qs = qs.filter(bijouterie_id=bijouterie_id)
-
-        verifie = self.request.query_params.get("verifie")
-        if verifie is not None:
-            v = verifie.lower()
-            if v in ("true", "1", "yes", "oui"):
-                qs = qs.filter(verifie=True)
-            elif v in ("false", "0", "no", "non"):
-                qs = qs.filter(verifie=False)
-
-        # ⬇️ Correction ici (singulier)
-        start = _parse_iso_dt(self.request.query_params.get("start_date"))
-        end = _parse_iso_dt(self.request.query_params.get("end_date"))
-        filt = Q()
-        if start:
-            filt &= Q(encaissement__created_at__gte=start)
-        if end:
-            filt &= Q(encaissement__created_at__lte=end)
-
-        qs = qs.annotate(total_encaisse=Sum("encaissement__montant", filter=filt))
-        return qs.order_by("-id")
-
-
-# -------- DÉTAIL / LECTURE + MÀJ --------
-class CashierDetailView(APIView):
-    """
-    GET  /api/cashiers/<int:id>/
-    GET  /api/cashiers/by-slug/<slug:slug>/
-    PATCH/PUT idem (CashierUpdateSerializer)
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def _get_obj(self, **kwargs):
-        cashier_id = kwargs.get("id") or kwargs.get("pk")
-        slug = kwargs.get("slug") or self.request.query_params.get("slug")
-        base_qs = Cashier.objects.select_related("user", "bijouterie")
-
-        # facultatif : annotate total via query params
-        start = _parse_iso_dt(self.request.query_params.get("start_date"))
-        end = _parse_iso_dt(self.request.query_params.get("end_date"))
-        filt = Q()
-        if start:
-            filt &= Q(encaissements__created_at__gte=start)
-        if end:
-            filt &= Q(encaissements__created_at__lte=end)
-        base_qs = base_qs.annotate(total_encaisse=Sum("encaissements__montant", filter=filt))
-
-        if cashier_id:
-            return generics.get_object_or_404(base_qs, pk=cashier_id)
-        if slug:
-            return generics.get_object_or_404(base_qs, user__slug=slug)
-        return generics.get_object_or_404(base_qs, pk=self.request.query_params.get("id"))
-
-    def _can_update(self, request, cashier: Cashier) -> bool:
-        role = getattr(getattr(request.user, "user_role", None), "role", None)
-        is_admin_or_manager = role in {"admin", "manager"}
-        is_owner = cashier.user_id == request.user.id
-        return bool(is_admin_or_manager or is_owner)
-
-    @swagger_auto_schema(
-        manual_parameters=[
-            openapi.Parameter("slug", openapi.IN_QUERY, description="(optionnel) user.slug si pas d'id dans l'URL", type=openapi.TYPE_STRING),
-            openapi.Parameter("start_date", openapi.IN_QUERY, description="Filtrer total_encaisse à partir de (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-            openapi.Parameter("end_date", openapi.IN_QUERY, description="Filtrer total_encaisse jusqu’à (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-        ],
-        responses={200: CashierReadSerializer}
-    )
-    def get(self, request, *args, **kwargs):
-        cashier = self._get_obj(**kwargs)
-        return Response(CashierReadSerializer(cashier).data)
-
-    @swagger_auto_schema(request_body=CashierUpdateSerializer, responses={200: CashierReadSerializer, 403: "Access Denied"})
-    def patch(self, request, *args, **kwargs):
-        cashier = self._get_obj(**kwargs)
-        if not self._can_update(request, cashier):
-            return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        s = CashierUpdateSerializer(cashier, data=request.data, partial=True)
-        s.is_valid(raise_exception=True)
-        s.save()
-        return Response(CashierReadSerializer(cashier).data)
-
-    @swagger_auto_schema(request_body=CashierUpdateSerializer, responses={200: CashierReadSerializer, 403: "Access Denied"})
-    def put(self, request, *args, **kwargs):
-        cashier = self._get_obj(**kwargs)
-        if not self._can_update(request, cashier):
-            return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        s = CashierUpdateSerializer(cashier, data=request.data, partial=False)
-        s.is_valid(raise_exception=True)
-        s.save()
-        return Response(CashierReadSerializer(cashier).data)
-
 
 
 # class VendorProduitAssociationAPIView(APIView):
@@ -2085,4 +971,64 @@ class CashierDetailView(APIView):
 
 #         except Vendor.DoesNotExist:
 #             return Response({"error": "Vendor not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
+class RapportVentesMensuellesPDFView(APIView):
+    renderer_classes = [UserRenderer]
+    permission_classes = [IsAuthenticated]
+    allowed_roles_admin_manager = ['admin', 'manager'] 
+
+    def get(self, request):
+        # allowed_roles = ['admin', 'manager']
+        # user_role = getattr(request.user.user_role, 'role', None)
+
+        # if user_role not in allowed_roles:
+        #     return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        
+        if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        
+        mois = request.GET.get('mois', now().strftime('%Y-%m'))  # Format: "2025-04"
+        vendor_id = request.GET.get('vendor_id')
+
+        # Parse les dates
+        try:
+            annee, mois_num = map(int, mois.split('-'))
+        except ValueError:
+            return Response({"detail": "Format de mois invalide. Exemple attendu : 2025-04"}, status=400)
+
+        ventes = VenteProduit.objects.filter(
+            vente__created_at__year=annee,
+            vente__created_at__month=mois_num
+        )
+
+        if vendor_id:
+            vendor = get_object_or_404(Vendor, id=vendor_id)
+            ventes = ventes.filter(produit__in=vendor.vendor_produits.values('produit'))
+            vendeur_nom = f"{vendor.user.first_name} {vendor.user.last_name}"
+        else:
+            vendeur_nom = "Tous les vendeurs"
+
+        montant_total = ventes.aggregate(total=Sum('sous_total_prix_vent'))['total'] or 0
+
+        context = {
+            'mois': mois,
+            'vendeur': vendeur_nom,
+            'ventes': [{
+                'date': v.vente.created_at.strftime('%d/%m/%Y'),
+                'produit': v.produit.nom,
+                'quantite': v.quantite,
+                'montant': v.sous_total_prix_vent
+            } for v in ventes],
+            'total_ventes': ventes.count(),
+            'montant_total': montant_total
+        }
+
+        html = render_to_string("reports/rapport_ventes.html", context)
+        pdf_file = BytesIO()
+        HTML(string=html).write_pdf(pdf_file)
+
+        response = HttpResponse(pdf_file.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="rapport_ventes_{mois}.pdf"'
+        return response
 
