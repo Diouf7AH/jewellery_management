@@ -4,7 +4,8 @@ from django.contrib.auth import get_user_model
 from store.serializers import ProduitSerializer
 from store.models import Produit, Bijouterie
 from userauths.models import User
-from .models import Vendor, VendorProduit, Cashier
+from .models import Vendor, VendorProduit
+from staff.models import Cashier
 from django.core.validators import EmailValidator
 
 User = get_user_model()

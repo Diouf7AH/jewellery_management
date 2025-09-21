@@ -1,76 +1,117 @@
-import string
-from decimal import Decimal
-from random import SystemRandom
-
+from django.core.exceptions import ValidationError
 from django.db import models
-from django.template.defaultfilters import slugify
+from store.models import Produit, Bijouterie
 
-from purchase.models import Fournisseur
-from store.models import Produit
+# class Stock(models.Model):
+#     produit = models.ForeignKey(
+#         Produit, on_delete=models.PROTECT, related_name="stocks"
+#     )
+#     # NULL = non attribué (réservé)
+#     bijouterie = models.ForeignKey(
+#         Bijouterie, on_delete=models.PROTECT, null=True, blank=True, related_name="stocks"
+#     )
+#     # True = non attribué ; False = attribué
+#     is_reserved = models.BooleanField(default=True, help_text="True = non attribué à une bijouterie")
+#     quantite = models.PositiveIntegerField(default=0)
 
-# from shortuuid.django_fields import ShortUUIDField
+#     date_ajout = models.DateTimeField(auto_now_add=True)
+#     date_modification = models.DateTimeField(auto_now=True)
+
+#     class Meta:
+#         verbose_name = "Stock"
+#         verbose_name_plural = "Stocks"
+#         ordering = ["-id"]
+#         constraints = [
+#             models.CheckConstraint(name="stock_quantite_gte_0", check=Q(quantite__gte=0)),
+#             # Cohérence d'état
+#             models.CheckConstraint(
+#                 name="stock_reserved_vs_bijouterie",
+#                 check=(Q(is_reserved=True, bijouterie__isnull=True) | Q(is_reserved=False, bijouterie__isnull=False)),
+#             ),
+#             # Un seul stock “non attribué” par produit
+#             models.UniqueConstraint(
+#                 fields=["produit"],
+#                 condition=Q(is_reserved=True, bijouterie__isnull=True),
+#                 name="uniq_stock_reserve_par_produit",
+#             ),
+#             # Un seul stock attribué par (produit, bijouterie)
+#             models.UniqueConstraint(
+#                 fields=["produit", "bijouterie"],
+#                 condition=Q(is_reserved=False, bijouterie__isnull=False),
+#                 name="uniq_stock_produit_bijouterie",
+#             ),
+#         ]
+#         indexes = [models.Index(fields=["is_reserved", "bijouterie", "produit"])]
+
+#     def clean(self):
+#         if self.quantite < 0:
+#             raise ValidationError("La quantité doit être ≥ 0.")
+#         if self.is_reserved and self.bijouterie_id is not None:
+#             raise ValidationError("Stock non attribué ⇒ bijouterie doit être vide.")
+#         if not self.is_reserved and self.bijouterie_id is None:
+#             raise ValidationError("Stock attribué ⇒ bijouterie requise.")
+
+#     def save(self, *args, **kwargs):
+#         self.full_clean()
+#         return super().save(*args, **kwargs)
+
+#     def __str__(self):
+#         cible = self.bijouterie or "Non attribué"
+#         return f"{cible} • {self.produit} • qte={self.quantite}"
 
 
-
-    
 class Stock(models.Model):
-    produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True)
-    # fournisseur = models.ForeignKey(Fournisseur, on_delete=models.SET_NULL, null=True, blank=True)
-    # quantite = models.PositiveIntegerField(default=0)
+    produit = models.ForeignKey(Produit, on_delete=models.PROTECT, related_name="stocks")
+    # NULL = non attribué (réservé)
+    bijouterie = models.ForeignKey(Bijouterie, on_delete=models.PROTECT, null=True, blank=True, related_name="stocks")
+
+    # True = non attribué ; False = attribué
+    is_reserved = models.BooleanField(default=True, help_text="True = non attribué à une bijouterie")
     quantite = models.PositiveIntegerField(default=0)
-    # total_poids_achat = models.DecimalField(default=0.00, decimal_places=2, max_digits=12) 
-    # prix_achat_gramme = models.DecimalField(default=0.00, decimal_places=2, max_digits=12) 
-    # # prix_achat_unite = models.DecimalField(default=0.00, decimal_places=2, max_digits=12) 
-    # total_prix_achat = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
-    date_ajout = models.DateTimeField(auto_now_add=True) 
+
+    # 👉 clé technique MySQL : 1 seule ligne 'réservée' par produit
+    reservation_key = models.CharField(max_length=32, null=True, blank=True, unique=True, editable=False)
+
+    date_ajout = models.DateTimeField(auto_now_add=True)
     date_modification = models.DateTimeField(auto_now=True)
-    
-    
-    # def update_stock(self, quantite):
-    #     self.quantite += quantite
-    #     self.save()
-    
+
+    class Meta:
+        verbose_name = "Stock"
+        verbose_name_plural = "Stocks"
+        ordering = ["-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["produit", "bijouterie"],
+                                    name="uniq_stock_produit_bijouterie"),
+        ]
+        indexes = [
+            models.Index(fields=["produit"]),
+            models.Index(fields=["bijouterie"]),
+            models.Index(fields=["is_reserved"]),
+            # ❌ pas d'index supplémentaire sur reservation_key (déjà unique)
+        ]
+
+    def clean(self):
+        if self.quantite < 0:
+            raise ValidationError("La quantité doit être ≥ 0.")
+        # Cohérence d’état côté application (MySQL n’applique pas CHECK < 8.0.16)
+        if self.is_reserved and self.bijouterie_id is not None:
+            raise ValidationError("Stock non attribué ⇒ bijouterie doit être vide.")
+        if not self.is_reserved and self.bijouterie_id is None:
+            raise ValidationError("Stock attribué ⇒ bijouterie requise.")
+
     def save(self, *args, **kwargs):
-        if self.quantite < 0:  # or any other validation logic
-            raise ValueError("Quantite must be non-negative")
-        super().save(*args, **kwargs)
-    
-    @property
-    def calcul_total_poids_achat(self):
-        total_poids_achat = self.produit.poids * self.quantite
-        return total_poids_achat
-    
-    @property
-    def calcul_total_achat(self):
-        total_achat = Decimal((self.produit.poids * self.quantite) * self.prix_achat_gramme)
-        return total_achat
-    
-    # def save(self, *args, **kwargs):  
-    #     # self.total_prix_achat = self.calcule_total_prix_achat() 
-    #     self.total_prix_achat = decimal.Decimal(self.total_poids_achat) * decimal.Decimal(Decimal(calcul_total_achat))
-    #     super(Stock, self).save(*args, **kwargs)
+    # Déduire l’état réservé/attribué depuis bijouterie
+        self.is_reserved = self.bijouterie_id is None
+
+        if self.is_reserved:
+            self.bijouterie_id = None
+            self.reservation_key = f"RES-{self.produit_id}" if self.produit_id else None
+        else:
+            self.reservation_key = None
+
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def __str__(self):
-        # return f"{self.produit} - {self.fournisseur}"
-        return f"{self.produit}"
-    
-
-
-# class CommandeStock(models.Model):
-#     fournisseur = models.ForeignKey(Fournisseur, on_delete=models.CASCADE)
-#     date_commande_stock = models.DateTimeField(auto_now_add=True)
-#     etat = models.CharField(max_length=20, choices=[('en attente', 'En attente'), ('livré', 'Livré')])
-
-#     def __str__(self):
-#         return f"La Commande fait chez {self.fournisseur.nom} - {self.fournisseur.prenom} - {self.etat}"
-
-
-# class LigneCommandeStock(models.Model):
-#     commande_stock = models.ForeignKey(CommandeStock, related_name='lignes_commande_stock', on_delete=models.CASCADE)
-#     produit = models.ForeignKey(Produit, on_delete=models.CASCADE)
-#     quantite = models.PositiveIntegerField()
-#     prix_par_unite = models.DecimalField(max_digits=10, decimal_places=2)
-
-#     def __str__(self):
-#         return f"Ligne de commande pour le {self.produit.nom}, Quantity: {self.quantite}"
-    
+        cible = self.bijouterie or "Non attribué"
+        return f"{cible} • {self.produit} • qte={self.quantite}"

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Vendor, VendorProduit, Cashier
+from .models import Vendor, VendorProduit
 from django.contrib.admin.sites import NotRegistered
 from django.contrib.auth import get_user_model
 from store.models import Bijouterie
@@ -88,10 +88,3 @@ class VendorProduitAdmin(admin.ModelAdmin):
 #     search_fields = ("user__email", "user__first_name", "user__last_name", "slug")
 #     readonly_fields = ("slug",)  # si tu verrouilles la modif côté admin
 #     list_filter = ("verifie",)
-
-@admin.register(Cashier)
-class CashierAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "slug", "verifie")
-    search_fields = ("user__email", "user__first_name", "user__last_name", "slug")
-    readonly_fields = ("slug",)
-    list_filter = ("verifie",)

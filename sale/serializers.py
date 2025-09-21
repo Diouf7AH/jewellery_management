@@ -6,7 +6,7 @@ from store.models import Produit, MarquePurete
 from vendor.models import Vendor 
 from decimal import Decimal
 
-from store.serializers import ProduitSerializer
+from store.serializers import ProduitSerializer, BijouterieSerializer
 from vendor.serializer import VendorSerializer 
 
 # class ProduitMiniSerializer(serializers.ModelSerializer):
@@ -233,12 +233,12 @@ class FactureSerializer(serializers.ModelSerializer):
     vente = serializers.SerializerMethodField()
     client = serializers.SerializerMethodField()
     lignes = VenteProduitInlineForFactureSerializer(source="vente.produits", many=True, read_only=True)
-
+    bijouterie = BijouterieSerializer(read_only=True)
     class Meta:
         model = Facture
         fields = [
             'numero_facture', 'vente', 'montant_total', 'total_paye',
-            'reste_a_payer', 'status', 'date_creation', 'client', 'fichier_pdf', 'lignes'
+            'reste_a_payer', 'status', 'date_creation', 'client', 'fichier_pdf', 'lignes', 'bijouterie'
         ]
 
     def get_client(self, obj):
@@ -286,6 +286,7 @@ class VenteDetailSerializer(serializers.ModelSerializer):
     total_taxes = serializers.SerializerMethodField()
     total_autres = serializers.SerializerMethodField()
     totaux = serializers.SerializerMethodField()
+    bijouterie = BijouterieSerializer(read_only=True)
 
     class Meta:
         model = Vente

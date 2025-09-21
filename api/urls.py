@@ -14,6 +14,7 @@ from store import views as store_views
 from vendor import views as vendor_views
 from compte_depot import views as compte_depot_views
 from order import views as order_views
+from staff import views as staff_views
 
 urlpatterns = [
     
@@ -120,17 +121,22 @@ urlpatterns = [
     
     # ACHAT
     path('achat-produit/get-one-achat/<int:pk>', achat_views.AchatProduitGetOneView.as_view(), name='get_achat_produit'),
-    path('achat-produit/add-achat', achat_views.AchatProduitCreateView.as_view(), name='achat_add_achat'),
+    path('achat-produit/create-achats', achat_views.AchatCreateView.as_view(), name='achats-create'),
+    # path("achats-produit-update/<int:achat_id>/", achat_views.AchatUpdateView.as_view(), name="achats-update"),
+    path("achats/<int:achat_id>/update", achat_views.AchatUpdateView.as_view(), name="achat-update"),
+    path("stocks/affect-reserve/", achat_views.StockReserveAffectationView.as_view(), name="stock-affect-reserve"),
+    
+    path("achats/<int:achat_id>/cancel/", achat_views.AchatCancelView.as_view(), name="achat-cancel"),
     # path('achat-produit/update-achat/<int:achat_id>', achat_views.AchatUpdateAPIView.as_view(), name='achat_update_achat'),
     # path('achat-produit/update-achat-produit/<int:achatproduit_id>', achat_views.AchatUpdateAchatProduitAPIView.as_view(), name='achat_produit_update_achat'),
-    path('achat-produit/<int:achatproduit_id>/produits/<int:achat_id>', achat_views.AchatProduitUpdateAPIView.as_view(),name='achat-produit-update'),
+    # path('achat-produit/<int:achatproduit_id>/produits/<int:achat_id>', achat_views.AchatProduitUpdate    APIView.as_view(),name='achat-produit-update'),
     path('achat-produit/list-achat', achat_views.AchatListView.as_view(), name='achat_produit_list'),
     # path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatPDFView.as_view(), name='achat-facture-pdf'),
     path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatProduitPDFView.as_view(), name='achat-produit-facture-pdf'),
     # END ACHAT
     
     # staff
-    path('staff/add-staff', vendor_views.CreateStaffMemberView.as_view(), name='add_staff'),
+    path('staff/add-staff', staff_views.CreateStaffMemberView.as_view(), name='add_staff'),
     
     #VENDOR
     # path('vendor/list/', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
@@ -145,9 +151,9 @@ urlpatterns = [
     
     
     # CASHIER
-    path("cashiers/", vendor_views.CashierListView.as_view(), name="cashier-list"),
-    path("cashiers/<int:id>/", vendor_views.CashierDetailView.as_view(), name="cashier-detail"),
-    path("cashiers/by-slug/<slug:slug>/", vendor_views.CashierDetailView.as_view(), name="cashier-detail-by-slug"),
+    path("cashiers/", staff_views.CashierListView.as_view(), name="cashier-list"),
+    path("cashiers/<int:id>/", staff_views.CashierDetailView.as_view(), name="cashier-detail"),
+    path("cashiers/by-slug/<slug:slug>/", staff_views.CashierDetailView.as_view(), name="cashier-detail-by-slug"),
     # END CASHIER
     
     # STOCK

@@ -11,7 +11,8 @@ from django.core.exceptions import ValidationError
 from django.db import models, IntegrityError, transaction
 from django.db.models import Q, Sum, CheckConstraint, F
 from django.utils import timezone
-
+from store.models import Bijouterie
+from django.apps import apps
 # ⚠️ Ne pas importer des modèles d'autres apps ici
 # from store.models import Categorie, Marque, Modele, Produit, Purete  # ❌
 # from vendor.models import Vendor, Cashier  # ❌
@@ -623,6 +624,7 @@ class Facture(models.Model):
         null=True, blank=True,
         related_name="facture_vente",
     )
+    bijouterie = models.ForeignKey(Bijouterie, on_delete=models.SET_NULL, null=True, blank=True, related_name="sale_bijouterie")
     date_creation = models.DateTimeField(auto_now_add=True)
     montant_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"), null=False)
     status = models.CharField(max_length=20, choices=STATUS, default=STAT_NON_PAYE)
@@ -816,6 +818,79 @@ class Facture(models.Model):
 #     est_reglee.short_description = "Facture réglée"
 
 
+# class Paiement(models.Model):
+#     MODE_CASH = "cash"
+#     MODE_MOBILE = "mobile"
+#     MODES = (
+#         (MODE_CASH, "Cash"),
+#         (MODE_MOBILE, "Mobile"),
+#     )
+
+#     facture = models.ForeignKey(
+#         "Facture", on_delete=models.CASCADE, related_name="paiements"
+#     )
+#     montant_paye = models.DecimalField(max_digits=10, decimal_places=2)
+#     mode_paiement = models.CharField(max_length=20, choices=MODES)
+#     date_paiement = models.DateTimeField(auto_now_add=True)
+#     cashier = models.ForeignKey(
+#         "staff.Cashier", null=True, blank=True,
+#         on_delete=models.SET_NULL, related_name="paiements"
+#     )
+#     created_by = models.ForeignKey(
+#         settings.AUTH_USER_MODEL, null=True, blank=True,
+#         on_delete=models.SET_NULL, related_name="paiements_validation"
+#     )
+
+#     def __str__(self):
+#         facture_num = self.facture.numero_facture if self.facture else "Aucune facture"
+#         return f"Paiement de {self.montant_paye} FCFA - {facture_num}"
+
+#     def clean(self):
+#         super().clean()
+#         if self.cashier and self.created_by and self.cashier.user_id != self.created_by_id:
+#             raise ValidationError("created_by doit correspondre au user du cashier.")
+#         if not self.facture_id:
+#             raise ValidationError("La facture est requise.")
+
+#     class Meta:
+#         ordering = ["-date_paiement"]
+#         verbose_name = "Paiement"
+#         verbose_name_plural = "Paiements"
+#         indexes = [
+#             models.Index(fields=["date_paiement"]),
+#             models.Index(fields=["created_by"]),
+#             models.Index(fields=["cashier"]),
+#             models.Index(fields=["facture", "date_paiement"]),  # 👈 utile en pratique
+#         ]
+#         constraints = [
+#             CheckConstraint(check=Q(montant_paye__gt=0), name="paiement_montant_gt_0"),
+#         ]
+
+#     def save(self, *args, **kwargs):
+#         # Auto-renseigne le cashier si absent mais created_by présent
+#         if not self.cashier and self.created_by_id:
+#             from vendor.models import Cashier
+#             self.cashier = Cashier.objects.filter(user_id=self.created_by_id).first()
+
+#         # Valide règles applicatives (inclut clean())
+#         self.full_clean()
+
+#         # Si tu veux verrouiller en écriture dans un service/vu, fais-le là-bas.
+#         # Ici on reste neutre : save simple.
+#         super().save(*args, **kwargs)
+
+#     def est_reglee(self):
+#         # Utilise la constante si définie dans Facture, sinon garde "Payé"
+#         try:
+#             from .models import Facture  # même app
+#             return self.facture.status == getattr(Facture, "STAT_PAYE", "Payé")
+#         except Exception:
+#             return self.facture.status == "Payé"
+
+#     est_reglee.boolean = True
+#     est_reglee.short_description = "Facture réglée"
+
+
 class Paiement(models.Model):
     MODE_CASH = "cash"
     MODE_MOBILE = "mobile"
@@ -831,7 +906,8 @@ class Paiement(models.Model):
     mode_paiement = models.CharField(max_length=20, choices=MODES)
     date_paiement = models.DateTimeField(auto_now_add=True)
     cashier = models.ForeignKey(
-        "vendor.Cashier", null=True, blank=True,
+        "staff.Cashier",  # ← aligne avec l’app réelle
+        null=True, blank=True,
         on_delete=models.SET_NULL, related_name="paiements"
     )
     created_by = models.ForeignKey(
@@ -840,15 +916,31 @@ class Paiement(models.Model):
     )
 
     def __str__(self):
-        facture_num = self.facture.numero_facture if self.facture else "Aucune facture"
+        facture_num = getattr(self.facture, "numero_facture", None) or "Aucune facture"
         return f"Paiement de {self.montant_paye} FCFA - {facture_num}"
 
     def clean(self):
         super().clean()
-        if self.cashier and self.created_by and self.cashier.user_id != self.created_by_id:
-            raise ValidationError("created_by doit correspondre au user du cashier.")
+
         if not self.facture_id:
             raise ValidationError("La facture est requise.")
+
+        # created_by doit être le user du cashier quand cashier est renseigné
+        if self.cashier_id and self.created_by_id and self.cashier.user_id != self.created_by_id:
+            raise ValidationError("created_by doit correspondre au user du cashier.")
+
+        # Optionnel mais recommandé : ne pas dépasser le restant dû
+        # (adapte le nom de méthode/prop selon ton modèle Facture)
+        restant = getattr(self.facture, "montant_restant", None)
+        if callable(restant):
+            restant = restant()
+        if restant is not None and self.montant_paye and self.montant_paye > restant:
+            raise ValidationError(f"Montant payé ({self.montant_paye}) > restant dû ({restant}).")
+
+        # Optionnel : interdire paiement sur facture annulée/close
+        statut = getattr(self.facture, "statut", None)
+        if statut in {"annulee", "cloturee"}:
+            raise ValidationError("Impossible d’enregistrer un paiement sur une facture close/annulée.")
 
     class Meta:
         ordering = ["-date_paiement"]
@@ -858,36 +950,35 @@ class Paiement(models.Model):
             models.Index(fields=["date_paiement"]),
             models.Index(fields=["created_by"]),
             models.Index(fields=["cashier"]),
-            models.Index(fields=["facture", "date_paiement"]),  # 👈 utile en pratique
+            models.Index(fields=["facture", "date_paiement"]),
         ]
         constraints = [
             CheckConstraint(check=Q(montant_paye__gt=0), name="paiement_montant_gt_0"),
         ]
 
     def save(self, *args, **kwargs):
-        # Auto-renseigne le cashier si absent mais created_by présent
-        if not self.cashier and self.created_by_id:
-            from vendor.models import Cashier
+        # Normalise à 2 décimales (sécurise les arrondis issus du front)
+        if self.montant_paye is not None:
+            self.montant_paye = (Decimal(self.montant_paye)
+                                 .quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+        # Auto-renseigne le cashier si absent mais created_by présent (sans import direct)
+        if not self.cashier_id and self.created_by_id:
+            Cashier = apps.get_model("staff", "Cashier")
             self.cashier = Cashier.objects.filter(user_id=self.created_by_id).first()
 
-        # Valide règles applicatives (inclut clean())
         self.full_clean()
-
-        # Si tu veux verrouiller en écriture dans un service/vu, fais-le là-bas.
-        # Ici on reste neutre : save simple.
         super().save(*args, **kwargs)
 
     def est_reglee(self):
-        # Utilise la constante si définie dans Facture, sinon garde "Payé"
-        try:
-            from .models import Facture  # même app
-            return self.facture.status == getattr(Facture, "STAT_PAYE", "Payé")
-        except Exception:
-            return self.facture.status == "Payé"
+        # Compare au statut de la facture en tenant compte d'une éventuelle constante STAT_PAYE
+        facture = self.facture
+        statut_paye = getattr(facture.__class__, "STAT_PAYE", "Payé")
+        return getattr(facture, "status", None) == statut_paye
 
     est_reglee.boolean = True
     est_reglee.short_description = "Facture réglée"
-
+    
 
 # class Paiement(models.Model):
 #     facture = models.OneToOneField(Facture, on_delete=models.SET_NULL, null=True, blank=True, related_name="paiement_facture")
