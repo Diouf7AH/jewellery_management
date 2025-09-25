@@ -124,10 +124,7 @@ class Migration(migrations.Migration):
             model_name='achatproduit',
             constraint=models.CheckConstraint(condition=models.Q(('tax_rate__gte', 0)), name='achatprod_tax_rate_gte_0'),
         ),
-        migrations.AddConstraint(
-            model_name='achatproduit',
-            constraint=models.CheckConstraint(condition=models.Q(('tax_amount__gte', 0)), name='achatprod_tax_amount_gte_0'),
-        ),
+        
         migrations.AddField(
             model_name='achatproduitlot',
             name='achat_ligne',
@@ -146,27 +143,97 @@ class Migration(migrations.Migration):
             index=models.Index(fields=['quantite_restante'], name='purchase_ac_quantit_97890d_idx'),
         ),
         migrations.AddConstraint(
+            model_name='achat',
+            constraint=models.CheckConstraint(
+                check=models.Q(montant_total_ht__gte=0),
+                name='achat_ht_gte_0',
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name='achat',
+            constraint=models.CheckConstraint(
+                check=models.Q(montant_total_ttc__gte=0),
+                name='achat_ttc_gte_0',
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name='achat',
+            constraint=models.CheckConstraint(
+                check=models.Q(montant_total_ttc__gte=models.F('montant_total_ht')),
+                name='achat_ttc_gte_ht',
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name='achat',
+            constraint=models.CheckConstraint(
+                check=(
+                    models.Q(cancelled_at__isnull=False, cancelled_by__isnull=False, status='cancelled')
+                    |
+                    models.Q(cancelled_at__isnull=True,  cancelled_by__isnull=True,  status='confirmed')
+                ),
+                name='achat_cancel_fields_consistency',
+            ),
+        ),
+
+        migrations.AddConstraint(
+            model_name='achatproduit',
+            constraint=models.CheckConstraint(
+                check=models.Q(tax_rate__gte=0),
+                name='achatprod_tax_rate_gte_0',
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name='achatproduit',
+            constraint=models.CheckConstraint(
+                check=models.Q(tax_amount__gte=0),
+                name='achatprod_tax_amount_gte_0',
+            ),
+        ),
+
+        migrations.AddConstraint(
             model_name='achatproduitlot',
-            constraint=models.UniqueConstraint(fields=('achat_ligne', 'lot_code'), name='uniq_lot_code_per_achat_ligne'),
+            constraint=models.UniqueConstraint(
+                fields=('achat_ligne', 'lot_code'),
+                name='uniq_lot_code_per_achat_ligne',
+            ),
         ),
         migrations.AddConstraint(
             model_name='achatproduitlot',
-            constraint=models.CheckConstraint(condition=models.Q(('quantite_total__gt', 0)), name='lot_quantite_total_gt_0'),
+            constraint=models.CheckConstraint(
+                check=models.Q(quantite_total__gt=0),
+                name='lot_quantite_total_gt_0',
+            ),
         ),
         migrations.AddConstraint(
             model_name='achatproduitlot',
-            constraint=models.CheckConstraint(condition=models.Q(('quantite_restante__gte', 0)), name='lot_quantite_restante_gte_0'),
+            constraint=models.CheckConstraint(
+                check=models.Q(quantite_restante__gte=0),
+                name='lot_quantite_restante_gte_0',
+            ),
         ),
         migrations.AddConstraint(
             model_name='achatproduitlot',
-            constraint=models.CheckConstraint(condition=models.Q(('quantite_restante__lte', models.F('quantite_total'))), name='lot_quantite_restante_lte_total'),
+            constraint=models.CheckConstraint(
+                check=models.Q(quantite_restante__lte=models.F('quantite_total')),
+                name='lot_quantite_restante_lte_total',
+            ),
         ),
         migrations.AddConstraint(
             model_name='achatproduitlot',
-            constraint=models.CheckConstraint(condition=models.Q(('prix_achat_gramme__gte', 0)), name='lot_prix_achat_gramme_gte_0'),
+            constraint=models.CheckConstraint(
+                check=models.Q(prix_achat_gramme__gte=0),
+                name='lot_prix_achat_gramme_gte_0',
+            ),
         ),
         migrations.AddConstraint(
             model_name='achatproduitlot',
-            constraint=models.CheckConstraint(condition=models.Q(('date_peremption__isnull', True), ('date_peremption__gte', models.F('date_reception')), _connector='OR'), name='lot_peremption_after_or_null'),
+            constraint=models.CheckConstraint(
+                check=(
+                    models.Q(date_peremption__isnull=True)
+                    |
+                    models.Q(date_peremption__gte=models.F('date_reception'))
+                ),
+                name='lot_peremption_after_or_null',
+            ),
         ),
     ]
