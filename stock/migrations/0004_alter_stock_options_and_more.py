@@ -66,6 +66,9 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='stock',
-            constraint=models.CheckConstraint(condition=models.Q(('quantite__gte', 0)), name='stock_qty_gte_0'),
+            constraint=models.CheckConstraint(
+            check=models.Q(quantite__gte=0),        # ✅ bon param et syntaxe plus lisible
+            name='stock_qty_gte_0',
         ),
+),
     ]
