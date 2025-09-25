@@ -15,6 +15,7 @@ from vendor import views as vendor_views
 from compte_depot import views as compte_depot_views
 from order import views as order_views
 from staff import views as staff_views
+from inventory import views as inv_views
 
 urlpatterns = [
     
@@ -124,8 +125,7 @@ urlpatterns = [
     path('achat-produit/create-achats', achat_views.AchatCreateView.as_view(), name='achats-create'),
     # path("achats-produit-update/<int:achat_id>/", achat_views.AchatUpdateView.as_view(), name="achats-update"),
     path("achats/<int:achat_id>/update", achat_views.AchatUpdateView.as_view(), name="achat-update"),
-    path("stocks/affect-reserve/", achat_views.StockReserveAffectationView.as_view(), name="stock-affect-reserve"),
-    
+    path("stock/affectations/reserve/", achat_views.StockReserveAffectationView.as_view(), name="stock-reserve-affect"),
     path("achats/<int:achat_id>/cancel/", achat_views.AchatCancelView.as_view(), name="achat-cancel"),
     # path('achat-produit/update-achat/<int:achat_id>', achat_views.AchatUpdateAPIView.as_view(), name='achat_update_achat'),
     # path('achat-produit/update-achat-produit/<int:achatproduit_id>', achat_views.AchatUpdateAchatProduitAPIView.as_view(), name='achat_produit_update_achat'),
@@ -134,6 +134,10 @@ urlpatterns = [
     # path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatPDFView.as_view(), name='achat-facture-pdf'),
     path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatProduitPDFView.as_view(), name='achat-produit-facture-pdf'),
     # END ACHAT
+    
+    # INVENTORY
+    path("api/achat-inventory/yearly/", inv_views.AchatYearInventoryView.as_view(), name="achat-inventory-yearly"),
+    # END INVENTORY
     
     # staff
     path('staff/add-staff', staff_views.CreateStaffMemberView.as_view(), name='add_staff'),

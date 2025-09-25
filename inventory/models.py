@@ -27,17 +27,17 @@ class InventoryMovement(models.Model):
     qty = models.PositiveIntegerField()  # > 0
     unit_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
 
-    lot_code = models.CharField(max_length=50, null=True, blank=True)
+    lot = models.ForeignKey('purchase.AchatProduitLot', null=True, blank=True, on_delete=models.SET_NULL)
     reason = models.TextField(null=True, blank=True)
 
     # D’où → vers
     src_bucket = models.CharField(max_length=16, choices=Bucket.choices, null=True, blank=True)
     src_bijouterie = models.ForeignKey('store.Bijouterie', on_delete=models.PROTECT, null=True, blank=True,
-                                       related_name="movements_as_source")
+                                    related_name="movements_as_source")
 
     dst_bucket = models.CharField(max_length=16, choices=Bucket.choices, null=True, blank=True)
     dst_bijouterie = models.ForeignKey('store.Bijouterie', on_delete=models.PROTECT, null=True, blank=True,
-                                       related_name="movements_as_destination")
+                                    related_name="movements_as_destination")
 
     # Liens métier (paresseux pour éviter les imports circulaires)
     achat = models.ForeignKey('purchase.Achat', on_delete=models.SET_NULL, null=True, blank=True, related_name="movements")

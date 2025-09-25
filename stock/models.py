@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import models
 from store.models import Produit, Bijouterie
+from django.db.models import Q
 
 # class Stock(models.Model):
 #     produit = models.ForeignKey(
@@ -62,56 +63,36 @@ from store.models import Produit, Bijouterie
 
 class Stock(models.Model):
     produit = models.ForeignKey(Produit, on_delete=models.PROTECT, related_name="stocks")
-    # NULL = non attribué (réservé)
     bijouterie = models.ForeignKey(Bijouterie, on_delete=models.PROTECT, null=True, blank=True, related_name="stocks")
-
-    # True = non attribué ; False = attribué
-    is_reserved = models.BooleanField(default=True, help_text="True = non attribué à une bijouterie")
+    lot = models.ForeignKey('purchase.AchatProduitLot', null=True, blank=True,
+                            on_delete=models.PROTECT, related_name='stocks')  # PROTECT conseillé
+    reservation_key = models.CharField(max_length=64, null=True, blank=True, db_index=True)  # ❗ plus unique
     quantite = models.PositiveIntegerField(default=0)
-
-    # 👉 clé technique MySQL : 1 seule ligne 'réservée' par produit
-    reservation_key = models.CharField(max_length=32, null=True, blank=True, unique=True, editable=False)
-
-    date_ajout = models.DateTimeField(auto_now_add=True)
-    date_modification = models.DateTimeField(auto_now=True)
+    is_reserved = models.BooleanField(default=True)
 
     class Meta:
-        verbose_name = "Stock"
-        verbose_name_plural = "Stocks"
         ordering = ["-id"]
         constraints = [
-            models.UniqueConstraint(fields=["produit", "bijouterie"],
-                                    name="uniq_stock_produit_bijouterie"),
+            models.UniqueConstraint(fields=["produit", "bijouterie", "lot"],
+                                    name="uniq_stock_prod_bij_lot"),  # ✅ remplace l’ancienne
+            models.CheckConstraint(check=Q(quantite__gte=0), name="stock_qty_gte_0"),
         ]
         indexes = [
-            models.Index(fields=["produit"]),
-            models.Index(fields=["bijouterie"]),
+            models.Index(fields=["produit", "bijouterie"]),
+            models.Index(fields=["lot"]),
             models.Index(fields=["is_reserved"]),
-            # ❌ pas d'index supplémentaire sur reservation_key (déjà unique)
         ]
 
-    def clean(self):
-        if self.quantite < 0:
-            raise ValidationError("La quantité doit être ≥ 0.")
-        # Cohérence d’état côté application (MySQL n’applique pas CHECK < 8.0.16)
-        if self.is_reserved and self.bijouterie_id is not None:
-            raise ValidationError("Stock non attribué ⇒ bijouterie doit être vide.")
-        if not self.is_reserved and self.bijouterie_id is None:
-            raise ValidationError("Stock attribué ⇒ bijouterie requise.")
-
     def save(self, *args, **kwargs):
-    # Déduire l’état réservé/attribué depuis bijouterie
         self.is_reserved = self.bijouterie_id is None
-
         if self.is_reserved:
             self.bijouterie_id = None
-            self.reservation_key = f"RES-{self.produit_id}" if self.produit_id else None
+            # clé lisible (non unique) utile pour MySQL
+            self.reservation_key = f"RES-{self.produit_id}-{self.lot_id or 'NOLOT'}" if self.produit_id else None
         else:
             self.reservation_key = None
-
         self.full_clean()
         return super().save(*args, **kwargs)
 
-    def __str__(self):
-        cible = self.bijouterie or "Non attribué"
-        return f"{cible} • {self.produit} • qte={self.quantite}"
+
+    

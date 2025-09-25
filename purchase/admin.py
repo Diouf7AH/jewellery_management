@@ -29,13 +29,13 @@ class FournisseurAdmin(admin.ModelAdmin):
 
 @admin.register(Achat)
 class AchatAdmin(admin.ModelAdmin):
-    list_display = ['fournisseur', 'created_at', 'montant_total_ht', 'montant_total_ttc']
+    list_display = ['numero_achat', 'fournisseur', 'created_at', 'montant_total_ht', 'montant_total_ttc']
     search_fields = ['fournisseur__nom', 'fournisseur__telephone']
     list_filter = ['created_at']
 
 @admin.register(AchatProduit)
 class AchatProduitAdmin(admin.ModelAdmin):
-    list_display = ('id','numero_achat_produit','achat', 'produit', 'quantite', 'prix_achat_gramme', 'tax', 'sous_total_prix_achat')
+    list_display = ('id','achat', 'produit', 'quantite', 'prix_achat_gramme', 'sous_total_prix_achat')
     # search_fields = ('nom',)
 
 
