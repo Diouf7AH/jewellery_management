@@ -106,7 +106,10 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='achat',
-            constraint=models.CheckConstraint(condition=models.Q(('montant_total_ht__gte', 0)), name='achat_ht_gte_0'),
+            constraint=models.CheckConstraint(
+                check=models.Q(montant_total_ht__gte=0),  # ✅ pas "condition="
+                name='achat_ht_gte_0',
+            ),
         ),
         migrations.AddConstraint(
             model_name='achat',
