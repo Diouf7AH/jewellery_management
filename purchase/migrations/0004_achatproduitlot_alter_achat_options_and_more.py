@@ -104,30 +104,6 @@ class Migration(migrations.Migration):
             model_name='achatproduit',
             index=models.Index(fields=['lot_code'], name='purchase_ac_lot_cod_5bdf65_idx'),
         ),
-        migrations.AddConstraint(
-            model_name='achat',
-            constraint=models.CheckConstraint(
-                check=models.Q(montant_total_ht__gte=0),  # ✅ pas "condition="
-                name='achat_ht_gte_0',
-            ),
-        ),
-        migrations.AddConstraint(
-            model_name='achat',
-            constraint=models.CheckConstraint(condition=models.Q(('montant_total_ttc__gte', 0)), name='achat_ttc_gte_0'),
-        ),
-        migrations.AddConstraint(
-            model_name='achat',
-            constraint=models.CheckConstraint(condition=models.Q(('montant_total_ttc__gte', models.F('montant_total_ht'))), name='achat_ttc_gte_ht'),
-        ),
-        migrations.AddConstraint(
-            model_name='achat',
-            constraint=models.CheckConstraint(condition=models.Q(models.Q(('cancelled_at__isnull', False), ('cancelled_by__isnull', False), ('status', 'cancelled')), models.Q(('cancelled_at__isnull', True), ('cancelled_by__isnull', True), ('status', 'confirmed')), _connector='OR'), name='achat_cancel_fields_consistency'),
-        ),
-        migrations.AddConstraint(
-            model_name='achatproduit',
-            constraint=models.CheckConstraint(condition=models.Q(('tax_rate__gte', 0)), name='achatprod_tax_rate_gte_0'),
-        ),
-        
         migrations.AddField(
             model_name='achatproduitlot',
             name='achat_ligne',
@@ -145,6 +121,7 @@ class Migration(migrations.Migration):
             model_name='achatproduitlot',
             index=models.Index(fields=['quantite_restante'], name='purchase_ac_quantit_97890d_idx'),
         ),
+        # --- Contraintes ACHAT ---
         migrations.AddConstraint(
             model_name='achat',
             constraint=models.CheckConstraint(
@@ -178,6 +155,7 @@ class Migration(migrations.Migration):
             ),
         ),
 
+        # --- Contraintes ACHATPRODUIT ---
         migrations.AddConstraint(
             model_name='achatproduit',
             constraint=models.CheckConstraint(
@@ -193,6 +171,7 @@ class Migration(migrations.Migration):
             ),
         ),
 
+        # --- Contraintes ACHATPRODUITLOT ---
         migrations.AddConstraint(
             model_name='achatproduitlot',
             constraint=models.UniqueConstraint(
@@ -239,4 +218,5 @@ class Migration(migrations.Migration):
                 name='lot_peremption_after_or_null',
             ),
         ),
+
     ]
