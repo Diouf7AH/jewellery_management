@@ -1,20 +1,18 @@
-from django.db import models
-from store.models import Bijouterie
 from django.conf import settings
+from django.db import models
 
-# Create your models here.
 class StaffProfile(models.Model):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
-        related_name="%(class)s_profile",
+        related_name="%(class)s_profile",   # évite les collisions futures
     )
     bijouterie = models.ForeignKey(
-        Bijouterie,
+        "store.Bijouterie",                 # référence par chaîne = pas d’import direct
         on_delete=models.SET_NULL,
         null=True, blank=True,
-        related_name="%(class)ss",
+        related_name="%(class)ss",          # donnera 'cashiers'
     )
     verifie = models.BooleanField(default=True)
     raison_desactivation = models.TextField(null=True, blank=True)
@@ -23,7 +21,6 @@ class StaffProfile(models.Model):
 
     @property
     def slug(self):
-        # utilise le slug du User si présent
         return getattr(self.user, "slug", None)
 
     class Meta:
