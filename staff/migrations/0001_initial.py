@@ -1,23 +1,31 @@
 from django.db import migrations, models
-import django.db.models.deletion
+
 
 class Migration(migrations.Migration):
-    
     initial = True
-    
+
     dependencies = [
-        # ('store', '0001_initial'),     # on attend que 'bijouterie' existe
+        # AUCUNE dépendance externe ici
     ]
 
     operations = [
-        migrations.AddField(
+        migrations.CreateModel(
+            name='Cashier',
+            fields=[
+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('verifie', models.BooleanField(default=True)),
+                ('raison_desactivation', models.TextField(blank=True, null=True)),
+                ('created_at', models.DateTimeField(auto_now_add=True)),
+                ('updated_at', models.DateTimeField(auto_now=True)),
+            ],
+            options={
+                'verbose_name': 'Caissier',
+                'verbose_name_plural': 'Caissiers',
+                'ordering': ['-id'],
+            },
+        ),
+        migrations.AddIndex(
             model_name='cashier',
-            name='bijouterie',
-            field=models.ForeignKey(
-                to='store.bijouterie',
-                on_delete=django.db.models.deletion.SET_NULL,
-                null=True, blank=True,
-                related_name='cashiers',      # valeur figée (pas de '%(class)ss')
-            ),
+            index=models.Index(fields=['verifie'], name='staff_cashier_verifie_idx'),
         ),
     ]
