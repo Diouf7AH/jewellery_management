@@ -6,7 +6,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         # mets ici la DERNIÈRE migration staff existante avant celle-ci
-        ('staff', '0002_cashier_bijouterie'),  # <-- adapte exactement au nom réel
+        ('staff', '0002_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
