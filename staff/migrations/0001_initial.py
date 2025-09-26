@@ -2,9 +2,10 @@ from django.db import migrations, models
 import django.db.models.deletion
 
 class Migration(migrations.Migration):
-
+    
+    initial = True
+    
     dependencies = [
-        ('staff', '0002_initial'),
         # ('store', '0001_initial'),     # on attend que 'bijouterie' existe
     ]
 
