@@ -5,7 +5,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('staff', '0002_initial'),
-        ('store', '0001_initial'),     # on attend que 'bijouterie' existe
+        # ('store', '0001_initial'),     # on attend que 'bijouterie' existe
     ]
 
     operations = [
