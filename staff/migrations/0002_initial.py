@@ -17,6 +17,12 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='cashier',
             name='bijouterie',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='%(class)ss', to='store.bijouterie'),
+            field=models.ForeignKey(
+                to='store.bijouterie',
+                on_delete=django.db.models.deletion.SET_NULL,
+                null=True,
+                blank=True,
+                related_name='cashiers',   # ← au lieu de '%(class)ss'
+            ),
         ),
     ]
