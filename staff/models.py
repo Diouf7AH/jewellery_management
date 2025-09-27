@@ -6,15 +6,18 @@ class StaffProfile(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
-        related_name="%(class)s_profile",   # évite les collisions futures
+        related_name="%(app_label)s_%(class)s_profile",   # ex: "staff_Cashier_profile"
+        related_query_name="%(class)s_profile",            # ex: "Cashier_profile"
     )
     bijouterie = models.ForeignKey(
-        "store.Bijouterie",                 # référence par chaîne = pas d’import direct
+        "store.Bijouterie",
         on_delete=models.SET_NULL,
         null=True, blank=True,
-        related_name="%(class)ss",          # donnera 'cashiers'
+        related_name="%(class)ss",        # ex: "Cashiers"
+        related_query_name="%(class)s",   # ex: "Cashier"
     )
-    verifie = models.BooleanField(default=True)
+    # verifie = models.BooleanField(default=True)
+    verifie = models.BooleanField(default=True, db_index=True)
     raison_desactivation = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -25,7 +28,6 @@ class StaffProfile(models.Model):
 
     class Meta:
         abstract = True
-        indexes = [models.Index(fields=["verifie"])]
 
 class Cashier(StaffProfile):
     class Meta:
@@ -37,3 +39,4 @@ class Cashier(StaffProfile):
         if self.user:
             return f"Caissier {getattr(self.user, 'username', self.user_id)}"
         return f"Caissier #{self.pk}"
+
