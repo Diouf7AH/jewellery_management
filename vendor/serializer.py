@@ -10,7 +10,8 @@ from django.core.validators import EmailValidator
 
 User = get_user_model()
 
-class VendorUpdateStatusSerializer(serializers.ModelSerializer):
+class VendorStatusInputSerializer(serializers.Serializer):
+    verifie = serializers.BooleanField(help_text="True=activer, False=désactiver")
     class Meta:
         model = Vendor
         fields = ['verifie']  # ⚠️ Si tu veux activer/désactiver le vendeur (champ correct = verifie, pas active)

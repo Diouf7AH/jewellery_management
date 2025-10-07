@@ -42,6 +42,33 @@ class Cashier(StaffCore):
         return f"Caissier {getattr(self.user, 'username', self.user_id) if self.user else '#'+str(self.pk)}"
 
 
+class Manager(StaffCore):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="staff_manager_profile",
+        related_query_name="manager_profile",
+    )
+    bijouterie = models.ForeignKey(
+        "store.Bijouterie",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="managers",
+        related_query_name="manager",
+    )
+
+    class Meta:
+        verbose_name = "Manager"
+        verbose_name_plural = "Managers"
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["verifie"]),
+            models.Index(fields=["bijouterie"]),
+        ]
+
+
+
 # # Exemple d’une autre sous-classe (si tu en as d’autres)
 # class Manager(StaffCore):
 #     user = models.OneToOneField(

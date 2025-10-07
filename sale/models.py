@@ -1,8 +1,7 @@
 # --- Standard library
 from decimal import Decimal, ROUND_HALF_UP
 import random
-import string
-import uuid
+from .counters import InvoiceCounter
 from typing import TYPE_CHECKING
 
 # --- Django
@@ -104,6 +103,31 @@ class Vente(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     montant_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'), null=True)
 
+    # -----valider SALE_OUT-----
+    DELIV_PENDING   = "pending"
+    DELIV_DELIVERED = "delivered"
+    DELIV_CANCELLED = "cancelled"
+    DELIVERY_STATUS = (
+        (DELIV_PENDING, "En attente"),
+        (DELIV_DELIVERED, "Livrée"),
+        (DELIV_CANCELLED, "Annulée"),
+    )
+
+    delivery_status = models.CharField(max_length=20, choices=DELIVERY_STATUS, default=DELIV_PENDING)
+    delivered_at    = models.DateTimeField(null=True, blank=True)
+    delivered_by    = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="ventes_livrees"
+    )
+
+    def marquer_livree(self, by_user):
+        self.delivery_status = self.DELIV_DELIVERED
+        self.delivered_at = timezone.now()
+        if by_user and not self.delivered_by_id:
+            self.delivered_by = by_user
+        self.save(update_fields=["delivery_status", "delivered_at", "delivered_by"])
+    # ------End SALE_OUT----------
+    
     class Meta:
         ordering = ['-created_at']
         verbose_name = "Vente"
@@ -597,18 +621,18 @@ class VenteProduit(models.Model):
 #     est_reglee.boolean = True
 #     est_reglee.short_description = "Facture réglée"
 
-
 class Facture(models.Model):
-    # Valeurs "machine" sans accent/espaces, libellés humains avec accents
-    TYPE_VENTE_DIRECTE = "vente_directe"
-    TYPE_ACOMPTE = "acompte"
-    TYPE_FINALE = "finale"
+    TYPE_PROFORMA       = "proforma"
+    TYPES_FACTURE_FACTURE = "facture"
+    TYPE_ACOMPTE        = "acompte"
+    TYPE_FINALE         = "finale"
 
     STAT_NON_PAYE = "non_paye"
-    STAT_PAYE = "paye"
+    STAT_PAYE     = "paye"
 
     TYPES_FACTURE = (
-        (TYPE_VENTE_DIRECTE, "Vente directe"),
+        (TYPE_PROFORMA, "Proforma"),
+        (TYPES_FACTURE_FACTURE, "facture"),
         (TYPE_ACOMPTE, "Facture d’acompte"),
         (TYPE_FINALE, "Facture finale"),
     )
@@ -617,19 +641,16 @@ class Facture(models.Model):
         (STAT_PAYE, "Payé"),
     )
 
-    numero_facture = models.CharField(max_length=20, unique=True, editable=False)
-    vente = models.OneToOneField(
-        "Vente",
-        on_delete=models.SET_NULL,
-        null=True, blank=True,
-        related_name="facture_vente",
-    )
-    bijouterie = models.ForeignKey(Bijouterie, on_delete=models.SET_NULL, null=True, blank=True, related_name="sale_bijouterie")
+    # ⬇️ PAS de unique=True ici (unicité gérée par la contrainte composite)
+    numero_facture = models.CharField(max_length=32, editable=False)
+
+    vente = models.OneToOneField("Vente", on_delete=models.SET_NULL, null=True, blank=True, related_name="facture_vente")
+    bijouterie = models.ForeignKey(Bijouterie, on_delete=models.PROTECT, null=False, blank=False, related_name="factures")
     date_creation = models.DateTimeField(auto_now_add=True)
-    montant_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"), null=False)
+    montant_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     status = models.CharField(max_length=20, choices=STATUS, default=STAT_NON_PAYE)
     fichier_pdf = models.FileField(upload_to="factures/", null=True, blank=True)
-    type_facture = models.CharField(max_length=20, choices=TYPES_FACTURE, default=TYPE_VENTE_DIRECTE)
+    type_facture = models.CharField(max_length=20, choices=TYPES_FACTURE, default=TYPE_PROFORMA)
 
     class Meta:
         ordering = ["-id"]
@@ -638,49 +659,44 @@ class Facture(models.Model):
             models.Index(fields=["numero_facture"]),
             models.Index(fields=["date_creation"]),
             models.Index(fields=["status"]),
+            models.Index(fields=["type_facture"]),
+            models.Index(fields=["bijouterie", "date_creation"]),
         ]
         constraints = [
-            # Empêche les montants négatifs
             CheckConstraint(check=Q(montant_total__gte=0), name="facture_montant_total_gte_0"),
+            models.UniqueConstraint(fields=["bijouterie", "numero_facture"], name="uniq_invoice_per_shop"),
         ]
 
     def __str__(self):
         return self.numero_facture
 
     @staticmethod
-    def generer_numero_unique():
-        """
-        Génère un numéro FAC-mmddYYYY-XXXX en essayant jusqu’à 10 fois.
-        Confiance sur la contrainte unique + retry si collision.
-        """
-        for _ in range(10):
-            now = timezone.now()
-            suffixe = "".join(random.choices(string.digits, k=4))
-            numero = f"FAC-{now.strftime('%m%d%Y')}-{suffixe}"
-            if not Facture.objects.filter(numero_facture=numero).exists():
-                return numero
-        raise RuntimeError("Impossible de générer un numéro de facture unique après 10 tentatives.")
+    def generer_numero_unique(bijouterie) -> str:
+        """Format uniforme par bijouterie, séquentiel/jour : FAC-YYYYMMDD-0001"""
+        seq = InvoiceCounter.next_for_today(bijouterie)
+        day = timezone.localdate().strftime("%Y%m%d")
+        return f"FAC-{day}-{seq:04d}"
 
     def save(self, *args, **kwargs):
         if not self.numero_facture:
-            self.numero_facture = self.generer_numero_unique()
+            if not self.bijouterie_id:
+                raise ValueError("La bijouterie est obligatoire pour numéroter la facture.")
+            self.numero_facture = self.generer_numero_unique(self.bijouterie)
         super().save(*args, **kwargs)
 
     @property
     def total_paye(self) -> Decimal:
-        # agrège en base pour éviter les incohérences
         return self.paiements.aggregate(total=Sum("montant_paye"))["total"] or Decimal("0.00")
 
     @property
     def reste_a_payer(self) -> Decimal:
-        # borne à 0 pour éviter les négatifs (arrondis etc.)
         return max((self.montant_total or Decimal("0.00")) - self.total_paye, Decimal("0.00"))
 
     def est_reglee(self) -> bool:
         return self.status == self.STAT_PAYE
 
-    est_reglee.boolean = True
-    est_reglee.short_description = "Facture réglée"
+    # est_reglee.boolean = True
+    # est_reglee.short_description = "Facture réglée"
 
 
 # class Facture(models.Model):
@@ -891,6 +907,96 @@ class Facture(models.Model):
 #     est_reglee.short_description = "Facture réglée"
 
 
+# class Paiement(models.Model):
+#     MODE_CASH = "cash"
+#     MODE_MOBILE = "mobile"
+#     MODES = (
+#         (MODE_CASH, "Cash"),
+#         (MODE_MOBILE, "Mobile"),
+#     )
+
+#     facture = models.ForeignKey(
+#         "Facture", on_delete=models.CASCADE, related_name="paiements"
+#     )
+#     montant_paye = models.DecimalField(max_digits=10, decimal_places=2)
+#     mode_paiement = models.CharField(max_length=20, choices=MODES)
+#     date_paiement = models.DateTimeField(auto_now_add=True)
+#     cashier = models.ForeignKey(
+#         "staff.Cashier",  # ← aligne avec l’app réelle
+#         null=True, blank=True,
+#         on_delete=models.SET_NULL, related_name="paiements"
+#     )
+#     created_by = models.ForeignKey(
+#         settings.AUTH_USER_MODEL, null=True, blank=True,
+#         on_delete=models.SET_NULL, related_name="paiements_validation"
+#     )
+
+#     def __str__(self):
+#         facture_num = getattr(self.facture, "numero_facture", None) or "Aucune facture"
+#         return f"Paiement de {self.montant_paye} FCFA - {facture_num}"
+
+#     def clean(self):
+#         super().clean()
+
+#         if not self.facture_id:
+#             raise ValidationError("La facture est requise.")
+
+#         # created_by doit être le user du cashier quand cashier est renseigné
+#         if self.cashier_id and self.created_by_id and self.cashier.user_id != self.created_by_id:
+#             raise ValidationError("created_by doit correspondre au user du cashier.")
+
+#         # Optionnel mais recommandé : ne pas dépasser le restant dû
+#         # (adapte le nom de méthode/prop selon ton modèle Facture)
+#         restant = getattr(self.facture, "montant_restant", None)
+#         if callable(restant):
+#             restant = restant()
+#         if restant is not None and self.montant_paye and self.montant_paye > restant:
+#             raise ValidationError(f"Montant payé ({self.montant_paye}) > restant dû ({restant}).")
+
+#         # Optionnel : interdire paiement sur facture annulée/close
+#         statut = getattr(self.facture, "statut", None)
+#         if statut in {"annulee", "cloturee"}:
+#             raise ValidationError("Impossible d’enregistrer un paiement sur une facture close/annulée.")
+
+#     class Meta:
+#         ordering = ["-date_paiement"]
+#         verbose_name = "Paiement"
+#         verbose_name_plural = "Paiements"
+#         indexes = [
+#             models.Index(fields=["date_paiement"]),
+#             models.Index(fields=["created_by"]),
+#             models.Index(fields=["cashier"]),
+#             models.Index(fields=["facture", "date_paiement"]),
+#         ]
+#         constraints = [
+#             CheckConstraint(check=Q(montant_paye__gt=0), name="paiement_montant_gt_0"),
+#         ]
+
+#     def save(self, *args, **kwargs):
+#         # Normalise à 2 décimales (sécurise les arrondis issus du front)
+#         if self.montant_paye is not None:
+#             self.montant_paye = (Decimal(self.montant_paye)
+#                                  .quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+#         # Auto-renseigne le cashier si absent mais created_by présent (sans import direct)
+#         if not self.cashier_id and self.created_by_id:
+#             Cashier = apps.get_model("staff", "Cashier")
+#             self.cashier = Cashier.objects.filter(user_id=self.created_by_id).first()
+
+#         self.full_clean()
+#         super().save(*args, **kwargs)
+
+#     def est_reglee(self):
+#         # Compare au statut de la facture en tenant compte d'une éventuelle constante STAT_PAYE
+#         facture = self.facture
+#         statut_paye = getattr(facture.__class__, "STAT_PAYE", "Payé")
+#         return getattr(facture, "status", None) == statut_paye
+
+#     est_reglee.boolean = True
+#     est_reglee.short_description = "Facture réglée"
+    
+
+
 class Paiement(models.Model):
     MODE_CASH = "cash"
     MODE_MOBILE = "mobile"
@@ -899,25 +1005,16 @@ class Paiement(models.Model):
         (MODE_MOBILE, "Mobile"),
     )
 
-    facture = models.ForeignKey(
-        "Facture", on_delete=models.CASCADE, related_name="paiements"
-    )
+    facture = models.ForeignKey("Facture", on_delete=models.CASCADE, related_name="paiements")
     montant_paye = models.DecimalField(max_digits=10, decimal_places=2)
-    mode_paiement = models.CharField(max_length=20, choices=MODES)
+    mode_paiement = models.CharField(max_length=20, choices=MODES, default=MODE_CASH)  # ← petit plus: défaut DB
     date_paiement = models.DateTimeField(auto_now_add=True)
-    cashier = models.ForeignKey(
-        "staff.Cashier",  # ← aligne avec l’app réelle
-        null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="paiements"
-    )
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="paiements_validation"
-    )
+    cashier = models.ForeignKey("staff.Cashier", null=True, blank=True, on_delete=models.SET_NULL, related_name="paiements")
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="paiements_validation")
 
     def __str__(self):
-        facture_num = getattr(self.facture, "numero_facture", None) or "Aucune facture"
-        return f"Paiement de {self.montant_paye} FCFA - {facture_num}"
+        num = getattr(self.facture, "numero_facture", None) or "Aucune facture"
+        return f"Paiement de {self.montant_paye} FCFA - {num}"
 
     def clean(self):
         super().clean()
@@ -925,22 +1022,26 @@ class Paiement(models.Model):
         if not self.facture_id:
             raise ValidationError("La facture est requise.")
 
-        # created_by doit être le user du cashier quand cashier est renseigné
+        # Le created_by doit correspondre au user du cashier si cashier est renseigné
         if self.cashier_id and self.created_by_id and self.cashier.user_id != self.created_by_id:
             raise ValidationError("created_by doit correspondre au user du cashier.")
 
-        # Optionnel mais recommandé : ne pas dépasser le restant dû
-        # (adapte le nom de méthode/prop selon ton modèle Facture)
-        restant = getattr(self.facture, "montant_restant", None)
-        if callable(restant):
-            restant = restant()
-        if restant is not None and self.montant_paye and self.montant_paye > restant:
-            raise ValidationError(f"Montant payé ({self.montant_paye}) > restant dû ({restant}).")
+        # Interdire paiement sur facture déjà soldée
+        if getattr(self.facture, "status", None) == getattr(self.facture.__class__, "STAT_PAYE", "paye"):
+            raise ValidationError("La facture est déjà réglée.")
 
-        # Optionnel : interdire paiement sur facture annulée/close
-        statut = getattr(self.facture, "statut", None)
-        if statut in {"annulee", "cloturee"}:
-            raise ValidationError("Impossible d’enregistrer un paiement sur une facture close/annulée.")
+        # Interdire surpaiement — on tient compte d'une éventuelle mise à jour d'un paiement existant
+        total = self.facture.montant_total or Decimal("0.00")
+        qs = self.facture.paiements.all()
+        if self.pk:
+            qs = qs.exclude(pk=self.pk)
+        deja = qs.aggregate(t=Sum("montant_paye"))["t"] or Decimal("0.00")
+        restant = max(total - deja, Decimal("0.00"))
+
+        if self.montant_paye is None or self.montant_paye <= 0:
+            raise ValidationError("Le montant payé doit être strictement positif.")
+        if self.montant_paye > restant:
+            raise ValidationError(f"Montant payé ({self.montant_paye}) > restant dû ({restant}).")
 
     class Meta:
         ordering = ["-date_paiement"]
@@ -957,12 +1058,11 @@ class Paiement(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        # Normalise à 2 décimales (sécurise les arrondis issus du front)
+        # Normaliser à 2 décimales
         if self.montant_paye is not None:
             self.montant_paye = (Decimal(self.montant_paye)
                                  .quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-
-        # Auto-renseigne le cashier si absent mais created_by présent (sans import direct)
+        # Auto-renseigner le cashier à partir de created_by si absent
         if not self.cashier_id and self.created_by_id:
             Cashier = apps.get_model("staff", "Cashier")
             self.cashier = Cashier.objects.filter(user_id=self.created_by_id).first()
@@ -971,14 +1071,11 @@ class Paiement(models.Model):
         super().save(*args, **kwargs)
 
     def est_reglee(self):
-        # Compare au statut de la facture en tenant compte d'une éventuelle constante STAT_PAYE
-        facture = self.facture
-        statut_paye = getattr(facture.__class__, "STAT_PAYE", "Payé")
-        return getattr(facture, "status", None) == statut_paye
+        statut_paye = getattr(self.facture.__class__, "STAT_PAYE", "paye")
+        return getattr(self.facture, "status", None) == statut_paye
 
     est_reglee.boolean = True
     est_reglee.short_description = "Facture réglée"
-    
 
 # class Paiement(models.Model):
 #     facture = models.OneToOneField(Facture, on_delete=models.SET_NULL, null=True, blank=True, related_name="paiement_facture")

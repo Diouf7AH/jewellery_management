@@ -54,7 +54,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     
     #Custom Apps
-    'userauths',
+    # 'userauths',
+    'userauths.apps.UserauthsConfig',
     'store',
     'stock',
     'staff',

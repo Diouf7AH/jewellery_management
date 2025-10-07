@@ -53,6 +53,7 @@ class ClientSerializer(serializers.ModelSerializer):
 
 class VenteProduitSerializer(serializers.ModelSerializer):
     # ÉCRITURE (IDs)
+    slug = serializers.SlugField()
     produit_id = serializers.PrimaryKeyRelatedField(
         source="produit",
         queryset=Produit.objects.all(),
@@ -79,6 +80,7 @@ class VenteProduitSerializer(serializers.ModelSerializer):
         model = VenteProduit
         fields = [
             "id",
+            "slug",
             # écriture
             "produit_id", "vendor_id",
             # lecture imbriquée
@@ -369,8 +371,12 @@ class VenteDetailSerializer(serializers.ModelSerializer):
 
 class PaiementCreateSerializer(serializers.Serializer):
     montant_paye = serializers.DecimalField(max_digits=10, decimal_places=2)
-    mode_paiement = serializers.ChoiceField(choices=[('cash', 'Cash'), ('mobile', 'Mobile')], required=False)
-
+    mode_paiement = serializers.ChoiceField(
+        choices=getattr(Paiement, "MODES", (("cash", "Cash"), ("mobile", "Mobile"))),
+        default=getattr(Paiement, "MODE_CASH", "cash"),
+        required=False,
+    )
+    
     def validate_montant_paye(self, value):
         if value is None or value <= 0:
             raise serializers.ValidationError("Le montant doit être strictement positif.")
@@ -378,17 +384,17 @@ class PaiementCreateSerializer(serializers.Serializer):
 
 
 class PaiementSerializer(serializers.ModelSerializer):
-    facture_numero = serializers.CharField(source="facture.numero_facture", read_only=True)
-    cashier_email = serializers.EmailField(source="cashier.user.email", read_only=True)
+    # facture_numero = serializers.CharField(source="facture.numero_facture", read_only=True)
+    # cashier_email = serializers.EmailField(source="cashier.user.email", read_only=True)
 
     class Meta:
         model = Paiement
         fields = [
-            "id", "facture", "facture_numero",
+            "id", "facture", "numero_facture",
             "montant_paye", "mode_paiement", "date_paiement",
             "cashier", "cashier_email", "created_by",
         ]
-        read_only_fields = ["id", "date_paiement", "cashier", "created_by"]
+        read_only_fields = ["id", "numero_facture", "date_paiement", "cashier", "created_by"]
 
 
 

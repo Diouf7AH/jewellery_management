@@ -161,14 +161,31 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = '__all__'
 
+# class ProfileSerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = Profile
+#         fields = '__all__'
+        
+#     def to_representation(self, instance):
+#         response = super().to_representation(instance)
+#         response['user'] = UserSerializer(instance.user).data
+#         return response
+
 class ProfileSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(source="user.email", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    full_name = serializers.CharField(read_only=True)
+
     class Meta:
         model = Profile
-        fields = '__all__'
-        
-    def to_representation(self, instance):
-        response = super().to_representation(instance)
-        response['user'] = UserSerializer(instance.user).data
-        return response
+        fields = [
+            "id", "email", "first_name", "last_name", "full_name",
+            "image", "bio", "sex", "country", "state", "city", "address",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "email", "first_name", "last_name", "full_name", "created_at", "updated_at"]
+
+
 
 

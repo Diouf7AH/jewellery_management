@@ -1,17 +1,20 @@
-from decimal import Decimal, ROUND_HALF_UP
+from __future__ import annotations
+from decimal import Decimal, InvalidOperation
 from django.db.models import F
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from typing import Optional, Dict, Tuple
 from textwrap import dedent
 from django.core.exceptions import ValidationError
-
+from django.db import IntegrityError
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.pagination import PageNumberPagination
+from datetime import datetime
 
-from django.db.models import Q
+from django.db.models import Q, Count
 from django.http import HttpResponse
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
@@ -29,9 +32,10 @@ from stock.models import Stock
 from store.models import Produit, Bijouterie
 from inventory.models import InventoryMovement, Bucket, MovementType
 from inventory.services import log_move# ta fonction utilitaire
+# from .your_mixin_and_pagination_module import ExportXlsxMixin, AchatPagination
 from .models import Achat, AchatProduit, Fournisseur, AchatProduitLot
 from .serializers import (AchatCreateSerializer, AchatCreateResponseSerializer, AchatSerializer,
-                        FournisseurSerializer,  StockReserveAffectationSerializer,
+                        FournisseurSerializer,  StockReserveAffectationSerializer, AchatListSerializer,
                         AchatUpdateSerializer, AchatCancelSerializer)
 from .utils import _auto_decrement_any_bucket_with_trace, _decrement_bucket 
 
@@ -39,16 +43,15 @@ from .utils import _auto_decrement_any_bucket_with_trace, _decrement_bucket
 from inventory.models import InventoryMovement, MovementType, Bucket
 from inventory.services import log_move  
 
-# --- Comptabilité
-
-
 # ⚙️ services que tu as (ou à mettre) dans purchase/services.py
 from purchase.services import create_purchase, rebase_purchase
 from purchase.utils import (_decrement_bucket as _dec_exact,
                             _auto_decrement_any_bucket_with_trace as _dec_auto,) # <- helpers stock (exact/auto)
 
-# Assure-toi que ta fonction upsert_stock_increment alimente bien is_reserved (voir note en bas)
-from stock.services import upsert_stock_increment
+# ---------- (facultatif) mixin réutilisé pour Excel ----------
+from io import BytesIO
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 
 from django.db.models import Sum, Count
 from django.utils.dateparse import parse_date
@@ -196,6 +199,375 @@ class FournisseurDeleteView(APIView):
 
         fournisseur.delete()
         return Response({"message": "Fournisseur supprimé avec succès."}, status=204)
+
+
+class ExportXlsxMixin:
+    def _xlsx_response(self, wb: Workbook, filename: str) -> HttpResponse:
+        bio = BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+        resp = HttpResponse(
+            bio.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
+
+    @staticmethod
+    def _autosize(ws):
+        for col in ws.columns:
+            width = max((len(str(c.value)) if c.value is not None else 0) for c in col) + 2
+            ws.column_dimensions[get_column_letter(col[0].column)].width = min(width, 50)
+
+
+# ---------- Pagination ----------
+class AchatPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
+# # =============== LIST VIEW ===============
+# class AchatListView(ExportXlsxMixin, APIView):
+#     """
+#     Liste paginée des achats (+ export Excel).
+
+#     Filtres disponibles (query params) :
+#       - q : recherche plein texte (numero_achat, fournisseur.nom/prenom/téléphone)
+#       - fournisseur_id : ID fournisseur
+#       - produit_id : ID produit contenu dans au moins une ligne de l’achat
+#       - bijouterie_id : (si tu rattaches l’achat à une bijouterie, sinon ignoré)
+#       - date_from, date_to : AAAA-MM-JJ sur created_at (inclus)
+#       - min_total, max_total : borne sur montant_total_ttc
+#       - status : si ton modèle contient un champ `status` (sinon ignoré)
+#       - ordering : -created_at (défaut), created_at, -montant_total_ttc, montant_total_ttc, numero_achat, -numero_achat
+#       - export=xlsx : renvoie un fichier Excel (désactive la pagination)
+#     """
+#     permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les achats (paginé) + export Excel",
+#         manual_parameters=[
+#             openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                               description="Recherche (numero_achat, fournisseur nom/prénom/téléphone)"),
+#             openapi.Parameter("fournisseur_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+#                               description="Filtrer par fournisseur"),
+#             openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+#                               description="Filtrer par produit présent dans l'achat"),
+#             openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+#                               description="(Optionnel) Filtrer par bijouterie si applicable"),
+#             openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                               description="AAAA-MM-JJ (inclus)"),
+#             openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                               description="AAAA-MM-JJ (inclus)"),
+#             openapi.Parameter("min_total", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                               description="Montant TTC minimum"),
+#             openapi.Parameter("max_total", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                               description="Montant TTC maximum"),
+#             openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                               description="Statut (si champ présent sur Achat)"),
+#             openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                               description="Tri: -created_at (défaut), created_at, +/-montant_total_ttc, +/-numero_achat"),
+#             openapi.Parameter("page", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Numéro de page"),
+#             openapi.Parameter("page_size", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Taille de page"),
+#             openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="xlsx pour export Excel"),
+#         ],
+#         tags=["Achats"],
+#         responses={
+#             200: "OK",
+#             403: openapi.Response(description="Accès refusé – réservé aux rôles admin/manager")
+#         }
+#     )
+#     def get(self, request):
+#         qs = (
+#             Achat.objects
+#             .select_related("fournisseur")
+#             .prefetch_related("produits__produit")  # lignes + produit
+#             .all()
+#         )
+
+#         getf = request.GET.get
+
+#         # ---- Recherche plein texte ----
+#         q = getf("q")
+#         if q:
+#             q = q.strip()
+#             # sécuriser: numero_achat peut ne pas exister partout
+#             fields = {f.name for f in Achat._meta.get_fields()}
+#             has_numero = "numero_achat" in fields
+#             filt = (
+#                 Q(fournisseur__nom__icontains=q) |
+#                 Q(fournisseur__prenom__icontains=q) |
+#                 Q(fournisseur__telephone__icontains=q)
+#             )
+#             if has_numero:
+#                 filt |= Q(numero_achat__icontains=q)
+#             qs = qs.filter(filt)
+
+#         # ---- Filtres simples ----
+#         if getf("fournisseur_id"):
+#             qs = qs.filter(fournisseur_id=getf("fournisseur_id"))
+
+#         if getf("produit_id"):
+#             qs = qs.filter(produits__produit_id=getf("produit_id")).distinct()
+
+#         if getf("bijouterie_id"):
+#             # à activer si ton modèle Achat a un lien direct vers une bijouterie
+#             qs = qs.filter(bijouterie_id=getf("bijouterie_id"))
+
+#         # Dates
+#         def _parse_date(s: str):
+#             try:
+#                 return datetime.strptime(s, "%Y-%m-%d")
+#             except Exception:
+#                 return None
+
+#         df = _parse_date(getf("date_from") or "")
+#         dt = _parse_date(getf("date_to") or "")
+#         if df:
+#             qs = qs.filter(created_at__date__gte=df.date())
+#         if dt:
+#             qs = qs.filter(created_at__date__lte=dt.date())
+
+#         # Totaux TTC
+#         def _dec(s: str | None) -> Decimal | None:
+#             if not s:
+#                 return None
+#             try:
+#                 return Decimal(str(s))
+#             except (InvalidOperation, TypeError):
+#                 return None
+
+#         min_total = _dec(getf("min_total"))
+#         max_total = _dec(getf("max_total"))
+#         if min_total is not None:
+#             qs = qs.filter(montant_total_ttc__gte=min_total)
+#         if max_total is not None:
+#             qs = qs.filter(montant_total_ttc__lte=max_total)
+
+#         # Statut (si présent)
+#         if getf("status") and "status" in {f.name for f in Achat._meta.get_fields()}:
+#             qs = qs.filter(status=getf("status"))
+
+#         # ---- Tri ----
+#         ordering = getf("ordering") or "-created_at"
+#         allowed = {"created_at", "-created_at",
+#                    "montant_total_ttc", "-montant_total_ttc",
+#                    "numero_achat", "-numero_achat"}
+#         if ordering not in allowed:
+#             ordering = "-created_at"
+#         # si numero_achat n'existe pas dans le modèle, on retombe sur created_at
+#         if "numero_achat" in ordering and "numero_achat" not in {f.name for f in Achat._meta.get_fields()}:
+#             ordering = "-created_at"
+#         qs = qs.order_by(ordering)
+
+#         # ---- Export Excel ? ----
+#         if (getf("export") or "").lower() == "xlsx":
+#             # Une ligne par achat
+#             qs_export = (
+#                 qs.annotate(nb_lignes=Count("produits"))
+#             )
+#             wb = Workbook()
+#             ws = wb.active
+#             ws.title = "Achats"
+
+#             headers = [
+#                 "id", "created_at", "numero_achat",
+#                 "fournisseur_id", "fournisseur_nom", "fournisseur_prenom", "fournisseur_telephone",
+#                 "montant_total_ht", "montant_total_tax", "montant_total_ttc",
+#                 "nb_lignes",
+#             ]
+#             ws.append(headers)
+
+#             for a in qs_export:
+#                 f = a.fournisseur
+#                 ws.append([
+#                     a.id,
+#                     getattr(a, "created_at", None),
+#                     getattr(a, "numero_achat", None),
+#                     getattr(f, "id", None) if f else None,
+#                     getattr(f, "nom", None) if f else None,
+#                     getattr(f, "prenom", None) if f else None,
+#                     getattr(f, "telephone", None) if f else None,
+#                     getattr(a, "montant_total_ht", None),
+#                     getattr(a, "montant_total_tax", None),
+#                     getattr(a, "montant_total_ttc", None),
+#                     getattr(a, "nb_lignes", None),
+#                 ])
+
+#             self._autosize(ws)
+#             return self._xlsx_response(wb, "achats.xlsx")
+
+#         # ---- Pagination + JSON ----
+#         paginator = AchatPagination()
+#         page = paginator.paginate_queryset(qs, request)
+#         data = AchatSerializer(page, many=True).data
+#         return paginator.get_paginated_response(data)
+
+class AchatListView(ExportXlsxMixin, APIView):
+    """
+    Liste paginée des achats (+ export Excel).
+    Inclut : n° de lot, status, description, cancelled_by/at/reason.
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+    @swagger_auto_schema(
+        operation_summary="Lister les achats (paginé) + export Excel",
+        manual_parameters=[
+            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description="Recherche (numero_achat, fournisseur nom/prénom/téléphone, lot_code)"),
+            openapi.Parameter("fournisseur_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+                              description="Filtrer par fournisseur"),
+            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+                              description="Filtrer par produit présent dans l'achat"),
+            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
+                              description="(Optionnel) Filtrer par bijouterie si applicable"),
+            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description="AAAA-MM-JJ (inclus)"),
+            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description="AAAA-MM-JJ (inclus)"),
+            openapi.Parameter("min_total", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description="Montant TTC minimum"),
+            openapi.Parameter("max_total", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description="Montant TTC maximum"),
+            openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description="Statut (si champ présent sur Achat)"),
+            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description="Tri: -created_at (défaut), created_at, +/-montant_total_ttc, +/-numero_achat"),
+            openapi.Parameter("page", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Numéro de page"),
+            openapi.Parameter("page_size", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Taille de page"),
+            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="xlsx pour export Excel"),
+        ],
+        tags=["Achats"],
+        responses={200: "OK", 403: "Accès refusé – admin/manager uniquement"}
+    )
+    def get(self, request):
+        fields = {f.name for f in Achat._meta.get_fields()}
+
+        qs = (
+            Achat.objects
+            .select_related("fournisseur", "cancelled_by")
+            .prefetch_related("produits__produit", "produits__lots")  # ← lots
+        )
+
+        getf = request.GET.get
+
+        # --- Recherche plein texte (inclut lot_code) ---
+        q = (getf("q") or "").strip()
+        if q:
+            filt = (
+                Q(fournisseur__nom__icontains=q) |
+                Q(fournisseur__prenom__icontains=q) |
+                Q(fournisseur__telephone__icontains=q) |
+                Q(produits__lots__lot_code__icontains=q)
+            )
+            if "numero_achat" in fields:
+                filt |= Q(numero_achat__icontains=q)
+            qs = qs.filter(filt).distinct()
+
+        # --- Filtres ---
+        if getf("fournisseur_id"):
+            qs = qs.filter(fournisseur_id=getf("fournisseur_id"))
+        if getf("produit_id"):
+            qs = qs.filter(produits__produit_id=getf("produit_id")).distinct()
+        if getf("bijouterie_id") and "bijouterie" in fields:
+            qs = qs.filter(bijouterie_id=getf("bijouterie_id"))
+
+        # Dates
+        def _d(s):
+            try: return datetime.strptime(s, "%Y-%m-%d").date()
+            except Exception: return None
+        df = _d(getf("date_from") or "")
+        dt = _d(getf("date_to") or "")
+        if df: qs = qs.filter(created_at__date__gte=df)
+        if dt: qs = qs.filter(created_at__date__lte=dt)
+
+        # Totaux TTC
+        def _dec(s):
+            if not s: return None
+            try: return Decimal(str(s))
+            except (InvalidOperation, TypeError): return None
+        min_total = _dec(getf("min_total"))
+        max_total = _dec(getf("max_total"))
+        if min_total is not None: qs = qs.filter(montant_total_ttc__gte=min_total)
+        if max_total is not None: qs = qs.filter(montant_total_ttc__lte=max_total)
+
+        # Statut
+        if getf("status") and "status" in fields:
+            qs = qs.filter(status=getf("status"))
+
+        # --- Tri ---
+        ordering = getf("ordering") or "-created_at"
+        allowed = {"created_at","-created_at","montant_total_ttc","-montant_total_ttc","numero_achat","-numero_achat"}
+        if ordering not in allowed or ("numero_achat" in ordering and "numero_achat" not in fields):
+            ordering = "-created_at"
+        qs = qs.order_by(ordering)
+
+        # --- Export Excel ? ---
+        if (getf("export") or "").lower() == "xlsx":
+            qs_export = qs.annotate(nb_lignes=Count("produits"))
+
+            # achat_id -> "LOT-..., LOT-..."
+            lot_codes_by_achat = {}
+            for a in qs_export:
+                codes = set()
+                for lp in a.produits.all():
+                    for lot in lp.lots.all():
+                        if lot.lot_code:
+                            codes.add(lot.lot_code)
+                lot_codes_by_achat[a.id] = ", ".join(sorted(codes))
+
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Achats"
+
+            headers = [
+                "id", "created_at", "numero_achat",
+                "status", "description",
+                "cancelled_by", "cancelled_at", "cancel_reason",
+                "fournisseur_id", "fournisseur_nom", "fournisseur_prenom", "fournisseur_telephone",
+                "montant_total_ht", "montant_total_tax", "montant_total_ttc",
+                "nb_lignes",
+                "lot_codes",
+            ]
+            ws.append(headers)
+
+            for a in qs_export:
+                f = a.fournisseur
+                cancelled_by_display = None
+                if getattr(a, "cancelled_by", None):
+                    u = a.cancelled_by
+                    cancelled_by_display = (u.get_full_name() or u.username)
+
+                ws.append([
+                    a.id,
+                    getattr(a, "created_at", None),
+                    getattr(a, "numero_achat", None) if "numero_achat" in fields else None,
+                    getattr(a, "status", None) if "status" in fields else None,
+                    getattr(a, "description", None) if "description" in fields else None,
+                    cancelled_by_display if "cancelled_by" in fields else None,
+                    getattr(a, "cancelled_at", None) if "cancelled_at" in fields else None,
+                    getattr(a, "cancel_reason", None) if "cancel_reason" in fields else None,
+                    getattr(f, "id", None) if f else None,
+                    getattr(f, "nom", None) if f else None,
+                    getattr(f, "prenom", None) if f else None,
+                    getattr(f, "telephone", None) if f else None,
+                    getattr(a, "montant_total_ht", None),
+                    getattr(a, "montant_total_tax", None),
+                    getattr(a, "montant_total_ttc", None),
+                    getattr(a, "nb_lignes", None),
+                    lot_codes_by_achat.get(a.id),
+                ])
+
+            self._autosize(ws)
+            return self._xlsx_response(wb, "achats.xlsx")
+
+        # --- Pagination + JSON (avec lots & champs d’annulation) ---
+        paginator = AchatPagination()
+        page = paginator.paginate_queryset(qs, request)
+        data = AchatListSerializer(page, many=True).data
+        return paginator.get_paginated_response(data)
 
 
 class AchatDashboardView(APIView):
@@ -4108,27 +4480,32 @@ class AchatCreateView(APIView):
             if lots:
                 total_lots = 0
                 for lot_item in lots:
-                    lot_code = (lot_item.get("lot_code") or "").strip().upper()
+                    lot_code_input = (lot_item.get("lot_code") or "").strip().upper()
                     lot_qty = int(lot_item.get("quantite") or 0)
-                    if not lot_code or lot_qty <= 0:
-                        return Response({"detail": "Chaque lot doit avoir un lot_code et une quantite > 0."}, status=400)
+                    if lot_qty <= 0:
+                        return Response({"detail": "Chaque lot doit avoir une quantite > 0."}, status=400)
                     total_lots += lot_qty
 
-                    # Créer le lot (si tu as le modèle)
-                    lot = None
+                    # Création du lot : si lot_code_input est vide → le modèle générera un code LOT-YYYYMMDD-####.
+                    lot = AchatProduitLot(
+                        achat_ligne=ap,
+                        lot_code=lot_code_input or None,              # <-- optionnel, auto-généré si None
+                        quantite_total=lot_qty,
+                        quantite_restante=lot_qty,
+                        prix_achat_gramme=prix_achat_gramme,
+                        date_peremption=lot_item.get("date_peremption"),
+                    )
                     try:
-                        lot = AchatProduitLot.objects.create(
-                            achat_ligne=ap,
-                            lot_code=lot_code,
-                            quantite_total=lot_qty,
-                            quantite_restante=lot_qty,
-                            prix_achat_gramme=prix_achat_gramme,
-                            date_peremption=lot_item.get("date_peremption"),
+                        lot.save()                                    # <-- déclenche la génération si None + vérifie l’unicité globale
+                    except IntegrityError:
+                        return Response(
+                            {"detail": f"Le code lot '{lot_code_input}' est déjà utilisé (unicité globale)."},
+                            status=400,
                         )
-                        lot_id = lot.pk
-                    except Exception:
-                        # Si pas de modèle Lot, continue sans stockage lot
-                        lot_id = None
+
+                    lot_id = lot.pk
+                    lot_code = lot.lot_code                           # <-- récupère le code final (généré ou normalisé)
+
 
                     # Affectations de ce lot
                     somme_aff = 0
@@ -4138,23 +4515,17 @@ class AchatCreateView(APIView):
                         if q <= 0:
                             continue
                         if somme_aff + q > lot_qty:
-                            return Response({"detail": f"Affectations > quantité du lot {lot_code}"}, status=400)
+                            return Response({"detail": f"Affectations > quantité du lot {lot_code}."}, status=400)
                         somme_aff += q
 
-                        # Réception directe en bijouterie
                         _stock_increment(produit_id=produit_id, bijouterie_id=bid, delta_qty=q, lot_id=lot_id)
                         log_move(
-                            produit=produit,
-                            qty=q,
+                            produit=produit, qty=q,
                             movement_type=MovementType.PURCHASE_IN,
                             src_bucket=Bucket.EXTERNAL,
-                            dst_bucket=Bucket.BIJOUTERIE,
-                            dst_bijouterie_id=bid,
+                            dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
                             unit_cost=prix_achat_gramme,
-                            achat=achat,
-                            achat_ligne=ap,
-                            lot=lot if lot_id else None,
-                            user=user,
+                            achat=achat, achat_ligne=ap, user=user,
                             reason=f"Arrivée achat (lot {lot_code} → bijouterie)",
                         )
 
@@ -4164,24 +4535,19 @@ class AchatCreateView(APIView):
                             "bijouterie_id": bid,
                             "bijouterie": bij_cache[bid].nom,
                             "quantite": q,
-                            "lot_code": lot_code,
+                            "lot_code": lot_code,                      # <-- on renvoie le code réel
                         })
 
-                    # Reste du lot -> réservé
+                    # Reste du lot → réservé
                     reste = lot_qty - somme_aff
                     if reste > 0:
                         _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=reste, lot_id=lot_id)
                         log_move(
-                            produit=produit,
-                            qty=reste,
+                            produit=produit, qty=reste,
                             movement_type=MovementType.PURCHASE_IN,
-                            src_bucket=Bucket.EXTERNAL,
-                            dst_bucket=Bucket.RESERVED,
+                            src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
                             unit_cost=prix_achat_gramme,
-                            achat=achat,
-                            achat_ligne=ap,
-                            lot=lot if lot_id else None,
-                            user=user,
+                            achat=achat, achat_ligne=ap, user=user,
                             reason=f"Arrivée achat (lot {lot_code} en réservé)",
                         )
                         line_summary["reserved"] += reste
@@ -5450,34 +5816,34 @@ class AchatUpdateView(APIView):
 #         )
 
 
-class AchatListView(APIView):
-    renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
+# class AchatListView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
+#     @swagger_auto_schema(
        
-        operation_description="Liste tous les achats avec leurs produits. Filtrable par fournisseur et date.",#
-#        manual_parameters=[
-#            openapi.Parameter('start_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de début (format YYYY-MM-DD)"),
-#            openapi.Parameter('end_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de fin (format YYYY-MM-DD)"),
-#            openapi.Parameter('fournisseur_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID du fournisseur")
-#        ],
+#         operation_description="Liste tous les achats avec leurs produits. Filtrable par fournisseur et date.",#
+# #        manual_parameters=[
+# #            openapi.Parameter('start_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de début (format YYYY-MM-DD)"),
+# #            openapi.Parameter('end_date', openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Date de fin (format YYYY-MM-DD)"),
+# #            openapi.Parameter('fournisseur_id', openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID du fournisseur")
+# #        ],
 
-        responses={200: AchatSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        user_role = getattr(request.user.user_role, 'role', None)
-        if user_role not in ['admin', 'manager']:
-            return Response({"message": "Access Denied"}, status=403)
+#         responses={200: AchatSerializer(many=True)}
+#     )
+#     def get(self, request, *args, **kwargs):
+#         user_role = getattr(request.user.user_role, 'role', None)
+#         if user_role not in ['admin', 'manager']:
+#             return Response({"message": "Access Denied"}, status=403)
 
-        try:
-            achats = Achat.objects.all().prefetch_related('produits__produit', 'fournisseur')
+#         try:
+#             achats = Achat.objects.all().prefetch_related('produits__produit', 'fournisseur')
 
-            serializer = AchatSerializer(achats, many=True)
-            return Response(serializer.data, status=200)
+#             serializer = AchatSerializer(achats, many=True)
+#             return Response(serializer.data, status=200)
 
-        except Exception as e:
-            return Response({'error': str(e)}, status=400)
+#         except Exception as e:
+#             return Response({'error': str(e)}, status=400)
         
 
 class AchatProduitGetOneView(APIView):  # renommé pour cohérence

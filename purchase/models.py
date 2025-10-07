@@ -510,24 +510,40 @@ class AchatProduit(models.Model):
             self.achat.update_total()
             
 
-
 class AchatProduitLot(models.Model):
     achat_ligne = models.ForeignKey(
         'AchatProduit', related_name='lots', on_delete=models.CASCADE
     )
-    lot_code = models.CharField(max_length=40, db_index=True)
+
+    # 👉 Identifiant technique, non modifiable, unique
+    lot_uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, db_index=True,
+        help_text="Identifiant technique global (UUIDv4)."
+    )
+
+    # 👉 Code humain lisible (unique globalement)
+    lot_code = models.CharField(max_length=24, unique=True, db_index=True, null=True, blank=True,
+        help_text="Laisser vide pour auto-génération (LOT-YYYYMMDD-XXXXXXXX)."
+    )
+    
+    # lot_uuid = models.UUIDField(null=True, editable=False, db_index=True)   # pas de default, pas unique
+    # lot_code = models.CharField(max_length=24, null=True, blank=True, db_index=True)  # pas unique
+
     date_reception = models.DateField(auto_now_add=True)
 
     quantite_total = models.PositiveIntegerField()
     quantite_restante = models.PositiveIntegerField()
     prix_achat_gramme = models.DecimalField(max_digits=12, decimal_places=2)
+
     date_peremption = models.DateField(null=True, blank=True)
 
     class Meta:
+        ordering = ['date_reception', 'id']  # FIFO naturel
+        indexes = [
+            models.Index(fields=['date_reception']),
+            models.Index(fields=['achat_ligne', 'date_reception']),
+            models.Index(fields=['quantite_restante']),
+        ]
         constraints = [
-            models.UniqueConstraint(
-                fields=('achat_ligne', 'lot_code'), name='uniq_lot_code_per_achat_ligne'
-            ),
             models.CheckConstraint(check=Q(quantite_total__gt=0), name='lot_quantite_total_gt_0'),
             models.CheckConstraint(check=Q(quantite_restante__gte=0), name='lot_quantite_restante_gte_0'),
             models.CheckConstraint(
@@ -540,12 +556,6 @@ class AchatProduitLot(models.Model):
                 name='lot_peremption_after_or_null',
             ),
         ]
-        indexes = [
-            models.Index(fields=['lot_code', 'date_reception']),
-            models.Index(fields=['achat_ligne', 'date_reception']),
-            models.Index(fields=['quantite_restante']),
-        ]
-        ordering = ['date_reception', 'id']  # FIFO naturel
 
     def __str__(self):
         p = getattr(self.achat_ligne, 'produit', None)
@@ -558,7 +568,7 @@ class AchatProduitLot(models.Model):
 
     @property
     def is_epuise(self) -> bool:
-        return (self.quantite_restante or 0) == 0
+        return int(self.quantite_restante or 0) == 0
 
     def clean(self):
         if self.quantite_total is not None and self.quantite_total <= 0:
@@ -573,14 +583,43 @@ class AchatProduitLot(models.Model):
         if self.date_peremption and self.date_reception and self.date_peremption < self.date_reception:
             raise ValidationError({"date_peremption": "Ne peut pas être antérieure à la réception."})
 
+    # -------- Génération du code lisible --------
+    def _gen_lot_code(self) -> str:
+        """
+        Construit un code lisible stable basé sur la date + un fragment du UUID.
+        Exemple: LOT-20250925-7F3A2C9D
+        """
+        if not self.lot_uuid:
+            # sécurité (normalement déjà rempli par default=uuid.uuid4)
+            self.lot_uuid = uuid.uuid4()
+        today = timezone.now().strftime("%Y%m%d")
+        fragment = str(self.lot_uuid).split("-")[0].upper()  # 8 caractères hex
+        return f"LOT-{today}-{fragment}"
+
     def save(self, *args, **kwargs):
+        # normalisation de l'input éventuellement fourni
         if self.lot_code:
             self.lot_code = self.lot_code.strip().upper()
+
+        # à la création : caler 'restante' si vide
         if self._state.adding and (self.quantite_restante is None or self.quantite_restante == 0):
             self.quantite_restante = self.quantite_total
-        super().save(*args, **kwargs)
 
-    # Décrément sécurisé (à appeler dans une transaction + select_for_update sur la ligne concernée)
+        # génération auto du code si absent
+        if not self.lot_code:
+            # on tente quelques fois en cas de collision théorique sur unique=True
+            for _ in range(5):
+                self.lot_code = self._gen_lot_code()
+                try:
+                    return super().save(*args, **kwargs)
+                except IntegrityError as e:
+                    # collision (très rare) : on régénère un nouveau UUID et on retente
+                    self.lot_uuid = uuid.uuid4()
+            raise ValidationError("Impossible de générer un code lot unique.")
+        else:
+            return super().save(*args, **kwargs)
+
+    # Décrément sécurisé (à appeler dans une transaction)
     def decrement(self, qty: int) -> int:
         if qty <= 0:
             raise ValidationError({"qty": "Doit être > 0."})
@@ -590,4 +629,5 @@ class AchatProduitLot(models.Model):
         if not updated:
             raise ValidationError("Stock lot insuffisant.")
         self.refresh_from_db(fields=['quantite_restante'])
-        return self.quantite_restante
+        return int(self.quantite_restante)
+

@@ -26,12 +26,12 @@ urlpatterns = [
     path('dashboard/achat/dashboard', achat_views.AchatDashboardView.as_view(), name='dashboard-achat'),
     # path('vendor/me/', vendor_views.VendorMeView.as_view(), name='vendor-me'),
     
-    path('vendor/dashboard/profile', vendor_views.VendorProfileView.as_view(), name='vendor-profile'),
+    # path('vendor/dashboard/profile', vendor_views.VendorProfileView.as_view(), name='vendor-profile'),
     path('vendor/produits/', vendor_views.VendorProduitListView.as_view(), name='vendor-produits'),
     # Pour l’utilisateur connecté
     # Pour un admin qui consulte un vendeur par ID
-    path('vendor/<int:user_id>/', vendor_views.VendorProfileView.as_view(), name='admin-vendor-view'),
-    path('vendor/<int:user_id>/toggle-status/', vendor_views.ToggleVendorStatusView.as_view(), name='toggle-vendor-status'),
+    # path('vendor/<int:user_id>/', vendor_views.VendorProfileView.as_view(), name='admin-vendor-view'),
+    # path('vendor/<int:user_id>/toggle-status/', vendor_views.ToggleVendorStatusView.as_view(), name='toggle-vendor-status'),
     
     # path('register', userauths_views.UserRegistrationView.as_view(), name='register'),
     path('login', userauths_views.UserLoginView.as_view(), name='login'),
@@ -53,7 +53,8 @@ urlpatterns = [
     path('role/update/<int:pk>',userauths_views.UpdateRoleAPIView.as_view(),name="update-role"),
     path('role/delete/<int:pk>',userauths_views.DeleteRoleAPIView.as_view(),name="delete-role"),
     
-    path('user/profile/<user_id>', userauths_views.ProfileView.as_view(), name='profile'),
+    # path('user/profile/<user_id>', userauths_views.ProfileView.as_view(), name='profile'),
+    path("me/profile/", userauths_views.MeProfileView.as_view(), name="me-profile"),
     
     path('password_reset/', include('django_rest_passwordreset.urls')),
     # Validate Token
@@ -121,6 +122,7 @@ urlpatterns = [
     path('fournisseur/list/', achat_views.FournisseurListView.as_view(), name='fournisseur-list'),
     
     # ACHAT
+    path("achats/liste", achat_views.AchatListView.as_view(), name="achat-list"),
     path('achat-produit/get-one-achat/<int:pk>', achat_views.AchatProduitGetOneView.as_view(), name='get_achat_produit'),
     path('achat-produit/create-achats', achat_views.AchatCreateView.as_view(), name='achats-create'),
     # path("achats-produit-update/<int:achat_id>/", achat_views.AchatUpdateView.as_view(), name="achats-update"),
@@ -130,13 +132,13 @@ urlpatterns = [
     # path('achat-produit/update-achat/<int:achat_id>', achat_views.AchatUpdateAPIView.as_view(), name='achat_update_achat'),
     # path('achat-produit/update-achat-produit/<int:achatproduit_id>', achat_views.AchatUpdateAchatProduitAPIView.as_view(), name='achat_produit_update_achat'),
     # path('achat-produit/<int:achatproduit_id>/produits/<int:achat_id>', achat_views.AchatProduitUpdate    APIView.as_view(),name='achat-produit-update'),
-    path('achat-produit/list-achat', achat_views.AchatListView.as_view(), name='achat_produit_list'),
+    # path('achat-produit/list-achat', achat_views.AchatListView.as_view(), name='achat_produit_list'),
     # path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatPDFView.as_view(), name='achat-facture-pdf'),
     path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatProduitPDFView.as_view(), name='achat-produit-facture-pdf'),
     # END ACHAT
     
     # INVENTORY
-    path("api/achat-inventory/yearly/", inv_views.AchatYearInventoryView.as_view(), name="achat-inventory-yearly"),
+    path("api/inventory/movements/", inv_views.InventoryMovementListView.as_view(), name="inventory-movement-list"),
     # END INVENTORY
     
     # staff
@@ -146,11 +148,12 @@ urlpatterns = [
     # path('vendor/list/', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
     # path('vendor/add-vendor', vendor_views.CreateVendorView.as_view(), name='add_vendor'),
     path("vendors/", vendor_views.VendorListView.as_view(), name="vendor-list"),
-    path("vendors/<int:id>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail"),
-    path("vendors/by-slug/<slug:slug>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail-by-slug"),
+    path("vendor/<int:id>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail"),
+    path("vendor/by-slug/<slug:slug>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail-by-slug"),
     path('vendor/association-produit-to-vendor', vendor_views.VendorProduitAssociationAPIView.as_view(), name='association-du-produit-au-vendor'),
-    path('vendor/find', vendor_views.RetrieveVendorView.as_view(), name='vendor-find'),
-    path('vendor/<int:user_id>/update-status', vendor_views.UpdateVendorStatusAPIView.as_view(), name='update_vendor_status'),
+    path("vendor/<int:user_id>/status/", vendor_views.UpdateVendorStatusAPIView.as_view(), name="vendor-status"),
+    # path('vendor/find', vendor_views.RetrieveVendorView.as_view(), name='vendor-find'),
+    # path('vendor/<int:user_id>/update-status', vendor_views.UpdateVendorStatusAPIView.as_view(), name='update_vendor_status'),
     # END VENDOR
     
     
@@ -176,9 +179,10 @@ urlpatterns = [
     path('vente/list-produit', sale_views.VentListAPIView.as_view(), name='vente-produit-list'),
     path('vente/rapport-mensuel/', sale_views.RapportVentesMensuelAPIView.as_view(), name='rapport-ventes-mensuel'),
     
-    path('facture/recherche-facture/<str:numero_facture>', sale_views.RechercherFactureView.as_view(), name='Recherche-facture-par-numero'),
+    # path('facture/recherche-facture/<str:numero_facture>', sale_views.RechercherFactureView.as_view(), name='Recherche-facture-par-numero'),
     path('facture/List-factures-a-payer', sale_views.ListFactureView.as_view(), name='list-factures-a-payer'),
     path('facture/paiement-facture/<str:facture_numero>', sale_views.PaiementFactureView.as_view(), name='Paiement-facture-par-numero'),
+    path("ventes/<int:vente_id>/livraison/confirm/", sale_views.ConfirmerLivraisonView.as_view(), name="vente-confirmer-livraison"),
     # END STOCK
     
     # BANK

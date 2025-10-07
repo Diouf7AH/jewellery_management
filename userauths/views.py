@@ -1,13 +1,11 @@
 import json
 from datetime import timedelta
 
-from django.core.mail import send_mail
-from django.db.models import Q
-from django.shortcuts import get_object_or_404
+from rest_framework import generics
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from rest_framework import status
+from rest_framework import status, parsers
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -60,7 +58,7 @@ class UserRegistrationView(APIView):
         operation_description="Inscription d’un nouvel utilisateur avec confirmation email",
         request_body=UserRegistrationSerializer,
         responses={
-            201: openapi.Response('Inscription réussie', UserDetailSerializer),
+            201: openapi.Response('Inscription réussie', UserRegistrationSerializer),
             400: openapi.Response('Requête invalide')
         }
     )
@@ -70,7 +68,7 @@ class UserRegistrationView(APIView):
         user = serializer.save()
         data = {
             'message': "Inscription réussie ✅. Vérifiez votre email.",
-            'user': UserDetailSerializer(user).data,
+            'user': UserRegistrationSerializer(user).data,
             'tokens': serializer.tokens
         }
         return Response(data, status=status.HTTP_201_CREATED)
@@ -473,57 +471,87 @@ class DeleteRoleAPIView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 # profile
-class ProfileView(APIView):
+# class ProfileView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_description="Récupérer le profil de l'utilisateur connecté.",
+#         responses={200: openapi.Response('Profil récupéré avec succès', ProfileSerializer)},
+#     )
+#     def get(self, request, format=None):
+#         try:
+#             profile = Profile.objects.get(user=request.user)
+#         except Profile.DoesNotExist:
+#             return Response({"detail": "Profil introuvable."}, status=404)
+
+#         serializer = ProfileSerializer(profile)
+#         return Response(serializer.data)
+
+#     @swagger_auto_schema(
+#         operation_description="Mettre à jour totalement le profil de l'utilisateur connecté.",
+#         request_body=ProfileSerializer,
+#         responses={200: openapi.Response('Profil mis à jour avec succès', ProfileSerializer)},
+#     )
+#     def put(self, request, format=None):
+#         try:
+#             profile = Profile.objects.get(user=request.user)
+#         except Profile.DoesNotExist:
+#             return Response({"detail": "Profil introuvable."}, status=404)
+
+#         serializer = ProfileSerializer(profile, data=request.data)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data)
+#         return Response(serializer.errors, status=400)
+
+#     @swagger_auto_schema(
+#         operation_description="Mettre à jour partiellement le profil de l'utilisateur connecté.",
+#         request_body=ProfileSerializer,
+#         responses={200: openapi.Response('Profil partiellement mis à jour', ProfileSerializer)},
+#     )
+#     def patch(self, request, format=None):
+#         try:
+#             profile = Profile.objects.get(user=request.user)
+#         except Profile.DoesNotExist:
+#             return Response({"detail": "Profil introuvable."}, status=404)
+
+#         serializer = ProfileSerializer(profile, data=request.data, partial=True)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data)
+#         return Response(serializer.errors, status=400)
+
+
+class MeProfileView(APIView):
     permission_classes = [IsAuthenticated]
+    # ← autorise JSON, form-data et multipart (pour image)
+    parser_classes = [parsers.JSONParser, parsers.FormParser, parsers.MultiPartParser]
 
     @swagger_auto_schema(
-        operation_description="Récupérer le profil de l'utilisateur connecté.",
-        responses={200: openapi.Response('Profil récupéré avec succès', ProfileSerializer)},
+        operation_summary="Voir mon profil",
+        operation_description="Retourne le profil de l’utilisateur connecté.",
+        responses={200: ProfileSerializer, 401: "Non authentifié"},
+        tags=["Profil"]
     )
-    def get(self, request, format=None):
-        try:
-            profile = Profile.objects.get(user=request.user)
-        except Profile.DoesNotExist:
-            return Response({"detail": "Profil introuvable."}, status=404)
-
-        serializer = ProfileSerializer(profile)
-        return Response(serializer.data)
+    def get(self, request):
+        profile, _ = Profile.objects.get_or_create(user=request.user)
+        return Response(ProfileSerializer(profile).data)
 
     @swagger_auto_schema(
-        operation_description="Mettre à jour totalement le profil de l'utilisateur connecté.",
-        request_body=ProfileSerializer,
-        responses={200: openapi.Response('Profil mis à jour avec succès', ProfileSerializer)},
+        operation_summary="Modifier mon profil (partiel)",
+        operation_description=(
+            "Met à jour partiellement le profil de l’utilisateur connecté. "
+            "Accepte JSON ou multipart/form-data pour l’upload de l’image."
+        ),
+        request_body=ProfileSerializer,  # champs du serializer; PATCH est partiel
+        responses={200: ProfileSerializer, 400: "Requête invalide", 401: "Non authentifié"},
+        consumes=['application/json', 'multipart/form-data'],
+        tags=["Profil"]
     )
-    def put(self, request, format=None):
-        try:
-            profile = Profile.objects.get(user=request.user)
-        except Profile.DoesNotExist:
-            return Response({"detail": "Profil introuvable."}, status=404)
-
-        serializer = ProfileSerializer(profile, data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=400)
-
-    @swagger_auto_schema(
-        operation_description="Mettre à jour partiellement le profil de l'utilisateur connecté.",
-        request_body=ProfileSerializer,
-        responses={200: openapi.Response('Profil partiellement mis à jour', ProfileSerializer)},
-    )
-    def patch(self, request, format=None):
-        try:
-            profile = Profile.objects.get(user=request.user)
-        except Profile.DoesNotExist:
-            return Response({"detail": "Profil introuvable."}, status=404)
-
-        serializer = ProfileSerializer(profile, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=400)
-
-
-
-
+    def patch(self, request):
+        profile, _ = Profile.objects.get_or_create(user=request.user)
+        s = ProfileSerializer(profile, data=request.data, partial=True)
+        s.is_valid(raise_exception=True)
+        s.save()
+        return Response(s.data, status=status.HTTP_200_OK)
 
