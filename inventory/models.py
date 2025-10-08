@@ -1,9 +1,11 @@
 from decimal import Decimal
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q, F, CheckConstraint
+from django.db.models import CheckConstraint, F, Q
 from django.utils import timezone
+
 
 class MovementType(models.TextChoices):
     PURCHASE_IN      = "PURCHASE_IN", "Entrée achat"
@@ -65,7 +67,7 @@ class InventoryMovement(models.Model):
     vendor = models.ForeignKey('vendor.Vendor', null=True, blank=True,
                             on_delete=models.SET_NULL, related_name='vendor_assignments')
     # Immutabilité
-    is_locked = models.BooleanField(default=True)
+    is_locked = models.BooleanField(default=False)  # recommandé pour utiliser freeze()
 
     class Meta:
         ordering = ["-occurred_at", "-id"]
@@ -76,39 +78,46 @@ class InventoryMovement(models.Model):
             models.Index(fields=['produit', 'occurred_at']),
             models.Index(fields=['src_bijouterie']),
             models.Index(fields=['dst_bijouterie']),
-            models.Index(fields=['sale_out_key']),
+            # ⛔ supprimé: models.Index(fields=['sale_out_key'])  # doublon avec l'unique
             models.Index(fields=['vendor', 'occurred_at']),
             models.Index(fields=['movement_type', 'vendor']),
         ]
         constraints = [
-            CheckConstraint(check=Q(qty__gt=0), name="inv_move_qty_gt_0"),
-            CheckConstraint(
-                check=~Q(src_bucket="BIJOUTERIE") | Q(src_bijouterie__isnull=False),
+            # qty > 0 (utile même si champ PositiveIntegerField, car PI autorise 0)
+            models.CheckConstraint(
+                check=Q(qty__gt=0),
+                name="inv_move_qty_gt_0",
+            ),
+            # src_bucket=BIJOUTERIE => src_bijouterie non nul
+            models.CheckConstraint(
+                check=~Q(src_bucket=Bucket.BIJOUTERIE) | Q(src_bijouterie__isnull=False),
                 name="inv_move_src_bijouterie_required_when_src_bucket_is_shop",
             ),
-            CheckConstraint(
-                check=~Q(dst_bucket="BIJOUTERIE") | Q(dst_bijouterie__isnull=False),
+            # dst_bucket=BIJOUTERIE => dst_bijouterie non nul
+            models.CheckConstraint(
+                check=~Q(dst_bucket=Bucket.BIJOUTERIE) | Q(dst_bijouterie__isnull=False),
                 name="inv_move_dst_bijouterie_required_when_dst_bucket_is_shop",
             ),
-            CheckConstraint(
-                check=~Q(movement_type="TRANSFER") |
-                      (Q(src_bucket="BIJOUTERIE", dst_bucket="BIJOUTERIE") & ~Q(src_bijouterie=F("dst_bijouterie"))),
+            # TRANSFER: BIJOUTERIE->BIJOUTERIE et bijouteries différentes
+            models.CheckConstraint(
+                check=~Q(movement_type=MovementType.TRANSFER) |
+                      (Q(src_bucket=Bucket.BIJOUTERIE, dst_bucket=Bucket.BIJOUTERIE) &
+                       ~Q(src_bijouterie=F("dst_bijouterie"))),
                 name="inv_move_transfer_src_dst_must_differ",
             ),
-            # VENDOR_ASSIGN doit indiquer un vendeur (pas d’exigence de bucket)
+            # VENDOR_ASSIGN: vendor obligatoire (pas d’exigence de bucket ici)
             models.CheckConstraint(
-                check=~Q(movement_type="VENDOR_ASSIGN") | Q(vendor__isnull=False),
+                check=~Q(movement_type=MovementType.VENDOR_ASSIGN) | Q(vendor__isnull=False),
                 name="ck_vendor_assign_requires_vendor",
             ),
-            # ✅ Un seul SALE_OUT par ligne de vente (sans contrainte conditionnelle)
-            models.UniqueConstraint(fields=['sale_out_key'], name="uniq_sale_out_per_sale_line_key"),
+            # Un seul SALE_OUT par ligne de vente (clé technique remplie uniquement pour SALE_OUT)
+            models.UniqueConstraint(
+                fields=['sale_out_key'],
+                name="uniq_sale_out_per_sale_line_key",
+            ),
         ]
 
-    @property
-    def total_cost(self) -> Decimal:
-        q = Decimal(self.qty or 0)
-        p = Decimal(self.unit_cost or 0)
-        return q * p
+    
 
     def __str__(self):
         def side(bucket, bid):
@@ -167,7 +176,6 @@ class InventoryMovement(models.Model):
             if not self.dst_bijouterie_id:
                 raise ValidationError({"dst_bijouterie": "Obligatoire pour RETURN_IN (destination boutique)."})
         
-        mt = self.movement_type
         if mt == MovementType.VENDOR_ASSIGN:
             # Ne pas imposer de src/dst_bucket ici : c’est un log d’affectation interne
             if not self.vendor_id:
@@ -180,11 +188,18 @@ class InventoryMovement(models.Model):
         if self.facture_id and self.vente_id and getattr(self.facture, "vente_id", None) not in (None, self.vente_id):
             raise ValidationError({"facture": "La facture n’est pas liée à la même vente."})
 
+    @property
+    def total_cost(self) -> Decimal:
+        q = Decimal(self.qty or 0)
+        p = Decimal(self.unit_cost or 0)
+        return q * p
+
     def save(self, *args, **kwargs):
+        # Interdit toute modification si verrouillé
         if self.pk and self.is_locked:
             raise ValidationError("Mouvement verrouillé (immutable). Crée un mouvement inverse pour corriger.")
 
-        # Renseigne la clé technique avant validation
+        # Sale-out key uniquement pour SALE_OUT
         if self.movement_type == MovementType.SALE_OUT:
             self.sale_out_key = self.vente_ligne_id or None
         else:
@@ -194,6 +209,7 @@ class InventoryMovement(models.Model):
         if self.occurred_at is None:
             self.occurred_at = timezone.now()
         super().save(*args, **kwargs)
+
 
     def freeze(self, by_user=None):
         if self.pk and not self.is_locked:
