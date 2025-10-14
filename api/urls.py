@@ -1,21 +1,18 @@
 from django.urls import include, path
 
-# Authentification
-from userauths import views as userauths_views
-
-
+from compte_depot import views as compte_depot_views
+from inventory import views as inv_views
+from order import views as order_views
+from purchase import views as achat_views
 # Vente, achat, stock
 from sale import views as sale_views
-from purchase import views as achat_views
+from staff import views as staff_views
 from stock import views as stock_views
-
 # Produits & structure
 from store import views as store_views
+# Authentification
+from userauths import views as userauths_views
 from vendor import views as vendor_views
-from compte_depot import views as compte_depot_views
-from order import views as order_views
-from staff import views as staff_views
-from inventory import views as inv_views
 
 urlpatterns = [
     

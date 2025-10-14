@@ -21,7 +21,7 @@ from store.serializers import ProduitSerializer
 class StockSerializer(serializers.ModelSerializer):
     class Meta:
         model = Stock
-        fields = ["id", "produit", "bijouterie", "is_reserved", "quantite", "date_ajout", "date_modification"]
+        fields = ["id", "bijouterie", "is_reserved", "quantite", "date_ajout", "date_modification"]
         read_only_fields = ["date_ajout", "date_modification"]
 
 

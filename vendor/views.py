@@ -1,42 +1,40 @@
+import datetime
+from collections import defaultdict
+from datetime import datetime
+from io import BytesIO
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
 from django.db import transaction
+from django.db.models import F, Q, Sum
+from django.db.models.functions import TruncDay, TruncMonth, TruncWeek
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.db.models import F, Q, Sum
-from collections import defaultdict
+
 from backend.renderers import UserRenderer
-from rest_framework.permissions import IsAuthenticated
-from django.db.models import Sum
-from io import BytesIO
-from datetime import datetime
-from django.utils import timezone
-import datetime
-from store.models import Produit, Bijouterie
-from userauths.models import Role
-from stock.models import Stock
-from userauths.serializers import UserRegistrationSerializer, UserSerializer
+from inventory.models import Bucket, InventoryMovement, MovementType
+# ⬇️ aligne le chemin du modèle de lot d’achat
+from purchase.models import Lot
 from sale.models import VenteProduit
 from sale.serializers import VenteProduitSerializer
+from stock.models import Stock
+from store.models import Bijouterie, Produit
 from store.serializers import ProduitSerializer
-from .models import Vendor, VendorProduit
-from .serializer import (VendorProduitSerializer, VendorSerializer,
-                        VendorStatusInputSerializer, UserSerializer,
-                        VendorReadSerializer, VendorUpdateSerializer,
-                        )
+from userauths.models import Role
+from userauths.serializers import UserRegistrationSerializer, UserSerializer
 
-from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
-from django.contrib.auth import get_user_model
-from inventory.models import InventoryMovement, MovementType, Bucket
-# ⬇️ aligne le chemin du modèle de lot d’achat
-from purchase.models import AchatProduitLot
-from inventory.models import InventoryMovement, MovementType
+from .models import Vendor, VendorProduit
+from .serializer import (UserSerializer, VendorProduitSerializer,
+                         VendorReadSerializer, VendorSerializer,
+                         VendorStatusInputSerializer, VendorUpdateSerializer)
 
 # Create your views here.
 User = get_user_model()
@@ -1340,21 +1338,67 @@ class UpdateVendorStatusAPIView(APIView):
 
 
 class VendorProduitAssociationAPIView(APIView):
+    """
+    Affecte des produits d'une **bijouterie source** vers un **vendeur** :
+      - Détermination automatique de la bijouterie via l'email du vendeur si `src_bijouterie_id` n'est pas fourni.
+      - Décrément du stock *de la bijouterie source*.
+      - Mise à jour du stock vendeur (VendorProduit).
+      - Journalisation `VENDOR_ASSIGN` (traçabilité possible via lot_id).
+      Explication:
+      Voici ce que signifie le champ status renvoyé pour chaque ligne de produit :
+
+    "créé"
+        → C’est la première fois que ce vendeur reçoit ce produit.
+    "mis à jour"
+        → Le vendeur avait déjà ce produit dans son stock.
+        L’API incrémente simplement la quantité existante (quantite = quantite + attribuée) sur la même ligne VendorProduit. 
+        On ne crée pas de nouvelle ligne ; on met à jour la ligne existante.
+    
+    Quelques points à bien retenir :
+
+        Le statut est par paire (vendeur, produit), pas par lot_id.
+        Même si tu fournis un lot_id différent, si le vendeur possède déjà ce produit, ce sera "mis à jour" 
+        (la traçabilité du lot est dans le mouvement InventoryMovement, pas dans VendorProduit).
+    
+    En résumé :
+        "créé" = nouvelle ligne VendorProduit(vendor, produit) créée.
+        "mis à jour" = ligne déjà existante, quantité augmentée (ou ajustée).
+    
+    Exemple de payload pour “réduction”
+        {
+        "email": "vendeur@exemple.com",
+        "produits": [
+            { "produit_id": 12, "set_stock_vendeur": 5 }
+        ]
+        }
+    Explication du payload:
+    S’il en avait 9, on fait –4 côté vendeur et +4 en bijouterie, 
+    et on journalise un ADJUSTMENT (dst=BIJOUTERIE) pour la traçabilité retour.
+
+    Remarque lot : le lot_id que tu envoies ici traçera cette opération (nouvelle affectation). 
+    Ça ne remplace pas le lot_id d’un mouvement passé (on ne réécrit pas l’historique).
+        
+    """
     permission_classes = [IsAuthenticated]
     allowed_roles_admin_manager = {"admin", "manager"}
 
     @swagger_auto_schema(
+        operation_summary="Affecter des produits à un vendeur (déduction bijouterie source automatique)",
         operation_description=(
-            "Associer des produits à un vendeur et ajuster les stocks.\n\n"
-            "- Si `lot_id` est fourni pour un item, on décrémente **aussi** le lot correspondant (FIFO manuel) "
-            "et on journalise le mouvement VENDOR_ASSIGN en liant le lot.\n"
-            "- Sans `lot_id`, on décrémente uniquement le stock global et on journalise le VENDOR_ASSIGN sans lot."
+            "- Si `src_bijouterie_id` est omis, on le déduit de `vendor.bijouterie_id` (via l'email).\n"
+            "- Si `src_bijouterie_id` est fourni ET que le vendeur a une bijouterie, ils doivent correspondre.\n"
+            "- `lot_id` est **optionnel** (traçabilité). On **ne décrémente pas** le lot d’achat ici.\n"
+            "- Le stock décrémenté est celui de la **bijouterie source**, pas le réservé."
         ),
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["email", "produits"],
             properties={
-                "email": openapi.Schema(type=openapi.TYPE_STRING),
+                "email": openapi.Schema(type=openapi.TYPE_STRING, description="Email du vendeur"),
+                "src_bijouterie_id": openapi.Schema(
+                    type=openapi.TYPE_INTEGER,
+                    description="Bijouterie source (optionnel si vend. rattaché)"
+                ),
                 "produits": openapi.Schema(
                     type=openapi.TYPE_ARRAY,
                     items=openapi.Schema(
@@ -1363,21 +1407,20 @@ class VendorProduitAssociationAPIView(APIView):
                         properties={
                             "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, description="> 0"),
-                            "lot_id": openapi.Schema(
-                                type=openapi.TYPE_INTEGER,
-                                description="ID du lot d’achat à débiter (optionnel)"
-                            ),
+                            "lot_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="Optionnel (traçabilité)"),
                         }
                     )
                 )
             }
         ),
         responses={
-            201: "Produits associés",
+            201: "Produits affectés",
             400: "Requête invalide",
             403: "Accès refusé",
             404: "Ressource introuvable",
-        }
+            409: "Conflit de stock",
+        },
+        tags=["Vendeurs / Affectations"],
     )
     @transaction.atomic
     def post(self, request):
@@ -1386,133 +1429,116 @@ class VendorProduitAssociationAPIView(APIView):
         if role not in self.allowed_roles_admin_manager:
             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
-        # 2) Entrées
+        # 2) Entrées de base
         email = request.data.get("email")
         produits_data = request.data.get("produits", [])
+        payload_src_bij = request.data.get("src_bijouterie_id")
 
         if not email:
-            return Response({"error": "L'email du vendeur est requis."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "L'email du vendeur est requis."}, status=400)
         if not isinstance(produits_data, list) or not produits_data:
-            return Response({"error": "La liste des produits est vide ou invalide."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "La liste des produits est vide ou invalide."}, status=400)
 
-        # 3) Vendeur
+        # 3) Vendeur + bijouterie source (déduction si nécessaire)
         try:
-            vendor = Vendor.objects.select_related("user").get(user__email=email)
+            vendor = Vendor.objects.select_related("user", "bijouterie").get(user__email=email)
         except Vendor.DoesNotExist:
-            return Response({"error": "Vendeur introuvable."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Vendeur introuvable."}, status=404)
         if not vendor.verifie:
-            return Response({"error": "Ce vendeur est désactivé."}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "Ce vendeur est désactivé."}, status=403)
 
-        # ⚠️ On NE regroupe plus par produit_id pour conserver l'information de lot par item.
-        #    On valide et normalise d'abord tous les items.
-        cleaned_items = []
-        produit_ids = set()
-        lot_ids = set()
+        vendor_bij = getattr(vendor, "bijouterie_id", None)
+        if payload_src_bij is None and vendor_bij is None:
+            return Response(
+                {"error": "Impossible de déterminer la bijouterie source. "
+                          "Renseigne 'src_bijouterie_id' ou rattache le vendeur à une bijouterie."},
+                status=400
+            )
 
+        if payload_src_bij is not None:
+            try:
+                src_bijouterie_id = int(payload_src_bij)
+            except Exception:
+                return Response({"error": "'src_bijouterie_id' doit être un entier."}, status=400)
+
+            if not Bijouterie.objects.filter(pk=src_bijouterie_id).exists():
+                return Response({"error": f"Bijouterie #{src_bijouterie_id} introuvable."}, status=404)
+
+            if vendor_bij and vendor_bij != src_bijouterie_id:
+                return Response(
+                    {"error": "Incohérence : la bijouterie fournie ne correspond pas à celle du vendeur."},
+                    status=400
+                )
+        else:
+            src_bijouterie_id = vendor_bij
+
+        # 4) Validation/chargement des items (on ne regroupe pas pour préserver lot_id par ligne)
+        cleaned_items, produit_ids, lot_ids = [], set(), set()
         for idx, raw in enumerate(produits_data, start=1):
             try:
                 pid = int(raw.get("produit_id"))
                 qty = int(raw.get("quantite"))
             except Exception:
                 return Response(
-                    {"error": f"Item {idx}: 'produit_id' et 'quantite' doivent être des entiers."},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {"error": f"Item {idx}: 'produit_id' et 'quantite' doivent être des entiers."}, status=400
                 )
             if pid <= 0 or qty <= 0:
-                return Response(
-                    {"error": f"Item {idx}: 'produit_id' et 'quantite' doivent être > 0."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({"error": f"Item {idx}: 'produit_id' et 'quantite' doivent être > 0."}, status=400)
+
             lot_id = raw.get("lot_id")
             if lot_id is not None:
                 try:
                     lot_id = int(lot_id)
                     if lot_id <= 0:
-                        return Response({"error": f"Item {idx}: 'lot_id' doit être > 0."},
-                                        status=status.HTTP_400_BAD_REQUEST)
+                        return Response({"error": f"Item {idx}: 'lot_id' doit être > 0."}, status=400)
                     lot_ids.add(lot_id)
                 except Exception:
-                    return Response({"error": f"Item {idx}: 'lot_id' doit être un entier."},
-                                    status=status.HTTP_400_BAD_REQUEST)
+                    return Response({"error": f"Item {idx}: 'lot_id' doit être un entier."}, status=400)
 
             produit_ids.add(pid)
             cleaned_items.append({"produit_id": pid, "quantite": qty, "lot_id": lot_id})
 
-        # 4) Existence des produits
+        # 5) Existence produits
         produits = Produit.objects.filter(id__in=produit_ids)
         if produits.count() != len(produit_ids):
-            ids_trouves = set(produits.values_list("id", flat=True))
-            manquants = [pid for pid in produit_ids if pid not in ids_trouves]
-            return Response({"error": f"Produit(s) introuvable(s): {manquants}"}, status=status.HTTP_404_NOT_FOUND)
+            ids_ok = set(produits.values_list("id", flat=True))
+            manquants = [p for p in produit_ids if p not in ids_ok]
+            return Response({"error": f"Produit(s) introuvable(s) : {manquants}"}, status=404)
         produits_by_id = {p.id: p for p in produits}
 
-        # 5) Charger / vérifier les lots si présents
-        lots_by_id = {}
-        if lot_ids:
-            lots = (AchatProduitLot.objects
-                    .select_related("achat_ligne__produit")
-                    .filter(id__in=lot_ids))
-            if lots.count() != len(lot_ids):
-                ids_trouves = set(lots.values_list("id", flat=True))
-                manquants = [lid for lid in lot_ids if lid not in ids_trouves]
-                return Response({"error": f"Lot(s) introuvable(s): {manquants}"}, status=status.HTTP_404_NOT_FOUND)
-            lots_by_id = {l.id: l for l in lots}
+        # 6) Traitement items
+        result = []
+        now = timezone.now()
 
-        # 6) Traitement item par item (verrouillage par ligne)
-        produits_associes = []
         for idx, item in enumerate(cleaned_items, start=1):
             pid = item["produit_id"]
             qty = item["quantite"]
             lot_id = item["lot_id"]
             produit = produits_by_id[pid]
-            unit_cost = None
 
-            # 6.a Verrouiller & décrémenter le stock global (agrégé)
-            stock = Stock.objects.select_for_update().filter(produit_id=pid).first()
+            # 6.a Vérrouillage + décrément du stock de la bijouterie source
+            stock = (Stock.objects
+                     .select_for_update()
+                     .filter(produit_id=pid, bijouterie_id=src_bijouterie_id)
+                     .first())
             if not stock:
-                return Response({"error": f"Aucun stock pour le produit {produit.nom}."},
-                                status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"error": f"Aucun stock en bijouterie #{src_bijouterie_id} pour le produit {produit.nom}."}, status=400
+                )
             if stock.quantite < qty:
                 return Response(
-                    {"error": f"Stock insuffisant pour {produit.nom}. Stock actuel : {stock.quantite}, demandé : {qty}"},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    {"error": f"Stock insuffisant en bijouterie #{src_bijouterie_id} pour {produit.nom}. "
+                              f"Stock actuel : {stock.quantite}, demandé : {qty}"},
+                    status=400
                 )
             updated = (Stock.objects
                        .filter(pk=stock.pk, quantite__gte=qty)
                        .update(quantite=F("quantite") - qty))
             if not updated:
-                return Response({"error": f"Conflit de stock détecté pour {produit.nom}. Réessayez."},
-                                status=status.HTTP_409_CONFLICT)
-            stock.refresh_from_db()
+                return Response({"error": "Conflit de stock détecté. Réessayez."}, status=409)
+            stock.refresh_from_db(fields=["quantite"])
 
-            # 6.b Si lot indiqué : vérifier appariement & décrémenter le lot
-            lot_code = None
-            if lot_id:
-                lot = (AchatProduitLot.objects
-                       .select_for_update()
-                       .select_related("achat_ligne__produit")
-                       .get(pk=lot_id))
-                # Cohérence produit <-> lot
-                lot_prod_id = getattr(getattr(lot, "achat_ligne", None), "produit_id", None)
-                if lot_prod_id != pid:
-                    return Response(
-                        {"error": f"Item {idx}: le lot #{lot_id} ne correspond pas au produit #{pid}."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                # Décrément sécurisé du lot
-                updated_lot = (AchatProduitLot.objects
-                               .filter(pk=lot.pk, quantite_restante__gte=qty)
-                               .update(quantite_restante=F("quantite_restante") - qty))
-                if not updated_lot:
-                    return Response(
-                        {"error": f"Lot #{lot_id}: quantité restante insuffisante (reste {lot.quantite_restante})."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                lot.refresh_from_db(fields=["quantite_restante"])
-                unit_cost = lot.prix_achat_gramme
-                lot_code = lot.lot_code
-
-            # 6.c Associer au vendeur (VendorProduit)
+            # 6.b Incrément du stock vendeur (VendorProduit)
             vp = (VendorProduit.objects
                   .select_for_update()
                   .filter(vendor=vendor, produit_id=pid)
@@ -1525,42 +1551,47 @@ class VendorProduitAssociationAPIView(APIView):
                 vp = VendorProduit.objects.create(vendor=vendor, produit_id=pid, quantite=qty)
                 status_item = "créé"
 
-            # 6.d Mouvement d’affectation (journal) — VENDOR_ASSIGN
+            # 6.c Mouvement VENDOR_ASSIGN (traçabilité + origine bijouterie)
             InventoryMovement.objects.create(
                 produit=produit,
                 movement_type=MovementType.VENDOR_ASSIGN,
                 qty=qty,
-                unit_cost=unit_cost,     # renseigne le coût du lot si dispo
-                lot_id=lot_id,           # 👈 lien direct au lot
-                reason=f"Affectation au vendeur #{vendor.id}"
-                       + (f" depuis lot {lot_code}" if lot_id else " depuis stock"),
-                # pas d’obligation de buckets pour VENDOR_ASSIGN
+                unit_cost=None,              # pas de coût calculé ici
+                lot_id=lot_id,               # traçabilité (optionnel)
+                reason=f"Affectation au vendeur #{vendor.id} depuis bijouterie #{src_bijouterie_id}",
+                src_bucket=Bucket.BIJOUTERIE,
+                src_bijouterie_id=src_bijouterie_id,
+                dst_bucket=None,
+                dst_bijouterie=None,
                 achat=None, achat_ligne=None,
                 facture=None, vente=None, vente_ligne=None,
+                vendor=vendor,
+                occurred_at=now,
                 created_by=request.user,
             )
 
-            produits_associes.append({
+            result.append({
                 "produit_id": produit.id,
                 "nom": produit.nom,
                 "quantite_attribuee": qty,
                 "lot_id": lot_id,
                 "stock_vendeur": vp.quantite,
-                "stock_restant_global": stock.quantite,
+                "stock_restant_bijouterie": stock.quantite,
                 "status": status_item,
             })
 
         # 7) OK
         return Response({
-            "message": "✅ Produits associés avec succès.",
+            "message": "✅ Produits affectés avec succès.",
+            "source_bijouterie_id": src_bijouterie_id,
             "vendeur": {
                 "id": vendor.id,
                 "nom_complet": vendor.user.get_full_name() if vendor.user else "",
                 "email": vendor.user.email if vendor.user else "",
             },
-            "produits": produits_associes
-        }, status=status.HTTP_201_CREATED)
-
+            "lignes": result
+        }, status=201)
+        
 
 
 # def _parse_iso_dt(s: str):

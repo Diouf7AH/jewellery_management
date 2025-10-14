@@ -3,7 +3,7 @@ from django.contrib import admin
 
 from store.models import Produit
 
-from .models import Achat, AchatProduit, Fournisseur
+from .models import Achat, Fournisseur
 
 
 @admin.register(Fournisseur)
@@ -33,10 +33,6 @@ class AchatAdmin(admin.ModelAdmin):
     search_fields = ['fournisseur__nom', 'fournisseur__telephone']
     list_filter = ['created_at']
 
-@admin.register(AchatProduit)
-class AchatProduitAdmin(admin.ModelAdmin):
-    list_display = ('id','achat', 'produit', 'quantite', 'prix_achat_gramme', 'sous_total_prix_achat')
-    # search_fields = ('nom',)
 
 
 

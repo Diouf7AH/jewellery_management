@@ -26,11 +26,11 @@ class InventoryMovement(models.Model):
     # Quoi
     produit = models.ForeignKey('store.Produit', on_delete=models.PROTECT, related_name="movements")
     movement_type = models.CharField(max_length=32, choices=MovementType.choices)
-
+    
     qty = models.PositiveIntegerField()
     unit_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
 
-    lot = models.ForeignKey('purchase.AchatProduitLot', null=True, blank=True, on_delete=models.SET_NULL)
+    lot = models.ForeignKey('purchase.Lot', null=True, blank=True, on_delete=models.SET_NULL)
     reason = models.TextField(null=True, blank=True)
 
     # D’où → vers
@@ -43,15 +43,15 @@ class InventoryMovement(models.Model):
 
     # Liens métier (achats)
     achat = models.ForeignKey('purchase.Achat', on_delete=models.SET_NULL, null=True, blank=True, related_name="movements")
-    achat_ligne = models.ForeignKey('purchase.AchatProduit', on_delete=models.SET_NULL, null=True, blank=True, related_name="movements")
+    achat_ligne = models.ForeignKey('purchase.Lot', on_delete=models.SET_NULL, null=True, blank=True, related_name="movements")
 
     # 🔗 Liens vente/facturation
     facture = models.ForeignKey('sale.Facture', on_delete=models.SET_NULL, null=True, blank=True,
                                 related_name='movements',
                                 help_text="Facture liée au mouvement (vente/retour client).")
     vente = models.ForeignKey('sale.Vente', on_delete=models.SET_NULL, null=True, blank=True,
-                              related_name='movements', db_index=True,
-                              help_text="Vente liée au mouvement (accès direct).")
+                            related_name='movements', db_index=True,
+                            help_text="Vente liée au mouvement (accès direct).")
     vente_ligne = models.ForeignKey('sale.VenteProduit', on_delete=models.SET_NULL, null=True, blank=True,
                                     related_name='movements',
                                     help_text="Ligne de vente d’origine (si traçable).")

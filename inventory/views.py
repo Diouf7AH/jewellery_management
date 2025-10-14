@@ -1,27 +1,25 @@
 from __future__ import annotations
-from typing import Optional, List
-from decimal import Decimal, InvalidOperation
+
 from datetime import datetime, timedelta
-from inventory.models import InventoryMovement, MovementType
-from django.db.models import (
-    Q, F, Value, DecimalField, ExpressionWrapper, Case, When
-)
-from django.db.models.functions import Coalesce
+from decimal import Decimal, InvalidOperation
+from typing import List, Optional
+
+from django.db.models import (Case, DecimalField, ExpressionWrapper, F, Q, Sum,
+                              Value, When)
+from django.db.models.functions import Coalesce, ExtractQuarter
 from django.http import HttpResponse
-from django.db.models import Sum, Q
-from django.db.models.functions import ExtractQuarter
 from django.utils import timezone
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.pagination import PageNumberPagination
-
-from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from inventory.models import InventoryMovement, MovementType
-from store.models import Produit, Bijouterie
-from purchase.models import AchatProduitLot  # pour lot_code si présent
+from purchase.models import Lot  # pour lot_code si présent
+from store.models import Bijouterie, Produit
+
 
 # ---------- Permission admin/manager ----------
 class IsAdminOrManager(IsAuthenticated):
@@ -34,8 +32,10 @@ class IsAdminOrManager(IsAuthenticated):
 
 # ---------- Export Excel ----------
 from io import BytesIO
+
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+
 
 class ExportXlsxMixin:
     def _xlsx_response(self, wb: Workbook, filename: str) -> HttpResponse:
@@ -83,15 +83,15 @@ class InventoryMovementListView(ExportXlsxMixin, APIView):
     Liste les **InventoryMovement** (détail), avec filtres + export Excel.
 
     Champs retournés (par ligne) :
-      - horodatage : occurred_at
-      - type : movement_type
-      - produit : produit_id, produit_nom, produit_sku
-      - quantités : qty, signed_qty (CANCEL_PURCHASE en négatif), unit_cost, total_cost (optionnel)
-      - source : src_bucket, src_bijouterie_id/nom
-      - destination : dst_bucket, dst_bijouterie_id/nom
-      - lot : lot_id, lot_code (si relié)
-      - achat : achat_id
-      - auteur / raison : created_by_id, reason
+        - horodatage : occurred_at
+        - type : movement_type
+        - produit : produit_id, produit_nom, produit_sku
+        - quantités : qty, signed_qty (CANCEL_PURCHASE en négatif), unit_cost, total_cost (optionnel)
+        - source : src_bucket, src_bijouterie_id/nom
+        - destination : dst_bucket, dst_bijouterie_id/nom
+        - lot : lot_id, lot_code (si relié)
+        - achat : achat_id
+        - auteur / raison : created_by_id, reason
 
     Filtres (query params) :
       - q : recherche (produit.nom/sku, lot_code, reason)

@@ -1,61 +1,58 @@
 from __future__ import annotations
-from decimal import Decimal, InvalidOperation
-from django.db.models import F
-from django.shortcuts import get_object_or_404
-from django.db import transaction
-from typing import Optional, Dict, Tuple
-from textwrap import dedent
-from django.core.exceptions import ValidationError
-from django.db import IntegrityError
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
-from rest_framework.pagination import PageNumberPagination
-from datetime import datetime
 
-from django.db.models import Q, Count
+import logging
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+# ---------- (facultatif) mixin réutilisé pour Excel ----------
+from io import BytesIO
+from textwrap import dedent
+from typing import Dict, Optional, Tuple
+
+from dateutil.relativedelta import relativedelta
+from django.core.exceptions import MultipleObjectsReturned, ValidationError
+from django.db import IntegrityError, transaction
+from django.db.models import Count, F, Q, Sum, UniqueConstraint
 from django.http import HttpResponse
-from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
+from django.shortcuts import get_object_or_404
 # import phonenumbers
 # from phonenumbers import PhoneNumber
 from django.template.loader import get_template
-from xhtml2pdf import pisa
-from dateutil.relativedelta import relativedelta
 from django.utils import timezone
-from django.core.exceptions import ValidationError, MultipleObjectsReturned
-
-from backend.renderers import UserRenderer
-from backend.permissions import IsAdminOrManager
-from stock.models import Stock
-from store.models import Produit, Bijouterie
-from inventory.models import InventoryMovement, Bucket, MovementType
-from inventory.services import log_move# ta fonction utilitaire
-# from .your_mixin_and_pagination_module import ExportXlsxMixin, AchatPagination
-from .models import Achat, AchatProduit, Fournisseur, AchatProduitLot
-from .serializers import (AchatCreateSerializer, AchatCreateResponseSerializer, AchatSerializer,
-                        FournisseurSerializer,  StockReserveAffectationSerializer, AchatListSerializer,
-                        AchatUpdateSerializer, AchatCancelSerializer)
-from .utils import _auto_decrement_any_bucket_with_trace, _decrement_bucket 
-
-# --- Inventaire
-from inventory.models import InventoryMovement, MovementType, Bucket
-from inventory.services import log_move  
-
-# ⚙️ services que tu as (ou à mettre) dans purchase/services.py
-from purchase.services import create_purchase, rebase_purchase
-from purchase.utils import (_decrement_bucket as _dec_exact,
-                            _auto_decrement_any_bucket_with_trace as _dec_auto,) # <- helpers stock (exact/auto)
-
-# ---------- (facultatif) mixin réutilisé pour Excel ----------
-from io import BytesIO
+from django.utils.dateparse import parse_date
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+from rest_framework import status
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from xhtml2pdf import pisa
 
-from django.db.models import Sum, Count
-from django.utils.dateparse import parse_date
-import logging
+from backend.permissions import IsAdminOrManager
+from backend.renderers import UserRenderer
+# --- Inventaire
+from inventory.models import Bucket, InventoryMovement, MovementType
+from inventory.services import log_move  # ta fonction utilitaire
+# ⚙️ services que tu as (ou à mettre) dans purchase/services.py
+# from purchase.services import create_purchase, rebase_purchase
+from purchase.utils import \
+    _auto_decrement_any_bucket_with_trace as \
+    _dec_auto  # <- helpers stock (exact/auto)
+from purchase.utils import _decrement_bucket as _dec_exact
+from stock.models import Stock
+from store.models import Bijouterie, Produit
+
+# from .your_mixin_and_pagination_module import ExportXlsxMixin, AchatPagination
+from .models import Achat, Fournisseur, Lot
+from .serializers import (AchatCancelSerializer, AchatCreateResponseSerializer,
+                          AchatCreateSerializer, AchatListSerializer,
+                          AchatSerializer, AchatUpdateSerializer,
+                          FournisseurSerializer,
+                          StockReserveAffectationSerializer)
+from .utils import _auto_decrement_any_bucket_with_trace, _decrement_bucket
+
 logger = logging.getLogger(__name__)
 
 # Create your views here.
@@ -622,3227 +619,6 @@ class AchatDashboardView(APIView):
             "achats_recents": achats_serializer.data
         })
 
-# class AchatProduitCreateView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un achat avec produits associés",
-#         operation_description="Crée un achat avec les produits, met à jour le stock et retourne les détails montant_total_tax() methode pour calculer le tax total .",
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["fournisseur", "produits"],
-#             properties={
-#                 "fournisseur": openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     required=["nom", "prenom", "telephone"],
-#                     properties={
-#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "address": openapi.Schema(type=openapi.TYPE_STRING),
-#                     }
-#                 ),
-#                 "produits": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit", "quantite", "prix_achat_gramme"],
-#                         properties={
-#                             "produit": openapi.Schema(type=openapi.TYPE_OBJECT, properties={"id": openapi.Schema(type=openapi.TYPE_INTEGER)}),
-#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                             "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-#                             "tax": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", default=0),
-#                         }
-#                     )
-#                 )
-#             }
-#         ),
-#         responses={
-#             201: openapi.Response("Création réussie", AchatSerializer),
-#             400: "Requête invalide",
-#             403: "Accès refusé"
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=403)
-
-#         try:
-#             data = request.data
-#             fournisseur_data = data.get('fournisseur')
-#             fournisseur, _ = Fournisseur.objects.get_or_create(
-#                 telephone=fournisseur_data['telephone'],
-#                 defaults={
-#                     'nom': fournisseur_data['nom'],
-#                     'prenom': fournisseur_data['prenom'],
-#                     'address': fournisseur_data.get('address', '')
-#                 }
-#             )
-
-#             achat = Achat.objects.create(fournisseur=fournisseur)
-#             stock_map = {}
-
-#             for item in data.get('produits', []):
-#                 produit_id = item['produit']['id']
-#                 quantite = int(item['quantite'])
-#                 prix_achat_gramme = Decimal(item['prix_achat_gramme'])
-#                 tax = Decimal(item.get('tax', 0))
-
-#                 produit = Produit.objects.get(id=produit_id)
-
-#                 # Créer et sauvegarder chaque AchatProduit (le modèle calcule lui-même le sous-total + mise à jour achat)
-#                 AchatProduit.objects.create(
-#                     achat=achat,
-#                     produit=produit,
-#                     quantite=quantite,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     tax=tax,
-#                     fournisseur=fournisseur
-#                 )
-
-#                 # Mise à jour stock
-#                 stock, _ = Stock.objects.get_or_create(produit=produit, defaults={"quantite": 0})
-#                 stock.quantite += quantite
-#                 stock.save()
-#                 stock_map[produit.id] = stock.quantite
-
-#             # Mise à jour des totaux HT/TTC
-#             achat.update_total()
-
-#             return Response({
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "stock": stock_map
-#             }, status=201)
-
-#         except Produit.DoesNotExist:
-#             return Response({"detail": "Produit introuvable."}, status=400)
-#         except Exception as e:
-#             return Response({"detail": str(e)}, status=500)
-
-
-# class AchatProduitCreateView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated, IsAdminOrManager]  # ⬅️ stricte
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un achat + MAJ stock (réservé ou attribué à une bijouterie)",
-#         operation_description=(
-#             "Seuls les rôles admin/manager sont autorisés. "
-#             "Si `bijouterie_id` est fourni (global ou par item), le stock est attribué à cette bijouterie. "
-#             "Sinon, il va dans le stock réservé (non attribué). Aucun fallback vendeur/caissier."
-#         ),
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["fournisseur", "produits"],
-#             properties={
-#                 "bijouterie_id": openapi.Schema(
-#                     type=openapi.TYPE_INTEGER,
-#                     description="Bijouterie cible par défaut (peut être surchargée par item)."
-#                 ),
-#                 "fournisseur": openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     required=["nom", "prenom", "telephone"],
-#                     properties={
-#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "address": openapi.Schema(type=openapi.TYPE_STRING),
-#                     }
-#                 ),
-#                 "produits": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit", "quantite", "prix_achat_gramme"],
-#                         properties={
-#                             "produit": openapi.Schema(
-#                                 type=openapi.TYPE_OBJECT,
-#                                 properties={"id": openapi.Schema(type=openapi.TYPE_INTEGER)}
-#                             ),
-#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                             "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-#                             "tax": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", default=0),
-#                             "bijouterie_id": openapi.Schema(
-#                                 type=openapi.TYPE_INTEGER,
-#                                 description="Bijouterie cible pour CET item (prioritaire sur le global)."
-#                             ),
-#                         }
-#                     )
-#                 )
-#             }
-#         ),
-#         responses={
-#             201: openapi.Response("Création réussie", AchatSerializer),
-#             400: "Requête invalide",
-#             403: "Accès refusé"
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user  # la permission a déjà filtré admin/manager
-
-#         try:
-#             data = request.data
-
-#             # ------- Fournisseur -------
-#             fournisseur_data = data.get("fournisseur") or {}
-#             if not {"nom", "prenom", "telephone"}.issubset(fournisseur_data.keys()):
-#                 return Response({"detail": "Champs fournisseur manquants."}, status=400)
-
-#             fournisseur, _ = Fournisseur.objects.get_or_create(
-#                 telephone=fournisseur_data["telephone"],
-#                 defaults={
-#                     "nom": fournisseur_data["nom"],
-#                     "prenom": fournisseur_data["prenom"],
-#                     "address": fournisseur_data.get("address", ""),
-#                 },
-#             )
-
-#             # ------- Achat -------
-#             achat = Achat.objects.create(fournisseur=fournisseur)
-
-#             # bijouterie par défaut — AUCUN fallback sur vendeur/caissier
-#             default_bijouterie_id = data.get("bijouterie_id")
-
-#             # ------- Lignes produits -------
-#             items = data.get("produits") or []
-#             if not items:
-#                 return Response({"detail": "Aucun produit fourni."}, status=400)
-
-#             stocks_result = []
-
-#             for item in items:
-#                 try:
-#                     produit_id = int(item["produit"]["id"])
-#                     quantite = int(item["quantite"])
-#                     if quantite <= 0:
-#                         return Response({"detail": "quantite doit être > 0."}, status=400)
-#                     prix_achat_gramme = Decimal(str(item["prix_achat_gramme"]))
-#                     tax = Decimal(str(item.get("tax", 0)))
-#                 except Exception:
-#                     return Response({"detail": "Ligne produit invalide."}, status=400)
-
-#                 produit = get_object_or_404(Produit, pk=produit_id)
-
-#                 AchatProduit.objects.create(
-#                     achat=achat,
-#                     produit=produit,
-#                     quantite=quantite,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     tax=tax,
-#                     fournisseur=fournisseur,
-#                 )
-
-#                 line_bijouterie_id = item.get("bijouterie_id", default_bijouterie_id)
-#                 target_is_reserved = line_bijouterie_id in (None, "", 0)
-
-#                 if not target_is_reserved:
-#                     get_object_or_404(Bijouterie, pk=line_bijouterie_id)
-
-#                 # ---- MAJ STOCK (réservé ou attribué) ----
-#                 if target_is_reserved:
-#                     stock, _ = (
-#                         Stock.objects.select_for_update()
-#                         .get_or_create(
-#                             produit_id=produit_id,
-#                             is_reserved=True,
-#                             bijouterie__isnull=True,
-#                             defaults={"quantite": 0},
-#                         )
-#                     )
-#                 else:
-#                     stock, _ = (
-#                         Stock.objects.select_for_update()
-#                         .get_or_create(
-#                             produit_id=produit_id,
-#                             bijouterie_id=line_bijouterie_id,
-#                             is_reserved=False,
-#                             defaults={"quantite": 0},
-#                         )
-#                     )
-
-#                 # incrément sûr
-#                 Stock.objects.filter(pk=stock.pk).update(quantite=F("quantite") + quantite)
-#                 stock.refresh_from_db(fields=["quantite", "date_modification"])
-
-#                 stocks_result.append({
-#                     "produit_id": produit_id,
-#                     "bijouterie_id": line_bijouterie_id,
-#                     "is_reserved": target_is_reserved,
-#                     "quantite_apres": stock.quantite,
-#                 })
-
-#             # Totaux
-#             achat.update_total()
-
-#             return Response({
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "stocks": stocks_result,
-#             }, status=201)
-
-#         except Produit.DoesNotExist:
-#             return Response({"detail": "Produit introuvable."}, status=400)
-#         except Exception as e:
-#             return Response({"detail": str(e)}, status=500)
-
-
-# def _is_admin_or_manager(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-
-# class AchatProduitCreateView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un achat (supporte les lots) + MAJ stock (affectations par lot ou réservé)",
-#         operation_description=(
-#             "Pour chaque produit, tu peux soit fournir `quantite` + `prix_achat_gramme`, "
-#             "soit un tableau `lots` (plusieurs sous-quantités avec prix/taxe/affectations). "
-#             "Chaque lot crée une ligne AchatProduit distincte et est affecté à des bijouteries "
-#             "ou placé en stock réservé s'il n'y a pas d'affectation."
-#         ),
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["fournisseur", "produits"],
-#             properties={
-#                 "fournisseur": openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     required=["nom", "prenom", "telephone"],
-#                     properties={
-#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "address": openapi.Schema(type=openapi.TYPE_STRING),
-#                     },
-#                 ),
-#                 "produits": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit"],
-#                         properties={
-#                             "produit": openapi.Schema(
-#                                 type=openapi.TYPE_OBJECT,
-#                                 properties={"id": openapi.Schema(type=openapi.TYPE_INTEGER)}
-#                             ),
-#                             # Variante simple (sans lots)
-#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                             "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-#                             "tax": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", default=0),
-#                             "affectations": openapi.Schema(  # par défaut pour tout l'item si pas de lots
-#                                 type=openapi.TYPE_ARRAY,
-#                                 items=openapi.Schema(
-#                                     type=openapi.TYPE_OBJECT,
-#                                     required=["bijouterie_id", "quantite"],
-#                                     properties={
-#                                         "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                                         "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                                     },
-#                                 ),
-#                             ),
-#                             "bijouterie_id": openapi.Schema(
-#                                 type=openapi.TYPE_INTEGER,
-#                                 description="S'il n'y a pas d'affectations, toute la quantité va à cette bijouterie."
-#                             ),
-#                             # Variante avancée (lots)
-#                             "lots": openapi.Schema(
-#                                 type=openapi.TYPE_ARRAY,
-#                                 description="Arrivage par lots : chaque lot a sa quantité/prix/taxe/affectations.",
-#                                 items=openapi.Schema(
-#                                     type=openapi.TYPE_OBJECT,
-#                                     required=["quantite", "prix_achat_gramme"],
-#                                     properties={
-#                                         "lot_code": openapi.Schema(type=openapi.TYPE_STRING, description="Optionnel si tu ajoutes le champ dans le modèle."),
-#                                         "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                                         "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-#                                         "tax": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", default=0),
-#                                         "affectations": openapi.Schema(
-#                                             type=openapi.TYPE_ARRAY,
-#                                             items=openapi.Schema(
-#                                                 type=openapi.TYPE_OBJECT,
-#                                                 required=["bijouterie_id", "quantite"],
-#                                                 properties={
-#                                                     "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                                                     "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                                                 },
-#                                             ),
-#                                         ),
-#                                         "bijouterie_id": openapi.Schema(
-#                                             type=openapi.TYPE_INTEGER,
-#                                             description="Si pas d'affectations au niveau du lot, tout le lot va ici."
-#                                         ),
-#                                     },
-#                                 ),
-#                             ),
-#                         },
-#                     ),
-#                 ),
-#             },
-#         ),
-#         responses={
-#             201: openapi.Response("Création réussie", AchatSerializer),
-#             400: "Requête invalide",
-#             403: "Accès refusé",
-#         },
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _is_admin_or_manager(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         data = request.data
-
-#         # ---------- Fournisseur ----------
-#         fournisseur_data = data.get("fournisseur") or {}
-#         required = {"nom", "prenom", "telephone"}
-#         if not required.issubset(fournisseur_data):
-#             return Response({"detail": "Champs fournisseur manquants."}, status=400)
-
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=fournisseur_data["telephone"],
-#             defaults={
-#                 "nom": fournisseur_data["nom"],
-#                 "prenom": fournisseur_data["prenom"],
-#                 "address": fournisseur_data.get("address", ""),
-#             },
-#         )
-
-#         # ---------- Achat ----------
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         mouvements_stock = []
-#         items = data.get("produits") or []
-#         if not items:
-#             return Response({"detail": "Aucun produit fourni."}, status=400)
-
-#         try:
-#             for item in items:
-#                 produit_id = int(item["produit"]["id"])
-#                 produit = get_object_or_404(Produit, pk=produit_id)
-
-#                 lots = item.get("lots") or []
-#                 if lots:
-#                     # --- Mode LOTS ---
-#                     for idx, lot in enumerate(lots, start=1):
-#                         q = int(lot["quantite"])
-#                         if q <= 0:
-#                             return Response({"detail": f"Lot #{idx}: quantite doit être > 0."}, status=400)
-
-#                         prix = Decimal(str(lot["prix_achat_gramme"]))
-#                         tax = Decimal(str(lot.get("tax", 0)))
-#                         lot_affect = lot.get("affectations")
-#                         if not lot_affect and lot.get("bijouterie_id"):
-#                             lot_affect = [{"bijouterie_id": int(lot["bijouterie_id"]), "quantite": q}]
-
-#                         ap = AchatProduit.objects.create(
-#                             achat=achat,
-#                             produit=produit,
-#                             quantite=q,
-#                             prix_achat_gramme=prix,
-#                             tax=tax,
-#                             fournisseur=fournisseur,
-#                             # lot_code=lot.get("lot_code")   # ← décommente si tu ajoutes le champ dans le modèle
-#                         )
-
-#                         mouvements = allocate_arrival(
-#                             produit_id=produit_id,
-#                             total_qty=q,
-#                             unit_price=prix,
-#                             affectations=lot_affect,  # None -> ce lot va en stock réservé
-#                         )
-#                         mouvements_stock.extend(mouvements)
-#                 else:
-#                     # --- Mode SIMPLE ---
-#                     try:
-#                         q = int(item["quantite"])
-#                         if q <= 0:
-#                             return Response({"detail": "quantite doit être > 0."}, status=400)
-#                         prix = Decimal(str(item["prix_achat_gramme"]))
-#                         tax = Decimal(str(item.get("tax", 0)))
-#                     except KeyError:
-#                         return Response({"detail": "Structure produit invalide (quantite/prix_achat_gramme manquants)."}, status=400)
-
-#                     ap = AchatProduit.objects.create(
-#                         achat=achat,
-#                         produit=produit,
-#                         quantite=q,
-#                         prix_achat_gramme=prix,
-#                         tax=tax,
-#                         fournisseur=fournisseur,
-#                     )
-
-#                     affect = item.get("affectations")
-#                     if not affect and item.get("bijouterie_id"):
-#                         affect = [{"bijouterie_id": int(item["bijouterie_id"]), "quantite": q}]
-
-#                     mouvements = allocate_arrival(
-#                         produit_id=produit_id,
-#                         total_qty=q,
-#                         unit_price=prix,
-#                         affectations=affect,  # None -> tout va en stock réservé
-#                     )
-#                     mouvements_stock.extend(mouvements)
-
-#             # Totaux
-#             achat.update_total()
-
-#         except ValueError as e:
-#             return Response({"detail": str(e)}, status=400)
-#         except Exception as e:
-#             return Response({"detail": str(e)}, status=500)
-
-#         return Response(
-#             {
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "mouvements_stock": mouvements_stock,
-#             },
-#             status=201,
-#         )
-
-
-# def _as_decimal(val, default="0.00") -> Decimal:
-#     if val is None or val == "":
-#         return Decimal(default)
-#     return Decimal(str(val))
-
-
-# def _role_ok(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-
-# def upsert_stock_increment(produit_id: int, bijouterie_id: int | None, delta_qty: int):
-#     """
-#     Incrémente le stock correspondant.
-#     - Si bijouterie_id est None -> stock réservé (bijouterie=NULL) avec reservation_key 'RES-<produit_id>'
-#     - Sinon -> stock attribué à la bijouterie.
-#     Utilise un UPDATE atomique (F()).
-#     """
-#     if delta_qty <= 0:
-#         return None
-
-#     if bijouterie_id is None:
-#         # Stock réservé (non attribué)
-#         reservation_key = f"RES-{produit_id}"
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie=None,
-#                 reservation_key=reservation_key,
-#                 defaults={"quantite": 0}
-#             )
-#         )
-#     else:
-#         # Valide la bijouterie
-#         get_object_or_404(Bijouterie, pk=bijouterie_id)
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie_id=bijouterie_id,
-#                 defaults={"quantite": 0}
-#             )
-#         )
-
-#     Stock.objects.filter(pk=stock.pk).update(quantite=F("quantite") + int(delta_qty))
-#     stock.refresh_from_db(fields=["quantite"])
-#     return stock
-
-
-# class AchatProduitCreateView(APIView):
-#     renderer_classes = []  # ex: [UserRenderer] si tu en as une
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un achat + lignes + affectations de stock (par lot)",
-#         operation_description=(
-#             "Crée un achat (fournisseur + lignes). Pour chaque ligne, tu peux :\n"
-#             "- soit fournir `affectations=[{bijouterie_id, quantite}, ...]` pour ventiler la quantité.\n"
-#             "- soit fournir `bijouterie_id` (global ou par ligne) pour tout affecter à une bijouterie.\n"
-#             "Le reste non affecté va automatiquement en **stock réservé** (bijouterie NULL)."
-#         ),
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["fournisseur", "produits"],
-#             properties={
-#                 "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="Bijouterie par défaut (optionnel)"),
-#                 "fournisseur": openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     required=["nom", "prenom", "telephone"],
-#                     properties={
-#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "address": openapi.Schema(type=openapi.TYPE_STRING),
-#                     }
-#                 ),
-#                 "produits": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit", "quantite", "prix_achat_gramme"],
-#                         properties={
-#                             "produit": openapi.Schema(
-#                                 type=openapi.TYPE_OBJECT,
-#                                 properties={"id": openapi.Schema(type=openapi.TYPE_INTEGER)}
-#                             ),
-#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                             "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_STRING, description="Decimal as string"),
-#                             "tax": openapi.Schema(type=openapi.TYPE_STRING, description="Decimal as string", default="0.00"),
-#                             "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="Affectation simple pour toute la ligne"),
-#                             "affectations": openapi.Schema(
-#                                 type=openapi.TYPE_ARRAY,
-#                                 description="Répartition fine par bijouterie",
-#                                 items=openapi.Schema(
-#                                     type=openapi.TYPE_OBJECT,
-#                                     required=["bijouterie_id", "quantite"],
-#                                     properties={
-#                                         "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                                         "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                                     }
-#                                 )
-#                             ),
-#                         }
-#                     )
-#                 ),
-#             }
-#         ),
-#         responses={
-#             201: openapi.Response("Création réussie", AchatSerializer),
-#             400: "Requête invalide",
-#             403: "Accès refusé"
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         data = request.data or {}
-
-#         # ------ Fournisseur ------
-#         fournisseur_data = data.get("fournisseur") or {}
-#         for key in ("nom", "prenom", "telephone"):
-#             if key not in fournisseur_data:
-#                 return Response({"detail": f"Champ fournisseur manquant: {key}"}, status=400)
-
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=fournisseur_data["telephone"],
-#             defaults={
-#                 "nom": fournisseur_data["nom"],
-#                 "prenom": fournisseur_data["prenom"],
-#                 "address": fournisseur_data.get("address", ""),
-#             },
-#         )
-
-#         # ------ Achat ------
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         default_bijouterie_id = data.get("bijouterie_id")
-#         stocks_result = []
-
-#         # ------ Lignes ------
-#         items = data.get("produits") or []
-#         if not items:
-#             return Response({"detail": "Aucun produit fourni."}, status=400)
-
-#         try:
-#             for item in items:
-#                 produit_id = int(item["produit"]["id"])
-#                 quantite = int(item["quantite"])
-#                 if quantite <= 0:
-#                     return Response({"detail": "La quantité doit être > 0."}, status=400)
-
-#                 prix_achat_gramme = _as_decimal(item.get("prix_achat_gramme"), "0.00")
-#                 tax = _as_decimal(item.get("tax"), "0.00")
-
-#                 produit = get_object_or_404(Produit, pk=produit_id)
-
-#                 # Crée la ligne d'achat (le modèle calcule sous_total et update_total())
-#                 AchatProduit.objects.create(
-#                     achat=achat,
-#                     produit=produit,
-#                     quantite=quantite,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     tax=tax,
-#                     fournisseur=fournisseur,
-#                 )
-
-#                 # ---- Affectations ----
-#                 affectations = item.get("affectations")
-#                 if affectations:
-#                     somme_aff = sum(int(a.get("quantite", 0)) for a in affectations)
-#                     if somme_aff > quantite:
-#                         return Response(
-#                             {"detail": "La somme des affectations dépasse la quantité de la ligne."},
-#                             status=400,
-#                         )
-
-#                     # 1) Ventile vers les bijouteries
-#                     for aff in affectations:
-#                         bid = int(aff["bijouterie_id"])
-#                         q = int(aff["quantite"])
-#                         if q <= 0:
-#                             continue
-#                         st = upsert_stock_increment(produit_id, bid, q)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": bid,
-#                             "reserved": False,
-#                             "delta": q,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-
-#                     # 2) Reste en réservé
-#                     reste = quantite - somme_aff
-#                     if reste > 0:
-#                         st = upsert_stock_increment(produit_id, None, reste)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": None,
-#                             "reserved": True,
-#                             "delta": reste,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-
-#                 else:
-#                     # Pas d'affectations : on prend bijouterie_id de la ligne sinon défaut global
-#                     line_bijouterie_id = item.get("bijouterie_id", default_bijouterie_id)
-#                     if line_bijouterie_id in (None, "", 0):
-#                         st = upsert_stock_increment(produit_id, None, quantite)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": None,
-#                             "reserved": True,
-#                             "delta": quantite,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-#                     else:
-#                         bid = int(line_bijouterie_id)
-#                         st = upsert_stock_increment(produit_id, bid, quantite)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": bid,
-#                             "reserved": False,
-#                             "delta": quantite,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-
-#             # Recalcule les totaux HT/TTC de l'achat
-#             achat.update_total(save=True)
-
-#             return Response({
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "stocks": stocks_result,
-#             }, status=201)
-
-#         except KeyError:
-#             return Response({"detail": "Structure de ligne invalide."}, status=400)
-#         except Produit.DoesNotExist:
-#             return Response({"detail": "Produit introuvable."}, status=400)
-#         except Bijouterie.DoesNotExist:
-#             return Response({"detail": "Bijouterie introuvable."}, status=400)
-#         except Exception as e:
-#             return Response({"detail": str(e)}, status=500)
-
-
-# class AchatProduitCreateView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un achat avec produits associés",
-#         operation_description="Crée un achat avec les produits, met à jour le stock et retourne les détails.",
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["fournisseur", "produits"],
-#             properties={
-#                 "fournisseur": openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     required=["nom", "prenom", "telephone"],
-#                     properties={
-#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "address": openapi.Schema(type=openapi.TYPE_STRING),
-#                     }
-#                 ),
-#                 "produits": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit", "quantite", "prix_achat_gramme"],
-#                         properties={
-#                             "produit": openapi.Schema(
-#                                 type=openapi.TYPE_OBJECT,
-#                                 properties={"id": openapi.Schema(type=openapi.TYPE_INTEGER)}
-#                             ),
-#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                             "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal"),
-#                             "tax": openapi.Schema(type=openapi.TYPE_NUMBER, format="decimal", default=0),
-#                         }
-#                     )
-#                 )
-#             }
-#         ),
-#         responses={
-#             201: openapi.Response("Création réussie", AchatSerializer),
-#             400: "Requête invalide",
-#             403: "Accès refusé"
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=403)
-
-#         try:
-#             data = request.data
-#             fournisseur_data = data.get('fournisseur')
-#             fournisseur, _ = Fournisseur.objects.get_or_create(
-#                 telephone=fournisseur_data['telephone'],
-#                 defaults={
-#                     'nom': fournisseur_data['nom'],
-#                     'prenom': fournisseur_data['prenom'],
-#                     'address': fournisseur_data.get('address', '')
-#                 }
-#             )
-
-#             achat = Achat.objects.create(fournisseur=fournisseur)
-#             produits_data = data.get('produits', [])
-
-#             achat_produits = []
-#             montant_total_ht = Decimal(0)
-#             montant_total_ttc = Decimal(0)
-#             stock_map = {}
-
-#             for item in produits_data:
-#                 produit_id = item['produit']['id']
-#                 quantite = int(item['quantite'])
-#                 prix_achat_gramme = Decimal(item['prix_achat_gramme'])
-#                 tax = Decimal(item.get('tax', 0))
-
-#                 produit = Produit.objects.get(id=produit_id)
-#                 poids = produit.poids or 1
-#                 sous_total = prix_achat_gramme * quantite * poids
-
-#                 achat_produits.append(AchatProduit(
-#                     achat=achat,
-#                     produit=produit,
-#                     quantite=quantite,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     tax=tax,
-#                     fournisseur=fournisseur,
-#                     sous_total_prix_achat=sous_total
-#                 ))
-
-#                 stock, _ = Stock.objects.get_or_create(produit=produit, defaults={"quantite": 0})
-#                 stock.quantite += quantite
-#                 stock.save()
-
-#                 montant_total_ht += sous_total
-#                 montant_total_ttc += sous_total + tax
-#                 stock_map[produit.id] = stock.quantite
-
-#             AchatProduit.objects.bulk_create(achat_produits)
-#             achat.montant_total_ht = montant_total_ht
-#             achat.montant_total_ttc = montant_total_ttc
-#             achat.save()
-
-#             return Response({
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "stock": stock_map
-#             }, status=201)
-
-#         except Produit.DoesNotExist:
-#             return Response({"detail": "Produit introuvable."}, status=400)
-#         except Fournisseur.DoesNotExist:
-#             return Response({"detail": "Fournisseur introuvable."}, status=400)
-#         except Exception as e:
-#             return Response({"detail": str(e)}, status=500)
-
-
-# class AchatProduitCreateView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_description="Créer un achat avec les produits associés. Met à jour le stock et calcule le montant total.",
-#         request_body=AchatSerializer,
-#         responses={
-#             201: openapi.Response("Achat créé avec succès", AchatSerializer),
-#             400: openapi.Response("Erreur de requête", openapi.Schema(
-#                 type=openapi.TYPE_OBJECT,
-#                 properties={"detail": openapi.Schema(type=openapi.TYPE_STRING)}
-#             ))
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         """Create a new Achat record and associated AchatProduit records"""
-#         user_role = getattr(request.user.user_role, 'role', None)
-#         if user_role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=403)
-#         try:
-#             # Get Fournisseur and Produit information from the request data
-#             data = request.data
-#             fournisseur_data = data.get('fournisseur')
-#             # produits_data = data.get('produit')  # Should be a list of dicts, e.g., [{'produit_id': 1, 'quantity': 3}]
-#             # quantities = request.data.get('quantities')
-
-#             # Récupérer les données du fournisseur
-#             fournisseur, created = Fournisseur.objects.get_or_create(
-#                 telephone=fournisseur_data['telephone'],
-#                 # id=fournisseur_data['id'],
-#                 # prenom=client_data['prenom'],
-#                 # defaults={
-#                 #     'nom': fournisseur_data['nom'],
-#                 #     'prenom': fournisseur_data['prenom']
-#                 #     }
-#                 defaults=fournisseur_data
-#             )
-
-#             # Create Achat record
-#             achat = Achat.objects.create(fournisseur=fournisseur)
-
-#             # Liste pour les objets venteProduit
-#             achat_produits = []
-#             montant_total = 0
-#             stock_map = {}
-#             # Create AchatProduit records
-#             for item in data.get('produits', []):
-#                 produit = Produit.objects.get(id=item['produit']['id']) 
-#                 # total_price = produit.price * quantity
-#                 quantite = item['quantite']
-#                 prix_achat_gramme = item['prix_achat_gramme']
-#                 tax = item['tax']
-#                 # tax = produit.prix_achat_avec_tax
-                
-#                 quantite = int(item.get('quantite', 0))
-#                 prix_achat_gramme = Decimal(item.get('prix_achat_gramme', 0))
-#                 tax = Decimal(item.get('tax', 0))
-                
-#                 if quantite <= 0:
-#                     return Response({"detail": f"Quantité invalide pour le produit {produit.id}"}, status=status.HTTP_400_BAD_REQUEST)
-
-#                 poids = produit.poids or 0
-#                 prix_achat = prix_achat_gramme*poids
-#                 sous_total_prix_achat = prix_achat*quantite
-
-#                 # achat_produit = AchatProduit.objects.create(
-#                 achat_produit = AchatProduit(
-#                     achat=achat,
-#                     produit=produit,
-#                     fournisseur = fournisseur,
-#                     quantite=quantite,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     tax=tax,
-#                     sous_total_prix_achat=sous_total_prix_achat,
-#                     # montant_total_tax_inclue=montant_total_tax_inclue,
-#                     # sous_total_prix_achat=sous_total_prix_achat
-#                 )
-#                 achat_produits.append(achat_produit)
-#                 # montant_total += prix_vente * quantite
-#                 montant_total += sous_total_prix_achat
-
-#                 # Update stock: If the produit exists in stock, increment it. Otherwise, create new stock entry
-#                 stock, created = Stock.objects.get_or_create(produit=produit, defaults={'quantite': 0})
-#                 stock.quantite = stock.quantite or 0  # protège contre None
-#                 stock.quantite += quantite
-#                 stock.save()
-#                 stock_map[produit.id] = stock.quantite
-
-#                 # # Update stock using model
-#                 # stock, created = Stock.objects.get_or_create(produit=produit)
-#                 # stock.update_stock(quantite)
-
-#             # calcul de montant total avec tax
-#             AchatProduit.objects.bulk_create(achat_produits)
-#             # update montant_total in vente
-#             # achat.montant_total=montant_total
-#             # achat.save()
-            
-#             achat.montant_total = montant_total
-#             achat.montant_total_tax_inclue = montant_total + sum(Decimal(item.get('tax', 0)) for item in data.get('produits', []))
-#             achat.save()
-
-#         #     # Retourner la réponse avec la vente et la facture
-#         # achat_serializer = AchatSerializer(achat)
-#         # achatproduit_serializer = AchatSerializer(achat_produits)
-#         # # paiement_serializer = PaiementSerializers(paiement)
-#         # return Response(achatproduit_serializer.data, status=status.HTTP_201_CREATED)
-#             achatproduit_serializer = AchatSerializer(achat)
-#             # return Response(achatproduit_serializer.data, status=status.HTTP_201_CREATED)
-#             return Response({
-#                 "message": "Achat et produits créés avec succès.",
-#                 "achat": achatproduit_serializer.data,
-#                 "stock_updated": [
-#                     {
-#                         "produit_id": p.produit.id,
-#                         "produit_nom": p.produit.nom,
-#                         "quantite_ajoutee": p.quantite,
-#                         "stock_actuel": stock_map[p.produit.id]
-#                     }
-#                     for p in achat_produits
-#                 ]
-#             }, status=status.HTTP_201_CREATED)
-#         except Fournisseur.DoesNotExist:
-#             return Response({"detail": "Fournisseur not found."}, status=status.HTTP_400_BAD_REQUEST)
-#         except Produit.DoesNotExist:
-#             return Response({"detail": "Produit not found."}, status=status.HTTP_400_BAD_REQUEST)
-#         except Exception as e:
-#             logger.error(f"[AchatProduitCreateView] Erreur : {str(e)}")
-#             return Response({"detail": "Une erreur est survenue. Veuillez réessayer."}, status=400)
-
-
-
-# def _as_decimal(val, default="0.00") -> Decimal:
-#     if val in (None, ""):
-#         return Decimal(default)
-#     return Decimal(str(val))
-
-# def _role_ok(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-# def upsert_stock_increment(produit_id: int, bijouterie_id: int | None, delta_qty: int):
-#     """
-#     Incrémente le stock correspondant.
-#     - bijouterie_id=None => stock réservé (bijouterie=NULL) avec reservation_key 'RES-<produit_id>'
-#     - sinon stock attribué à la bijouterie.
-#     """
-#     from inventory.models import Stock  # évite import circulaire si besoin
-
-#     if delta_qty <= 0:
-#         return None
-
-#     if bijouterie_id is None:
-#         reservation_key = f"RES-{produit_id}"
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie=None,
-#                 reservation_key=reservation_key,  # ⚠️ champ unique dans ton modèle Stock (MySQL-friendly)
-#                 defaults={"quantite": 0}
-#             )
-#         )
-#     else:
-#         get_object_or_404(Bijouterie, pk=bijouterie_id)
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie_id=bijouterie_id,
-#                 defaults={"quantite": 0}
-#             )
-#         )
-
-#     Stock.objects.filter(pk=stock.pk).update(quantite=F("quantite") + int(delta_qty))
-#     stock.refresh_from_db(fields=["quantite"])
-#     return stock
-
-
-# class AchatProduitCreateView(APIView):
-#     permission_classes = [IsAuthenticated]  # tu as déjà le check de rôle plus bas
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un achat + lignes + affectations de stock (par lot)",
-#         operation_description=(
-#             "Crée un achat (fournisseur + lignes).\n"
-#             "- Fournis `affectations=[{bijouterie_id, quantite}, ...]` pour ventiler une ligne.\n"
-#             "- Ou `bijouterie_id` (global ou par ligne) pour tout affecter à une bijouterie.\n"
-#             "Le reliquat non affecté va en **stock réservé** (bijouterie NULL)."
-#             "sortie prevue"
-#             '''{
-#                 "bijouterie_id": null,
-#                 "fournisseur": { "nom": "Diallo", "prenom": "Aïcha", "telephone": "77112233" },
-#                 "produits": [
-#                     {
-#                     "produit": {"id": 12},
-#                     "quantite": 30,
-#                     "prix_achat_gramme": "25000.00",
-#                     "tax": "0.00",
-#                     "affectations": [
-#                         {"bijouterie_id": 1, "quantite": 10},
-#                         {"bijouterie_id": 2, "quantite": 5}
-#                     ]
-#                     },
-#                     {
-#                     "produit": {"id": 18},
-#                     "quantite": 8,
-#                     "prix_achat_gramme": "18000.00",
-#                     "bijouterie_id": 1
-#                     }
-#                 ]
-#                 }''',
-#         ),
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["fournisseur", "produits"],
-#             properties={
-#                 "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="Bijouterie par défaut (optionnel)"),
-#                 "fournisseur": openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     required=["nom", "prenom", "telephone"],
-#                     properties={
-#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "address": openapi.Schema(type=openapi.TYPE_STRING),
-#                     }
-#                 ),
-#                 "produits": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit", "quantite", "prix_achat_gramme"],
-#                         properties={
-#                             "produit": openapi.Schema(
-#                                 type=openapi.TYPE_OBJECT,
-#                                 properties={"id": openapi.Schema(type=openapi.TYPE_INTEGER)}
-#                             ),
-#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                             "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_STRING, description="Decimal as string"),
-#                             "tax": openapi.Schema(type=openapi.TYPE_STRING, description="Decimal as string", default="0.00"),
-#                             "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="Affectation simple pour toute la ligne"),
-#                             "affectations": openapi.Schema(
-#                                 type=openapi.TYPE_ARRAY,
-#                                 description="Répartition fine par bijouterie",
-#                                 items=openapi.Schema(
-#                                     type=openapi.TYPE_OBJECT,
-#                                     required=["bijouterie_id", "quantite"],
-#                                     properties={
-#                                         "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                                         "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                                     }
-#                                 )
-#                             ),
-#                         }
-#                     )
-#                 ),
-#             }
-#         ),
-#         responses={201: openapi.Response("Création réussie", AchatSerializer), 400: "Requête invalide", 403: "Accès refusé"}
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         data = request.data or {}
-
-#         # ------ Fournisseur ------
-#         fournisseur_data = data.get("fournisseur") or {}
-#         for key in ("nom", "prenom", "telephone"):
-#             if key not in fournisseur_data:
-#                 return Response({"detail": f"Champ fournisseur manquant: {key}"}, status=400)
-
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=fournisseur_data["telephone"],
-#             defaults={
-#                 "nom": fournisseur_data["nom"],
-#                 "prenom": fournisseur_data["prenom"],
-#                 "address": fournisseur_data.get("address", ""),
-#             },
-#         )
-
-#         # ------ Achat ------
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         default_bijouterie_id = data.get("bijouterie_id")
-#         stocks_result = []
-
-#         # ------ Lignes ------
-#         items = data.get("produits") or []
-#         if not items:
-#             return Response({"detail": "Aucun produit fourni."}, status=400)
-
-#         try:
-#             for item in items:
-#                 produit_id = int(item["produit"]["id"])
-#                 quantite = int(item["quantite"])
-#                 if quantite <= 0:
-#                     return Response({"detail": "La quantité doit être > 0."}, status=400)
-
-#                 prix_achat_gramme = _as_decimal(item.get("prix_achat_gramme"), "0.00")
-#                 tax = _as_decimal(item.get("tax"), "0.00")
-
-#                 produit = get_object_or_404(Produit, pk=produit_id)
-
-#                 # Ligne d'achat (le modèle calcule sous_total + update_total)
-#                 AchatProduit.objects.create(
-#                     achat=achat,
-#                     produit=produit,
-#                     quantite=quantite,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     tax=tax,
-#                     fournisseur=fournisseur,
-#                 )
-
-#                 # ---- Affectations ----
-#                 affectations = item.get("affectations")
-#                 if affectations:
-#                     # fusionne les doublons de bijouterie
-#                     merged = {}
-#                     for aff in affectations:
-#                         bid = int(aff["bijouterie_id"])
-#                         q = int(aff["quantite"])
-#                         if q <= 0:
-#                             continue
-#                         merged[bid] = merged.get(bid, 0) + q
-
-#                     somme_aff = sum(merged.values())
-#                     if somme_aff > quantite:
-#                         return Response(
-#                             {"detail": "La somme des affectations dépasse la quantité de la ligne."},
-#                             status=400,
-#                         )
-
-#                     # 1) Ventile vers les bijouteries
-#                     for bid, q in merged.items():
-#                         st = upsert_stock_increment(produit_id, bid, q)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": bid,
-#                             "reserved": False,
-#                             "delta": q,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-
-#                     # 2) Reste en réservé
-#                     reste = quantite - somme_aff
-#                     if reste > 0:
-#                         st = upsert_stock_increment(produit_id, None, reste)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": None,
-#                             "reserved": True,
-#                             "delta": reste,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-
-#                 else:
-#                     # Pas d'affectations → bijouterie_id de la ligne ou défaut global
-#                     line_bijouterie_id = item.get("bijouterie_id", default_bijouterie_id)
-#                     if line_bijouterie_id in (None, "", 0):
-#                         st = upsert_stock_increment(produit_id, None, quantite)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": None,
-#                             "reserved": True,
-#                             "delta": quantite,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-#                     else:
-#                         bid = int(line_bijouterie_id)
-#                         st = upsert_stock_increment(produit_id, bid, quantite)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": bid,
-#                             "reserved": False,
-#                             "delta": quantite,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-
-#             # Totaux
-#             achat.update_total(save=True)
-
-#             return Response({
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "stocks": stocks_result,
-#             }, status=201)
-
-#         except KeyError:
-#             return Response({"detail": "Structure de ligne invalide."}, status=400)
-#         except Produit.DoesNotExist:
-#             return Response({"detail": "Produit introuvable."}, status=400)
-#         except Bijouterie.DoesNotExist:
-#             return Response({"detail": "Bijouterie introuvable."}, status=400)
-#         except Exception as e:
-#             return Response({"detail": str(e)}, status=500)
-
-
-
-
-
-    # # # # # # # # # #  exemple de "sortie prevue"
-#             '''{
-#                 "bijouterie_id": null,
-#                 "fournisseur": { "nom": "Diallo", "prenom": "Aïcha", "telephone": "77112233" },
-#                 "produits": [
-#                     {
-#                     "produit": {"id": 12},
-#                     "quantite": 30,
-#                     "prix_achat_gramme": "25000.00",
-#                     "tax": "0.00",
-#                     "affectations": [
-#                         {"bijouterie_id": 1, "quantite": 10},
-#                         {"bijouterie_id": 2, "quantite": 5}
-#                     ]
-#                     },
-#                     {
-#                     "produit": {"id": 18},
-#                     "quantite": 8,
-#                     "prix_achat_gramme": "18000.00",
-#                     "bijouterie_id": 1
-#                     }
-#                 ]
-#                 }''',
-
-
-# def _role_ok(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-
-# def upsert_stock_increment(produit_id: int, bijouterie_id: int | None, delta_qty: int):
-#     """
-#     Incrémente le stock correspondant.
-#     - bijouterie_id None -> stock réservé (bijouterie=NULL) avec reservation_key 'RES-<produit_id>'
-#     - sinon -> stock attribué à la bijouterie.
-#     """
-#     if delta_qty <= 0:
-#         return None
-
-#     if bijouterie_id is None:
-#         reservation_key = f"RES-{produit_id}"
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie=None,
-#                 reservation_key=reservation_key,
-#                 defaults={"quantite": 0, "is_reserved": True},
-#             )
-#         )
-#         is_reserved = True
-#     else:
-#         get_object_or_404(Bijouterie, pk=bijouterie_id)
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie_id=bijouterie_id,
-#                 defaults={"quantite": 0, "is_reserved": False},
-#             )
-#         )
-#         is_reserved = False
-
-#     Stock.objects.filter(pk=stock.pk).update(
-#         quantite=F("quantite") + int(delta_qty),
-#         is_reserved=is_reserved,
-#     )
-#     stock.refresh_from_db(fields=["quantite", "is_reserved"])
-#     return stock
-
-
-# # --------- Vue ---------
-# class AchatProduitCreateView(APIView):
-#     """
-#     Crée un achat (fournisseur + lignes) et met à jour les stocks.
-#     - Par ligne: 'affectations' (multi-bijouteries) OU 'bijouterie_id' (ligne entière).
-#     - Le reliquat non affecté va en stock réservé (bijouterie NULL).
-#     - Un mouvement d’inventaire est créé par affectation réelle.
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un achat + lignes + affectations de stock (par lot)",
-#         request_body=AchatCreateSerializer,
-#         responses={201: AchatSerializer},
-#         tags=["Achats"]
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         serializer = AchatCreateSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-#         payload = serializer.validated_data
-
-#         # Fournisseur (upsert par téléphone)
-#         fz = payload["fournisseur"]
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=fz["telephone"],
-#             defaults={
-#                 "nom": fz["nom"],
-#                 "prenom": fz["prenom"],
-#                 "address": fz.get("address", ""),
-#             },
-#         )
-
-#         # Achat
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         default_bijouterie_id = payload.get("bijouterie_id")
-#         stocks_result = []
-#         moves_result = []
-
-#         # Lignes
-#         for item in payload["produits"]:
-#             produit: Produit = item["produit"]
-#             produit_id = produit.id
-#             quantite = int(item["quantite"])
-#             prix_achat_gramme: Decimal = item["prix_achat_gramme"]
-#             tax: Decimal = item.get("tax", Decimal("0.00"))
-
-#             # Crée la ligne d’achat (le modèle calcule ses sous-totaux et achat.update_total())
-#             ligne = AchatProduit.objects.create(
-#                 achat=achat,
-#                 produit=produit,
-#                 quantite=quantite,
-#                 prix_achat_gramme=prix_achat_gramme,
-#                 tax=tax,
-#                 fournisseur=fournisseur,
-#             )
-
-#             affectations = item.get("affectations")
-#             if affectations:
-#                 somme_aff = sum(int(a["quantite"]) for a in affectations)
-#                 if somme_aff > quantite:
-#                     return Response(
-#                         {"detail": "La somme des affectations dépasse la quantité de la ligne."},
-#                         status=400,
-#                     )
-
-#                 # 1) Vers les bijouteries
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     q = int(aff["quantite"])
-
-#                     st = upsert_stock_increment(produit_id, bid, q)
-#                     stocks_result.append({
-#                         "produit_id": produit_id,
-#                         "bijouterie_id": bid,
-#                         "reserved": False,
-#                         "delta": q,
-#                         "stock_qte_apres": st.quantite,
-#                     })
-
-#                     mv = log_move(
-#                         produit=produit, qty=q, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne,
-#                         user=request.user, reason="Réception achat"
-#                     )
-#                     moves_result.append(mv.id)
-
-#                 # 2) Reste en réservé
-#                 reste = quantite - somme_aff
-#                 if reste > 0:
-#                     st = upsert_stock_increment(produit_id, None, reste)
-#                     stocks_result.append({
-#                         "produit_id": produit_id,
-#                         "bijouterie_id": None,
-#                         "reserved": True,
-#                         "delta": reste,
-#                         "stock_qte_apres": st.quantite,
-#                     })
-
-#                     mv = log_move(
-#                         produit=produit, qty=reste, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne,
-#                         user=request.user, reason="Réception achat (réservé)"
-#                     )
-#                     moves_result.append(mv.id)
-
-#             else:
-#                 # Pas d'affectations : bijouterie de la ligne sinon défaut global
-#                 line_bijouterie_id = item.get("bijouterie_id", default_bijouterie_id)
-#                 if line_bijouterie_id in (None, "", 0):
-#                     # tout en réservé
-#                     st = upsert_stock_increment(produit_id, None, quantite)
-#                     stocks_result.append({
-#                         "produit_id": produit_id,
-#                         "bijouterie_id": None,
-#                         "reserved": True,
-#                         "delta": quantite,
-#                         "stock_qte_apres": st.quantite,
-#                     })
-#                     mv = log_move(
-#                         produit=produit, qty=quantite, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne,
-#                         user=request.user, reason="Réception achat (réservé)"
-#                     )
-#                     moves_result.append(mv.id)
-#                 else:
-#                     # tout dans la bijouterie choisie
-#                     bid = int(line_bijouterie_id)
-#                     st = upsert_stock_increment(produit_id, bid, quantite)
-#                     stocks_result.append({
-#                         "produit_id": produit_id,
-#                         "bijouterie_id": bid,
-#                         "reserved": False,
-#                         "delta": quantite,
-#                         "stock_qte_apres": st.quantite,
-#                     })
-#                     mv = log_move(
-#                         produit=produit, qty=quantite, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne,
-#                         user=request.user, reason="Réception achat"
-#                     )
-#                     moves_result.append(mv.id)
-
-#         # Totaux HT/TTC
-#         achat.update_total(save=True)
-#         try:
-#             post_purchase_entry(achat, user=request.user, bijouterie=None)
-#         except Account.DoesNotExist as e:
-#             return Response(
-#                 {"detail": f"Compte comptable manquant: {e}. Configure les comptes (stock/TVA/fournisseurs)."},
-#                 status=500
-#             )
-#         # post_purchase_entry(achat, user=request.user, bijouterie=None)  # ou une bijouterie par défaut si tu veux
-
-#         return Response(
-#             {
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "stocks": stocks_result,
-#                 "inventory_moves": moves_result,
-#             },
-#             status=201,
-#         )
-
-
-# # et tu as déjà défini: log_move(...)
-
-# # ----------------- Vue -----------------
-
-# class AchatUpdateCreateView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     # --------- CREATE ---------
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Créer un achat (avec affectations de stock + mouvements d’inventaire)",
-#         request_body=AchatCreateSerializer,
-#         responses={201: AchatSerializer},
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         # Validation d’entrée
-#         create_ser = AchatCreateSerializer(data=request.data)
-#         create_ser.is_valid(raise_exception=True)
-#         payload = create_ser.validated_data
-
-#         # Fournisseur (upsert par téléphone)
-#         fz = payload["fournisseur"]
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=fz["telephone"],
-#             defaults={"nom": fz["nom"], "prenom": fz["prenom"], "address": fz.get("address", "")},
-#         )
-
-#         # Achat
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         default_bijouterie_id = payload.get("bijouterie_id")
-#         stocks_result = []
-
-#         for item in payload["produits"]:
-#             produit: Produit = item["produit"]
-#             produit_id = produit.id
-#             quantite = int(item["quantite"])
-#             prix_achat_gramme: Decimal = item["prix_achat_gramme"]
-#             tax: Decimal = item.get("tax", Decimal("0.00"))
-
-#             # Crée la ligne d’achat
-#             ligne = AchatProduit.objects.create(
-#                 achat=achat,
-#                 produit=produit,
-#                 quantite=quantite,
-#                 prix_achat_gramme=prix_achat_gramme,
-#                 tax=tax,
-#                 fournisseur=fournisseur,
-#             )
-
-#             affectations = item.get("affectations")
-#             if affectations:
-#                 somme_aff = sum(int(a["quantite"]) for a in affectations)
-#                 if somme_aff > quantite:
-#                     return Response({"detail": "Somme des affectations > quantité."}, status=400)
-
-#                 # 1) Vers bijouteries (stock + mouvement PURCHASE_IN → BIJOUTERIE)
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     q = int(aff["quantite"])
-#                     st = upsert_stock_increment(produit_id, bid, q)
-#                     stocks_result.append({
-#                         "produit_id": produit_id, "bijouterie_id": bid,
-#                         "reserved": False, "delta": q, "stock_qte_apres": st.quantite,
-#                     })
-#                     # LOG INVENTORY
-#                     log_move(
-#                         produit=produit, qty=q, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne, user=user,
-#                         reason="Réception achat"
-#                     )
-
-#                 # 2) Reste en réservé (PURCHASE_IN → RESERVED)
-#                 reste = quantite - somme_aff
-#                 if reste > 0:
-#                     st = upsert_stock_increment(produit_id, None, reste)
-#                     stocks_result.append({
-#                         "produit_id": produit_id, "bijouterie_id": None,
-#                         "reserved": True, "delta": reste, "stock_qte_apres": st.quantite,
-#                     })
-#                     log_move(
-#                         produit=produit, qty=reste, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne, user=user,
-#                         reason="Réception achat (réservé)"
-#                     )
-
-#             else:
-#                 # Sans affectations : tout réservé OU tout vers une bijouterie (ligne ou défaut global)
-#                 line_bijouterie_id = item.get("bijouterie_id", default_bijouterie_id)
-#                 if line_bijouterie_id in (None, "", 0):
-#                     st = upsert_stock_increment(produit_id, None, quantite)
-#                     stocks_result.append({
-#                         "produit_id": produit_id, "bijouterie_id": None,
-#                         "reserved": True, "delta": quantite, "stock_qte_apres": st.quantite,
-#                     })
-#                     log_move(
-#                         produit=produit, qty=quantite, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne, user=user,
-#                         reason="Réception achat (réservé)"
-#                     )
-#                 else:
-#                     bid = int(line_bijouterie_id)
-#                     st = upsert_stock_increment(produit_id, bid, quantite)
-#                     stocks_result.append({
-#                         "produit_id": produit_id, "bijouterie_id": bid,
-#                         "reserved": False, "delta": quantite, "stock_qte_apres": st.quantite,
-#                     })
-#                     log_move(
-#                         produit=produit, qty=quantite, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne, user=user,
-#                         reason="Réception achat"
-#                     )
-
-#         achat.update_total(save=True)
-#         post_purchase_entry(achat, user=request.user, bijouterie_id=payload.get("bijouterie_id"))
-        
-#         return Response(
-#             {"message": "Achat créé", "achat": AchatSerializer(achat).data, "stocks": stocks_result},
-#             status=201
-#         )
-
-#     # --------- UPDATE (REBASE) ---------
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Mettre à jour un achat (rebase + mouvements d’inventaire inverses)",
-#         operation_description=(
-#             "Retire d’abord des stocks les quantités de l’achat existant (avec mouvements `CANCEL_PURCHASE`), "
-#             "puis recrée les lignes + mouvements `PURCHASE_IN` comme en création."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter("achat_id", openapi.IN_PATH, required=True, type=openapi.TYPE_INTEGER),
-#         ],
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             properties={
-#                 "reverse_allocations": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit_id", "allocations"],
-#                         properties={
-#                             "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                             "allocations": openapi.Schema(
-#                                 type=openapi.TYPE_ARRAY,
-#                                 items=openapi.Schema(
-#                                     type=openapi.TYPE_OBJECT,
-#                                     required=["quantite"],
-#                                     properties={
-#                                         "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER, nullable=True),
-#                                         "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                                     },
-#                                 ),
-#                             ),
-#                         },
-#                     ),
-#                 ),
-#                 "payload": AchatCreateSerializer.schema,
-#             },
-#         ),
-#         responses={200: AchatSerializer, 403: "Accès refusé", 404: "Introuvable", 409: "Conflit stock"},
-#     )
-#     @transaction.atomic
-#     def put(self, request, achat_id: int):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         achat = get_object_or_404(Achat.objects.select_for_update(), pk=achat_id)
-
-#         reverse_allocations = (request.data or {}).get("reverse_allocations")
-#         payload_in = (request.data or {}).get("payload") or {}
-
-#         # Valide le nouveau payload (comme en POST)
-#         upd_ser = AchatCreateSerializer(data=payload_in)
-#         upd_ser.is_valid(raise_exception=True)
-#         payload = upd_ser.validated_data
-
-#         # 1) --- REBASE : retirer l'ancien achat du stock + LOG mouvements CANCEL_PURCHASE ---
-#         lignes = (
-#             AchatProduit.objects.filter(achat=achat)
-#             .values("produit_id").annotate(total=Sum("quantite"))
-#         )
-#         qty_by_prod = {row["produit_id"]: int(row["total"] or 0) for row in lignes}
-
-#         try:
-#             if reverse_allocations:
-#                 # Retrait piloté
-#                 for item in reverse_allocations:
-#                     produit_id = int(item["produit_id"])
-#                     if produit_id not in qty_by_prod:
-#                         return Response({"detail": f"produit_id={produit_id} n'appartient pas à cet achat."}, status=400)
-#                     allocs = item.get("allocations") or []
-#                     if sum(int(a.get("quantite", 0)) for a in allocs) != qty_by_prod[produit_id]:
-#                         return Response({"detail": f"Les allocations pour produit_id={produit_id} ne totalisent pas {qty_by_prod[produit_id]}."}, status=400)
-
-#                     produit = get_object_or_404(Produit, pk=produit_id)
-#                     for a in allocs:
-#                         bid = a.get("bijouterie_id", None)
-#                         q = int(a.get("quantite", 0))
-#                         bij_id = None if (bid in (None, "", 0)) else int(bid)
-
-#                         # Maj stock
-#                         _decrement_bucket(produit_id, bij_id, q)
-#                         # LOG INVENTORY: CANCEL_PURCHASE (source = où on retire)
-#                         log_move(
-#                             produit=produit, qty=q, movement_type=MovementType.CANCEL_PURCHASE,
-#                             src_bucket=(Bucket.RESERVED if bij_id is None else Bucket.BIJOUTERIE),
-#                             src_bijouterie_id=(None if bij_id is None else bij_id),
-#                             dst_bucket=Bucket.EXTERNAL,
-#                             unit_cost=None, achat=achat, achat_ligne=None, user=user,
-#                             reason="Rebase achat : retrait ancien stock"
-#                         )
-#             else:
-#                 # Retrait automatique (réservé puis bijouteries) avec LOG
-#                 for produit_id, total_qty in qty_by_prod.items():
-#                     produit = get_object_or_404(Produit, pk=produit_id)
-
-#                     # 1) réservé
-#                     reservation_key = f"RES-{produit_id}"
-#                     reserved = (
-#                         Stock.objects.select_for_update()
-#                         .filter(produit_id=produit_id, bijouterie__isnull=True, reservation_key=reservation_key)
-#                         .first()
-#                     )
-#                     take_from_reserved = 0
-#                     qty_left = total_qty
-#                     if reserved:
-#                         take_from_reserved = min(reserved.quantite, qty_left)
-#                         if take_from_reserved > 0:
-#                             Stock.objects.filter(pk=reserved.pk).update(quantite=F("quantite") - take_from_reserved)
-#                             qty_left -= take_from_reserved
-#                             log_move(
-#                                 produit=produit, qty=take_from_reserved, movement_type=MovementType.CANCEL_PURCHASE,
-#                                 src_bucket=Bucket.RESERVED, dst_bucket=Bucket.EXTERNAL,
-#                                 unit_cost=None, achat=achat, achat_ligne=None, user=user,
-#                                 reason="Rebase achat : retrait ancien stock (réservé)"
-#                             )
-
-#                     # 2) bijouteries
-#                     if qty_left > 0:
-#                         buckets = (
-#                             Stock.objects.select_for_update()
-#                             .filter(produit_id=produit_id, bijouterie__isnull=False, quantite__gt=0)
-#                             .order_by("bijouterie_id")
-#                         )
-#                         for b in buckets:
-#                             if qty_left <= 0:
-#                                 break
-#                             take = min(b.quantite, qty_left)
-#                             if take > 0:
-#                                 Stock.objects.filter(pk=b.pk).update(quantite=F("quantite") - take)
-#                                 qty_left -= take
-#                                 log_move(
-#                                     produit=produit, qty=take, movement_type=MovementType.CANCEL_PURCHASE,
-#                                     src_bucket=Bucket.BIJOUTERIE, src_bijouterie_id=b.bijouterie_id,
-#                                     dst_bucket=Bucket.EXTERNAL,
-#                                     unit_cost=None, achat=achat, achat_ligne=None, user=user,
-#                                     reason="Rebase achat : retrait ancien stock (bijouterie)"
-#                                 )
-#                         if qty_left > 0:
-#                             raise ValueError(f"Stock global insuffisant pour retirer {total_qty} du produit {produit_id} (reste {qty_left}).")
-#         except ValueError as e:
-#             return Response({"detail": str(e)}, status=409)
-        
-#         # ✅ COMPTABILITÉ : écriture inverse de l'ancien achat
-#         reverse_purchase_entry(achat, user=request.user)
-#         reverse_purchase_entry(achat, user=request.user, bijouterie=None)
-
-#         # Supprime les anciennes lignes
-#         AchatProduit.objects.filter(achat=achat).delete()
-
-#         # 2) --- (Re)lier le fournisseur (upsert tel) ---
-#         fz = payload["fournisseur"]
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=fz["telephone"],
-#             defaults={"nom": fz["nom"], "prenom": fz["prenom"], "address": fz.get("address", "")},
-#         )
-#         if achat.fournisseur_id != fournisseur.id:
-#             achat.fournisseur = fournisseur
-#             achat.save(update_fields=["fournisseur"])
-
-#         # 3) --- Recréer lignes + réaffecter stocks + LOG PURCHASE_IN ---
-#         default_bijouterie_id = payload.get("bijouterie_id")
-#         stocks_result = []
-
-#         for item in payload["produits"]:
-#             produit: Produit = item["produit"]
-#             produit_id = produit.id
-#             quantite = int(item["quantite"])
-#             prix_achat_gramme: Decimal = item["prix_achat_gramme"]
-#             tax: Decimal = item.get("tax", Decimal("0.00"))
-
-#             ligne = AchatProduit.objects.create(
-#                 achat=achat,
-#                 produit=produit,
-#                 quantite=quantite,
-#                 prix_achat_gramme=prix_achat_gramme,
-#                 tax=tax,
-#                 fournisseur=fournisseur,
-#             )
-
-#             affectations = item.get("affectations")
-#             if affectations:
-#                 somme_aff = sum(int(a["quantite"]) for a in affectations)
-#                 if somme_aff > quantite:
-#                     return Response({"detail": "Somme des affectations > quantité."}, status=400)
-
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     q = int(aff["quantite"])
-#                     st = upsert_stock_increment(produit_id, bid, q)
-#                     stocks_result.append({
-#                         "produit_id": produit_id, "bijouterie_id": bid,
-#                         "reserved": False, "delta": q, "stock_qte_apres": st.quantite,
-#                     })
-#                     log_move(
-#                         produit=produit, qty=q, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne, user=user,
-#                         reason="Rebase achat : réaffectation"
-#                     )
-
-#                 reste = quantite - somme_aff
-#                 if reste > 0:
-#                     st = upsert_stock_increment(produit_id, None, reste)
-#                     stocks_result.append({
-#                         "produit_id": produit_id, "bijouterie_id": None,
-#                         "reserved": True, "delta": reste, "stock_qte_apres": st.quantite,
-#                     })
-#                     log_move(
-#                         produit=produit, qty=reste, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne, user=user,
-#                         reason="Rebase achat : réaffectation (réservé)"
-#                     )
-
-#             else:
-#                 line_bijouterie_id = item.get("bijouterie_id", default_bijouterie_id)
-#                 if line_bijouterie_id in (None, "", 0):
-#                     st = upsert_stock_increment(produit_id, None, quantite)
-#                     stocks_result.append({
-#                         "produit_id": produit_id, "bijouterie_id": None,
-#                         "reserved": True, "delta": quantite, "stock_qte_apres": st.quantite,
-#                     })
-#                     log_move(
-#                         produit=produit, qty=quantite, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne, user=user,
-#                         reason="Rebase achat : réaffectation (réservé)"
-#                     )
-#                 else:
-#                     bid = int(line_bijouterie_id)
-#                     st = upsert_stock_increment(produit_id, bid, quantite)
-#                     stocks_result.append({
-#                         "produit_id": produit_id, "bijouterie_id": bid,
-#                         "reserved": False, "delta": quantite, "stock_qte_apres": st.quantite,
-#                     })
-#                     log_move(
-#                         produit=produit, qty=quantite, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=prix_achat_gramme, achat=achat, achat_ligne=ligne, user=user,
-#                         reason="Rebase achat : réaffectation"
-#                     )
-
-#         achat.update_total(save=True)
-#         #  ✅ COMPTABILITÉ : nouvelle écriture d’achat (post-rebase)
-#         post_purchase_entry(achat, user=request.user, bijouterie_id=payload.get("bijouterie_id"))
-#         return Response(
-#             {"message": "Achat mis à jour (rebase) avec succès", "achat": AchatSerializer(achat).data, "stocks": stocks_result},
-#             status=200
-#         )
-
-
-# def _role_ok(user) -> bool:
-#     """Autorise admin / manager (adapte si tu veux d'autres rôles)."""
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-
-# class AchatUpdateCreateView(APIView):
-#     """
-#     POST : crée un achat + lignes + impacte stocks + mouvements + écriture comptable.
-#     PUT  : rebase un achat (retire ancien stock + extourne écriture, recrée lignes, réaffecte
-#           stock + mouvements, reposte écriture).
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     # --------------- Helpers Stock (internes à la vue pour être autonome) ----------------
-
-#     @staticmethod
-#     def _reservation_key(produit_id: int) -> str:
-#         return f"RES-{produit_id}"
-
-#     @staticmethod
-#     def _inc_stock(produit_id: int, bijouterie_id: Optional[int], qty: int) -> Stock:
-#         """
-#         Incrémente le ‘bucket’ cible :
-#         - bijouterie_id None => réservé (bijouterie NULL + reservation_key)
-#         - bijouterie_id int  => stock de cette bijouterie
-#         """
-#         if qty <= 0:
-#             raise ValueError("Quantité à incrémenter doit être > 0")
-
-#         if bijouterie_id is None:
-#             stock, _ = (
-#                 Stock.objects.select_for_update()
-#                 .get_or_create(
-#                     produit_id=produit_id,
-#                     bijouterie=None,
-#                     reservation_key=AchatUpdateCreateView._reservation_key(produit_id),
-#                     defaults={"quantite": 0, "is_reserved": True},
-#                 )
-#             )
-#             is_reserved = True
-#         else:
-#             get_object_or_404(Bijouterie, pk=bijouterie_id)
-#             stock, _ = (
-#                 Stock.objects.select_for_update()
-#                 .get_or_create(
-#                     produit_id=produit_id,
-#                     bijouterie_id=bijouterie_id,
-#                     defaults={"quantite": 0, "is_reserved": False},
-#                 )
-#             )
-#             is_reserved = False
-
-#         Stock.objects.filter(pk=stock.pk).update(
-#             quantite=F("quantite") + int(qty),
-#             is_reserved=is_reserved,
-#         )
-#         stock.refresh_from_db(fields=["quantite", "is_reserved"])
-#         return stock
-
-#     @staticmethod
-#     def _dec_bucket_exact(produit_id: int, bijouterie_id: Optional[int], qty: int):
-#         """
-#         Décrémente exactement le bucket demandé:
-#         - None => réservé
-#         - int  => bijouterie_id
-#         Lève ValueError si stock insuffisant.
-#         """
-#         if qty <= 0:
-#             return
-
-#         if bijouterie_id is None:
-#             stock = (
-#                 Stock.objects.select_for_update()
-#                 .filter(
-#                     produit_id=produit_id,
-#                     bijouterie__isnull=True,
-#                     reservation_key=AchatUpdateCreateView._reservation_key(produit_id),
-#                 )
-#                 .first()
-#             )
-#         else:
-#             stock = (
-#                 Stock.objects.select_for_update()
-#                 .filter(produit_id=produit_id, bijouterie_id=bijouterie_id)
-#                 .first()
-#             )
-
-#         if not stock or stock.quantite < qty:
-#             cible = "réservé" if bijouterie_id is None else f"bijouterie={bijouterie_id}"
-#             dispo = getattr(stock, "quantite", 0)
-#             raise ValueError(
-#                 f"Stock insuffisant pour produit={prodf_id} ({cible}). requis={qty}, dispo={dispo}"
-#             )
-
-#         Stock.objects.filter(pk=stock.pk).update(quantite=F("quantite") - int(qty))
-
-#     @staticmethod
-#     def _dec_auto(produit_id: int, qty: int):
-#         """
-#         Décrémente automatiquement :
-#         1) réservé -> 2) bijouteries (ordre arbitraire).
-#         Lève ValueError si insuffisant.
-#         """
-#         if qty <= 0:
-#             return
-
-#         # 1) réservé
-#         reserved = (
-#             Stock.objects.select_for_update()
-#             .filter(
-#                 produit_id=produit_id,
-#                 bijouterie__isnull=True,
-#                 reservation_key=AchatUpdateCreateView._reservation_key(produit_id),
-#             )
-#             .first()
-#         )
-#         if reserved:
-#             take = min(reserved.quantite, qty)
-#             if take > 0:
-#                 Stock.objects.filter(pk=reserved.pk).update(quantite=F("quantite") - take)
-#                 qty -= take
-
-#         if qty <= 0:
-#             return
-
-#         # 2) bijouteries
-#         for b in (
-#             Stock.objects.select_for_update()
-#             .filter(produit_id=produit_id, bijouterie__isnull=False, quantite__gt=0)
-#             .order_by("bijouterie_id")
-#         ):
-#             if qty <= 0:
-#                 break
-#             take = min(b.quantite, qty)
-#             if take > 0:
-#                 Stock.objects.filter(pk=b.pk).update(quantite=F("quantite") - take)
-#                 qty -= take
-
-#         if qty > 0:
-#             raise ValueError(f"Stock global insuffisant pour produit={produit_id}. Reste={qty}")
-
-#     # ------------------------------------ POST ------------------------------------------
-
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Créer un achat (stocks + mouvements + écriture comptable)",
-#         request_body=AchatCreateSerializer,
-#         responses={201: AchatSerializer, 403: "Accès refusé", 400: "Invalide"},
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         ser = AchatCreateSerializer(data=request.data)
-#         ser.is_valid(raise_exception=True)
-#         payload = ser.validated_data
-
-#         # Fournisseur (upsert par téléphone)
-#         fz = payload["fournisseur"]
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=fz["telephone"],
-#             defaults={"nom": fz["nom"], "prenom": fz["prenom"], "address": fz.get("address", "")},
-#         )
-
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         default_bijouterie_id = payload.get("bijouterie_id")
-#         recap_stocks = []
-
-#         for item in payload["produits"]:
-#             produit: Produit = item["produit"]
-#             produit_id = produit.id
-#             qte = int(item["quantite"])
-#             pu  = Decimal(item["prix_achat_gramme"])
-#             tax = Decimal(item.get("tax", ZERO))
-
-#             # Ligne d’achat (ton modèle calcule ses sous-totaux et met à jour l’achat si tu l’as codé ainsi)
-#             ligne = AchatProduit.objects.create(
-#                 achat=achat, produit=produit, quantite=qte, prix_achat_gramme=pu, tax=tax, fournisseur=fournisseur
-#             )
-
-#             affectations = item.get("affectations")
-#             if affectations:
-#                 total_aff = sum(int(a["quantite"]) for a in affectations)
-#                 if total_aff > qte:
-#                     return Response({"detail": "Somme des affectations > quantité."}, status=400)
-
-#                 # 1) vers bijouteries
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     qa  = int(aff["quantite"])
-#                     st = self._inc_stock(produit_id, bid, qa)
-#                     recap_stocks.append({"produit_id": produit_id, "bijouterie_id": bid, "reserved": False, "delta": qa, "stock": st.quantite})
-
-#                     # Mouvement inventaire
-#                     log_move(
-#                         produit=produit, qty=qa, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=pu, achat=achat, achat_ligne=ligne, user=user, reason="Réception achat"
-#                     )
-
-#                 # 2) reste en réservé
-#                 reste = qte - total_aff
-#                 if reste > 0:
-#                     st = self._inc_stock(produit_id, None, reste)
-#                     recap_stocks.append({"produit_id": produit_id, "bijouterie_id": None, "reserved": True, "delta": reste, "stock": st.quantite})
-
-#                     log_move(
-#                         produit=produit, qty=reste, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=pu, achat=achat, achat_ligne=ligne, user=user, reason="Réception achat (réservé)"
-#                     )
-
-#             else:
-#                 # pas d’affectations → tout réservé OU vers une bijouterie
-#                 line_bij = item.get("bijouterie_id", default_bijouterie_id)
-#                 if line_bij in (None, "", 0):
-#                     st = self._inc_stock(produit_id, None, qte)
-#                     recap_stocks.append({"produit_id": produit_id, "bijouterie_id": None, "reserved": True, "delta": qte, "stock": st.quantite})
-#                     log_move(
-#                         produit=produit, qty=qte, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=pu, achat=achat, achat_ligne=ligne, user=user, reason="Réception achat (réservé)"
-#                     )
-#                 else:
-#                     bid = int(line_bij)
-#                     st = self._inc_stock(produit_id, bid, qte)
-#                     recap_stocks.append({"produit_id": produit_id, "bijouterie_id": bid, "reserved": False, "delta": qte, "stock": st.quantite})
-#                     log_move(
-#                         produit=produit, qty=qte, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=pu, achat=achat, achat_ligne=ligne, user=user, reason="Réception achat"
-#                     )
-
-#         # Totaux (si ton modèle Achat ne le fait pas automatiquement sur save)
-#         achat.update_total(save=True)
-
-#         # Comptabilité : poste l’écriture achat
-#         post_purchase_entry(achat, user=user, bijouterie=None)
-
-#         return Response(
-#             {"message": "Achat créé", "achat": AchatSerializer(achat).data, "stocks": recap_stocks},
-#             status=201
-#         )
-
-#     # ------------------------------------ PUT -------------------------------------------
-
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Rebase d’un achat (retire ancien stock + extourne, recrée tout)",
-#         operation_description=(
-#             "Retire d’abord des stocks les quantités de l’achat existant (mouvements CANCEL_PURCHASE), "
-#             "extourne l’écriture comptable, supprime les anciennes lignes, puis recrée lignes, "
-#             "stocks, mouvements PURCHASE_IN et reposte l’écriture."
-#         ),
-#         manual_parameters=[openapi.Parameter("achat_id", openapi.IN_PATH, required=True, type=openapi.TYPE_INTEGER)],
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             properties={
-#                 "reverse_allocations": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     description="Contrôle fin du retrait (sinon auto retiré: réservé -> bijouteries).",
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit_id", "allocations"],
-#                         properties={
-#                             "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                             "allocations": openapi.Schema(
-#                                 type=openapi.TYPE_ARRAY,
-#                                 items=openapi.Schema(
-#                                     type=openapi.TYPE_OBJECT,
-#                                     required=["quantite"],
-#                                     properties={
-#                                         "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER, nullable=True),
-#                                         "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                                     },
-#                                 ),
-#                             ),
-#                         },
-#                     ),
-#                 ),
-#                 "payload": AchatCreateSerializer.schema,
-#             },
-#         ),
-#         responses={200: AchatSerializer, 403: "Accès refusé", 404: "Introuvable", 409: "Conflit stock"},
-#     )
-#     @transaction.atomic
-#     def put(self, request, achat_id: int):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         achat = get_object_or_404(Achat.objects.select_for_update(), pk=achat_id)
-
-#         reverse_alloc = (request.data or {}).get("reverse_allocations")
-#         payload_in = (request.data or {}).get("payload") or {}
-
-#         # Valide le nouveau payload (comme en POST)
-#         upd_ser = AchatCreateSerializer(data=payload_in)
-#         upd_ser.is_valid(raise_exception=True)
-#         payload = upd_ser.validated_data
-
-#         # Quantités actuelles par produit dans l’achat
-#         lignes = (
-#             AchatProduit.objects.filter(achat=achat)
-#             .values("produit_id")
-#             .annotate(total=Sum("quantite"))
-#         )
-#         qty_by_prod = {r["produit_id"]: int(r["total"] or 0) for r in lignes}
-
-#         # 1) Retrait stock + mouvements CANCEL_PURCHASE
-#         try:
-#             if reverse_alloc:
-#                 for item in reverse_alloc:
-#                     produit_id = int(item["produit_id"])
-#                     if produit_id not in qty_by_prod:
-#                         return Response({"detail": f"produit_id={produit_id} n'appartient pas à cet achat."}, status=400)
-#                     allocs = item.get("allocations") or []
-#                     if sum(int(a.get("quantite", 0)) for a in allocs) != qty_by_prod[produit_id]:
-#                         return Response({"detail": f"Les allocations pour produit_id={produit_id} ne totalisent pas {qty_by_prod[produit_id]}."}, status=400)
-
-#                     produit = get_object_or_404(Produit, pk=produit_id)
-#                     for a in allocs:
-#                         bid = a.get("bijouterie_id", None)
-#                         q   = int(a.get("quantite", 0))
-#                         bij_id = None if (bid in (None, "", 0)) else int(bid)
-
-#                         # Décrément
-#                         self._dec_bucket_exact(produit_id, bij_id, q)
-
-#                         # Mouvement inventaire (source = bucket d’où l’on retire)
-#                         log_move(
-#                             produit=produit, qty=q, movement_type=MovementType.CANCEL_PURCHASE,
-#                             src_bucket=(Bucket.RESERVED if bij_id is None else Bucket.BIJOUTERIE),
-#                             src_bijouterie_id=(None if bij_id is None else bij_id),
-#                             dst_bucket=Bucket.EXTERNAL,
-#                             unit_cost=None, achat=achat, achat_ligne=None, user=user,
-#                             reason="Rebase achat : retrait ancien stock"
-#                         )
-#             else:
-#                 for produit_id, total_qty in qty_by_prod.items():
-#                     produit = get_object_or_404(Produit, pk=produit_id)
-#                     # réservé d’abord
-#                     reservation_key = self._reservation_key(produit_id)
-#                     reserved = (
-#                         Stock.objects.select_for_update()
-#                         .filter(produit_id=produit_id, bijouterie__isnull=True, reservation_key=reservation_key)
-#                         .first()
-#                     )
-#                     qty_left = total_qty
-#                     if reserved:
-#                         take_r = min(reserved.quantite, qty_left)
-#                         if take_r > 0:
-#                             Stock.objects.filter(pk=reserved.pk).update(quantite=F("quantite") - take_r)
-#                             qty_left -= take_r
-#                             log_move(
-#                                 produit=produit, qty=take_r, movement_type=MovementType.CANCEL_PURCHASE,
-#                                 src_bucket=Bucket.RESERVED, dst_bucket=Bucket.EXTERNAL,
-#                                 unit_cost=None, achat=achat, achat_ligne=None, user=user,
-#                                 reason="Rebase achat : retrait ancien stock (réservé)"
-#                             )
-#                     # puis bijouteries
-#                     if qty_left > 0:
-#                         for b in (
-#                             Stock.objects.select_for_update()
-#                             .filter(produit_id=produit_id, bijouterie__isnull=False, quantite__gt=0)
-#                             .order_by("bijouterie_id")
-#                         ):
-#                             if qty_left <= 0:
-#                                 break
-#                             take = min(b.quantite, qty_left)
-#                             if take > 0:
-#                                 Stock.objects.filter(pk=b.pk).update(quantite=F("quantite") - take)
-#                                 qty_left -= take
-#                                 log_move(
-#                                     produit=produit, qty=take, movement_type=MovementType.CANCEL_PURCHASE,
-#                                     src_bucket=Bucket.BIJOUTERIE, src_bijouterie_id=b.bijouterie_id,
-#                                     dst_bucket=Bucket.EXTERNAL,
-#                                     unit_cost=None, achat=achat, achat_ligne=None, user=user,
-#                                     reason="Rebase achat : retrait ancien stock (bijouterie)"
-#                                 )
-#                         if qty_left > 0:
-#                             raise ValueError(
-#                                 f"Stock global insuffisant pour retirer {total_qty} du produit {produit_id} (reste {qty_left})."
-#                             )
-#         except ValueError as e:
-#             return Response({"detail": str(e)}, status=409)
-
-#         # 2) Extourne écriture comptable liée à l’ancien achat
-#         reverse_purchase_entry(achat, user=user)
-
-#         # 3) Supprime anciennes lignes
-#         AchatProduit.objects.filter(achat=achat).delete()
-
-#         # 4) Recrée lignes + réaffecte stock + mouvements PURCHASE_IN
-#         fz = payload["fournisseur"]
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=fz["telephone"],
-#             defaults={"nom": fz["nom"], "prenom": fz["prenom"], "address": fz.get("address", "")},
-#         )
-#         if achat.fournisseur_id != fournisseur.id:
-#             achat.fournisseur = fournisseur
-#             achat.save(update_fields=["fournisseur"])
-
-#         default_bijouterie_id = payload.get("bijouterie_id")
-#         recap_stocks = []
-
-#         for item in payload["produits"]:
-#             produit: Produit = item["produit"]
-#             produit_id = produit.id
-#             qte = int(item["quantite"])
-#             pu  = Decimal(item["prix_achat_gramme"])
-#             tax = Decimal(item.get("tax", ZERO))
-
-#             ligne = AchatProduit.objects.create(
-#                 achat=achat, produit=produit, quantite=qte, prix_achat_gramme=pu, tax=tax, fournisseur=fournisseur
-#             )
-
-#             affectations = item.get("affectations")
-#             if affectations:
-#                 total_aff = sum(int(a["quantite"]) for a in affectations)
-#                 if total_aff > qte:
-#                     return Response({"detail": "Somme des affectations > quantité."}, status=400)
-
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     qa  = int(aff["quantite"])
-#                     st = self._inc_stock(produit_id, bid, qa)
-#                     recap_stocks.append({"produit_id": produit_id, "bijouterie_id": bid, "reserved": False, "delta": qa, "stock": st.quantite})
-#                     log_move(
-#                         produit=produit, qty=qa, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=pu, achat=achat, achat_ligne=ligne, user=user, reason="Rebase achat : réaffectation"
-#                     )
-
-#                 reste = qte - total_aff
-#                 if reste > 0:
-#                     st = self._inc_stock(produit_id, None, reste)
-#                     recap_stocks.append({"produit_id": produit_id, "bijouterie_id": None, "reserved": True, "delta": reste, "stock": st.quantite})
-#                     log_move(
-#                         produit=produit, qty=reste, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=pu, achat=achat, achat_ligne=ligne, user=user, reason="Rebase achat : réaffectation (réservé)"
-#                     )
-#             else:
-#                 line_bij = item.get("bijouterie_id", default_bijouterie_id)
-#                 if line_bij in (None, "", 0):
-#                     st = self._inc_stock(produit_id, None, qte)
-#                     recap_stocks.append({"produit_id": produit_id, "bijouterie_id": None, "reserved": True, "delta": qte, "stock": st.quantite})
-#                     log_move(
-#                         produit=produit, qty=qte, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#                         unit_cost=pu, achat=achat, achat_ligne=ligne, user=user, reason="Rebase achat : réaffectation (réservé)"
-#                     )
-#                 else:
-#                     bid = int(line_bij)
-#                     st = self._inc_stock(produit_id, bid, qte)
-#                     recap_stocks.append({"produit_id": produit_id, "bijouterie_id": bid, "reserved": False, "delta": qte, "stock": st.quantite})
-#                     log_move(
-#                         produit=produit, qty=qte, movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=pu, achat=achat, achat_ligne=ligne, user=user, reason="Rebase achat : réaffectation"
-#                     )
-
-#         # Totaux + écriture comptable (nouvelle)
-#         achat.update_total(save=True)
-#         post_purchase_entry(achat, user=user)
-
-#         return Response(
-#             {"message": "Achat mis à jour (rebase) avec succès", "achat": AchatSerializer(achat).data, "stocks": recap_stocks},
-#             status=200
-#         )
-
-
-# # même helper rôle que d’habitude
-# def _role_ok(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-
-# class AchatCreateView(APIView):
-#     """POST: crée un achat + lignes, met à jour les stocks, loggue l'inventaire et poste la compta."""
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Créer un achat (stocks + mouvements d’inventaire + écriture comptable)",
-#         request_body=AchatCreateSerializer,
-#         responses={201: AchatSerializer, 403: "Accès refusé"},
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         ser = AchatCreateSerializer(data=request.data)
-#         ser.is_valid(raise_exception=True)
-
-#         achat = create_purchase(ser.validated_data, user)  # ✅ automatise inventaire + compta
-#         return Response(
-#             {"message": "Achat créé", "achat": AchatSerializer(achat).data},
-#             status=201
-#         )
-
-
-# # ---------- helpers simples ----------
-# def _as_decimal(val, default="0.00") -> Decimal:
-#     if val is None or val == "":
-#         return Decimal(default)
-#     return Decimal(str(val))
-
-# def _role_ok(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-# def _parse_produit_id(raw):
-#     """
-#     Accepte: 5 / "5" / {"id": 5}
-#     """
-#     if isinstance(raw, dict) and "id" in raw:
-#         return int(raw["id"])
-#     if isinstance(raw, (int, str)) and str(raw).isdigit():
-#         return int(raw)
-#     raise ValueError("`produit` doit être un id (int/str) ou {'id': int}.")
-
-# def upsert_stock_increment(produit_id: int, bijouterie_id: int | None, delta_qty: int):
-#     """
-#     Incrémente le stock:
-#     - bijouterie_id=None  -> stock réservé (bijouterie NULL) avec reservation_key 'RES-<produit_id>'
-#     - sinon -> stock attribué à la bijouterie.
-#     """
-#     if delta_qty <= 0:
-#         return None
-
-#     if bijouterie_id is None:
-#         reservation_key = f"RES-{produit_id}"
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie=None,
-#                 reservation_key=reservation_key,  # champ unique pour MySQL
-#                 defaults={"quantite": 0},
-#             )
-#         )
-#     else:
-#         get_object_or_404(Bijouterie, pk=bijouterie_id)
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie_id=bijouterie_id,
-#                 defaults={"quantite": 0},
-#             )
-#         )
-
-#     Stock.objects.filter(pk=stock.pk).update(quantite=F("quantite") + int(delta_qty))
-#     stock.refresh_from_db(fields=["quantite"])
-#     return stock
-
-
-# class AchatCreateView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Créer un achat + lignes + affectations (réservé/bijouterie)",
-#         operation_description=(
-#             "Crée un achat (fournisseur + lignes). Pour chaque ligne :\n"
-#             "- soit fournir `affectations=[{bijouterie_id, quantite}, ...]` pour ventiler la quantité entre bijouteries,\n"
-#             "- soit fournir `bijouterie_id` (global ou par ligne) pour tout affecter à une bijouterie,\n"
-#             "Le **reste non affecté** est placé en **stock réservé** (bijouterie=NULL)."
-#         ),
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["fournisseur", "produits"],
-#             properties={
-#                 "bijouterie_id": openapi.Schema(
-#                     type=openapi.TYPE_INTEGER,
-#                     description="Bijouterie par défaut (optionnel, 0/null => réservé)."
-#                 ),
-#                 "fournisseur": openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     required=["nom", "prenom", "telephone"],
-#                     properties={
-#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "address": openapi.Schema(type=openapi.TYPE_STRING),
-#                     }
-#                 ),
-#                 "produits": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit", "quantite", "prix_achat_gramme"],
-#                         properties={
-#                             # ⚠️ ici on choisit INT pour éviter l'erreur "Value must be a string"
-#                             "produit": openapi.Schema(
-#                                 type=openapi.TYPE_INTEGER,
-#                                 description="ID du produit (ex: 1)."
-#                             ),
-#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                             "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_STRING, description="Decimal as string"),
-#                             "tax": openapi.Schema(type=openapi.TYPE_STRING, default="0.00"),
-#                             "bijouterie_id": openapi.Schema(
-#                                 type=openapi.TYPE_INTEGER,
-#                                 description="Si fixé, affecte toute la ligne à cette bijouterie. 0/null => réservé",
-#                                 nullable=True
-#                             ),
-#                             "affectations": openapi.Schema(
-#                                 type=openapi.TYPE_ARRAY,
-#                                 description="Répartition fine par bijouterie ; la somme des quantités <= quantite",
-#                                 items=openapi.Schema(
-#                                     type=openapi.TYPE_OBJECT,
-#                                     required=["bijouterie_id", "quantite"],
-#                                     properties={
-#                                         "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                                         "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                                     }
-#                                 )
-#                             ),
-#                         }
-#                     )
-#                 ),
-#             },
-#             example={
-#                 "bijouterie_id": 0,
-#                 "fournisseur": {"nom": "awa", "prenom": "ba", "telephone": "776765445", "address": "Rufisque"},
-#                 "produits": [
-#                     {
-#                         "produit": 1,                # <-- int simple
-#                         "quantite": 50,
-#                         "prix_achat_gramme": "47000",
-#                         "tax": "0.00",
-#                         "bijouterie_id": 0,
-#                         "affectations": [
-#                             {"bijouterie_id": 1, "quantite": 30}
-#                         ]
-#                     }
-#                 ]
-#             }
-#         ),
-#         responses={201: AchatSerializer},
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         data = request.data or {}
-
-#         # ------- Fournisseur -------
-#         fournisseur_data = data.get("fournisseur") or {}
-#         for key in ("nom", "prenom", "telephone"):
-#             if key not in fournisseur_data:
-#                 return Response({"detail": f"Champ fournisseur manquant: {key}"}, status=400)
-
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=fournisseur_data["telephone"],
-#             defaults={
-#                 "nom": fournisseur_data["nom"],
-#                 "prenom": fournisseur_data["prenom"],
-#                 "address": fournisseur_data.get("address", ""),
-#             },
-#         )
-
-#         # ------- Achat -------
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         default_bijouterie_id = data.get("bijouterie_id")
-#         stocks_result = []
-
-#         # ------- Lignes -------
-#         items = data.get("produits") or []
-#         if not items:
-#             return Response({"detail": "Aucun produit fourni."}, status=400)
-
-#         try:
-#             for item in items:
-#                 # produit peut arriver sous plusieurs formes: 1 / "1" / {"id": 1}
-#                 try:
-#                     produit_id = _parse_produit_id(item.get("produit"))
-#                 except ValueError as e:
-#                     return Response({"detail": str(e)}, status=400)
-
-#                 quantite = int(item["quantite"])
-#                 if quantite <= 0:
-#                     return Response({"detail": "La quantité doit être > 0."}, status=400)
-
-#                 prix_achat_gramme = _as_decimal(item.get("prix_achat_gramme"), "0.00")
-#                 tax = _as_decimal(item.get("tax"), "0.00")
-
-#                 produit = get_object_or_404(Produit, pk=produit_id)
-
-#                 # Crée la ligne d'achat (le modèle calcule sous_total et update_total())
-#                 AchatProduit.objects.create(
-#                     achat=achat,
-#                     produit=produit,
-#                     quantite=quantite,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     tax=tax,
-#                     fournisseur=fournisseur,
-#                 )
-
-#                 # ---- Affectations ----
-#                 affectations = item.get("affectations")
-#                 if affectations:
-#                     somme_aff = sum(int(a.get("quantite", 0)) for a in affectations)
-#                     if somme_aff > quantite:
-#                         return Response(
-#                             {"detail": "La somme des affectations dépasse la quantité de la ligne."},
-#                             status=400,
-#                         )
-
-#                     # 1) Ventile vers les bijouteries
-#                     for aff in affectations:
-#                         bid = int(aff["bijouterie_id"])
-#                         q = int(aff["quantite"])
-#                         if q <= 0:
-#                             continue
-#                         st = upsert_stock_increment(produit_id, bid, q)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": bid,
-#                             "reserved": False,
-#                             "delta": q,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-
-#                     # 2) Reste en réservé
-#                     reste = quantite - somme_aff
-#                     if reste > 0:
-#                         st = upsert_stock_increment(produit_id, None, reste)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": None,
-#                             "reserved": True,
-#                             "delta": reste,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-
-#                 else:
-#                     # Pas d'affectations : on prend bijouterie_id de la ligne sinon défaut global
-#                     line_bijouterie_id = item.get("bijouterie_id", default_bijouterie_id)
-#                     if line_bijouterie_id in (None, "", 0):
-#                         st = upsert_stock_increment(produit_id, None, quantite)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": None,
-#                             "reserved": True,
-#                             "delta": quantite,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-#                     else:
-#                         bid = int(line_bijouterie_id)
-#                         st = upsert_stock_increment(produit_id, bid, quantite)
-#                         stocks_result.append({
-#                             "produit_id": produit_id,
-#                             "bijouterie_id": bid,
-#                             "reserved": False,
-#                             "delta": quantite,
-#                             "stock_qte_apres": st.quantite,
-#                         })
-
-#             # Totaux HT/TTC
-#             achat.update_total(save=True)
-
-#             return Response({
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "stocks": stocks_result,
-#             }, status=201)
-
-#         except KeyError:
-#             return Response({"detail": "Structure de ligne invalide."}, status=400)
-#         except Produit.DoesNotExist:
-#             return Response({"detail": "Produit introuvable."}, status=400)
-#         except Bijouterie.DoesNotExist:
-#             return Response({"detail": "Bijouterie introuvable."}, status=400)
-#         except Exception as e:
-#             return Response({"detail": str(e)}, status=500)
-
-
-
-# def _role_ok(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-# def _as_decimal(val, default="0.00") -> Decimal:
-#     if val in (None, ""):
-#         return Decimal(default)
-#     return Decimal(str(val))
-
-# def _parse_produit_id(raw) -> int:
-#     if isinstance(raw, dict):
-#         if "id" not in raw:
-#             raise ValueError("Champ 'produit.id' manquant.")
-#         return int(raw["id"])
-#     return int(raw)
-
-# class AchatCreateView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Créer un achat + lignes + affectations (réservé/bijouterie)",
-#         operation_description=(
-#             "Crée un achat (fournisseur + lignes). Pour chaque ligne :\n"
-#             "- **affectations** = liste de `{bijouterie_id, quantite}` pour distribuer la quantité entre bijouteries,\n"
-#             "- **si pas d'affectations**, **toute la quantité** va en **stock réservé** (bijouterie=NULL).\n"
-#             "👉 Il n'y a **pas** de champ `bijouterie_id` global ni par ligne."
-#         ),
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["fournisseur", "produits"],
-#             properties={
-#                 "fournisseur": openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     required=["nom", "prenom", "telephone"],
-#                     properties={
-#                         "nom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "address": openapi.Schema(type=openapi.TYPE_STRING),
-#                     }
-#                 ),
-#                 "produits": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["produit", "quantite", "prix_achat_gramme"],
-#                         properties={
-#                             "produit": openapi.Schema(
-#                                 type=openapi.TYPE_INTEGER,
-#                                 description="ID du produit (ex: 1)."
-#                             ),
-#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                             "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_STRING, description="Decimal as string"),
-#                             "tax": openapi.Schema(type=openapi.TYPE_STRING, default="0.00"),
-#                             "affectations": openapi.Schema(
-#                                 type=openapi.TYPE_ARRAY,
-#                                 description="Répartition fine par bijouterie ; la somme des quantités <= quantite. Le reste va en réservé.",
-#                                 items=openapi.Schema(
-#                                     type=openapi.TYPE_OBJECT,
-#                                     required=["bijouterie_id", "quantite"],
-#                                     properties={
-#                                         "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-#                                         "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
-#                                     }
-#                                 )
-#                             ),
-#                         }
-#                     )
-#                 ),
-#             },
-#             example={
-#                 "fournisseur": {"nom": "awa", "prenom": "ba", "telephone": "776765445", "address": "Rufisque"},
-#                 "produits": [
-#                     {
-#                         "produit": 1,
-#                         "quantite": 50,
-#                         "prix_achat_gramme": "47000.00",
-#                         "tax": "0.00",
-#                         "affectations": [
-#                             {"bijouterie_id": 1, "quantite": 30}   # 30 à la bijouterie 1
-#                         ]                                             # 20 restants => réservé
-#                     },
-#                     {
-#                         "produit": 2,
-#                         "quantite": 10,
-#                         "prix_achat_gramme": "1000.00"
-#                         # pas d'affectations => 10 en réservé
-#                     }
-#                 ]
-#             }
-#         ),
-#         responses={201: AchatSerializer, 403: "Accès refusé"},
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         ser = AchatCreateSerializer(data=request.data)
-#         ser.is_valid(raise_exception=True)
-#         data = ser.validated_data
-
-#         # Fournisseur (upsert par téléphone)
-#         f = data["fournisseur"]
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=f["telephone"],
-#             defaults={"nom": f["nom"], "prenom": f["prenom"], "address": f.get("address", "")},
-#         )
-
-#         # Achat
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         # Lignes
-#         for item in data["produits"]:
-#             produit_id = _parse_produit_id(item["produit"])
-#             produit = get_object_or_404(Produit, pk=produit_id)
-
-#             quantite = int(item["quantite"])
-#             prix_achat_gramme = item["prix_achat_gramme"]
-#             tax = item.get("tax", Decimal("0.00"))
-
-#             ap = AchatProduit.objects.create(
-#                 achat=achat,
-#                 produit=produit,
-#                 quantite=quantite,
-#                 prix_achat_gramme=prix_achat_gramme,
-#                 tax=tax,
-#                 fournisseur=fournisseur,
-#             )
-
-#             affectations = item.get("affectations") or []
-#             if affectations:
-#                 somme_aff = 0
-#                 # 1) ventilations bijouteries
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     q = int(aff["quantite"])
-#                     if q <= 0:
-#                         continue
-#                     somme_aff += q
-#                     upsert_stock_increment(produit_id, bid, q)  # attribué
-#                 # 2) reste en réservé
-#                 reste = quantite - somme_aff
-#                 if reste > 0:
-#                     upsert_stock_increment(produit_id, None, reste)  # réservé
-#             else:
-#                 # Pas d'affectations -> tout en réservé
-#                 upsert_stock_increment(produit_id, None, quantite)
-
-#         # Totaux
-#         achat.update_total(save=True)
-
-#         return Response(
-#             {"message": "Achat créé avec succès", "achat": AchatSerializer(achat).data},
-#             status=201
-#         )
-
-
-# # (Optionnel) log des mouvements ; fallback no-op si le module n'existe pas
-# try:
-#     from inventory.services import log_move
-# except Exception:
-#     def log_move(**kwargs):
-#         return None
-
-
-# # ---------- Helpers ----------
-# def _role_ok(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-# def _stock_increment(produit_id: int, bijouterie_id: int | None, delta_qty: int):
-#     """
-#     Incrémente un bucket de stock :
-#       - bijouterie_id=None  -> stock réservé (bijouterie=NULL) + reservation_key='RES-<produit_id>'
-#       - sinon               -> stock attribué à la bijouterie
-#     Compatible MySQL : on s'appuie sur reservation_key pour le stock réservé.
-#     """
-#     if delta_qty <= 0:
-#         return None
-
-#     if bijouterie_id is None:
-#         reservation_key = f"RES-{produit_id}"
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie=None,
-#                 reservation_key=reservation_key,
-#                 defaults={"quantite": 0, "is_reserved": True},
-#             )
-#         )
-#     else:
-#         # Valider la bijouterie
-#         get_object_or_404(Bijouterie, pk=int(bijouterie_id))
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie_id=int(bijouterie_id),
-#                 defaults={"quantite": 0, "is_reserved": False},
-#             )
-#         )
-
-#     Stock.objects.filter(pk=stock.pk).update(quantite=F("quantite") + int(delta_qty))
-#     stock.refresh_from_db(fields=["quantite"])
-#     return stock
-# # ------------------------------
-
-
-# class AchatCreateView(APIView):
-#     """
-#     Crée un achat (fournisseur + lignes), met à jour les stocks et journalise les mouvements d’inventaire.
-
-#     - Chaque ligne produit peut contenir `affectations=[{bijouterie_id, quantite}, ...]`.
-#     - La **somme** des affectations doit être **≤** à la quantité de la ligne.
-#     - Le **reste non affecté** va automatiquement en **stock réservé** (bijouterie=NULL).
-#     - Le champ `produit` est un **entier** (ID du produit).
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Créer un achat (stocks + mouvements d’inventaire)",
-#         request_body=AchatCreateSerializer,
-#         responses={201: AchatSerializer, 403: "Accès refusé"},
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         ser = AchatCreateSerializer(data=request.data)
-#         ser.is_valid(raise_exception=True)
-#         data = ser.validated_data
-
-#         # -------- Fournisseur (upsert par téléphone) --------
-#         f = data["fournisseur"]
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=f["telephone"],
-#             defaults={
-#                 "nom": f["nom"],
-#                 "prenom": f["prenom"],
-#                 "address": f.get("address", ""),
-#             },
-#         )
-
-#         # -------- Achat --------
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         # -------- Lignes --------
-#         for item in data["produits"]:
-#             # produit est un INT (pas de string)
-#             produit_id: int = int(item["produit"])
-#             produit = get_object_or_404(Produit, pk=produit_id)
-
-#             quantite: int = int(item["quantite"])
-#             prix_achat_gramme: Decimal = item["prix_achat_gramme"]
-#             tax: Decimal = item.get("tax", Decimal("0.00"))
-
-#             # Crée la ligne d’achat (le modèle calcule sous_total + achat.update_total())
-#             ap = AchatProduit.objects.create(
-#                 achat=achat,
-#                 produit=produit,
-#                 quantite=quantite,
-#                 prix_achat_gramme=prix_achat_gramme,
-#                 tax=tax,
-#                 fournisseur=fournisseur,
-#             )
-
-#             # ---- Affectations éventuelles ----
-#             affectations = item.get("affectations") or []
-#             if affectations:
-#                 somme_aff = 0
-#                 # 1) Ventilation vers les bijouteries
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     q = int(aff["quantite"])
-#                     if q <= 0:
-#                         continue
-#                     somme_aff += q
-
-#                     _stock_increment(produit_id, bid, q)
-#                     # Mouvement inventaire : Achat -> Bijouterie
-#                     log_move(
-#                         produit=produit,
-#                         qty=q,
-#                         movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL,
-#                         dst_bucket=Bucket.BIJOUTERIE,
-#                         dst_bijouterie_id=bid,
-#                         unit_cost=prix_achat_gramme,
-#                         achat=achat,
-#                         achat_ligne=ap,
-#                         user=user,
-#                         reason="Arrivée achat (affectation directe)",
-#                     )
-
-#                 # 2) Reste en réservé
-#                 reste = quantite - somme_aff
-#                 if reste > 0:
-#                     _stock_increment(produit_id, None, reste)
-#                     log_move(
-#                         produit=produit,
-#                         qty=reste,
-#                         movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL,
-#                         dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme,
-#                         achat=achat,
-#                         achat_ligne=ap,
-#                         user=user,
-#                         reason="Arrivée achat (reste en réservé)",
-#                     )
-
-#             else:
-#                 # Pas d'affectations -> tout en réservé
-#                 _stock_increment(produit_id, None, quantite)
-#                 log_move(
-#                     produit=produit,
-#                     qty=quantite,
-#                     movement_type=MovementType.PURCHASE_IN,
-#                     src_bucket=Bucket.EXTERNAL,
-#                     dst_bucket=Bucket.RESERVED,
-#                     unit_cost=prix_achat_gramme,
-#                     achat=achat,
-#                     achat_ligne=ap,
-#                     user=user,
-#                     reason="Arrivée achat (réservé)",
-#                 )
-
-#         # -------- Totaux --------
-#         achat.update_total(save=True)
-
-#         return Response(
-#             {"message": "Achat créé avec succès", "achat": AchatSerializer(achat).data},
-#             status=201
-#         )
-
-
-# (Optionnel) log des mouvements ; no-op si le module n'existe pas
-try:
-    from inventory.services import log_move
-except Exception:
-    def log_move(**kwargs):
-        return None
-
-
-# ---------- Helpers ----------
-# def _role_ok(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-# def _stock_increment(produit_id: int, bijouterie_id: int | None, delta_qty: int):
-#     """
-#     Incrémente un bucket de stock :
-#       - bijouterie_id=None  -> stock réservé (bijouterie=NULL) + reservation_key='RES-<produit_id>'
-#       - sinon               -> stock attribué à la bijouterie.
-#     Compatible MySQL via reservation_key.
-#     """
-#     if delta_qty <= 0:
-#         return None
-
-#     if bijouterie_id is None:
-#         reservation_key = f"RES-{produit_id}"
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie=None,
-#                 reservation_key=reservation_key,
-#                 defaults={"quantite": 0, "is_reserved": True},
-#             )
-#         )
-#     else:
-#         # Valider la bijouterie
-#         get_object_or_404(Bijouterie, pk=int(bijouterie_id))
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie_id=int(bijouterie_id),
-#                 defaults={"quantite": 0, "is_reserved": False},
-#             )
-#         )
-
-#     Stock.objects.filter(pk=stock.pk).update(quantite=F("quantite") + int(delta_qty))
-#     stock.refresh_from_db(fields=["quantite"])
-#     return stock
-# # ------------------------------
-
-
-# class AchatCreateView(APIView):
-#     """
-#     Crée un achat (fournisseur + lignes), met à jour les stocks et journalise les mouvements d’inventaire.
-
-#     - Chaque ligne produit peut contenir `affectations=[{bijouterie_id, quantite}, ...]`.
-#     - La somme des affectations doit être ≤ à la quantité de la ligne.
-#     - Le reste non affecté va automatiquement en stock réservé (bijouterie=NULL).
-#     - Le champ `produit` est un entier (ID).
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Créer un achat (stocks + mouvements d’inventaire)",
-#         request_body=AchatCreateSerializer,             # ✅ on utilise TON serializer d’entrée
-#         responses={201: AchatSerializer, 403: "Accès refusé"},  # ✅ et TON serializer de sortie
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         # ✅ Validation via TON serializer
-#         ser = AchatCreateSerializer(data=request.data)
-#         ser.is_valid(raise_exception=True)
-#         data = ser.validated_data
-
-#         # -------- Fournisseur (upsert par téléphone) --------
-#         f = data["fournisseur"]
-#         fournisseur, _ = Fournisseur.objects.get_or_create(
-#             telephone=f["telephone"],
-#             defaults={"nom": f["nom"], "prenom": f["prenom"], "address": f.get("address", "")},
-#         )
-
-#         # -------- Achat --------
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         # Cache bijouterie (pour éviter N requêtes pour les noms)
-#         bij_cache: dict[int, Bijouterie] = {}
-
-#         # >>> Récap allocations pour la réponse
-#         allocations_summary: list[dict] = []
-
-#         # -------- Lignes --------
-#         for item in data["produits"]:
-#             # 🔸 ICI: produit est déjà un int grâce à ProduitRefField
-#             produit_id: int = int(item["produit"])
-#             produit = get_object_or_404(Produit, pk=produit_id)
-
-#             quantite: int = int(item["quantite"])
-#             prix_achat_gramme: Decimal = item["prix_achat_gramme"]
-#             tax: Decimal = item.get("tax", Decimal("0.00"))
-
-#             # Crée la ligne d’achat (le modèle calcule sous_total + achat.update_total())
-#             ap = AchatProduit.objects.create(
-#                 achat=achat,
-#                 produit=produit,
-#                 quantite=quantite,
-#                 prix_achat_gramme=prix_achat_gramme,
-#                 tax=tax,
-#                 fournisseur=fournisseur,
-#             )
-
-#             # Récap par ligne pour la réponse
-#             line_summary = {
-#                 "produit_id": produit.id,
-#                 "produit": produit.nom,
-#                 "total_ligne": quantite,
-#                 "details": [],  # [{bijouterie_id, bijouterie, quantite}]
-#                 "reserved": 0,
-#             }
-
-#             # ---- Affectations éventuelles ----
-#             affectations = item.get("affectations") or []
-#             if affectations:
-#                 somme_aff = 0
-
-#                 # 1) Ventilation vers les bijouteries
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     q = int(aff["quantite"])
-#                     if q <= 0:
-#                         continue
-#                     somme_aff += q
-
-#                     _stock_increment(produit_id, bid, q)
-#                     # Mouvement inventaire : Achat -> Bijouterie
-#                     log_move(
-#                         produit=produit,
-#                         qty=q,
-#                         movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL,
-#                         dst_bucket=Bucket.BIJOUTERIE,
-#                         dst_bijouterie_id=bid,
-#                         unit_cost=prix_achat_gramme,
-#                         achat=achat,
-#                         achat_ligne=ap,
-#                         user=user,
-#                         reason="Arrivée achat (affectation directe)",
-#                     )
-
-#                     if bid not in bij_cache:
-#                         bij_cache[bid] = Bijouterie.objects.only("id", "nom").get(pk=bid)
-#                     line_summary["details"].append({
-#                         "bijouterie_id": bid,
-#                         "bijouterie": bij_cache[bid].nom,
-#                         "quantite": q,
-#                     })
-
-#                 # 2) Reste en réservé
-#                 reste = quantite - somme_aff
-#                 if reste > 0:
-#                     _stock_increment(produit_id, None, reste)
-#                     log_move(
-#                         produit=produit,
-#                         qty=reste,
-#                         movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL,
-#                         dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme,
-#                         achat=achat,
-#                         achat_ligne=ap,
-#                         user=user,
-#                         reason="Arrivée achat (reste en réservé)",
-#                     )
-#                     line_summary["reserved"] = reste
-
-#             else:
-#                 # Pas d'affectations -> tout en réservé
-#                 _stock_increment(produit_id, None, quantite)
-#                 log_move(
-#                     produit=produit,
-#                     qty=quantite,
-#                     movement_type=MovementType.PURCHASE_IN,
-#                     src_bucket=Bucket.EXTERNAL,
-#                     dst_bucket=Bucket.RESERVED,
-#                     unit_cost=prix_achat_gramme,
-#                     achat=achat,
-#                     achat_ligne=ap,
-#                     user=user,
-#                     reason="Arrivée achat (réservé)",
-#                 )
-#                 line_summary["reserved"] = quantite
-
-#             allocations_summary.append(line_summary)
-
-#         # -------- Totaux --------
-#         achat.update_total(save=True)
-
-#         # ✅ Sortie avec TON serializer + recap allocations
-#         return Response(
-#             {
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "allocations": allocations_summary,
-#             },
-#             status=201
-#         )
 
 
 # # (Optionnel) log des mouvements ; no-op si le module n'existe pas
@@ -3913,1074 +689,7 @@ except Exception:
 # # ------------------------------
 
 
-# class AchatCreateView(APIView):
-#     """
-#     Crée un achat (fournisseur + lignes), gère les lots, met à jour les stocks et journalise les mouvements.
 
-#     - Chaque ligne produit peut contenir soit :
-#         A) des 'lots' : [{lot_code, quantite, affectations=[{bijouterie_id, quantite}, ...]}, ...]
-#            -> La somme des quantités des lots DOIT = quantite de la ligne.
-#            -> Pour chaque lot : somme des 'affectations' ≤ quantite du lot. Reste => réservé.
-#         B) ou des 'affectations' directement (sans lots) :
-#            -> somme des affectations ≤ quantite de la ligne. Reste => réservé.
-
-#     - Le champ 'produit' est un entier (ID).
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         # 1) Validation d'entrée
-#         ser = AchatCreateSerializer(data=request.data)
-#         ser.is_valid(raise_exception=True)
-#         data = ser.validated_data
-
-#         # 2) Upsert fournisseur (par téléphone)
-#         f = data["fournisseur"]
-#         fournisseur, _ = fournisseur_upsert_par_telephone(f)
-
-#         # 3) Création de l'achat (numero_achat généré en save() si manquant)
-#         achat = Achat.objects.create(fournisseur=fournisseur)
-
-#         # caches simples
-#         bij_cache = {}  # id -> instance (nom)
-#         allocations_summary = []  # récap pour la réponse
-
-#         # 4) Boucle lignes
-#         for item in data["produits"]:
-#             produit_id = int(item["produit"])
-#             produit = get_object_or_404(Produit, pk=produit_id)
-
-#             quantite = int(item["quantite"])
-#             if quantite <= 0:
-#                 return Response({"detail": "La quantité doit être > 0."}, status=400)
-
-#             prix_achat_gramme: Decimal = item["prix_achat_gramme"]
-#             # Si tu gères un taux côté ligne : item.get("tax_rate") etc. (facultatif)
-
-#             # Créer la ligne (les calculs PHT/Taxe se font dans le model save())
-#             ap = AchatProduit.objects.create(
-#                 achat=achat,
-#                 produit=produit,
-#                 quantite=quantite,
-#                 prix_achat_gramme=prix_achat_gramme,
-#                 # ex: tax_rate=item.get("tax_rate", Decimal("0.00"))
-#             )
-
-#             line_summary = {
-#                 "produit_id": produit.id,
-#                 "produit": produit.nom,
-#                 "total_ligne": quantite,
-#                 "details": [],   # [{bijouterie_id, bijouterie, quantite, lot_code?}]
-#                 "reserved": 0,
-#             }
-
-#             lots = item.get("lots") or []
-#             affectations = item.get("affectations") or []
-
-#             # MODE A — avec lots
-#             if lots:
-#                 total_lots = 0
-#                 for lot_item in lots:
-#                     lot_code = (lot_item.get("lot_code") or "").strip().upper()
-#                     lot_qty = int(lot_item.get("quantite") or 0)
-#                     if not lot_code or lot_qty <= 0:
-#                         return Response({"detail": "Chaque lot doit avoir un lot_code et une quantite > 0."}, status=400)
-#                     total_lots += lot_qty
-
-#                     # Créer le lot
-#                     lot = AchatProduitLot.objects.create(
-#                         achat_ligne=ap,
-#                         lot_code=lot_code,
-#                         quantite_total=lot_qty,
-#                         quantite_restante=lot_qty,
-#                         prix_achat_gramme=prix_achat_gramme,
-#                         date_peremption=lot_item.get("date_peremption"),
-#                     )
-
-#                     # Affectations de ce lot
-#                     somme_aff = 0
-#                     for aff in (lot_item.get("affectations") or []):
-#                         bid = int(aff["bijouterie_id"])
-#                         q = int(aff["quantite"])
-#                         if q <= 0:
-#                             continue
-#                         if somme_aff + q > lot_qty:
-#                             return Response({"detail": f"Affectations > quantité du lot {lot_code}"}, status=400)
-#                         somme_aff += q
-
-#                         # Réception directe en bijouterie
-#                         _stock_increment(produit_id=produit_id, bijouterie_id=bid, delta_qty=q, lot_id=lot.pk)
-#                         log_move(
-#                             produit=produit,
-#                             qty=q,
-#                             movement_type=MovementType.PURCHASE_IN,
-#                             src_bucket=Bucket.EXTERNAL,
-#                             dst_bucket=Bucket.BIJOUTERIE,
-#                             dst_bijouterie_id=bid,
-#                             unit_cost=prix_achat_gramme,
-#                             achat=achat,
-#                             achat_ligne=ap,
-#                             lot=lot,
-#                             user=user,
-#                             reason=f"Arrivée achat (lot {lot_code} → bijouterie)",
-#                         )
-
-#                         if bid not in bij_cache:
-#                             bij_cache[bid] = Bijouterie.objects.only("id", "nom").get(pk=bid)
-#                         line_summary["details"].append({
-#                             "bijouterie_id": bid,
-#                             "bijouterie": bij_cache[bid].nom,
-#                             "quantite": q,
-#                             "lot_code": lot_code,
-#                         })
-
-#                     # Reste du lot -> réservé
-#                     reste = lot_qty - somme_aff
-#                     if reste > 0:
-#                         _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=reste, lot_id=lot.pk)
-#                         log_move(
-#                             produit=produit,
-#                             qty=reste,
-#                             movement_type=MovementType.PURCHASE_IN,
-#                             src_bucket=Bucket.EXTERNAL,
-#                             dst_bucket=Bucket.RESERVED,
-#                             unit_cost=prix_achat_gramme,
-#                             achat=achat,
-#                             achat_ligne=ap,
-#                             lot=lot,
-#                             user=user,
-#                             reason=f"Arrivée achat (lot {lot_code} en réservé)",
-#                         )
-#                         line_summary["reserved"] += reste
-
-#                 if total_lots != quantite:
-#                     return Response(
-#                         {"detail": f"La somme des lots ({total_lots}) doit égaler la quantité de la ligne ({quantite})."},
-#                         status=400,
-#                     )
-
-#             # MODE B — sans lots (affectations directes ou tout réservé)
-#             else:
-#                 if affectations:
-#                     somme_aff = 0
-#                     for aff in affectations:
-#                         bid = int(aff["bijouterie_id"])
-#                         q = int(aff["quantite"])
-#                         if q <= 0:
-#                             continue
-#                         somme_aff += q
-
-#                         _stock_increment(produit_id=produit_id, bijouterie_id=bid, delta_qty=q, lot_id=None)
-#                         log_move(
-#                             produit=produit,
-#                             qty=q,
-#                             movement_type=MovementType.PURCHASE_IN,
-#                             src_bucket=Bucket.EXTERNAL,
-#                             dst_bucket=Bucket.BIJOUTERIE,
-#                             dst_bijouterie_id=bid,
-#                             unit_cost=prix_achat_gramme,
-#                             achat=achat,
-#                             achat_ligne=ap,
-#                             user=user,
-#                             reason="Arrivée achat (affectation directe)",
-#                         )
-
-#                         if bid not in bij_cache:
-#                             bij_cache[bid] = Bijouterie.objects.only("id", "nom").get(pk=bid)
-#                         line_summary["details"].append({
-#                             "bijouterie_id": bid,
-#                             "bijouterie": bij_cache[bid].nom,
-#                             "quantite": q,
-#                         })
-
-#                     # Reste -> réservé
-#                     reste = quantite - somme_aff
-#                     if reste > 0:
-#                         _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=reste, lot_id=None)
-#                         log_move(
-#                             produit=produit,
-#                             qty=reste,
-#                             movement_type=MovementType.PURCHASE_IN,
-#                             src_bucket=Bucket.EXTERNAL,
-#                             dst_bucket=Bucket.RESERVED,
-#                             unit_cost=prix_achat_gramme,
-#                             achat=achat,
-#                             achat_ligne=ap,
-#                             user=user,
-#                             reason="Arrivée achat (reste en réservé)",
-#                         )
-#                         line_summary["reserved"] = reste
-#                 else:
-#                     # Tout en réservé
-#                     _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=quantite, lot_id=None)
-#                     log_move(
-#                         produit=produit,
-#                         qty=quantite,
-#                         movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL,
-#                         dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme,
-#                         achat=achat,
-#                         achat_ligne=ap,
-#                         user=user,
-#                         reason="Arrivée achat (réservé)",
-#                     )
-#                     line_summary["reserved"] = quantite
-
-#             allocations_summary.append(line_summary)
-
-#         # 5) Totaux
-#         achat.update_total(save=True)
-
-#         # 6) Sortie
-#         return Response(
-#             {
-#                 "message": "Achat créé avec succès",
-#                 "achat": AchatSerializer(achat).data,
-#                 "allocations": allocations_summary,
-#             },
-#             status=201
-#         )
-
-
-# # -------- petit service fournisseur --------
-# def fournisseur_upsert_par_telephone(f_data: dict):
-#     """Crée ou récupère un fournisseur via son téléphone (upsert)."""
-#     from purchase.models import Fournisseur  # évite import circulaire
-#     tel = f_data["telephone"]
-#     defaults = {
-#         "nom": f_data.get("nom", ""),
-#         "prenom": f_data.get("prenom", ""),
-#         "address": f_data.get("address", ""),
-#     }
-#     return Fournisseur.objects.get_or_create(telephone=tel, defaults=defaults)
-# ------------------------AchatCancelView-----------------------
-# --- Mouvements d'inventaire ---
-try:
-    # Optionnel : si tu as un service centralisé
-    from inventory.services import log_move
-except Exception:
-    def log_move(**kwargs):
-        return None
-
-# Buckets / Types de mouvements (reprend tes enums)
-from inventory.models import MovementType, Bucket
-
-# ---------- Helpers locaux ----------
-def _role_ok(user) -> bool:
-    return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-def _reservation_key(produit_id: int, lot_id: Optional[int]) -> str:
-    return f"RES-{produit_id}-{lot_id or 'NOLOT'}"
-
-def _stock_is_lot_aware() -> bool:
-    """
-    True si Stock a un champ 'lot' ET une contrainte Unique(produit, bijouterie, lot).
-    """
-    has_lot = any(getattr(f, "name", "") == "lot" for f in Stock._meta.get_fields())
-    if not has_lot:
-        return False
-    for c in getattr(Stock._meta, "constraints", []):
-        fields = getattr(c, "fields", None)
-        if fields and tuple(fields) == ("produit", "bijouterie", "lot"):
-            return True
-    return False
-
-# Stock model minimal (adapte si besoin)
-from stock.models import Stock  # doit contenir: produit, bijouterie (nullable), quantite, is_reserved, reservation_key, (lot?) ...
-
-def _stock_increment(
-    *,
-    produit_id: int,
-    bijouterie_id: Optional[int],
-    delta_qty: int,
-    lot_id: Optional[int] = None,
-):
-    """
-    Incrémente le stock sans créer de doublons.
-
-    - Si ton modèle Stock est 'lot-aware' (Unique(produit, bijouterie, lot)) :
-        lookup = (produit, bijouterie, lot)  → on distingue les lots.
-    - Sinon (Unique(produit, bijouterie)) :
-        lookup = (produit, bijouterie) + lot ignoré côté stockage  → un seul 'réservé' global / produit.
-
-    ⚠️ Ne JAMAIS mettre reservation_key dans le lookup de get_or_create.
-    """
-    if delta_qty <= 0:
-        return None
-
-    lot_aware = _stock_is_lot_aware()
-
-    # Valider la bijouterie si fournie
-    if bijouterie_id is not None:
-        get_object_or_404(Bijouterie, pk=int(bijouterie_id))
-
-    # --- lookup = uniquement les champs d'unicité ---
-    lookup = {"produit_id": int(produit_id)}
-    if bijouterie_id is None:
-        lookup["bijouterie__isnull"] = True
-    else:
-        lookup["bijouterie_id"] = int(bijouterie_id)
-
-    if lot_aware:
-        lookup["lot_id"] = lot_id            # on utilise le lot (même si None)
-    else:
-        lookup["lot__isnull"] = True         # schéma non lot-aware → forcer lot NULL
-
-    defaults = {
-        "quantite": 0,
-        "is_reserved": (bijouterie_id is None),
-        "reservation_key": _reservation_key(produit_id, lot_id if lot_aware else None),
-    }
-
-    stock, _ = Stock.objects.select_for_update().get_or_create(**lookup, defaults=defaults)
-    Stock.objects.filter(pk=stock.pk).update(quantite=F("quantite") + int(delta_qty))
-    stock.refresh_from_db(fields=["quantite"])
-    return stock
-
-# -------- petit service fournisseur --------
-def fournisseur_upsert_par_telephone(f_data: dict):
-    """Crée ou récupère un fournisseur via son téléphone (upsert)."""
-    from purchase.models import Fournisseur  # évite import circulaire
-    tel = f_data["telephone"]
-    defaults = {
-        "nom": f_data.get("nom", ""),
-        "prenom": f_data.get("prenom", ""),
-        "address": f_data.get("address", ""),
-    }
-    return Fournisseur.objects.get_or_create(telephone=tel, defaults=defaults)
-
-# =========================
-#       CREATE VIEW
-# =========================
-class AchatCreateView(APIView):
-    """
-    Crée un achat (fournisseur + lignes), gère les lots, met à jour les stocks et journalise les mouvements.
-
-    - Chaque ligne produit peut contenir soit :
-        A) des 'lots' : [{lot_code, quantite, affectations=[{bijouterie_id, quantite}, ...]}, ...]
-           -> La somme des quantités des lots DOIT = quantite de la ligne.
-           -> Pour chaque lot : somme des 'affectations' ≤ quantite du lot. Reste => réservé.
-        B) ou des 'affectations' directement (sans lots) :
-           -> somme des affectations ≤ quantite de la ligne. Reste => réservé.
-
-    - Le champ 'produit' est un entier (ID).
-    """
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Créer un achat",
-        operation_description=dedent("""\
-            exemple:
-    
-            --------------------------------------
-            / Exemple JSON — Affectation par lot /
-            --------------------------------------
-            {
-            "fournisseur": {"nom": "Diallo", "prenom": "Awa", "telephone": "770000000"},
-            "produits": [
-                {
-                "produit": 12,
-                "quantite": 10,
-                "prix_achat_gramme": "4500.00",
-                "lots": [
-                    {
-                    "lot_code": "LOT-A1",
-                    "quantite": 6,
-                    "affectations": [
-                        {"bijouterie_id": 2, "quantite": 4},
-                        {"bijouterie_id": 5, "quantite": 1}
-                    ]
-                    },
-                    {
-                    "lot_code": "LOT-A2",
-                    "quantite": 4,
-                    "affectations": [
-                        {"bijouterie_id": 2, "quantite": 2}
-                    ]
-                    }
-                ]
-                }
-            ]
-            }
-            ---------------sortie----------------
-            Résultat (mouvements + stock) :
-            Bijouterie #2 : +6 (4 du A1, 2 du A2)
-            Bijouterie #5 : +1 (A1)
-            Réservé : +3 (1 restant du A1, 2 restants du A2)
-            
-            ---------------------------------------
-            Exemple JSON — Affectation directe    /
-            ---------------------------------------
-            {
-            "fournisseur": {"nom": "Kane", "prenom": "Moussa", "telephone": "780000000"},
-            "produits": [
-                {
-                "produit": 34,
-                "quantite": 8,
-                "prix_achat_gramme": "5200.00",
-                "affectations": [
-                    {"bijouterie_id": 3, "quantite": 5},
-                    {"bijouterie_id": 7, "quantite": 1}
-                ]
-                }
-            ]
-            }
-            ---------------Sortie Affectation directe-------------------
-            Résultat :
-            Bijouteries : #3 → +5, #7 → +1
-            Réservé : +2 (reste)
-            
-            -----------------------------------------------------------------
-            / Exemple JSON — Tout réservé (pas de lots, pas d’affectations) /
-            -----------------------------------------------------------------
-            {
-            "fournisseur": {"nom": "NDIAYE", "prenom": "Aminata", "telephone": "760000000"},
-            "produits": [
-                {
-                "produit": 50,
-                "quantite": 5,
-                "prix_achat_gramme": "6000.00"
-                }
-            ]
-            }
-
-            --------------------sortie pas d’affectations
-            Résultat :
-            Réservé : +5
-            Aucune bijouterie incrémentée
-        """),
-        request_body=AchatCreateSerializer,  # <- ton serializer d'entrée
-        responses={
-            201: openapi.Response(
-                description="Création réussie",
-                schema=AchatCreateResponseSerializer,  # <- ton serializer de sortie
-                examples={
-                    "application/json": {
-                        "message": "Achat créé avec succès",
-                        "achat": {
-                            "id": 42,
-                            "created_at": "2025-09-23T12:00:00Z",
-                            "fournisseur": {
-                                "id": 7, "nom": "Diallo", "prenom": "Awa",
-                                "telephone": "770000000", "address": "Dakar"
-                            },
-                            "montant_total_ht": "250000.00",
-                            "montant_total_ttc": "250000.00",
-                            "montant_total_tax": "0.00",
-                            "produits": [
-                                {
-                                    "id": 101,
-                                    "produit": {"id": 12, "nom": "Bague or", "sku": "BG-001", "poids": "5.00"},
-                                    "quantite": 10,
-                                    "prix_achat_gramme": "4500.00",
-                                    "sous_total_prix_achat": "225000.00",
-                                    "prix_achat_total_ttc": "225000.00",
-                                    "created_at": "2025-09-23T12:00:00Z",
-                                    "updated_at": "2025-09-23T12:00:00Z"
-                                }
-                            ]
-                        },
-                        "allocations": [
-                            {
-                                "produit_id": 12,
-                                "produit": "Bague or",
-                                "total_ligne": 10,
-                                "reserved": 2,
-                                "details": [
-                                    {"bijouterie_id": 2, "bijouterie": "Plateau", "quantite": 6},
-                                    {"bijouterie_id": 5, "bijouterie": "Almadies", "quantite": 2}
-                                ]
-                            }
-                        ]
-                    }
-                },
-            ),
-            400: openapi.Response(
-                description="Erreur de validation",
-                schema=openapi.Schema(  # schéma simple pour une erreur classique DRF
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "detail": openapi.Schema(type=openapi.TYPE_STRING)
-                    }
-                ),
-                examples={
-                    "application/json": {"detail": "La somme des lots (7) doit égaler la quantité de la ligne (5)."}
-                },
-            ),
-            403: openapi.Response(
-                description="Accès refusé",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={"detail": openapi.Schema(type=openapi.TYPE_STRING)},
-                ),
-                examples={"application/json": {"detail": "Access Denied"}},
-            ),
-        },
-        tags=["Achats"],
-    )
-    @transaction.atomic
-    def post(self, request):
-        user = request.user
-        if not _role_ok(user):
-            return Response({"detail": "Access Denied"}, status=403)
-
-        # 1) Validation d'entrée
-        ser = AchatCreateSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        data = ser.validated_data
-
-        # 2) Upsert fournisseur (par téléphone)
-        fournisseur, _ = fournisseur_upsert_par_telephone(data["fournisseur"])
-
-        # 3) Création de l'achat (numero_achat généré au save() si manquant)
-        achat = Achat.objects.create(fournisseur=fournisseur, description=data["fournisseur"].get("address", ""))
-
-        # caches simples
-        bij_cache = {}                # id -> instance (nom)
-        allocations_summary = []      # récap pour la réponse
-
-        # 4) Boucle lignes
-        for item in data["produits"]:
-            produit_id = int(item["produit"])
-            produit = get_object_or_404(Produit, pk=produit_id)
-
-            quantite = int(item["quantite"])
-            if quantite <= 0:
-                return Response({"detail": "La quantité doit être > 0."}, status=400)
-
-            prix_achat_gramme: Decimal = item["prix_achat_gramme"]
-
-            # Créer la ligne (les calculs PHT/Taxe se font dans le model save())
-            ap = AchatProduit.objects.create(
-                achat=achat,
-                produit=produit,
-                quantite=quantite,
-                prix_achat_gramme=prix_achat_gramme,
-                # ex: tax_rate=item.get("tax_rate", Decimal("0.00"))
-            )
-
-            line_summary = {
-                "produit_id": produit.id,
-                "produit": produit.nom,
-                "total_ligne": quantite,
-                "details": [],   # [{bijouterie_id, bijouterie, quantite, lot_code?}]
-                "reserved": 0,
-            }
-
-            lots = item.get("lots") or []
-            affectations = item.get("affectations") or []
-
-            # MODE A — avec lots
-            if lots:
-                total_lots = 0
-                for lot_item in lots:
-                    lot_code_input = (lot_item.get("lot_code") or "").strip().upper()
-                    lot_qty = int(lot_item.get("quantite") or 0)
-                    if lot_qty <= 0:
-                        return Response({"detail": "Chaque lot doit avoir une quantite > 0."}, status=400)
-                    total_lots += lot_qty
-
-                    # Création du lot : si lot_code_input est vide → le modèle générera un code LOT-YYYYMMDD-####.
-                    lot = AchatProduitLot(
-                        achat_ligne=ap,
-                        lot_code=lot_code_input or None,              # <-- optionnel, auto-généré si None
-                        quantite_total=lot_qty,
-                        quantite_restante=lot_qty,
-                        prix_achat_gramme=prix_achat_gramme,
-                        date_peremption=lot_item.get("date_peremption"),
-                    )
-                    try:
-                        lot.save()                                    # <-- déclenche la génération si None + vérifie l’unicité globale
-                    except IntegrityError:
-                        return Response(
-                            {"detail": f"Le code lot '{lot_code_input}' est déjà utilisé (unicité globale)."},
-                            status=400,
-                        )
-
-                    lot_id = lot.pk
-                    lot_code = lot.lot_code                           # <-- récupère le code final (généré ou normalisé)
-
-
-                    # Affectations de ce lot
-                    somme_aff = 0
-                    for aff in (lot_item.get("affectations") or []):
-                        bid = int(aff["bijouterie_id"])
-                        q = int(aff["quantite"])
-                        if q <= 0:
-                            continue
-                        if somme_aff + q > lot_qty:
-                            return Response({"detail": f"Affectations > quantité du lot {lot_code}."}, status=400)
-                        somme_aff += q
-
-                        _stock_increment(produit_id=produit_id, bijouterie_id=bid, delta_qty=q, lot_id=lot_id)
-                        log_move(
-                            produit=produit, qty=q,
-                            movement_type=MovementType.PURCHASE_IN,
-                            src_bucket=Bucket.EXTERNAL,
-                            dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-                            unit_cost=prix_achat_gramme,
-                            achat=achat, achat_ligne=ap, user=user,
-                            reason=f"Arrivée achat (lot {lot_code} → bijouterie)",
-                        )
-
-                        if bid not in bij_cache:
-                            bij_cache[bid] = Bijouterie.objects.only("id", "nom").get(pk=bid)
-                        line_summary["details"].append({
-                            "bijouterie_id": bid,
-                            "bijouterie": bij_cache[bid].nom,
-                            "quantite": q,
-                            "lot_code": lot_code,                      # <-- on renvoie le code réel
-                        })
-
-                    # Reste du lot → réservé
-                    reste = lot_qty - somme_aff
-                    if reste > 0:
-                        _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=reste, lot_id=lot_id)
-                        log_move(
-                            produit=produit, qty=reste,
-                            movement_type=MovementType.PURCHASE_IN,
-                            src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-                            unit_cost=prix_achat_gramme,
-                            achat=achat, achat_ligne=ap, user=user,
-                            reason=f"Arrivée achat (lot {lot_code} en réservé)",
-                        )
-                        line_summary["reserved"] += reste
-
-                if total_lots != quantite:
-                    return Response(
-                        {"detail": f"La somme des lots ({total_lots}) doit égaler la quantité de la ligne ({quantite})."},
-                        status=400,
-                    )
-
-            # MODE B — sans lots (affectations directes ou tout réservé)
-            else:
-                if affectations:
-                    somme_aff = 0
-                    for aff in affectations:
-                        bid = int(aff["bijouterie_id"])
-                        q = int(aff["quantite"])
-                        if q <= 0:
-                            continue
-                        somme_aff += q
-
-                        _stock_increment(produit_id=produit_id, bijouterie_id=bid, delta_qty=q, lot_id=None)
-                        log_move(
-                            produit=produit,
-                            qty=q,
-                            movement_type=MovementType.PURCHASE_IN,
-                            src_bucket=Bucket.EXTERNAL,
-                            dst_bucket=Bucket.BIJOUTERIE,
-                            dst_bijouterie_id=bid,
-                            unit_cost=prix_achat_gramme,
-                            achat=achat,
-                            achat_ligne=ap,
-                            user=user,
-                            reason="Arrivée achat (affectation directe)",
-                        )
-
-                        if bid not in bij_cache:
-                            bij_cache[bid] = Bijouterie.objects.only("id", "nom").get(pk=bid)
-                        line_summary["details"].append({
-                            "bijouterie_id": bid,
-                            "bijouterie": bij_cache[bid].nom,
-                            "quantite": q,
-                        })
-
-                    # Reste -> réservé
-                    reste = quantite - somme_aff
-                    if reste > 0:
-                        _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=reste, lot_id=None)
-                        log_move(
-                            produit=produit,
-                            qty=reste,
-                            movement_type=MovementType.PURCHASE_IN,
-                            src_bucket=Bucket.EXTERNAL,
-                            dst_bucket=Bucket.RESERVED,
-                            unit_cost=prix_achat_gramme,
-                            achat=achat,
-                            achat_ligne=ap,
-                            user=user,
-                            reason="Arrivée achat (reste en réservé)",
-                        )
-                        line_summary["reserved"] = reste
-                else:
-                    # Tout en réservé
-                    _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=quantite, lot_id=None)
-                    log_move(
-                        produit=produit,
-                        qty=quantite,
-                        movement_type=MovementType.PURCHASE_IN,
-                        src_bucket=Bucket.EXTERNAL,
-                        dst_bucket=Bucket.RESERVED,
-                        unit_cost=prix_achat_gramme,
-                        achat=achat,
-                        achat_ligne=ap,
-                        user=user,
-                        reason="Arrivée achat (réservé)",
-                    )
-                    line_summary["reserved"] = quantite
-
-            allocations_summary.append(line_summary)
-
-        # 5) Totaux achat
-        try:
-            achat.update_total(save=True)
-        except AttributeError:
-            # fallback si tu n'as pas (encore) de méthode utilitaire
-            achat.recalculate_totals() if hasattr(achat, "recalculate_totals") else None
-
-        # 6) Sortie
-        return Response(
-            {
-                "message": "Achat créé avec succès",
-                "achat": AchatSerializer(achat).data,
-                "allocations": allocations_summary,
-            },
-            status=201
-        )
-# ------------------End AchatCreateView-----------------------
-
-# --------------------Acaht Update View
-# (Optionnel) log mouvements inventaire ; fallback no-op si absent
-# try:
-#     from inventory.services import log_move
-# except Exception:
-#     def log_move(**kwargs):
-#         return None
-
-# # ---- helpers communs ----
-# def _role_ok(user) -> bool:
-#     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
-
-# def _stock_increment(produit_id: int, bijouterie_id: int | None, delta_qty: int):
-#     """
-#     Incrémente un bucket de stock :
-#       - bijouterie_id=None  -> stock réservé (bijouterie=NULL) + reservation_key='RES-<produit_id>'
-#       - sinon               -> stock attribué à la bijouterie
-#     Compatible MySQL via reservation_key.
-#     """
-#     if delta_qty <= 0:
-#         return None
-
-#     if bijouterie_id is None:
-#         reservation_key = f"RES-{produit_id}"
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie=None,
-#                 reservation_key=reservation_key,
-#                 defaults={"quantite": 0, "is_reserved": True},
-#             )
-#         )
-#     else:
-#         get_object_or_404(Bijouterie, pk=int(bijouterie_id))
-#         stock, _ = (
-#             Stock.objects.select_for_update()
-#             .get_or_create(
-#                 produit_id=produit_id,
-#                 bijouterie_id=int(bijouterie_id),
-#                 defaults={"quantite": 0, "is_reserved": False},
-#             )
-#         )
-
-#     Stock.objects.filter(pk=stock.pk).update(quantite=F("quantite") + int(delta_qty))
-#     stock.refresh_from_db(fields=["quantite"])
-#     return stock
-
-
-# class AchatUpdateView(APIView):
-#     """
-#     Met à jour un achat existant :
-#     - Mise à jour du fournisseur (optionnel)
-#     - Ajout de nouvelles lignes produits (optionnel)
-#     Les lignes **existantes** ne sont pas modifiées/supprimées ici.
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Mettre à jour un achat (fournisseur + ajout de lignes)",
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 name="achat_id", in_=openapi.IN_PATH, type=openapi.TYPE_INTEGER,
-#                 description="ID de l'achat à mettre à jour", required=True
-#             )
-#         ],
-#         request_body=AchatUpdateSerializer,
-#         responses={200: AchatSerializer, 403: "Accès refusé", 404: "Achat introuvable"},
-#     )
-#     @transaction.atomic
-#     def patch(self, request, achat_id: int):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         achat = get_object_or_404(Achat.objects.select_for_update(), pk=achat_id)
-
-#         # (optionnel) si tu gères un statut d’annulation, on peut empêcher la modif :
-#         if getattr(achat, "status", None) == "cancelled":
-#             return Response({"detail": "Achat annulé — mise à jour impossible."}, status=409)
-
-#         ser = AchatUpdateSerializer(data=request.data, partial=True)
-#         ser.is_valid(raise_exception=True)
-#         data = ser.validated_data
-
-#         # ---- MAJ fournisseur (optionnel) ----
-#         if "fournisseur" in data:
-#             f = data["fournisseur"]
-#             fournisseur, _ = Fournisseur.objects.get_or_create(
-#                 telephone=f["telephone"],
-#                 defaults={"nom": f["nom"], "prenom": f["prenom"], "address": f.get("address", "")},
-#             )
-#             if achat.fournisseur_id != fournisseur.id:
-#                 achat.fournisseur = fournisseur
-#                 achat.save(update_fields=["fournisseur"])
-
-#         # ---- Ajout de lignes (optionnel) ----
-#         allocations_summary = []  # recap des nouvelles affectations
-#         bij_cache: dict[int, Bijouterie] = {}
-
-#         for item in data.get("produits", []):
-#             produit_id: int = int(item["produit"])  # grâce à ProduitRefField, c’est déjà un int
-#             produit = get_object_or_404(Produit, pk=produit_id)
-
-#             quantite: int = int(item["quantite"])
-#             prix_achat_gramme: Decimal = item["prix_achat_gramme"]
-#             tax: Decimal = item.get("tax", Decimal("0.00"))
-
-#             ap = AchatProduit.objects.create(
-#                 achat=achat,
-#                 produit=produit,
-#                 quantite=quantite,
-#                 prix_achat_gramme=prix_achat_gramme,
-#                 tax=tax,
-#                 fournisseur=achat.fournisseur,  # cohérent avec l'achat
-#             )
-
-#             line_summary = {
-#                 "produit_id": produit.id,
-#                 "produit": produit.nom,
-#                 "total_ligne_ajoutee": quantite,
-#                 "details": [],  # [{bijouterie_id, bijouterie, quantite}]
-#                 "reserved": 0,
-#             }
-
-#             affectations = item.get("affectations") or []
-#             if affectations:
-#                 somme_aff = 0
-#                 # 1) vers bijouteries
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     q = int(aff["quantite"])
-#                     if q <= 0:
-#                         continue
-#                     somme_aff += q
-
-#                     _stock_increment(produit_id, bid, q)
-#                     log_move(
-#                         produit=produit, qty=q,
-#                         movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL,
-#                         dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                         unit_cost=prix_achat_gramme,
-#                         achat=achat, achat_ligne=ap, user=user,
-#                         reason="Achat update: affectation directe",
-#                     )
-
-#                     if bid not in bij_cache:
-#                         bij_cache[bid] = Bijouterie.objects.only("id", "nom").get(pk=bid)
-#                     line_summary["details"].append({
-#                         "bijouterie_id": bid,
-#                         "bijouterie": bij_cache[bid].nom,
-#                         "quantite": q,
-#                     })
-
-#                 # 2) reste en réservé
-#                 reste = quantite - somme_aff
-#                 if reste > 0:
-#                     _stock_increment(produit_id, None, reste)
-#                     log_move(
-#                         produit=produit, qty=reste,
-#                         movement_type=MovementType.PURCHASE_IN,
-#                         src_bucket=Bucket.EXTERNAL,
-#                         dst_bucket=Bucket.RESERVED,
-#                         unit_cost=prix_achat_gramme,
-#                         achat=achat, achat_ligne=ap, user=user,
-#                         reason="Achat update: reste en réservé",
-#                     )
-#                     line_summary["reserved"] = reste
-#             else:
-#                 # tout en réservé
-#                 _stock_increment(produit_id, None, quantite)
-#                 log_move(
-#                     produit=produit, qty=quantite,
-#                     movement_type=MovementType.PURCHASE_IN,
-#                     src_bucket=Bucket.EXTERNAL,
-#                     dst_bucket=Bucket.RESERVED,
-#                     unit_cost=prix_achat_gramme,
-#                     achat=achat, achat_ligne=ap, user=user,
-#                     reason="Achat update: réservé",
-#                 )
-#                 line_summary["reserved"] = quantite
-
-#             allocations_summary.append(line_summary)
-
-#         # ---- totaux ----
-#         achat.update_total(save=True)
-
-#         return Response(
-#             {
-#                 "message": "Achat mis à jour",
-#                 "achat": AchatSerializer(achat).data,
-#                 "allocations": allocations_summary,  # recap des nouvelles lignes ajoutées
-#             },
-#             status=200
-#         )
-
-
-# class AchatUpdateView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         tags=["Achats"],
-#         operation_summary="Mettre à jour un achat (fournisseur + ajout/maj de lignes)",
-#         operation_description=(
-#             "Met à jour un achat existant.\n\n"
-#             "• **Fournisseur (optionnel)** : upsert par `telephone` (met à jour nom/prénom/adresse si déjà existant).\n"
-#             "• **Lignes (optionnel)** :\n"
-#             "   - Si `id` est fourni → **mise à jour documentaire** (ex. `prix_achat_gramme`, `tax`). "
-#             "     La quantité et le produit de la ligne existante ne sont **pas modifiés**.\n"
-#             "   - Si `id` est absent → **création d'une nouvelle ligne** (audit financier uniquement). "
-#             "     ⚠️ Cette vue **n'ajuste pas les stocks** ; la réception / affectation physique se fait via un endpoint dédié.\n\n"
-#             "**Rôles autorisés** : admin, manager."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 name="achat_id",
-#                 in_=openapi.IN_PATH,
-#                 type=openapi.TYPE_INTEGER,
-#                 required=True,
-#                 description="ID de l'achat à mettre à jour",
-#             )
-#         ],
-#         request_body=AchatUpdateSerializer,  # ← ton serializer d'entrée
-#         responses={
-#             200: openapi.Response("Achat mis à jour", AchatSerializer),  # ← sortie
-#             403: "Accès refusé",
-#             404: "Achat introuvable",
-#         },
-#         examples={
-#             "application/json": {
-#                 "fournisseur": {
-#                     "nom": "Awa",
-#                     "prenom": "Ba",
-#                     "telephone": "776765445",
-#                     "address": "Rufisque"
-#                 },
-#                 "lignes": [
-#                     # Mise à jour d'une ligne existante (documentaire : prix/taxe)
-#                     {
-#                         "id": 123,                      # id d'une AchatProduit existante
-#                         "prix_achat_gramme": "47000.00",
-#                         "tax": "0.00"
-#                     },
-#                     # Création d'une nouvelle ligne (n'ajuste pas le stock ici)
-#                     {
-#                         "produit": 2,                   # ID produit
-#                         "quantite": 10,
-#                         "prix_achat_gramme": "1000.00",
-#                         "tax": "18.00"
-#                     }
-#                 ]
-#             }
-#         }
-#     )
-#     @transaction.atomic
-#     def patch(self, request, achat_id: int):
-#         user = request.user
-#         if not _role_ok(user):
-#             return Response({"detail": "Access Denied"}, status=403)
-
-#         achat = get_object_or_404(Achat.objects.select_for_update(), pk=achat_id)
-
-#         ser = AchatUpdateSerializer(data=request.data)
-#         ser.is_valid(raise_exception=True)
-#         data = ser.validated_data
-
-#         # 1) MAJ fournisseur (optionnel, upsert par téléphone)
-#         f = data.get("fournisseur")
-#         if f:
-#             fournisseur, created = Fournisseur.objects.get_or_create(
-#                 telephone=f["telephone"],
-#                 defaults={"nom": f["nom"], "prenom": f["prenom"], "address": f.get("address", "")},
-#             )
-#             if not created:  # mettre à jour les champs si déjà présent
-#                 changed = False
-#                 for k in ("nom", "prenom", "address"):
-#                     val = f.get(k)
-#                     if val is not None and getattr(fournisseur, k) != val:
-#                         setattr(fournisseur, k, val)
-#                         changed = True
-#                 if changed:
-#                     fournisseur.save(update_fields=["nom", "prenom", "address"])
-#             if achat.fournisseur_id != fournisseur.id:
-#                 achat.fournisseur = fournisseur
-#                 achat.save(update_fields=["fournisseur"])
-
-#         # 2) Lignes (optionnelles)
-#         lignes = data.get("lignes") or []
-#         for payload in lignes:
-#             ap_id = payload.get("id")
-
-#             if ap_id:
-#                 # Mise à jour d'une ligne existante (prix/taxe uniquement)
-#                 ap = get_object_or_404(AchatProduit, pk=ap_id, achat=achat)
-#                 fields = []
-#                 if "prix_achat_gramme" in payload:
-#                     ap.prix_achat_gramme = payload["prix_achat_gramme"]
-#                     fields.append("prix_achat_gramme")
-#                 if "tax" in payload:
-#                     ap.tax = payload["tax"]
-#                     fields.append("tax")
-
-#                 if fields:
-#                     if "prix_achat_gramme" in fields:
-#                         poids = ap.produit.poids or Decimal("0.00")
-#                         ap.sous_total_prix_achat = ap.prix_achat_gramme * Decimal(ap.quantite) * poids
-#                         fields.append("sous_total_prix_achat")
-#                     ap.save(update_fields=fields)
-
-#             else:
-#                 # Création d'une nouvelle ligne (audit financier ; pas de mouvement stock ici)
-#                 produit_id = int(payload["produit"])
-#                 produit = get_object_or_404(Produit, pk=produit_id)
-#                 quantite = int(payload["quantite"])
-#                 prix_achat_gramme = payload.get("prix_achat_gramme", Decimal("0.00"))
-#                 tax = payload.get("tax", Decimal("0.00"))
-
-#                 AchatProduit.objects.create(
-#                     achat=achat,
-#                     produit=produit,
-#                     quantite=quantite,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     tax=tax,
-#                     fournisseur=achat.fournisseur,
-#                 )
-
-#         # 3) Recalcul des totaux
-#         achat.update_total(save=True)
-
-#         return Response(
-#             {"message": "Achat mis à jour", "achat": AchatSerializer(achat).data},
-#             status=200
-#         )
 
 # # (Optionnel) log des mouvements ; no-op si le module n'existe pas
 # try:
@@ -4989,339 +698,641 @@ class AchatCreateView(APIView):
 #     def log_move(**kwargs):
 #         return None
 
-
-# # ---------- Helpers rôles ----------
+# # ----------------- Helpers locaux -----------------
 # def _role_ok(user) -> bool:
 #     return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
 
 
-# # ---------- Helpers Stock (STRICT: jamais de création) ----------
-# def _has_lot_fk() -> bool:
-#     return any(getattr(f, "name", "") == "lot" for f in Stock._meta.get_fields())
-
-# def _reservation_key(produit_id: int, lot_id: Optional[int]) -> str:
-#     return f"RES-{produit_id}-{lot_id or 'NOLOT'}"
-
-# def _stock_row_qs(produit_id: int, bijouterie_id: Optional[int], lot_id: Optional[int]):
-#     qs = Stock.objects.select_for_update().filter(produit_id=produit_id)
-#     if bijouterie_id is None:
-#         qs = qs.filter(bijouterie__isnull=True, reservation_key=_reservation_key(produit_id, lot_id))
-#     else:
-#         qs = qs.filter(bijouterie_id=int(bijouterie_id))
-#     if _has_lot_fk():
-#         qs = qs.filter(lot_id=lot_id) if lot_id else qs.filter(lot__isnull=True)
-#     return qs
-
-# def _stock_get_strict(produit_id: int, bijouterie_id: Optional[int], lot_id: Optional[int]):
-#     row = _stock_row_qs(produit_id, bijouterie_id, lot_id).first()
-#     if not row:
-#         where = "réservé" if bijouterie_id is None else f"bijouterie_id={bijouterie_id}"
-#         raise ValidationError(f"Ligne de stock introuvable pour produit={produit_id}, {where}, lot_id={lot_id}.")
-#     return row
-
-# def _stock_increment_strict(*, produit_id: int, bijouterie_id: Optional[int], delta_qty: int, lot_id: Optional[int]):
-#     if delta_qty <= 0:
-#         return
-#     row = _stock_get_strict(produit_id, bijouterie_id, lot_id)
-#     Stock.objects.filter(pk=row.pk).update(quantite=F("quantite") + int(delta_qty))
-
-# def _stock_decrement_strict(*, produit_id: int, bijouterie_id: Optional[int], delta_qty: int, lot_id: Optional[int]):
-#     if delta_qty <= 0:
-#         return
-#     qs = _stock_row_qs(produit_id, bijouterie_id, lot_id)
-#     updated = qs.filter(quantite__gte=delta_qty).update(quantite=F("quantite") - int(delta_qty))
-#     if not updated:
-#         raise ValidationError("Stock insuffisant ou ligne de stock introuvable.")
-
-
-# def _snapshot_stock(*, produit_id: int, lot_id: Optional[int]) -> Tuple[int, Dict[int, int]]:
-#     # Réservé
-#     r_qs = Stock.objects.filter(
-#         produit_id=produit_id,
-#         bijouterie__isnull=True,
-#         reservation_key=_reservation_key(produit_id, lot_id),
-#     )
-#     if _has_lot_fk():
-#         r_qs = r_qs.filter(lot_id=lot_id) if lot_id else r_qs.filter(lot__isnull=True)
-#     reserved = int(r_qs.aggregate(s=Sum("quantite"))["s"] or 0)
-
-#     # Bijouteries
-#     b_qs = Stock.objects.filter(produit_id=produit_id, bijouterie__isnull=False)
-#     if _has_lot_fk():
-#         b_qs = b_qs.filter(lot_id=lot_id) if lot_id else b_qs.filter(lot__isnull=True)
-#     pairs = list(
-#         b_qs.values_list("bijouterie_id").annotate(s=Sum("quantite")).values_list("bijouterie_id", "s")
-#     ) if b_qs.exists() else []
-#     return reserved, {int(k): int(v or 0) for k, v in pairs}
-
-
-# def _apply_repartition_strict(
-#     *,
-#     produit,
-#     achat,
-#     achat_ligne,
-#     lot: Optional[AchatProduitLot],
-#     unit_cost: Decimal,
-#     current_res: int,
-#     current_bij: Dict[int, int],
-#     target_res: int,
-#     target_bij: Dict[int, int],
-#     user,
-# ):
+# def _stock_increment(*, produit_id: int, bijouterie_id: int | None, delta_qty: int, lot_id: int | None = None) -> Stock:
 #     """
-#     Applique les deltas pour un (produit, lot) en STRICT update :
-#     - Ne crée jamais de lignes de stock.
-#     - Echoue si stock insuffisant.
+#     Incrémente le stock en PIÈCES (jamais 0 à la création).
+#     Réserve si bijouterie_id=None, sinon boutique.
 #     """
-#     lot_id = lot.pk if lot else None
-#     produit_id = produit.pk
+#     if delta_qty is None or int(delta_qty) <= 0:
+#         return None  # on ignore les 0 ou négatifs
 
-#     # 1) Ajuster le 'réservé'
-#     delta_res = target_res - current_res
-#     if delta_res > 0:
-#         # EXIGE que la ligne réservé existe déjà
-#         _stock_increment_strict(produit_id=produit_id, bijouterie_id=None, delta_qty=delta_res, lot_id=lot_id)
-#         log_move(
-#             produit=produit, qty=delta_res,
-#             movement_type=MovementType.PURCHASE_IN,
-#             src_bucket=Bucket.EXTERNAL, dst_bucket=Bucket.RESERVED,
-#             unit_cost=unit_cost, achat=achat, achat_ligne=achat_ligne, lot=lot, user=user,
-#             reason=f"Maj achat (strict): +{delta_res} réservé" + (f" (lot {lot.lot_code})" if lot else ""),
-#         )
-#     elif delta_res < 0:
-#         delta = -delta_res
-#         _stock_decrement_strict(produit_id=produit_id, bijouterie_id=None, delta_qty=delta, lot_id=lot_id)
-#         log_move(
-#             produit=produit, qty=delta,
-#             movement_type=MovementType.CANCEL_PURCHASE,
-#             src_bucket=Bucket.RESERVED, dst_bucket=Bucket.EXTERNAL,
-#             unit_cost=unit_cost, achat=achat, achat_ligne=achat_ligne, lot=lot, user=user,
-#             reason=f"Maj achat (strict): -{delta} réservé" + (f" (lot {lot.lot_code})" if lot else ""),
-#         )
+#     if bijouterie_id is not None:
+#         get_object_or_404(Bijouterie, pk=int(bijouterie_id))
 
-#     # 2) Ajuster les bijouteries
-#     for bid in set(current_bij) | set(target_bij):
-#         cur = current_bij.get(bid, 0)
-#         tgt = target_bij.get(bid, 0)
-#         diff = tgt - cur
-#         if diff > 0:
-#             # réservé -> bijouterie (les deux lignes doivent exister)
-#             _stock_decrement_strict(produit_id=produit_id, bijouterie_id=None, delta_qty=diff, lot_id=lot_id)
-#             _stock_increment_strict(produit_id=produit_id, bijouterie_id=bid, delta_qty=diff, lot_id=lot_id)
-#             log_move(
-#                 produit=produit, qty=diff,
-#                 movement_type=MovementType.ALLOCATE,
-#                 src_bucket=Bucket.RESERVED, dst_bucket=Bucket.BIJOUTERIE, dst_bijouterie_id=bid,
-#                 unit_cost=unit_cost, achat=achat, achat_ligne=achat_ligne, lot=lot, user=user,
-#                 reason="Maj achat (strict): réservé → bijouterie",
-#             )
-#         elif diff < 0:
-#             take = -diff
-#             # bijouterie -> réservé
-#             _stock_decrement_strict(produit_id=produit_id, bijouterie_id=bid, delta_qty=take, lot_id=lot_id)
-#             _stock_increment_strict(produit_id=produit_id, bijouterie_id=None, delta_qty=take, lot_id=lot_id)
-#             log_move(
-#                 produit=produit, qty=take,
-#                 movement_type=MovementType.ADJUSTMENT,
-#                 src_bucket=Bucket.BIJOUTERIE, src_bijouterie_id=bid,
-#                 unit_cost=unit_cost, achat=achat, achat_ligne=achat_ligne, lot=lot, user=user,
-#                 reason="Maj achat (strict): bijouterie → réservé (out)",
-#             )
-#             log_move(
-#                 produit=produit, qty=take,
-#                 movement_type=MovementType.ADJUSTMENT,
-#                 dst_bucket=Bucket.RESERVED,
-#                 unit_cost=unit_cost, achat=achat, achat_ligne=achat_ligne, lot=lot, user=user,
-#                 reason="Maj achat (strict): bijouterie → réservé (in)",
-#             )
+#     lookup = {
+#         "produit_id": int(produit_id),
+#         "bijouterie_id": int(bijouterie_id) if bijouterie_id is not None else None,
+#         "lot_id": int(lot_id) if lot_id is not None else None,
+#     }
+
+#     with transaction.atomic():
+#         st = Stock.objects.select_for_update().filter(**lookup).first()
+#         if st is None:
+#             try:
+#                 # ✅ création déjà VALIDE (quantite > 0)
+#                 st = Stock.objects.create(**lookup, quantite=int(delta_qty))
+#             except IntegrityError:
+#                 # collision rare -> reprendre puis increment
+#                 st = Stock.objects.select_for_update().get(**lookup)
+#                 Stock.objects.filter(pk=st.pk).update(quantite=F("quantite") + int(delta_qty))
+#                 st.refresh_from_db(fields=["quantite"])
+#         else:
+#             Stock.objects.filter(pk=st.pk).update(quantite=F("quantite") + int(delta_qty))
+#             st.refresh_from_db(fields=["quantite"])
+#         return st
 
 
-# # ====================== VIEW (STRICT UPDATE) ======================
-# class AchatUpdateView(APIView):
+# # =========================
+# #       CREATE VIEW
+# # =========================
+# class AchatCreateView(APIView):
 #     """
-#     Update uniquement :
-#       - Aucune création de lignes d'achat, de lots ou de lignes de stock.
-#       - Ajuste la répartition réservé/bijouteries (par lot si présent).
-#       - Échoue si références manquantes ou stock insuffisant.
+#     Crée un achat + lots (optionnels) et met à jour les stocks :
+#       - Affectation par **lot** : ventilation vers des bijouteries, le reste va en **RÉSERVE**.
+#       - Affectation **directe** (sans lot) : ventilation au niveau de la ligne, le reste va en **RÉSERVE**.
+#       - **Tout réservé** : aucune affectation fournie -> tout va en **RÉSERVE**.
+
+#     Règles (pièces uniquement) :
+#       - Somme(lots.quantite) == quantite de la ligne (si lots).
+#       - Somme(affectations.quantite) ≤ quantite (ligne/lot).
+#       - Stock crédité :
+#           • Bijouterie : (produit, bijouterie, lot) ; is_reserved=False
+#           • Réserve    : (produit, bijouterie=NULL, lot) ; is_reserved=True
+#       - Mouvement : MovementType.PURCHASE_IN (src=EXTERNAL → dst=BIJOUTERIE/RESERVED).
 #     """
 #     permission_classes = [IsAuthenticated]
 
 #     @swagger_auto_schema(
+#         operation_summary="Créer un achat (lots, affectation directe, réservé)",
+#         operation_description=dedent("""
+#         Crée un achat fournisseur, des lots (optionnels) et met à jour les stocks (bijouteries / réserve).
+
+#         ## Affectation par lot
+#         ```json
+#         {
+#           "fournisseur": {"nom":"Diop","prenom":"Abdou","telephone":"770000000","address":"Dakar"},
+#           "produits":[
+#             {
+#               "produit": 12,
+#               "quantite": 50,
+#               "prix_achat_gramme": "4500.00",
+#               "lots": [
+#                 {
+#                   "lot_code": "LOT-A1",
+#                   "quantite": 30,
+#                   "affectations": [
+#                     {"bijouterie_id": 2, "quantite": 12},
+#                     {"bijouterie_id": 5, "quantite": 10}
+#                   ]
+#                 },
+#                 {
+#                   "lot_code": null,
+#                   "quantite": 20,
+#                   "affectations": [
+#                     {"bijouterie_id": 2, "quantite": 15}
+#                   ]
+#                 }
+#               ]
+#             }
+#           ],
+#           "frais_transport": "0.00",
+#           "frais_douane": "0.00"
+#         }
+#         ```
+
+#         ## Affectation directe (sans lots)
+#         ```json
+#         {
+#           "fournisseur": {"nom":"Kane","prenom":"Moussa","telephone":"780000000"},
+#           "produits":[
+#             {
+#               "produit": 34,
+#               "quantite": 8,
+#               "prix_achat_gramme": "5200.00",
+#               "affectations": [
+#                 {"bijouterie_id": 3, "quantite": 5},
+#                 {"bijouterie_id": 7, "quantite": 1}
+#               ]
+#             }
+#           ]
+#         }
+#         ```
+#         """),
+#         request_body=AchatCreateSerializer,
+#         responses={201: openapi.Response("Création réussie", schema=AchatSerializer)},
 #         tags=["Achats"],
-#         operation_summary="Mettre à jour un achat (STRICT, pas de création)",
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 name="achat_id",
-#                 in_=openapi.IN_PATH,
-#                 type=openapi.TYPE_INTEGER,
-#                 required=True,
-#                 description="ID de l'achat à modifier",
-#             ),
-#         ],
-#         request_body=AchatUpdateSerializer,  # ton serializer d'entrée
-#         responses={
-#             200: AchatSerializer,             # ton serializer de sortie
-#             400: "Requête invalide",
-#             403: "Accès refusé",
-#             404: "Ressource introuvable",
-#             409: "Conflit (stock insuffisant / lignes manquantes)",
-#         },
 #     )
 #     @transaction.atomic
-#     def put(self, request, achat_id: int):
-#         user = request.user
-#         if not _role_ok(user):
+#     def post(self, request):
+#         # 0) ACL
+#         if not _role_ok(request.user):
 #             return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-#         achat = get_object_or_404(Achat, pk=achat_id)
-#         if getattr(achat, "status", None) == "cancelled":
-#             return Response({"detail": "Achat annulé : modification interdite."}, status=status.HTTP_400_BAD_REQUEST)
-
-#         ser = AchatUpdateSerializer(data=request.data)
+#         # 1) Valider payload
+#         ser = AchatCreateSerializer(data=request.data)
 #         ser.is_valid(raise_exception=True)
 #         data = ser.validated_data
 
-#         # Optionnel : mise à jour fournisseur si fourni (ne crée pas de nouveau fournisseur si tel inconnu ?)
-#         # Ici on autorise l'upsert du fournisseur (ce n'est pas de l'inventaire)
-#         f_data = data.get("fournisseur")
-#         if f_data:
-#             fournisseur, _ = Fournisseur.objects.get_or_create(
-#                 telephone=f_data["telephone"],
-#                 defaults={"nom": f_data.get("nom", ""), "prenom": f_data.get("prenom", ""), "address": f_data.get("address", "")},
-#             )
-#             if achat.fournisseur_id != fournisseur.id:
-#                 achat.fournisseur = fournisseur
-#                 achat.save(update_fields=["fournisseur"])
+#         # 2) Upsert fournisseur (par téléphone)
+#         f = data["fournisseur"]
+#         fournisseur, _ = Fournisseur.objects.get_or_create(
+#             telephone=f["telephone"],
+#             defaults={"nom": f.get("nom", ""), "prenom": f.get("prenom", ""), "address": f.get("address", "")},
+#         )
 
-#         # Indexer les lignes existantes (update-only: doivent exister)
-#         existing_lines = {ap.produit_id: ap for ap in achat.produits.select_related("produit").all()}
+#         # 3) Créer l'achat
+#         achat = Achat.objects.create(
+#             fournisseur=fournisseur,
+#             description=f.get("address", ""),
+#             frais_transport=data.get("frais_transport", Decimal("0.00")),
+#             frais_douane=data.get("frais_douane", Decimal("0.00")),
+#         )
 
-#         for item in data.get("produits", []):
-#             produit_id = int(item["produit"])
-#             ap = existing_lines.get(produit_id)
-#             if not ap:
-#                 return Response(
-#                     {"detail": f"Ligne d'achat inconnue pour produit_id={produit_id} (update-only)."},
-#                     status=status.HTTP_404_NOT_FOUND,
-#                 )
+#         # 4) Traiter chaque ligne produit
+#         now = timezone.now()
+#         for line in data["produits"]:
+#             produit_id = int(line["produit"])
+#             produit = get_object_or_404(Produit, pk=produit_id)
 
-#             produit = ap.produit
-#             unit_cost = Decimal(item["prix_achat_gramme"])
-#             qty_total_payload = int(item["quantite"])
+#             q_line = int(line["quantite"])
+#             prix_gramme = line["prix_achat_gramme"]  # Decimal
+#             lots = line.get("lots") or []
+#             affs = line.get("affectations") or []
 
-#             # Maj des champs de la ligne (pas de création)
-#             ap.prix_achat_gramme = unit_cost
-#             ap.quantite = qty_total_payload
-#             ap.save(update_fields=["prix_achat_gramme", "quantite"])
+#             # ---- MODE A : avec lots
+#             if lots:
+#                 for l in lots:
+#                     lot_code_input = (l.get("lot_code") or "").strip().upper() or None
+#                     lot_qty = int(l["quantite"])
 
-#             lots_payload = item.get("lots") or []
-#             affectations = item.get("affectations") or []
+#                     # (Option valorisation) poids = lot_qty * produit.poids (si dispo)
+#                     try:
+#                         poids_unitaire = getattr(produit, "poids", None)
+#                         if poids_unitaire is None:
+#                             poids_total = Decimal("0.000")
+#                         else:
+#                             poids_total = (Decimal(lot_qty) * Decimal(poids_unitaire)).quantize(Decimal("0.000"))
+#                     except Exception:
+#                         poids_total = Decimal("0.000")
 
-#             # ----- MODE A : par lots (update-only → tous les lots référencés doivent exister) -----
-#             if lots_payload:
-#                 existing_lots = {l.lot_code: l for l in ap.lots.all()}
+#                     lot = Lot(
+#                         achat=achat,
+#                         produit=produit,
+#                         lot_code=lot_code_input,
+#                         poids_total=poids_total,
+#                         poids_restant=poids_total,
+#                         prix_achat_gramme=prix_gramme,
+#                         commentaire="Créé via AchatCreateView",
+#                     )
+#                     try:
+#                         lot.save()
+#                     except IntegrityError:
+#                         lot.lot_code = None
+#                         lot.save()
 
-#                 # (strict) interdire l'ajout/suppression de lots : tous les lots du payload doivent exister
-#                 for lot_item in lots_payload:
-#                     lot_code = (lot_item.get("lot_code") or "").strip().upper()
-#                     if lot_code not in existing_lots:
-#                         return Response(
-#                             {"detail": f"Lot inconnu '{lot_code}' pour cette ligne (update-only)."},
-#                             status=status.HTTP_404_NOT_FOUND,
-#                         )
-
-#                 # on n'efface pas les lots non envoyés : on modifie seulement ceux présents dans le payload
-#                 somme_lots_payload = 0
-#                 for lot_item in lots_payload:
-#                     lot_code = (lot_item.get("lot_code") or "").strip().upper()
-#                     lot_qty_new = int(lot_item.get("quantite") or 0)
-#                     if lot_qty_new <= 0:
-#                         return Response({"detail": f"Quantité du lot {lot_code} doit être > 0."}, status=status.HTTP_400_BAD_REQUEST)
-#                     somme_lots_payload += lot_qty_new
-
-#                     lot = existing_lots[lot_code]
-#                     cur_res, cur_bij = _snapshot_stock(produit_id=produit.id, lot_id=lot.pk)
-
-#                     target_bij: Dict[int, int] = {}
+#                     # Ventilation vers bijouteries
 #                     somme_aff = 0
-#                     for aff in (lot_item.get("affectations") or []):
-#                         bid = int(aff["bijouterie_id"])
-#                         q = int(aff["quantite"])
+#                     for a in (l.get("affectations") or []):
+#                         bid = int(a["bijouterie_id"])
+#                         q = int(a["quantite"])
 #                         if q <= 0:
 #                             continue
 #                         somme_aff += q
-#                         target_bij[bid] = target_bij.get(bid, 0) + q
-#                     if somme_aff > lot_qty_new:
-#                         return Response({"detail": f"Affectations > quantité du lot {lot_code}."}, status=status.HTTP_400_BAD_REQUEST)
-#                     target_res = lot_qty_new - somme_aff
 
-#                     try:
-#                         _apply_repartition_strict(
-#                             produit=produit, achat=achat, achat_ligne=ap, lot=lot,
-#                             unit_cost=unit_cost,
-#                             current_res=cur_res, current_bij=cur_bij,
-#                             target_res=target_res, target_bij=target_bij,
-#                             user=user,
+#                         _stock_increment(produit_id=produit_id, bijouterie_id=bid, delta_qty=q, lot_id=lot.id)
+#                         log_move(
+#                             produit=produit,
+#                             qty=q,
+#                             movement_type=MovementType.PURCHASE_IN,
+#                             src_bucket=Bucket.EXTERNAL,
+#                             dst_bucket=Bucket.BIJOUTERIE,
+#                             dst_bijouterie_id=bid,
+#                             unit_cost=prix_gramme,
+#                             achat=achat,
+#                             lot=lot,
+#                             user=request.user,
+#                             reason=f"Arrivée achat (lot {lot.lot_code or lot.id} → bijouterie)",
+#                             # occurred_at=now,
 #                         )
-#                     except ValidationError as e:
-#                         return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
 
-#                     # Recalage des champs du lot (on-hand = réservé + bijouteries)
-#                     new_res, new_bij = _snapshot_stock(produit_id=produit.id, lot_id=lot.pk)
-#                     on_hand = int(new_res + sum(new_bij.values()))
-#                     lot.quantite_total = lot_qty_new
-#                     lot.quantite_restante = on_hand
-#                     lot.prix_achat_gramme = unit_cost
-#                     lot.save(update_fields=["quantite_total", "quantite_restante", "prix_achat_gramme"])
+#                     # Reste du lot -> RÉSERVE
+#                     reste = lot_qty - somme_aff
+#                     if reste > 0:
+#                         _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=reste, lot_id=lot.id)
+#                         log_move(
+#                             produit=produit,
+#                             qty=reste,
+#                             movement_type=MovementType.PURCHASE_IN,
+#                             src_bucket=Bucket.EXTERNAL,
+#                             dst_bucket=Bucket.RESERVED,
+#                             unit_cost=prix_gramme,
+#                             achat=achat,
+#                             lot=lot,
+#                             user=request.user,
+#                             reason=f"Arrivée achat (reste lot {lot.lot_code or lot.id} en réservé)",
+#                             # occurred_at=now,
+#                         )
 
-#                 # (option strict) facultatif : valider la cohérence somme des lots vs quantité de ligne
-#                 if somme_lots_payload != qty_total_payload:
-#                     return Response(
-#                         {"detail": f"Incohérence: somme des lots={somme_lots_payload} ≠ quantité de ligne={qty_total_payload}."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#             # ----- MODE B : sans lots (la ligne ne doit pas avoir de lots existants pour rester simple) -----
+#             # ---- MODE B : sans lots (affectations directes ou tout réservé)
 #             else:
-#                 # Si des lots existent déjà pour cette ligne, on impose de passer par le mode lots.
-#                 if ap.lots.exists():
-#                     return Response(
-#                         {"detail": "Cette ligne a des lots existants. Utilisez le mode 'lots' pour la mettre à jour."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#                 cur_res, cur_bij = _snapshot_stock(produit_id=produit.id, lot_id=None)
-#                 target_bij: Dict[int, int] = {}
 #                 somme_aff = 0
-#                 for aff in affectations:
-#                     bid = int(aff["bijouterie_id"])
-#                     q = int(aff["quantite"])
+#                 for a in affs:
+#                     bid = int(a["bijouterie_id"])
+#                     q = int(a["quantite"])
 #                     if q <= 0:
 #                         continue
 #                     somme_aff += q
-#                     target_bij[bid] = target_bij.get(bid, 0) + q
-#                 if somme_aff > qty_total_payload:
-#                     return Response({"detail": "Affectations > quantité de la ligne."}, status=status.HTTP_400_BAD_REQUEST)
-#                 target_res = qty_total_payload - somme_aff
 
-#                 try:
-#                     _apply_repartition_strict(
-#                         produit=produit, achat=achat, achat_ligne=ap, lot=None,
-#                         unit_cost=unit_cost,
-#                         current_res=cur_res, current_bij=cur_bij,
-#                         target_res=target_res, target_bij=target_bij,
-#                         user=user,
+#                     _stock_increment(produit_id=produit_id, bijouterie_id=bid, delta_qty=q, lot_id=None)
+#                     log_move(
+#                         produit=produit,
+#                         qty=q,
+#                         movement_type=MovementType.PURCHASE_IN,
+#                         src_bucket=Bucket.EXTERNAL,
+#                         dst_bucket=Bucket.BIJOUTERIE,
+#                         dst_bijouterie_id=bid,
+#                         unit_cost=prix_gramme,
+#                         achat=achat,
+#                         lot=None,
+#                         user=request.user,
+#                         reason="Arrivée achat (affectation directe)",
+#                         # occurred_at=now,
 #                     )
-#                 except ValidationError as e:
-#                     return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
 
-#         # Totaux
-#         achat.update_total(save=True)
+#                 # Reste -> RÉSERVE
+#                 reste = q_line - somme_aff
+#                 if reste > 0:
+#                     _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=reste, lot_id=None)
+#                     log_move(
+#                         produit=produit,
+#                         qty=reste,
+#                         movement_type=MovementType.PURCHASE_IN,
+#                         src_bucket=Bucket.EXTERNAL,
+#                         dst_bucket=Bucket.RESERVED,
+#                         unit_cost=prix_gramme,
+#                         achat=achat,
+#                         lot=None,
+#                         user=request.user,
+#                         reason="Arrivée achat (reste en réservé)",
+#                         occurred_at=now,
+#                     )
 
-#         return Response(
-#             {"message": "Achat mis à jour avec succès", "achat": AchatSerializer(achat).data},
-#             status=status.HTTP_200_OK
-#         )
+#         # 5) Totaux achat (silencieux si non implémenté)
+#         try:
+#             achat.update_total(save=True)
+#         except Exception:
+#             pass
+
+#         # 6) Réponse
+#         return Response(AchatSerializer(achat).data, status=status.HTTP_201_CREATED)
+
+
+# (Optionnel) log des mouvements ; no-op si le module n'existe pas
+try:
+    from inventory.services import log_move
+except Exception:
+    def log_move(**kwargs):
+        return None
+
+# ----------------- Helpers locaux -----------------
+def _role_ok(user) -> bool:
+    return bool(getattr(user, "user_role", None) and user.user_role.role in ["admin", "manager"])
+
+
+def _stock_increment(*, produit_id: int, bijouterie_id: int | None, delta_qty: int, lot_id: int | None = None) -> Stock | None:
+    """
+    Incrémente le stock en PIÈCES (jamais 0 à la création).
+    Réserve si bijouterie_id=None, sinon boutique.
+    """
+    if delta_qty is None or int(delta_qty) <= 0:
+        return None  # on ignore les 0/négatifs
+
+    if bijouterie_id is not None:
+        get_object_or_404(Bijouterie, pk=int(bijouterie_id))
+
+    lookup = {
+        "produit_id": int(produit_id),
+        "bijouterie_id": int(bijouterie_id) if bijouterie_id is not None else None,
+        "lot_id": int(lot_id) if lot_id is not None else None,
+    }
+
+    with transaction.atomic():
+        st = Stock.objects.select_for_update().filter(**lookup).first()
+        if st is None:
+            try:
+                # ✅ création déjà VALIDE (quantite > 0)
+                st = Stock.objects.create(**lookup, quantite=int(delta_qty))
+            except IntegrityError:
+                # collision rare -> reprendre puis increment
+                st = Stock.objects.select_for_update().get(**lookup)
+                Stock.objects.filter(pk=st.pk).update(quantite=F("quantite") + int(delta_qty))
+                st.refresh_from_db(fields=["quantite"])
+        else:
+            Stock.objects.filter(pk=st.pk).update(quantite=F("quantite") + int(delta_qty))
+            st.refresh_from_db(fields=["quantite"])
+        return st
+
+
+# =========================
+#       CREATE VIEW
+# =========================
+class AchatCreateView(APIView):
+    """
+    Crée un achat + lots (optionnels) et met à jour les stocks :
+      - Affectation par **lot** : ventilation vers des bijouteries, le reste va en **RÉSERVE**.
+      - Affectation **directe** (sans lot) : ventilation au niveau de la ligne, le reste va en **RÉSERVE**.
+      - **Tout réservé** : aucune affectation fournie -> tout va en **RÉSERVE**.
+
+    Règles (pièces uniquement) :
+      - Somme(lots.quantite) == quantite de la ligne (si lots).
+      - Somme(affectations.quantite) ≤ quantite (ligne/lot).
+      - Stock crédité :
+          • Bijouterie : (produit, bijouterie, lot) ; is_reserved=False
+          • Réserve    : (produit, bijouterie=NULL, lot) ; is_reserved=True
+      - Mouvement : MovementType.PURCHASE_IN (src=EXTERNAL → dst=BIJOUTERIE/RESERVED).
+    """
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Créer un achat (lots, affectation directe, réservé)",
+        operation_description=dedent("""
+        Crée un achat fournisseur, des lots (optionnels) et met à jour les stocks (bijouteries / réserve).
+
+        ## Affectation par lot
+        ```json
+        {
+          "fournisseur": {"nom":"Diop","prenom":"Abdou","telephone":"770000000","address":"Dakar"},
+          "produits":[
+            {
+              "produit": 12,
+              "quantite": 50,
+              "prix_achat_gramme": "4500.00",
+              "lots": [
+                {
+                  "lot_code": "LOT-A1",
+                  "quantite": 30,
+                  "affectations": [
+                    {"bijouterie_id": 2, "quantite": 12},
+                    {"bijouterie_id": 5, "quantite": 10}
+                  ]
+                },
+                {
+                  "lot_code": null,
+                  "quantite": 20,
+                  "affectations": [
+                    {"bijouterie_id": 2, "quantite": 15}
+                  ]
+                }
+              ]
+            }
+          ],
+          "frais_transport": "0.00",
+          "frais_douane": "0.00"
+        }
+        ```
+
+        ## Affectation directe (sans lots)
+        ```json
+        {
+          "fournisseur": {"nom":"Kane","prenom":"Moussa","telephone":"780000000"},
+          "produits":[
+            {
+              "produit": 34,
+              "quantite": 8,
+              "prix_achat_gramme": "5200.00",
+              "affectations": [
+                {"bijouterie_id": 3, "quantite": 5},
+                {"bijouterie_id": 7, "quantite": 1}
+              ]
+            }
+          ]
+        }
+        ```
+        """),
+        request_body=AchatCreateSerializer,
+        responses={201: openapi.Response("Création réussie", schema=AchatSerializer)},
+        tags=["Achats"],
+    )
+    @transaction.atomic
+    def post(self, request):
+        # 0) ACL
+        if not _role_ok(request.user):
+            return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        # 1) Valider payload
+        ser = AchatCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        # 2) Upsert fournisseur (par téléphone)
+        f = data["fournisseur"]
+        fournisseur, _ = Fournisseur.objects.get_or_create(
+            telephone=f["telephone"],
+            defaults={"nom": f.get("nom", ""), "prenom": f.get("prenom", ""), "address": f.get("address", "")},
+        )
+
+        # 3) Créer l'achat
+        achat = Achat.objects.create(
+            fournisseur=fournisseur,
+            description=f.get("address", ""),
+            frais_transport=data.get("frais_transport", Decimal("0.00")),
+            frais_douane=data.get("frais_douane", Decimal("0.00")),
+        )
+
+        # 4) Traiter chaque ligne produit
+        now = timezone.now()
+
+        # -- Conteneur de réponse enrichie
+        details: list[dict] = []
+
+        for line in data["produits"]:
+            produit_id = int(line["produit"])
+            produit = get_object_or_404(Produit, pk=produit_id)
+
+            q_line = int(line["quantite"])
+            prix_gramme = line["prix_achat_gramme"]  # Decimal
+            lots = line.get("lots") or []
+            affs = line.get("affectations") or []
+
+            # ---- MODE A : avec lots
+            if lots:
+                line_result = {
+                    "produit_id": produit_id,
+                    "mode": "LOTS",
+                    "quantite_ligne": q_line,
+                    "lots": [],
+                }
+
+                for l in lots:
+                    lot_code_input = (l.get("lot_code") or "").strip().upper() or None
+                    lot_qty = int(l["quantite"])
+
+                    # (Option valorisation) poids = lot_qty * produit.poids (si dispo)
+                    try:
+                        poids_unitaire = getattr(produit, "poids", None)
+                        if poids_unitaire is None:
+                            poids_total = Decimal("0.000")
+                        else:
+                            poids_total = (Decimal(lot_qty) * Decimal(poids_unitaire)).quantize(Decimal("0.000"))
+                    except Exception:
+                        poids_total = Decimal("0.000")
+
+                    lot = Lot(
+                        achat=achat,
+                        produit=produit,
+                        lot_code=lot_code_input,
+                        poids_total=poids_total,
+                        poids_restant=poids_total,
+                        prix_achat_gramme=prix_gramme,
+                        commentaire="Créé via AchatCreateView",
+                    )
+                    try:
+                        lot.save()
+                    except IntegrityError:
+                        lot.lot_code = None
+                        lot.save()
+
+                    # Ventilation vers bijouteries
+                    somme_aff = 0
+                    lot_result = {
+                        "lot_id": lot.id,
+                        "lot_code": lot.lot_code,
+                        "quantite": lot_qty,
+                        "affectations": [],
+                    }
+
+                    for a in (l.get("affectations") or []):
+                        bid = int(a["bijouterie_id"])
+                        q = int(a["quantite"])
+                        if q <= 0:
+                            continue
+                        somme_aff += q
+
+                        st = _stock_increment(produit_id=produit_id, bijouterie_id=bid, delta_qty=q, lot_id=lot.id)
+                        log_move(
+                            produit=produit,
+                            qty=q,
+                            movement_type=MovementType.PURCHASE_IN,
+                            src_bucket=Bucket.EXTERNAL,
+                            dst_bucket=Bucket.BIJOUTERIE,
+                            dst_bijouterie_id=bid,
+                            unit_cost=prix_gramme,
+                            achat=achat,
+                            lot=lot,
+                            user=request.user,
+                            reason=f"Arrivée achat (lot {lot.lot_code or lot.id} → bijouterie)",
+                        )
+
+                        lot_result["affectations"].append({
+                            "bijouterie_id": bid,
+                            "quantite": q,
+                            "stock": {
+                                "id": st.id, "produit_id": st.produit_id,
+                                "bijouterie_id": st.bijouterie_id, "lot_id": st.lot_id,
+                                "quantite": st.quantite, "is_reserved": st.is_reserved,
+                            },
+                        })
+
+                    # Reste du lot -> RÉSERVE
+                    reste = lot_qty - somme_aff
+                    if reste > 0:
+                        st = _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=reste, lot_id=lot.id)
+                        log_move(
+                            produit=produit,
+                            qty=reste,
+                            movement_type=MovementType.PURCHASE_IN,
+                            src_bucket=Bucket.EXTERNAL,
+                            dst_bucket=Bucket.RESERVED,
+                            unit_cost=prix_gramme,
+                            achat=achat,
+                            lot=lot,
+                            user=request.user,
+                            reason=f"Arrivée achat (reste lot {lot.lot_code or lot.id} en réservé)",
+                        )
+                        lot_result["reserve"] = {
+                            "id": st.id, "produit_id": st.produit_id,
+                            "bijouterie_id": st.bijouterie_id, "lot_id": st.lot_id,
+                            "quantite": st.quantite, "is_reserved": st.is_reserved,
+                        }
+
+                    line_result["lots"].append(lot_result)
+
+                details.append(line_result)
+
+            # ---- MODE B : sans lots (affectations directes ou tout réservé)
+            else:
+                line_result = {
+                    "produit_id": produit_id,
+                    "mode": "DIRECT",
+                    "quantite_ligne": q_line,
+                    "affectations": [],
+                }
+                somme_aff = 0
+
+                for a in affs:
+                    bid = int(a["bijouterie_id"])
+                    q = int(a["quantite"])
+                    if q <= 0:
+                        continue
+                    somme_aff += q
+
+                    st = _stock_increment(produit_id=produit_id, bijouterie_id=bid, delta_qty=q, lot_id=None)
+                    log_move(
+                        produit=produit,
+                        qty=q,
+                        movement_type=MovementType.PURCHASE_IN,
+                        src_bucket=Bucket.EXTERNAL,
+                        dst_bucket=Bucket.BIJOUTERIE,
+                        dst_bijouterie_id=bid,
+                        unit_cost=prix_gramme,
+                        achat=achat,
+                        lot=None,
+                        user=request.user,
+                        reason="Arrivée achat (affectation directe)",
+                    )
+
+                    line_result["affectations"].append({
+                        "bijouterie_id": bid,
+                        "quantite": q,
+                        "stock": {
+                            "id": st.id, "produit_id": st.produit_id,
+                            "bijouterie_id": st.bijouterie_id, "lot_id": st.lot_id,
+                            "quantite": st.quantite, "is_reserved": st.is_reserved,
+                        },
+                    })
+
+                # Reste -> RÉSERVE
+                reste = q_line - somme_aff
+                if reste > 0:
+                    st = _stock_increment(produit_id=produit_id, bijouterie_id=None, delta_qty=reste, lot_id=None)
+                    log_move(
+                        produit=produit,
+                        qty=reste,
+                        movement_type=MovementType.PURCHASE_IN,
+                        src_bucket=Bucket.EXTERNAL,
+                        dst_bucket=Bucket.RESERVED,
+                        unit_cost=prix_gramme,
+                        achat=achat,
+                        lot=None,
+                        user=request.user,
+                        reason="Arrivée achat (reste en réservé)",
+                    )
+                    line_result["reserve"] = {
+                        "id": st.id, "produit_id": st.produit_id,
+                        "bijouterie_id": st.bijouterie_id, "lot_id": st.lot_id,
+                        "quantite": st.quantite, "is_reserved": st.is_reserved,
+                    }
+
+                details.append(line_result)
+
+        # 5) Totaux achat (silencieux si non implémenté)
+        try:
+            achat.update_total(save=True)
+        except Exception:
+            pass
+
+        # 6) Réponse enrichie
+        payload = {
+            "achat": AchatSerializer(achat).data,
+            "details": details,
+        }
+        return Response(payload, status=status.HTTP_201_CREATED)
+
 
 # (Optionnel) log des mouvements ; no-op si le module n'existe pas
 try:
@@ -5399,7 +1410,7 @@ def _apply_repartition_strict(
     produit,
     achat,
     achat_ligne,
-    lot: Optional[AchatProduitLot],
+    lot: Optional[Lot],
     unit_cost: Decimal,
     current_res: int,
     current_bij: Dict[int, int],
@@ -6491,7 +2502,7 @@ class StockReserveAffectationView(APIView):
             lot_id = it.get("lot_id")
             lot_obj = None
             if lot_id:
-                lot_obj = get_object_or_404(AchatProduitLot, pk=int(lot_id))
+                lot_obj = get_object_or_404(Lot, pk=int(lot_id))
                 if lot_obj.achat_ligne.produit_id != produit_id:
                     return Response(
                         {"detail": f"Le lot #{lot_id} n'appartient pas au produit {produit_id}."},
@@ -6500,10 +2511,10 @@ class StockReserveAffectationView(APIView):
             elif it.get("lot_code"):
                 code = it["lot_code"]
                 try:
-                    lot_obj = AchatProduitLot.objects.get(
+                    lot_obj = Lot.objects.get(
                         lot_code=code, achat_ligne__produit_id=produit_id
                     )
-                except AchatProduitLot.DoesNotExist:
+                except Lot.DoesNotExist:
                     return Response(
                         {"detail": f"Lot '{code}' introuvable pour le produit {produit_id}."},
                         status=status.HTTP_404_NOT_FOUND,
@@ -8912,8 +4923,8 @@ class AchatProduitPDFView(APIView):
             return Response({"message": "Access Denied"}, status=403)
 
         try:
-            achat_produit = AchatProduit.objects.select_related('achat', 'produit', 'fournisseur').get(pk=pk)
-        except AchatProduit.DoesNotExist:
+            achat_produit = Lot.objects.select_related('achat', 'produit', 'fournisseur').get(pk=pk)
+        except Lot.DoesNotExist:
             return Response({"detail": "AchatProduit non trouvé."}, status=404)
 
         context = {
