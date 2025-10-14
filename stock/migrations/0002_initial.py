@@ -71,9 +71,19 @@ class Migration(migrations.Migration):
                 name="ck_stock_weight_gte_0",
             ),
         ),
+        # migrations.AddConstraint(
+        #     model_name='stock',
+        #     constraint=models.CheckConstraint(condition=models.Q(models.Q(('bijouterie__isnull', True), ('is_reserved', True)), models.Q(('bijouterie__isnull', False), ('is_reserved', False)), _connector='OR'), name='ck_reserved_matches_bijouterie_null'),
+        # ),
         migrations.AddConstraint(
-            model_name='stock',
-            constraint=models.CheckConstraint(condition=models.Q(models.Q(('bijouterie__isnull', True), ('is_reserved', True)), models.Q(('bijouterie__isnull', False), ('is_reserved', False)), _connector='OR'), name='ck_reserved_matches_bijouterie_null'),
+            model_name="stock",
+            constraint=models.CheckConstraint(
+                check=(
+                    Q(is_reserved=True,  bijouterie__isnull=True) |
+                    Q(is_reserved=False, bijouterie__isnull=False)
+                ),
+                name="ck_reserved_matches_bijouterie_null",
+            ),
         ),
         migrations.AddConstraint(
             model_name='stock',
