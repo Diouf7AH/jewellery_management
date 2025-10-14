@@ -2,6 +2,7 @@
 
 import django.db.models.deletion
 from django.db import migrations, models
+from django.db.models import Q
 
 
 class Migration(migrations.Migration):
@@ -50,9 +51,14 @@ class Migration(migrations.Migration):
             model_name='stock',
             constraint=models.UniqueConstraint(condition=models.Q(('is_reserved', False)), fields=('produit', 'bijouterie', 'lot'), name='uniq_stock_prod_bij_lot_when_assigned'),
         ),
+        # migrations.AddConstraint(
+        #     model_name='stock',
+        #     constraint=models.CheckConstraint(condition=models.Q(('quantite__gte', 0)), name='ck_stock_qty_gte_0'),
+        # ),
         migrations.AddConstraint(
-            model_name='stock',
-            constraint=models.CheckConstraint(condition=models.Q(('quantite__gte', 0)), name='ck_stock_qty_gte_0'),
+            model_name="stock",constraint=models.CheckConstraint(
+                check=Q(quantite__gte=0),
+                name="ck_stock_qty_gte_0",),
         ),
         migrations.AddConstraint(
             model_name='stock',
