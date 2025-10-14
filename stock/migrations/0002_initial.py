@@ -60,9 +60,16 @@ class Migration(migrations.Migration):
                 check=Q(quantite__gte=0),
                 name="ck_stock_qty_gte_0",),
         ),
+        # migrations.AddConstraint(
+        #     model_name='stock',
+        #     constraint=models.CheckConstraint(condition=models.Q(('poids_grammes__gte', 0)), name='ck_stock_weight_gte_0'),
+        # ),
         migrations.AddConstraint(
-            model_name='stock',
-            constraint=models.CheckConstraint(condition=models.Q(('poids_grammes__gte', 0)), name='ck_stock_weight_gte_0'),
+            model_name="stock",
+            constraint=models.CheckConstraint(
+                check=Q(poids_grammes__gte=0),
+                name="ck_stock_weight_gte_0",
+            ),
         ),
         migrations.AddConstraint(
             model_name='stock',
