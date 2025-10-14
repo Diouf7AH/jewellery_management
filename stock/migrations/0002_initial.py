@@ -86,11 +86,18 @@ class Migration(migrations.Migration):
             ),
         ),
         migrations.AddConstraint(
-            model_name='stock',
-            constraint=models.CheckConstraint(condition=models.Q(('quantite__gt', 0), ('poids_grammes__gt', 0), _connector='OR'), name='ck_stock_has_qty_or_weight'),
+            model_name="stock",
+            constraint=models.CheckConstraint(
+                check=Q(quantite__gt=0) | Q(poids_grammes__gt=0),
+                name="ck_stock_has_qty_or_weight",
+            ),
         ),
+        # XOR : soit quantité > 0 et poids == 0, soit poids > 0 et quantité == 0
         migrations.AddConstraint(
-            model_name='stock',
-            constraint=models.CheckConstraint(condition=models.Q(models.Q(('quantite', 0), ('poids_grammes__gt', 0)), models.Q(('quantite__gt', 0), ('poids_grammes', 0)), _connector='OR'), name='ck_stock_qty_xor_weight'),
+            model_name="stock",
+            constraint=models.CheckConstraint(
+                check=(Q(quantite__gt=0, poids_grammes=0) | Q(quantite=0, poids_grammes__gt=0)),
+                name="ck_stock_qty_xor_weight",
+            ),
         ),
     ]
