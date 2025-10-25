@@ -1,12 +1,14 @@
-from django.contrib.auth.models import User
-from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from store.serializers import ProduitSerializer
-from store.models import Produit, Bijouterie
-from userauths.models import User
-from .models import Vendor, VendorProduit
-from staff.models import Cashier
+from django.contrib.auth.models import User
 from django.core.validators import EmailValidator
+from rest_framework import serializers
+
+from staff.models import Cashier
+from store.models import Bijouterie, Produit
+from store.serializers import ProduitSerializer
+from userauths.models import User
+
+from .models import Vendor
 
 User = get_user_model()
 
@@ -16,7 +18,16 @@ class VendorStatusInputSerializer(serializers.Serializer):
         model = Vendor
         fields = ['verifie']  # ⚠️ Si tu veux activer/désactiver le vendeur (champ correct = verifie, pas active)
 
+# # ------------------------------------Bijouterie to vendeur----------------------
+class BijouterieToVendorLineInSerializer(serializers.Serializer):
+    produit_line_id = serializers.IntegerField()
+    quantite = serializers.IntegerField(min_value=1)
 
+class BijouterieToVendorInSerializer(serializers.Serializer):
+    vendor_id = serializers.IntegerField()  # 👈 canonique
+    lignes = BijouterieToVendorLineInSerializer(many=True)
+    note = serializers.CharField(required=False, allow_blank=True)
+# ----------------------------------End bijouterie to vendeur ---------------
 
 # class VendorProduitSerializer(serializers.ModelSerializer):
 #     # produit = ProduitSerializer()
@@ -25,46 +36,46 @@ class VendorStatusInputSerializer(serializers.Serializer):
 #         model = VendorProduit
 #         fields = ['vendor', 'produit', 'quantite']
 
-class VendorProduitSerializer(serializers.ModelSerializer):
-    produit = ProduitSerializer(read_only=True)  # Affichage complet du produit
-    produit_id = serializers.PrimaryKeyRelatedField(
-        queryset=Produit.objects.all(),
-        source='produit',
-        write_only=True
-    )
-    vendor = serializers.SerializerMethodField()  # 👈 lecture seule, affiche l'ID de l'utilisateur
-
-    class Meta:
-        model = VendorProduit
-        fields = ['vendor', 'produit', 'produit_id', 'quantite']
-
-    def get_vendor(self, obj):
-        return obj.vendor.user.id if obj.vendor and obj.vendor.user else None
-
-
-
-# class VendorSerializer(serializers.ModelSerializer):
-#     email = serializers.EmailField(source='user.email', read_only=True)
+# class VendorProduitSerializer(serializers.ModelSerializer):
+#     produit = ProduitSerializer(read_only=True)  # Affichage complet du produit
+#     produit_id = serializers.PrimaryKeyRelatedField(
+#         queryset=Produit.objects.all(),
+#         source='produit',
+#         write_only=True
+#     )
+#     vendor = serializers.SerializerMethodField()  # 👈 lecture seule, affiche l'ID de l'utilisateur
 
 #     class Meta:
-#         model = Vendor
-#         fields = ['email', 'bijouterie', 'active', 'description', 'verifie', 'raison_desactivation']
+#         model = VendorProduit
+#         fields = ['vendor', 'produit', 'produit_id', 'quantite']
+
+#     def get_vendor(self, obj):
+#         return obj.vendor.user.id if obj.vendor and obj.vendor.user else None
+
+
 
 class VendorSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(source='user.email', read_only=True)
-    bijouterie = serializers.SerializerMethodField()  # ✅ personnalisation
 
     class Meta:
         model = Vendor
-        fields = '__all__'
+        fields = ['email', 'bijouterie', 'active', 'description', 'verifie', 'raison_desactivation']
 
-    def get_bijouterie(self, obj):
-        if obj.bijouterie:
-            return {
-                "id": obj.bijouterie.id,
-                "nom": obj.bijouterie.nom
-            }
-        return None
+# # class VendorSerializer(serializers.ModelSerializer):
+# #     email = serializers.EmailField(source='user.email', read_only=True)
+# #     bijouterie = serializers.SerializerMethodField()  # ✅ personnalisation
+
+# #     class Meta:
+# #         model = Vendor
+# #         fields = '__all__'
+
+# #     def get_bijouterie(self, obj):
+# #         if obj.bijouterie:
+# #             return {
+# #                 "id": obj.bijouterie.id,
+# #                 "nom": obj.bijouterie.nom
+# #             }
+# #         return None
 
 # Pour l'affichage du swagger
 # # avoir tous les attributs du vendeur dans swagger
@@ -75,70 +86,70 @@ class VendorSerializer(serializers.ModelSerializer):
 #     bijouterie = serializers.IntegerField(required=True)
 #     description = serializers.CharField(required=False, allow_blank=True)
 
-class CreateVendorSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    bijouterie = serializers.CharField()
-    # description = serializers.CharField(required=False, allow_blank=True)
-
-    def validate_bijouterie(self, value):
-        from store.models import Bijouterie
-        try:
-            return Bijouterie.objects.get(nom__iexact=value.strip())
-        except Bijouterie.DoesNotExist:
-            raise serializers.ValidationError("Bijouterie introuvable.")
-
 # class CreateVendorSerializer(serializers.Serializer):
 #     email = serializers.EmailField()
-#     bijouterie_id = serializers.IntegerField()
-#     description = serializers.CharField(required=False, allow_blank=True)
+#     bijouterie = serializers.CharField()
+#     # description = serializers.CharField(required=False, allow_blank=True)
 
-#     def validate_bijouterie_id(self, value):
+#     def validate_bijouterie(self, value):
 #         from store.models import Bijouterie
-#         if not Bijouterie.objects.filter(id=value).exists():
+#         try:
+#             return Bijouterie.objects.get(nom__iexact=value.strip())
+#         except Bijouterie.DoesNotExist:
 #             raise serializers.ValidationError("Bijouterie introuvable.")
-#         return value
+
+# # class CreateVendorSerializer(serializers.Serializer):
+# #     email = serializers.EmailField()
+# #     bijouterie_id = serializers.IntegerField()
+# #     description = serializers.CharField(required=False, allow_blank=True)
+
+# #     def validate_bijouterie_id(self, value):
+# #         from store.models import Bijouterie
+# #         if not Bijouterie.objects.filter(id=value).exists():
+# #             raise serializers.ValidationError("Bijouterie introuvable.")
+# #         return value
 
 
-class UserListeSerializer(serializers.ModelSerializer):
-    full_name = serializers.SerializerMethodField()
+# class UserListeSerializer(serializers.ModelSerializer):
+#     full_name = serializers.SerializerMethodField()
 
-    class Meta:
-        model = User
-        fields = ['id', 'email', 'first_name', 'last_name', 'full_name']
+#     class Meta:
+#         model = User
+#         fields = ['id', 'email', 'first_name', 'last_name', 'full_name']
 
-    def get_full_name(self, obj):
-        return f"{obj.first_name} {obj.last_name}"
+#     def get_full_name(self, obj):
+#         return f"{obj.first_name} {obj.last_name}"
 
 
-class VendorDashboardSerializer(serializers.Serializer):
-    # Infos du vendeur
-    user_id = serializers.IntegerField()
-    email = serializers.EmailField()
-    first_name = serializers.CharField()
-    last_name = serializers.CharField()
-    bijouterie = serializers.CharField()
+# class VendorDashboardSerializer(serializers.Serializer):
+#     # Infos du vendeur
+#     user_id = serializers.IntegerField()
+#     email = serializers.EmailField()
+#     first_name = serializers.CharField()
+#     last_name = serializers.CharField()
+#     bijouterie = serializers.CharField()
 
-    # Produits associés
-    produits = VendorProduitSerializer(many=True)
+#     # Produits associés
+#     produits = VendorProduitSerializer(many=True)
 
-    # Statistiques globales
-    total_produits = serializers.IntegerField()
-    total_ventes = serializers.IntegerField()
-    quantite_totale_vendue = serializers.IntegerField()
-    montant_total_ventes = serializers.DecimalField(max_digits=12, decimal_places=2)
-    stock_restant = serializers.IntegerField()
+#     # Statistiques globales
+#     total_produits = serializers.IntegerField()
+#     total_ventes = serializers.IntegerField()
+#     quantite_totale_vendue = serializers.IntegerField()
+#     montant_total_ventes = serializers.DecimalField(max_digits=12, decimal_places=2)
+#     stock_restant = serializers.IntegerField()
 
-    # Statistiques groupées (par mois, semaine, etc.)
-    stats_groupées = serializers.ListField(
-        child=serializers.DictField(), required=False
-    )
+#     # Statistiques groupées (par mois, semaine, etc.)
+#     stats_groupées = serializers.ListField(
+#         child=serializers.DictField(), required=False
+#     )
 
-    # Top produits
-    top_produits = serializers.ListField(
-        child=serializers.DictField(), required=False
-    )
+#     # Top produits
+#     top_produits = serializers.ListField(
+#         child=serializers.DictField(), required=False
+#     )
 
-    mode_groupement = serializers.CharField(required=False)
+#     mode_groupement = serializers.CharField(required=False)
 
 
 class CreateStaffMemberSerializer(serializers.Serializer):
@@ -158,7 +169,7 @@ class CreateStaffMemberSerializer(serializers.Serializer):
     #     required=False, allow_blank=True, max_length=255
     # )
 
-# ----- Lecture -----
+# # ----- Lecture -----
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -199,8 +210,8 @@ class VendorReadSerializer(serializers.ModelSerializer):
         return (f"{fn} {ln}").strip() or (u.username or u.email or "")
 
 
-# ----- Écriture / Update -----
-# Permet de mettre à jour Vendor + quelques champs du User.
+# # ----- Écriture / Update -----
+# # Permet de mettre à jour Vendor + quelques champs du User.
 
 class VendorUpdateSerializer(serializers.ModelSerializer):
     # lier/délier la bijouterie par id

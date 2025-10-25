@@ -19,7 +19,7 @@ urlpatterns = [
     # Store API Endpoints
     # path('', userauths_views.getRoutes),
     
-    path('dashboard/vendor/dashboard', vendor_views.VendorDashboardView.as_view(), name='dashboard-vendeur'),
+    path("vendors/stats/", vendor_views.VendorStatsView.as_view(), name="vendor-stats"),
     path('dashboard/achat/dashboard', achat_views.AchatDashboardView.as_view(), name='dashboard-achat'),
     # path('vendor/me/', vendor_views.VendorMeView.as_view(), name='vendor-me'),
     
@@ -119,13 +119,22 @@ urlpatterns = [
     path('fournisseur/list/', achat_views.FournisseurListView.as_view(), name='fournisseur-list'),
     
     # ACHAT
-    path("achats/liste", achat_views.AchatListView.as_view(), name="achat-list"),
+    path("achat/liste", achat_views.AchatListView.as_view(), name="achat-list"),
     path('achat-produit/get-one-achat/<int:pk>', achat_views.AchatProduitGetOneView.as_view(), name='get_achat_produit'),
-    path('achat-produit/create-achats', achat_views.AchatCreateView.as_view(), name='achats-create'),
+    path("achat/lots", achat_views.LotListView.as_view(), name="lots-list"),
+    path("achat/lots/<int:pk>", achat_views.LotDetailView.as_view(), name="lot-detail"),
+    path("achat/arrivage", achat_views.ArrivageCreateView.as_view(), name="arrivage-create"),
+    path("achat/lots/export/csv", achat_views.LotExportCSVView.as_view(), name="lots-export-csv"),
+    path("achat/lots/export/xlsx", achat_views.LotExportExcelView.as_view(), name="lots-export-xlsx"),
+    # path('achat-produit/create-achats', achat_views.AchatCreateView.as_view(), name='achats-create'),
     # path("achats-produit-update/<int:achat_id>/", achat_views.AchatUpdateView.as_view(), name="achats-update"),
-    path("achats/<int:achat_id>/update", achat_views.AchatUpdateView.as_view(), name="achat-update"),
-    path("stock/affectations/reserve/", achat_views.StockReserveAffectationView.as_view(), name="stock-reserve-affect"),
-    path("achats/<int:achat_id>/cancel/", achat_views.AchatCancelView.as_view(), name="achat-cancel"),
+    path("stocks/transfer/reserve-to-bijouterie", stock_views.ReserveToBijouterieTransferView.as_view(), name="reserve-to-bijouterie"),
+    # path("stock/affectations/reserve", achat_views.StockReserveAffectationView.as_view(), name="stock-reserve-affect"),
+    path("stocks/transfer/bijouterie-to-vendor", stock_views.BijouterieToVendorTransferView.as_view(),name="bijouterie-to-vendor"),
+    path("stocks", stock_views.StockListView.as_view(), name="stock-list"),
+    path("stocks/summary", stock_views.StockSummaryView.as_view(), name="stock-summary"),
+
+    path("achats/<int:achat_id>/cancel", achat_views.AchatCancelView.as_view(), name="achat-cancel"),
     # path('achat-produit/update-achat/<int:achat_id>', achat_views.AchatUpdateAPIView.as_view(), name='achat_update_achat'),
     # path('achat-produit/update-achat-produit/<int:achatproduit_id>', achat_views.AchatUpdateAchatProduitAPIView.as_view(), name='achat_produit_update_achat'),
     # path('achat-produit/<int:achatproduit_id>/produits/<int:achat_id>', achat_views.AchatProduitUpdate    APIView.as_view(),name='achat-produit-update'),
@@ -173,7 +182,7 @@ urlpatterns = [
     # SALE
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
     
-    path('vente/list-produit', sale_views.VentListAPIView.as_view(), name='vente-produit-list'),
+    path('vente/list-produit', sale_views.VenteListAPIView.as_view(), name='vente-produit-list'),
     path('vente/rapport-mensuel/', sale_views.RapportVentesMensuelAPIView.as_view(), name='rapport-ventes-mensuel'),
     
     # path('facture/recherche-facture/<str:numero_facture>', sale_views.RechercherFactureView.as_view(), name='Recherche-facture-par-numero'),

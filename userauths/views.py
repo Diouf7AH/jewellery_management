@@ -1,42 +1,34 @@
-import json
 from datetime import timedelta
+from smtplib import (SMTPDataError, SMTPException, SMTPRecipientsRefused,
+                     SMTPSenderRefused)
 
-from rest_framework import generics
+from django.conf import settings
+from django.contrib import messages
+from django.contrib.auth import authenticate, get_user_model
+from django.db import transaction
+from django.http import Http404
+from django.shortcuts import redirect, render
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from rest_framework import status, parsers
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework import parsers, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.reverse import reverse
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
-from django.shortcuts import render, redirect
-from django.contrib import messages
-from django.template.loader import render_to_string
-from django.core.mail import EmailMultiAlternatives
-
-from django.utils import timezone
-from datetime import timedelta
-from django.contrib.auth import authenticate
 
 from backend.renderers import UserRenderer
-
-from django.http import Http404 
+from userauths.utils import send_confirmation_email, verify_email_token
 
 from .auth_backend import EmailPhoneUsernameAuthenticationBackend as EoP
 from .models import Profile, Role
-from .serializers import (ProfileSerializer, RoleSerializer, UserChangePasswordSerializer, UserDetailSerializer, UserLoginSerializer, UserRegistrationSerializer)
-
-from django.utils import timezone
-
-from django.conf import settings
-
-from django.core.mail import send_mail
-from userauths.utils import verify_email_token, send_confirmation_email
-from django.contrib.auth import get_user_model
-from django.utils import timezone
-from datetime import timedelta
+# (optionnel) si tu mets en place la file d’attente :
+from .outbox import enqueue_email  # voir 2.b
+from .serializers import (ProfileSerializer, RoleSerializer,
+                          UserChangePasswordSerializer, UserDetailSerializer,
+                          UserLoginSerializer, UserRegistrationSerializer)
+from .utils import generate_email_token, send_confirmation_email
 
 User = get_user_model()
 
@@ -51,27 +43,117 @@ def get_tokens_for_user(user):
         'access': str(refresh.access_token),
     }
 
+# class UserRegistrationView(APIView):
+#     permission_classes = [AllowAny]
+
+#     @swagger_auto_schema(
+#         operation_description="Inscription d’un nouvel utilisateur avec confirmation email",
+#         request_body=UserRegistrationSerializer,
+#         responses={
+#             201: openapi.Response('Inscription réussie', UserRegistrationSerializer),
+#             400: openapi.Response('Requête invalide')
+#         }
+#     )
+#     def post(self, request, format=None):
+#         serializer = UserRegistrationSerializer(data=request.data, context={'request': request})
+#         serializer.is_valid(raise_exception=True)
+#         user = serializer.save()
+#         data = {
+#             'message': "Inscription réussie ✅. Vérifiez votre email.",
+#             'user': UserRegistrationSerializer(user).data,
+#             'tokens': serializer.tokens
+#         }
+#         return Response(data, status=status.HTTP_201_CREATED)
+
+
+try:
+    from .outbox import enqueue_email  # si tu as mis en place l’outbox
+    HAS_OUTBOX = True
+except Exception:
+    HAS_OUTBOX = False
+
+User = get_user_model()
+
 class UserRegistrationView(APIView):
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(
-        operation_description="Inscription d’un nouvel utilisateur avec confirmation email",
+        operation_summary="Inscription d’un nouvel utilisateur avec confirmation email",
+        operation_description="Crée l'utilisateur, génère les tokens JWT et envoie l'email de confirmation.",
         request_body=UserRegistrationSerializer,
         responses={
-            201: openapi.Response('Inscription réussie', UserRegistrationSerializer),
+            201: openapi.Response('Inscription réussie'),
             400: openapi.Response('Requête invalide')
         }
     )
+    @transaction.atomic
     def post(self, request, format=None):
-        serializer = UserRegistrationSerializer(data=request.data, context={'request': request})
-        serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-        data = {
-            'message': "Inscription réussie ✅. Vérifiez votre email.",
-            'user': UserRegistrationSerializer(user).data,
-            'tokens': serializer.tokens
-        }
-        return Response(data, status=status.HTTP_201_CREATED)
+        s = UserRegistrationSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        data = s.validated_data
+
+        # --- Création utilisateur (désormais ici) ---
+        user = User(
+            email=data["email"],
+            username=data.get("username") or "",
+            telephone=data.get("telephone") or "",
+            is_active=True,             # ou False si tu veux bloquer avant confirmation
+            is_email_verified=False,    # champ bool custom si tu l’as
+        )
+        user.set_password(data["password"])
+        user.save()
+
+        # --- JWT tokens ---
+        refresh = RefreshToken.for_user(user)
+        tokens = {"access": str(refresh.access_token), "refresh": str(refresh)}
+
+        # --- Lien de confirmation (FORCE frontend) ---
+        token = generate_email_token(user)
+        frontend = getattr(settings, "FRONTEND_BASE_URL", "").rstrip("/")
+        # Option A (recommandé) : lien vers le frontend
+        confirm_url = f"{frontend}/confirm-email?token={token}" if frontend else None
+        home_url = frontend or "/"
+
+        # Si tu préfères le backend pour vérifier (Option B), dé-commente:
+        # from django.urls import reverse
+        # confirm_url = request.build_absolute_uri(reverse('verify-email') + f"?token={token}")
+        # home_url = request.build_absolute_uri('/')
+
+        # --- Envoi email (ou enfile si erreur SMTP) ---
+        email_status = "sent"
+        try:
+            send_confirmation_email(user, request=None, confirm_url=confirm_url, home_url=home_url)
+        except (SMTPRecipientsRefused, SMTPDataError, SMTPSenderRefused, SMTPException) as e:
+            if HAS_OUTBOX:
+                enqueue_email(
+                    to=user.email,
+                    template="confirm_email",
+                    context={"user_id": user.id, "confirm_url": confirm_url, "home_url": home_url},
+                    reason=f"{e.__class__.__name__}: {e}"
+                )
+                email_status = "queued"
+            else:
+                email_status = "failed"
+
+        # --- Réponse ---
+        return Response(
+            {
+                "message": "Inscription réussie ✅. Vérifiez votre email.",
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "username": user.username,
+                    "telephone": user.telephone,
+                    "is_active": user.is_active,
+                    "is_email_verified": getattr(user, "is_email_verified", False),
+                },
+                "tokens": tokens,
+                "email_status": email_status,  # "sent" | "queued" | "failed"
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
 
 class EmailVerificationView(APIView):
     permission_classes = []

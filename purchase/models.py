@@ -6,7 +6,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import IntegrityError, models
+from django.db import IntegrityError, models, transaction
 from django.db.models import DecimalField, ExpressionWrapper, F, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -646,125 +646,181 @@ class Achat(models.Model):
 #             self.achat.update_total()
 
 
-# --- Lot (lié à AchatProduit) ---
+# # --- Lot (lié à AchatProduit) ---
+# class Lot(models.Model):
+#     produit = models.ForeignKey('store.Produit', on_delete=models.PROTECT, related_name='lots')
+#     achat   = models.ForeignKey('purchase.Achat', on_delete=models.PROTECT, related_name='lots')
+
+#     lot_uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, db_index=True)
+#     lot_code = models.CharField(max_length=24, unique=True, db_index=True, null=True, blank=True,
+#                                 help_text="Vide → auto (LOT-YYYYMMDD-XXXXXXXX)")
+
+#     # Valorisation métal (obligatoire)
+#     prix_achat_gramme = models.DecimalField(max_digits=12, decimal_places=2)
+#     poids_total   = models.DecimalField(max_digits=12, decimal_places=3)
+#     poids_restant = models.DecimalField(max_digits=12, decimal_places=3)
+
+#     # Suivi pièces (optionnel mais utile)
+#     quantite = models.PositiveIntegerField(null=True, blank=True)
+#     quantite_restante = models.PositiveIntegerField(null=True, blank=True)
+
+#     date_achat = models.DateField(null=True, blank=True)
+#     commentaire = models.CharField(max_length=255, blank=True, default="")
+
+#     class Meta:
+#         ordering = ['date_achat', 'id']
+#         indexes = [
+#             models.Index(fields=['date_achat']),
+#             models.Index(fields=['achat', 'date_achat']),
+#             models.Index(fields=['produit']),
+#             models.Index(fields=['poids_restant']),
+#         ]
+#         constraints = [
+#             models.CheckConstraint(name='lot_poids_total_gt_0', check=Q(poids_total__gt=0)),
+#             models.CheckConstraint(name='lot_poids_restant_range',
+#                                    check=Q(poids_restant__gte=0) & Q(poids_restant__lte=F('poids_total'))),
+#             models.CheckConstraint(name='lot_prix_achat_gramme_gt_0', check=Q(prix_achat_gramme__gt=0)),
+#             models.CheckConstraint(name='lot_qte_gt_0_when_set',
+#                                    check=Q(quantite__isnull=True) | Q(quantite__gt=0)),
+#             models.CheckConstraint(name='lot_qte_restante_range',
+#                                    check=Q(quantite_restante__isnull=True) |
+#                                         (Q(quantite__isnull=False) &
+#                                          Q(quantite_restante__gte=0) &
+#                                          Q(quantite_restante__lte=F('quantite')))),
+#         ]
+
+#     def __str__(self):
+#         nom = getattr(self.produit, 'nom', 'N/A')
+#         return f"Lot {self.lot_code or 'AUTO'} • {self.poids_restant}/{self.poids_total} g • {nom}"
+
+#     @property
+#     def is_epuise(self) -> bool:
+#         return (self.poids_restant or Decimal("0.000")) <= Decimal("0.000")
+
+#     def _gen_lot_code(self) -> str:
+#         today = timezone.now().strftime("%Y%m%d")
+#         frag = str(self.lot_uuid).split("-")[0].upper()
+#         return f"LOT-{today}-{frag}"
+
+#     def clean(self):
+#         if self.poids_total is not None and self.poids_total <= 0:
+#             raise ValidationError({"poids_total": "Doit être > 0."})
+#         if self.poids_restant is not None and self.poids_restant < 0:
+#             raise ValidationError({"poids_restant": "Doit être ≥ 0."})
+#         if self.poids_total is not None and self.poids_restant is not None and self.poids_restant > self.poids_total:
+#             raise ValidationError({"poids_restant": "Ne peut pas dépasser le poids total."})
+#         if self.prix_achat_gramme is not None and self.prix_achat_gramme <= 0:
+#             raise ValidationError({"prix_achat_gramme": "Doit être > 0."})
+#         if self.quantite is not None:
+#             if self.quantite <= 0:
+#                 raise ValidationError({"quantite": "Doit être > 0 si renseignée."})
+#             if self.quantite_restante is not None and not (0 <= self.quantite_restante <= self.quantite):
+#                 raise ValidationError({"quantite_restante": "Doit être dans [0; quantite]."})
+
+#     def save(self, *args, **kwargs):
+#         if self.lot_code:
+#             self.lot_code = self.lot_code.strip().upper()
+#         if self._state.adding:
+#             if self.poids_restant is None:
+#                 self.poids_restant = self.poids_total
+#             if self.quantite is not None and self.quantite_restante is None:
+#                 self.quantite_restante = self.quantite
+
+#         # génération automatique + retry sur collision
+#         if not self.lot_code:
+#             for _ in range(5):
+#                 self.lot_code = self._gen_lot_code()
+#                 try:
+#                     self.full_clean()
+#                     super().save(*args, **kwargs)
+#                     return
+#                 except Exception as e:
+#                     from django.db.utils import IntegrityError
+#                     if isinstance(e, IntegrityError):
+#                         self.lot_uuid = uuid.uuid4()
+#                         self.lot_code = None
+#                         continue
+#                     raise
+#             raise ValidationError("Impossible de générer un code lot unique.")
+#         else:
+#             self.full_clean()
+#             return super().save(*args, **kwargs)
+
+#     # Décréments (poids/pièces) si tu veux les utiliser plus tard
+#     def decrement_weight(self, poids: Decimal) -> Decimal:
+#         if poids is None or Decimal(poids) <= 0:
+#             raise ValidationError({"poids": "Doit être > 0."})
+#         updated = type(self).objects.filter(pk=self.pk, poids_restant__gte=Decimal(poids))\
+#             .update(poids_restant=F('poids_restant') - Decimal(poids))
+#         if not updated:
+#             raise ValidationError("Poids restant insuffisant.")
+#         self.refresh_from_db(fields=['poids_restant'])
+#         return self.poids_restant
+
+#     def decrement_qty(self, qty: int) -> int:
+#         if self.quantite is None:
+#             raise ValidationError("Ce lot ne suit pas les pièces (quantite=NULL).")
+#         if not qty or qty <= 0:
+#             raise ValidationError({"quantite": "Doit être > 0."})
+#         updated = type(self).objects.filter(pk=self.pk, quantite_restante__gte=int(qty))\
+#             .update(quantite_restante=F('quantite_restante') - int(qty))
+#         if not updated:
+#             raise ValidationError("Quantité restante insuffisante.")
+#         self.refresh_from_db(fields=['quantite_restante'])
+#         return self.quantite_restante
+
 class Lot(models.Model):
-    produit = models.ForeignKey('store.Produit', on_delete=models.PROTECT, related_name='lots')
-    achat   = models.ForeignKey('purchase.Achat', on_delete=models.PROTECT, related_name='lots')
-
-    lot_uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, db_index=True)
-    lot_code = models.CharField(max_length=24, unique=True, db_index=True, null=True, blank=True,
-                                help_text="Vide → auto (LOT-YYYYMMDD-XXXXXXXX)")
-
-    # Valorisation métal (obligatoire)
-    prix_achat_gramme = models.DecimalField(max_digits=12, decimal_places=2)
-    poids_total   = models.DecimalField(max_digits=12, decimal_places=3)
-    poids_restant = models.DecimalField(max_digits=12, decimal_places=3)
-
-    # Suivi pièces (optionnel mais utile)
-    quantite = models.PositiveIntegerField(null=True, blank=True)
-    quantite_restante = models.PositiveIntegerField(null=True, blank=True)
-
-    date_achat = models.DateField(null=True, blank=True)
-    commentaire = models.CharField(max_length=255, blank=True, default="")
+    achat = models.ForeignKey("purchase.Achat", on_delete=models.PROTECT, related_name="lots")
+    numero_lot = models.CharField(max_length=64, unique=True, db_index=True)
+    description = models.CharField(max_length=255, blank=True, default="")
+    received_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     class Meta:
-        ordering = ['date_achat', 'id']
+        ordering = ["received_at", "id"]
+
+    def __str__(self):
+        return self.numero_lot
+
+
+class ProduitLine(models.Model):
+    """
+    Une ligne produit dans un lot.
+    On ne stocke que les QUANTITÉS. Les POIDS se déduisent : quantité × produit.poids.
+    """
+    lot = models.ForeignKey(Lot, on_delete=models.CASCADE, related_name="lignes")
+    produit = models.ForeignKey("store.Produit", on_delete=models.PROTECT, related_name="produit_lines")
+
+    # coût d'achat par gramme (fourni dans le payload: prix_achat_gramme)
+    prix_gramme_achat = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+
+    # quantités
+    quantite_total = models.PositiveIntegerField()
+    quantite_restante = models.PositiveIntegerField()
+
+    class Meta:
         indexes = [
-            models.Index(fields=['date_achat']),
-            models.Index(fields=['achat', 'date_achat']),
-            models.Index(fields=['produit']),
-            models.Index(fields=['poids_restant']),
+            models.Index(fields=["lot"]),
+            models.Index(fields=["produit"]),
         ]
         constraints = [
-            models.CheckConstraint(name='lot_poids_total_gt_0', check=Q(poids_total__gt=0)),
-            models.CheckConstraint(name='lot_poids_restant_range',
-                                   check=Q(poids_restant__gte=0) & Q(poids_restant__lte=F('poids_total'))),
-            models.CheckConstraint(name='lot_prix_achat_gramme_gt_0', check=Q(prix_achat_gramme__gt=0)),
-            models.CheckConstraint(name='lot_qte_gt_0_when_set',
-                                   check=Q(quantite__isnull=True) | Q(quantite__gt=0)),
-            models.CheckConstraint(name='lot_qte_restante_range',
-                                   check=Q(quantite_restante__isnull=True) |
-                                        (Q(quantite__isnull=False) &
-                                         Q(quantite_restante__gte=0) &
-                                         Q(quantite_restante__lte=F('quantite')))),
+            models.CheckConstraint(check=models.Q(quantite_total__gte=1), name="ck_pl_qty_gte1"),
+            models.CheckConstraint(check=models.Q(quantite_restante__gte=0), name="ck_pl_qtyrest_gte0"),
         ]
 
     def __str__(self):
-        nom = getattr(self.produit, 'nom', 'N/A')
-        return f"Lot {self.lot_code or 'AUTO'} • {self.poids_restant}/{self.poids_total} g • {nom}"
+        return f"{self.lot.numero_lot} · produit={self.produit_id}"
+
+    # ---- Helpers (poids dynamiques) ----
+    @property
+    def poids_total_calc(self):
+        # quantité totale × poids unitaire courant du produit
+        if self.produit.poids is None:
+            return None
+        return (self.quantite_total or 0) * self.produit.poids
 
     @property
-    def is_epuise(self) -> bool:
-        return (self.poids_restant or Decimal("0.000")) <= Decimal("0.000")
-
-    def _gen_lot_code(self) -> str:
-        today = timezone.now().strftime("%Y%m%d")
-        frag = str(self.lot_uuid).split("-")[0].upper()
-        return f"LOT-{today}-{frag}"
-
-    def clean(self):
-        if self.poids_total is not None and self.poids_total <= 0:
-            raise ValidationError({"poids_total": "Doit être > 0."})
-        if self.poids_restant is not None and self.poids_restant < 0:
-            raise ValidationError({"poids_restant": "Doit être ≥ 0."})
-        if self.poids_total is not None and self.poids_restant is not None and self.poids_restant > self.poids_total:
-            raise ValidationError({"poids_restant": "Ne peut pas dépasser le poids total."})
-        if self.prix_achat_gramme is not None and self.prix_achat_gramme <= 0:
-            raise ValidationError({"prix_achat_gramme": "Doit être > 0."})
-        if self.quantite is not None:
-            if self.quantite <= 0:
-                raise ValidationError({"quantite": "Doit être > 0 si renseignée."})
-            if self.quantite_restante is not None and not (0 <= self.quantite_restante <= self.quantite):
-                raise ValidationError({"quantite_restante": "Doit être dans [0; quantite]."})
-
-    def save(self, *args, **kwargs):
-        if self.lot_code:
-            self.lot_code = self.lot_code.strip().upper()
-        if self._state.adding:
-            if self.poids_restant is None:
-                self.poids_restant = self.poids_total
-            if self.quantite is not None and self.quantite_restante is None:
-                self.quantite_restante = self.quantite
-
-        # génération automatique + retry sur collision
-        if not self.lot_code:
-            for _ in range(5):
-                self.lot_code = self._gen_lot_code()
-                try:
-                    self.full_clean()
-                    super().save(*args, **kwargs)
-                    return
-                except Exception as e:
-                    from django.db.utils import IntegrityError
-                    if isinstance(e, IntegrityError):
-                        self.lot_uuid = uuid.uuid4()
-                        self.lot_code = None
-                        continue
-                    raise
-            raise ValidationError("Impossible de générer un code lot unique.")
-        else:
-            self.full_clean()
-            return super().save(*args, **kwargs)
-
-    # Décréments (poids/pièces) si tu veux les utiliser plus tard
-    def decrement_weight(self, poids: Decimal) -> Decimal:
-        if poids is None or Decimal(poids) <= 0:
-            raise ValidationError({"poids": "Doit être > 0."})
-        updated = type(self).objects.filter(pk=self.pk, poids_restant__gte=Decimal(poids))\
-            .update(poids_restant=F('poids_restant') - Decimal(poids))
-        if not updated:
-            raise ValidationError("Poids restant insuffisant.")
-        self.refresh_from_db(fields=['poids_restant'])
-        return self.poids_restant
-
-    def decrement_qty(self, qty: int) -> int:
-        if self.quantite is None:
-            raise ValidationError("Ce lot ne suit pas les pièces (quantite=NULL).")
-        if not qty or qty <= 0:
-            raise ValidationError({"quantite": "Doit être > 0."})
-        updated = type(self).objects.filter(pk=self.pk, quantite_restante__gte=int(qty))\
-            .update(quantite_restante=F('quantite_restante') - int(qty))
-        if not updated:
-            raise ValidationError("Quantité restante insuffisante.")
-        self.refresh_from_db(fields=['quantite_restante'])
-        return self.quantite_restante
+    def poids_restant_calc(self):
+        if self.produit.poids is None:
+            return None
+        return (self.quantite_restante or 0) * self.produit.poids
+    

@@ -1,17 +1,15 @@
-import threading
-from django.core.mail import EmailMessage
 import logging
+import threading
+from datetime import datetime
 
-from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
-from django.core.mail import EmailMultiAlternatives
+from django.conf import settings
+from django.core.mail import EmailMessage, EmailMultiAlternatives
+from django.dispatch import receiver
 from django.template.loader import render_to_string
 from django.urls import reverse
-from django.conf import settings
-from datetime import datetime
-from django.dispatch import receiver
 from django.utils.html import strip_tags
-from django.core.mail import EmailMultiAlternatives
 from django_rest_passwordreset.signals import reset_password_token_created
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +112,41 @@ def verify_email_token(token, expiration=getattr(settings, 'EMAIL_TOKEN_EXPIRATI
         return {"status": "invalid", "email": None}
 
 
-# ✅ Fonction pour envoyer l'email de confirmation
-def send_confirmation_email(user, request):
-    token = generate_email_token(user)
-    confirm_url = request.build_absolute_uri(reverse('verify-email') + f"?token={token}")
-    home_url = request.build_absolute_uri('/')
+# # ✅ Fonction pour envoyer l'email de confirmation
+# def send_confirmation_email(user, request):
+#     token = generate_email_token(user)
+#     confirm_url = request.build_absolute_uri(reverse('verify-email') + f"?token={token}")
+#     home_url = request.build_absolute_uri('/')
+
+#     subject = "Confirmez votre adresse email"
+#     html = render_to_string("emails/email_confirmation.html", {
+#         "user": user,
+#         "home_url": home_url,
+#         "confirm_url": confirm_url,
+#         "year": datetime.now().year
+#     })
+
+#     email = EmailMultiAlternatives(subject, "", settings.DEFAULT_FROM_EMAIL, [user.email])
+#     email.attach_alternative(html, "text/html")
+#     email.send()
+
+def send_confirmation_email(user, request=None, *, confirm_url=None, home_url=None):
+    """
+    Envoie l'email de confirmation.
+    - Si confirm_url/home_url ne sont pas fournis, ils sont générés via request.
+    - Laisse remonter les exceptions SMTP (on les catchera dans la vue).
+    """
+    if not confirm_url:
+        if request is None:
+            # fallback si on n'a pas de request (ex: envoi différé)
+            frontend = getattr(settings, "FRONTEND_BASE_URL", "").rstrip("/")
+            token = generate_email_token(user)
+            confirm_url = f"{frontend}/confirm-email?token={token}" if frontend else None
+            home_url = home_url or (frontend or "/")
+        else:
+            token = generate_email_token(user)
+            confirm_url = request.build_absolute_uri(reverse('verify-email') + f"?token={token}")
+            home_url = home_url or request.build_absolute_uri('/')
 
     subject = "Confirmez votre adresse email"
     html = render_to_string("emails/email_confirmation.html", {
@@ -130,8 +158,7 @@ def send_confirmation_email(user, request):
 
     email = EmailMultiAlternatives(subject, "", settings.DEFAULT_FROM_EMAIL, [user.email])
     email.attach_alternative(html, "text/html")
-    email.send()
-
+    email.send()  # peut lever une exception SMTP → gérée dans la vue appelante
 
 @receiver(reset_password_token_created)
 def send_password_reset_email(sender, instance, reset_password_token, *args, **kwargs):

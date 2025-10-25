@@ -1,21 +1,24 @@
-from django.contrib.auth.base_user import BaseUserManager
-from django.contrib.auth.models import AbstractUser
-from django.core.mail import EmailMultiAlternatives
+import logging
+import re
 import string
 from random import SystemRandom
-import re
-from django.db import models, transaction, IntegrityError
-from django.utils.text import slugify
+
+from django.conf import settings
+from django.contrib.auth.base_user import BaseUserManager
+from django.contrib.auth.models import AbstractUser
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, models, transaction
 from django.db.models.signals import post_migrate, post_save
 from django.dispatch import receiver
 from django.template.loader import render_to_string
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.html import mark_safe, strip_tags
+from django.utils.text import slugify
 from django_rest_passwordreset.signals import reset_password_token_created
-from django.core.exceptions import ValidationError
+
 from store.models import Bijouterie
-from django.conf import settings
-import logging
+
 logger = logging.getLogger(__name__)
 
 GENDER = (
@@ -525,3 +528,18 @@ post_save.connect(create_user_profile, sender=User)
 post_save.connect(save_user_profile, sender=User)
 
 # End Profile
+
+
+# Mini file d’attente + retry
+class OutboxEmail(models.Model):
+    to = models.EmailField()
+    template = models.CharField(max_length=100)      # ex: "confirm_email"
+    context = models.JSONField(default=dict)         # {user_id, confirm_url, home_url}
+    reason = models.TextField(blank=True)
+    attempts = models.IntegerField(default=0)
+    next_try_at = models.DateTimeField(default=timezone.now)
+    last_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["next_try_at", "to"])]

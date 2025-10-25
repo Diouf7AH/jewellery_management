@@ -308,25 +308,25 @@ CORS_ALLOW_HEADERS = [
 
 
 
-# dossier .env
-SECRET_KEY=django-insecure-l0_vam@=nmq2gy4b7+=8izmh(h==!hmp=e^+0_97b&m(&#z77@
-# DEBUG=False
-DEBUG=True
-ALLOWED_HOSTS=http://localhost:5173,
-ALLOWED_HOSTS=127.0.0.1,localhost,rio-gold.com
-# ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '147.79.100.245', 'rio-gold.com', 'www.rio-gold.com']
+# # dossier .env
+# SECRET_KEY=django-insecure-l0_vam@=nmq2gy4b7+=8izmh(h==!hmp=e^+0_97b&m(&#z77@
+# # DEBUG=False
+# DEBUG=True
+# ALLOWED_HOSTS=http://localhost:5173,
+# ALLOWED_HOSTS=127.0.0.1,localhost,rio-gold.com
+# # ALLOWED_HOSTS = ['127.0.0.1', 'localhost', '147.79.100.245', 'rio-gold.com', 'www.rio-gold.com']
 
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_HOST_USER=lamzooo555@gmail.com
-EMAIL_HOST_PASSWORD = zyzruylpncztuqrn
-EMAIL_USE_TLS=True
-EMAIL_TOKEN_EXPIRATION=60
+# EMAIL_HOST=smtp.gmail.com
+# EMAIL_PORT=587
+# EMAIL_HOST_USER=lamzooo555@gmail.com
+# EMAIL_HOST_PASSWORD = zyzruylpncztuqrn
+# EMAIL_USE_TLS=True
+# EMAIL_TOKEN_EXPIRATION=60
 
-DB_NAME=jewellery_management
-DB_USER=root
-DB_PASSWORD=''
-DB_HOST=localhost
-DB_PORT=3306
+# DB_NAME=jewellery_management
+# DB_USER=root
+# DB_PASSWORD=''
+# DB_HOST=localhost
+# DB_PORT=3306
 
-TIME_ZONE=Africa/Dakar
+# TIME_ZONE=Africa/Dakar

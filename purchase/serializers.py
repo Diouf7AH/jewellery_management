@@ -4,6 +4,7 @@ from typing import List
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from purchase.models import Achat, Lot, ProduitLine
 from store.models import Bijouterie, Marque, Modele, Produit, Purete
 from store.serializers import Produit
 
@@ -423,256 +424,439 @@ class ProduitRefField(serializers.IntegerField):
 #   Sous-serializers
 # =========================
 # ----------------------------------Create----------------------------------------------
-class FournisseurInlineSerializer(serializers.Serializer):
-    nom = serializers.CharField(allow_blank=True, required=False, default="")
-    prenom = serializers.CharField(allow_blank=True, required=False, default="")
-    telephone = serializers.CharField()  # clé d'upsert dans la View
-    address = serializers.CharField(allow_blank=True, required=False, default="")
+# class FournisseurInlineSerializer(serializers.Serializer):
+#     nom = serializers.CharField(allow_blank=True, required=False, default="")
+#     prenom = serializers.CharField(allow_blank=True, required=False, default="")
+#     telephone = serializers.CharField()  # clé d'upsert dans la View
+#     address = serializers.CharField(allow_blank=True, required=False, default="")
 
 
-class AffectationSplitSerializer(serializers.Serializer):
-    bijouterie_id = serializers.IntegerField()
-    quantite = serializers.IntegerField(min_value=1)
+# class AffectationSplitSerializer(serializers.Serializer):
+#     bijouterie_id = serializers.IntegerField()
+#     quantite = serializers.IntegerField(min_value=1)
 
-    def validate(self, attrs):
-        # on évite les ids négatifs/0 même si IntegerField le gère
-        if attrs["bijouterie_id"] <= 0:
-            raise serializers.ValidationError({"bijouterie_id": "ID bijouterie invalide."})
-        return attrs
-
-
-class LotInputSerializer(serializers.Serializer):
-    lot_code = serializers.CharField(allow_null=True, allow_blank=True, required=False, default=None)
-    quantite = serializers.IntegerField(min_value=1)
-    affectations = AffectationSplitSerializer(many=True, required=False)
-
-    def _check_duplicate_bijouteries(self, splits: List[dict]):
-        ids = [s["bijouterie_id"] for s in splits]
-        dups = sorted(set([x for x in ids if ids.count(x) > 1]))
-        if dups:
-            raise serializers.ValidationError(
-                {"affectations": f"Bijouterie(s) dupliquée(s) dans ce lot: {dups}. Regroupe les quantités."}
-            )
-
-    def validate(self, attrs):
-        affs = attrs.get("affectations") or []
-        # Somme des affectations <= quantite du lot
-        if affs:
-            s = sum(a["quantite"] for a in affs)
-            if s > attrs["quantite"]:
-                raise serializers.ValidationError(
-                    {"affectations": "La somme des affectations du lot dépasse la quantité du lot."}
-                )
-            self._check_duplicate_bijouteries(affs)
-        return attrs
+#     def validate(self, attrs):
+#         # on évite les ids négatifs/0 même si IntegerField le gère
+#         if attrs["bijouterie_id"] <= 0:
+#             raise serializers.ValidationError({"bijouterie_id": "ID bijouterie invalide."})
+#         return attrs
 
 
-class LigneProduitAchatSerializer(serializers.Serializer):
-    """
-    Une ligne d'achat (produit).
-    Deux modes:
-      - avec 'lots' (liste de lots, chacun avec ses affectations)
-      - sans 'lots' (affectations directes au niveau de la ligne)
-      - si aucune affectation fournie -> tout va en réserve
-    """
-    produit = serializers.IntegerField()
-    quantite = serializers.IntegerField(min_value=1)
-    prix_achat_gramme = serializers.DecimalField(max_digits=12, decimal_places=2)
-    lots = LotInputSerializer(many=True, required=False)
-    affectations = AffectationSplitSerializer(many=True, required=False)
+# class LotInputSerializer(serializers.Serializer):
+#     lot_code = serializers.CharField(allow_null=True, allow_blank=True, required=False, default=None)
+#     quantite = serializers.IntegerField(min_value=1)
+#     affectations = AffectationSplitSerializer(many=True, required=False)
 
-    def _check_duplicate_bijouteries(self, splits: List[dict]):
-        ids = [s["bijouterie_id"] for s in splits]
-        dups = sorted(set([x for x in ids if ids.count(x) > 1]))
-        if dups:
-            raise serializers.ValidationError(
-                {"affectations": f"Bijouterie(s) dupliquée(s) sur la ligne: {dups}. Regroupe les quantités."}
-            )
+#     def _check_duplicate_bijouteries(self, splits: List[dict]):
+#         ids = [s["bijouterie_id"] for s in splits]
+#         dups = sorted(set([x for x in ids if ids.count(x) > 1]))
+#         if dups:
+#             raise serializers.ValidationError(
+#                 {"affectations": f"Bijouterie(s) dupliquée(s) dans ce lot: {dups}. Regroupe les quantités."}
+#             )
 
-    def validate(self, attrs):
-        lots = attrs.get("lots") or []
-        affs = attrs.get("affectations") or []
-
-        # Exclusivité lots vs affectations de ligne
-        if lots and affs:
-            raise serializers.ValidationError(
-                "Ne pas définir 'affectations' au niveau ligne lorsqu'on utilise 'lots'."
-            )
-
-        q_line = attrs["quantite"]
-
-        # Avec lots: somme(lots.quantite) == quantite de la ligne
-        if lots:
-            somme_lots = sum(l["quantite"] for l in lots)
-            if somme_lots != q_line:
-                raise serializers.ValidationError(
-                    {"lots": f"La somme des quantités des lots ({somme_lots}) doit être ÉGALE à la quantité de la ligne ({q_line})."}
-                )
-        else:
-            # Sans lots: affectations directes (facultatives)
-            if affs:
-                s_aff = sum(a["quantite"] for a in affs)
-                if s_aff > q_line:
-                    raise serializers.ValidationError(
-                        {"affectations": f"La somme des affectations ({s_aff}) dépasse la quantité de la ligne ({q_line})."}
-                    )
-                self._check_duplicate_bijouteries(affs)
-
-        # Prix au gramme > 0 (plus strict que >= 0)
-        try:
-            p = Decimal(attrs["prix_achat_gramme"])
-        except (InvalidOperation, TypeError):
-            raise serializers.ValidationError({"prix_achat_gramme": "Valeur invalide."})
-        if p <= 0:
-            raise serializers.ValidationError({"prix_achat_gramme": "Doit être > 0."})
-        # normalisation à 2 décimales
-        attrs["prix_achat_gramme"] = p.quantize(Decimal("0.01"))
-
-        return attrs
+#     def validate(self, attrs):
+#         affs = attrs.get("affectations") or []
+#         # Somme des affectations <= quantite du lot
+#         if affs:
+#             s = sum(a["quantite"] for a in affs)
+#             if s > attrs["quantite"]:
+#                 raise serializers.ValidationError(
+#                     {"affectations": "La somme des affectations du lot dépasse la quantité du lot."}
+#                 )
+#             self._check_duplicate_bijouteries(affs)
+#         return attrs
 
 
-# =========================
-#   Serializer principal
-# =========================
+# class LigneProduitAchatSerializer(serializers.Serializer):
+#     """
+#     Une ligne d'achat (produit).
+#     Deux modes:
+#       - avec 'lots' (liste de lots, chacun avec ses affectations)
+#       - sans 'lots' (affectations directes au niveau de la ligne)
+#       - si aucune affectation fournie -> tout va en réserve
+#     """
+#     produit = serializers.IntegerField()
+#     quantite = serializers.IntegerField(min_value=1)
+#     prix_achat_gramme = serializers.DecimalField(max_digits=12, decimal_places=2)
+#     lots = LotInputSerializer(many=True, required=False)
+#     affectations = AffectationSplitSerializer(many=True, required=False)
 
-class AchatCreateSerializer(serializers.Serializer):
-    fournisseur = FournisseurInlineSerializer()
-    produits = LigneProduitAchatSerializer(many=True, allow_empty=False)
-    frais_transport = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal("0.00"))
-    frais_douane = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal("0.00"))
+#     def _check_duplicate_bijouteries(self, splits: List[dict]):
+#         ids = [s["bijouterie_id"] for s in splits]
+#         dups = sorted(set([x for x in ids if ids.count(x) > 1]))
+#         if dups:
+#             raise serializers.ValidationError(
+#                 {"affectations": f"Bijouterie(s) dupliquée(s) sur la ligne: {dups}. Regroupe les quantités."}
+#             )
 
-    # ---------- Validations globales (existence FK + normalisations) ----------
-    def validate(self, attrs):
-        produits = attrs["produits"]
+#     def validate(self, attrs):
+#         lots = attrs.get("lots") or []
+#         affs = attrs.get("affectations") or []
 
-        # Vérifier l'existence des produits en 1 requête
-        pids = [int(p["produit"]) for p in produits]
-        found_pids = set(Produit.objects.filter(id__in=pids).values_list("id", flat=True))
-        missing = sorted(set(pids) - found_pids)
-        if missing:
-            raise serializers.ValidationError({"produits": [f"Produit introuvable: {missing}"]})
+#         # Exclusivité lots vs affectations de ligne
+#         if lots and affs:
+#             raise serializers.ValidationError(
+#                 "Ne pas définir 'affectations' au niveau ligne lorsqu'on utilise 'lots'."
+#             )
 
-        # Vérifier l'existence des bijouteries demandées (affectations ligne + lots)
-        bij_ids = []
-        for p in produits:
-            for a in (p.get("affectations") or []):
-                bij_ids.append(int(a["bijouterie_id"]))
-            for lot in (p.get("lots") or []):
-                for a in (lot.get("affectations") or []):
-                    bij_ids.append(int(a["bijouterie_id"]))
+#         q_line = attrs["quantite"]
 
-        if bij_ids:
-            req = set(bij_ids)
-            found_b = set(Bijouterie.objects.filter(id__in=req).values_list("id", flat=True))
-            miss_b = sorted(req - found_b)
-            if miss_b:
-                raise serializers.ValidationError({"affectations": [f"Bijouterie introuvable: {miss_b}"]})
+#         # Avec lots: somme(lots.quantite) == quantite de la ligne
+#         if lots:
+#             somme_lots = sum(l["quantite"] for l in lots)
+#             if somme_lots != q_line:
+#                 raise serializers.ValidationError(
+#                     {"lots": f"La somme des quantités des lots ({somme_lots}) doit être ÉGALE à la quantité de la ligne ({q_line})."}
+#                 )
+#         else:
+#             # Sans lots: affectations directes (facultatives)
+#             if affs:
+#                 s_aff = sum(a["quantite"] for a in affs)
+#                 if s_aff > q_line:
+#                     raise serializers.ValidationError(
+#                         {"affectations": f"La somme des affectations ({s_aff}) dépasse la quantité de la ligne ({q_line})."}
+#                     )
+#                 self._check_duplicate_bijouteries(affs)
 
-        # Frais normalisés à 2 décimales (et non négatifs)
-        try:
-            ft = (attrs.get("frais_transport") or Decimal("0.00"))
-            fd = (attrs.get("frais_douane") or Decimal("0.00"))
-            if ft < 0 or fd < 0:
-                raise serializers.ValidationError({"frais": "Les frais ne peuvent pas être négatifs."})
-            attrs["frais_transport"] = ft.quantize(Decimal("0.01"))
-            attrs["frais_douane"] = fd.quantize(Decimal("0.01"))
-        except (InvalidOperation, TypeError):
-            raise serializers.ValidationError({"frais": "Valeurs de frais invalides."})
+#         # Prix au gramme > 0 (plus strict que >= 0)
+#         try:
+#             p = Decimal(attrs["prix_achat_gramme"])
+#         except (InvalidOperation, TypeError):
+#             raise serializers.ValidationError({"prix_achat_gramme": "Valeur invalide."})
+#         if p <= 0:
+#             raise serializers.ValidationError({"prix_achat_gramme": "Doit être > 0."})
+#         # normalisation à 2 décimales
+#         attrs["prix_achat_gramme"] = p.quantize(Decimal("0.01"))
 
-        return attrs
+#         return attrs
 
 
-# =========================
-#   (Optionnel) Serializer de réponse
-# =========================
+# # =========================
+# #   Serializer principal
+# # =========================
+
+# class AchatCreateSerializer(serializers.Serializer):
+#     fournisseur = FournisseurInlineSerializer()
+#     produits = LigneProduitAchatSerializer(many=True, allow_empty=False)
+#     frais_transport = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal("0.00"))
+#     frais_douane = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal("0.00"))
+
+#     # ---------- Validations globales (existence FK + normalisations) ----------
+#     def validate(self, attrs):
+#         produits = attrs["produits"]
+
+#         # Vérifier l'existence des produits en 1 requête
+#         pids = [int(p["produit"]) for p in produits]
+#         found_pids = set(Produit.objects.filter(id__in=pids).values_list("id", flat=True))
+#         missing = sorted(set(pids) - found_pids)
+#         if missing:
+#             raise serializers.ValidationError({"produits": [f"Produit introuvable: {missing}"]})
+
+#         # Vérifier l'existence des bijouteries demandées (affectations ligne + lots)
+#         bij_ids = []
+#         for p in produits:
+#             for a in (p.get("affectations") or []):
+#                 bij_ids.append(int(a["bijouterie_id"]))
+#             for lot in (p.get("lots") or []):
+#                 for a in (lot.get("affectations") or []):
+#                     bij_ids.append(int(a["bijouterie_id"]))
+
+#         if bij_ids:
+#             req = set(bij_ids)
+#             found_b = set(Bijouterie.objects.filter(id__in=req).values_list("id", flat=True))
+#             miss_b = sorted(req - found_b)
+#             if miss_b:
+#                 raise serializers.ValidationError({"affectations": [f"Bijouterie introuvable: {miss_b}"]})
+
+#         # Frais normalisés à 2 décimales (et non négatifs)
+#         try:
+#             ft = (attrs.get("frais_transport") or Decimal("0.00"))
+#             fd = (attrs.get("frais_douane") or Decimal("0.00"))
+#             if ft < 0 or fd < 0:
+#                 raise serializers.ValidationError({"frais": "Les frais ne peuvent pas être négatifs."})
+#             attrs["frais_transport"] = ft.quantize(Decimal("0.01"))
+#             attrs["frais_douane"] = fd.quantize(Decimal("0.01"))
+#         except (InvalidOperation, TypeError):
+#             raise serializers.ValidationError({"frais": "Valeurs de frais invalides."})
+
+#         return attrs
+
+
+# # =========================
+# #   (Optionnel) Serializer de réponse
+# # =========================
+
+# class AchatSerializer(serializers.ModelSerializer):
+#     """Réponse après création (utilisée dans la View). Adapte selon ton modèle Achat réel."""
+#     class Meta:
+#         model = Achat
+#         fields = [
+#             "id", "created_at", "description",
+#             "frais_transport", "frais_douane",
+#             "montant_total_ht", "montant_total_tax", "montant_total_ttc",
+#             "numero_achat", "status",
+#         ]
+#         read_only_fields = fields
+        
+# # ---------------------------Serializer de sortie-----------------------------
+
+# class StockMiniSerializer(serializers.Serializer):
+#     id = serializers.IntegerField()
+#     produit_id = serializers.IntegerField()
+#     bijouterie_id = serializers.IntegerField(allow_null=True)
+#     lot_id = serializers.IntegerField(allow_null=True)
+#     quantite = serializers.IntegerField()
+#     is_reserved = serializers.BooleanField()
+
+# class AffectationResultSerializer(serializers.Serializer):
+#     bijouterie_id = serializers.IntegerField()
+#     quantite = serializers.IntegerField()
+#     stock = StockMiniSerializer()
+
+# class LotResultSerializer(serializers.Serializer):
+#     lot_id = serializers.IntegerField()
+#     lot_code = serializers.CharField(allow_null=True)
+#     quantite = serializers.IntegerField()
+#     reserve = StockMiniSerializer(required=False)
+#     affectations = AffectationResultSerializer(many=True)
+
+# class LigneResultSerializer(serializers.Serializer):
+#     produit_id = serializers.IntegerField()
+#     mode = serializers.ChoiceField(choices=["LOTS", "DIRECT"])
+#     quantite_ligne = serializers.IntegerField()
+#     lots = LotResultSerializer(many=True, required=False)
+#     affectations = AffectationResultSerializer(many=True, required=False)
+#     reserve = StockMiniSerializer(required=False)
+
+# class AchatCreateResultSerializer(serializers.Serializer):
+#     achat = AchatSerializer()
+#     details = LigneResultSerializer(many=True)
+# # -----------------END CREATE SERIALZER-------------------------------------
+
+# #----------------Create Response Serializer-------------------
+# class _AllocationDetailOutSerializer(serializers.Serializer):
+#     bijouterie_id = serializers.IntegerField(min_value=1)
+#     bijouterie = serializers.CharField()
+#     quantite = serializers.IntegerField(min_value=1)
+#     lot_code = serializers.CharField(required=False, allow_blank=True)
+
+# class _LineSummaryOutSerializer(serializers.Serializer):
+#     produit_id = serializers.IntegerField(min_value=1)
+#     produit = serializers.CharField()
+#     total_ligne = serializers.IntegerField(min_value=1)
+#     reserved = serializers.IntegerField(min_value=0)
+#     details = _AllocationDetailOutSerializer(many=True)
+
+# class AchatCreateResponseSerializer(serializers.Serializer):
+#     """
+#     Réponse de AchatCreateView :
+#     {
+#       "message": "...",
+#       "achat": { ... AchatSerializer ... },
+#       "allocations": [
+#         {
+#           "produit_id": 12,
+#           "produit": "Bague or",
+#           "total_ligne": 10,
+#           "reserved": 2,
+#           "details": [
+#             {"bijouterie_id": 2, "bijouterie": "Plateau", "quantite": 6, "lot_code": "LOT-A1"},
+#             {"bijouterie_id": 5, "bijouterie": "Almadies", "quantite": 2}
+#           ]
+#         }
+#     ]
+#     }
+#     """
+#     message = serializers.CharField()
+#     achat = AchatSerializer()
+#     allocations = _LineSummaryOutSerializer(many=True)
+
+# ---------------------------------LIST--------------------------------------------
+class LotListSerializer(serializers.ModelSerializer):
+    achat_id = serializers.IntegerField(source="achat.id", read_only=True)
+    numero_achat = serializers.CharField(source="achat.numero_achat", read_only=True)
+    fournisseur = serializers.CharField(source="achat.fournisseur.nom", read_only=True)
+
+    nb_lignes = serializers.IntegerField(read_only=True)
+    quantite_total = serializers.IntegerField(read_only=True)
+    quantite_restante = serializers.IntegerField(read_only=True)
+
+    # Poids calculés à la volée (annotés ou fallback calcul serializer)
+    poids_total = serializers.DecimalField(max_digits=18, decimal_places=3, read_only=True)
+    poids_restant = serializers.DecimalField(max_digits=18, decimal_places=3, read_only=True)
+
+    class Meta:
+        model = Lot
+        fields = [
+            "id", "numero_lot", "description", "received_at",
+            "achat_id", "numero_achat", "fournisseur",
+            "nb_lignes", "quantite_total", "quantite_restante",
+            "poids_total", "poids_restant",
+        ]
+        
+
+class FournisseurOutSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Fournisseur
+        fields = ["nom", "prenom", "telephone"]
+        ref_name = "FournisseurOut_V1"
+
+class LotDisplayLineSerializer(serializers.ModelSerializer):
+    # renommer les champs pour matcher ton shape
+    produit_id = serializers.IntegerField(source="produit.id", read_only=True)
+    quantite = serializers.IntegerField(source="quantite_total", read_only=True)
+    prix_achat_gramme = serializers.DecimalField(source="prix_gramme_achat", max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = ProduitLine
+        fields = ["produit_id", "quantite", "prix_achat_gramme"]
+        ref_name = "LotDisplayLine_V1"
+
+class LotDisplaySerializer(serializers.ModelSerializer):
+    fournisseur = FournisseurOutSerializer(source="achat.fournisseur", read_only=True)
+    frais_transport = serializers.DecimalField(source="achat.frais_transport", max_digits=12, decimal_places=2, read_only=True)
+    frais_douane    = serializers.DecimalField(source="achat.frais_douane",    max_digits=12, decimal_places=2, read_only=True)
+    lots = LotDisplayLineSerializer(source="lignes", many=True, read_only=True)
+
+    class Meta:
+        model = Lot
+        fields = ["fournisseur", "description", "frais_transport", "frais_douane", "numero_lot", "lots"]
+        ref_name = "LotDisplay_V1"
+# ------------------------------------END LIST---------------------------------------
+
+# ----------------------------------------Lot display---------------------------------------------
+class FournisseurOutSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Fournisseur
+        fields = ["nom", "prenom", "telephone"]
+        ref_name = "FournisseurOut_V1"
+
+class LotDisplayLineSerializer(serializers.ModelSerializer):
+    # renommer les champs pour matcher ton shape
+    produit_id = serializers.IntegerField(source="produit.id", read_only=True)
+    quantite = serializers.IntegerField(source="quantite_total", read_only=True)
+    prix_achat_gramme = serializers.DecimalField(source="prix_gramme_achat", max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = ProduitLine
+        fields = ["produit_id", "quantite", "prix_achat_gramme"]
+        ref_name = "LotDisplayLine_V1"
+
+class LotDisplaySerializer(serializers.ModelSerializer):
+    fournisseur = FournisseurOutSerializer(source="achat.fournisseur", read_only=True)
+    frais_transport = serializers.DecimalField(source="achat.frais_transport", max_digits=12, decimal_places=2, read_only=True)
+    frais_douane    = serializers.DecimalField(source="achat.frais_douane",    max_digits=12, decimal_places=2, read_only=True)
+    lots = LotDisplayLineSerializer(source="lignes", many=True, read_only=True)
+
+    class Meta:
+        model = Lot
+        fields = ["fournisseur", "description", "frais_transport", "frais_douane", "numero_lot", "lots"]
+        ref_name = "LotDisplay_V1"
+# -----------------------------------------End lot display----------------------------------------------
+
+# Réutilise tes serializers existants :
+# - ProduitLineOutSerializer (déjà défini dans ton message)
+# - LotOutSerializer ci-dessous (pour réutiliser ProduitLineOutSerializer)
+# --- Lignes produit (dans un lot) ---
+class ProduitLineOutSerializer(serializers.ModelSerializer):
+    produit_id = serializers.IntegerField(source="produit.id", read_only=True)
+    produit_nom = serializers.CharField(source="produit.nom", read_only=True)
+
+    class Meta:
+        model = ProduitLine
+        fields = [
+            "id", "produit_id", "produit_nom",
+            "quantite_total", "quantite_restante",
+            "prix_gramme_achat",
+        ]
+
+class FournisseurSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Fournisseur
+        fields = ["id", "nom", "prenom", "telephone"]
+
+
+class LotOutSerializer(serializers.ModelSerializer):
+    lignes = ProduitLineOutSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Lot
+        fields = ["id", "numero_lot", "description", "received_at", "lignes"]
+
 
 class AchatSerializer(serializers.ModelSerializer):
-    """Réponse après création (utilisée dans la View). Adapte selon ton modèle Achat réel."""
+    fournisseur = FournisseurSerializer(read_only=True)
+    lots = LotOutSerializer(many=True, read_only=True)
+
     class Meta:
         model = Achat
         fields = [
-            "id", "created_at", "description",
+            "id", "numero_achat", "created_at", "status",
+            "description",
             "frais_transport", "frais_douane",
-            "montant_total_ht", "montant_total_tax", "montant_total_ttc",
-            "numero_achat", "status",
+            "montant_total_ht", "montant_total_ttc",
+            "fournisseur", "lots",
+        ]
+        read_only_fields = fields  # tout en lecture seule pour le détail
+
+
+class AchatListSerializer(serializers.ModelSerializer):
+    fournisseur = serializers.CharField(source="fournisseur.nom", read_only=True)
+    nb_lots = serializers.IntegerField(source="lots.count", read_only=True)
+
+    class Meta:
+        model = Achat
+        fields = [
+            "id", "numero_achat", "created_at", "status",
+            "fournisseur", "montant_total_ttc", "nb_lots",
         ]
         read_only_fields = fields
         
-# ---------------------------Serializer de sortie-----------------------------
+# -----------------------Arrivage ------------------------------------------
 
-class StockMiniSerializer(serializers.Serializer):
-    id = serializers.IntegerField()
+# ===== IN =====
+class FournisseurInlineSerializer(serializers.Serializer):
+    nom = serializers.CharField()
+    prenom = serializers.CharField(required=False, allow_blank=True)
+    telephone = serializers.CharField(required=False, allow_blank=True)
+
+class LotLineInSerializer(serializers.Serializer):
     produit_id = serializers.IntegerField()
-    bijouterie_id = serializers.IntegerField(allow_null=True)
-    lot_id = serializers.IntegerField(allow_null=True)
-    quantite = serializers.IntegerField()
-    is_reserved = serializers.BooleanField()
-
-class AffectationResultSerializer(serializers.Serializer):
-    bijouterie_id = serializers.IntegerField()
-    quantite = serializers.IntegerField()
-    stock = StockMiniSerializer()
-
-class LotResultSerializer(serializers.Serializer):
-    lot_id = serializers.IntegerField()
-    lot_code = serializers.CharField(allow_null=True)
-    quantite = serializers.IntegerField()
-    reserve = StockMiniSerializer(required=False)
-    affectations = AffectationResultSerializer(many=True)
-
-class LigneResultSerializer(serializers.Serializer):
-    produit_id = serializers.IntegerField()
-    mode = serializers.ChoiceField(choices=["LOTS", "DIRECT"])
-    quantite_ligne = serializers.IntegerField()
-    lots = LotResultSerializer(many=True, required=False)
-    affectations = AffectationResultSerializer(many=True, required=False)
-    reserve = StockMiniSerializer(required=False)
-
-class AchatCreateResultSerializer(serializers.Serializer):
-    achat = AchatSerializer()
-    details = LigneResultSerializer(many=True)
-# -----------------END CREATE SERIALZER-------------------------------------
-
-#----------------Create Response Serializer-------------------
-class _AllocationDetailOutSerializer(serializers.Serializer):
-    bijouterie_id = serializers.IntegerField(min_value=1)
-    bijouterie = serializers.CharField()
     quantite = serializers.IntegerField(min_value=1)
-    lot_code = serializers.CharField(required=False, allow_blank=True)
+    prix_achat_gramme = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
-class _LineSummaryOutSerializer(serializers.Serializer):
-    produit_id = serializers.IntegerField(min_value=1)
-    produit = serializers.CharField()
-    total_ligne = serializers.IntegerField(min_value=1)
-    reserved = serializers.IntegerField(min_value=0)
-    details = _AllocationDetailOutSerializer(many=True)
+class ArrivageCreateInSerializer(serializers.Serializer):
+    fournisseur = FournisseurInlineSerializer()
+    description = serializers.CharField(required=False, allow_blank=True)
+    frais_transport = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal("0.00"))
+    frais_douane    = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=Decimal("0.00"))
+    # numero_lot      = serializers.CharField()
+    lots            = LotLineInSerializer(many=True)
 
-class AchatCreateResponseSerializer(serializers.Serializer):
-    """
-    Réponse de AchatCreateView :
-    {
-      "message": "...",
-      "achat": { ... AchatSerializer ... },
-      "allocations": [
-        {
-          "produit_id": 12,
-          "produit": "Bague or",
-          "total_ligne": 10,
-          "reserved": 2,
-          "details": [
-            {"bijouterie_id": 2, "bijouterie": "Plateau", "quantite": 6, "lot_code": "LOT-A1"},
-            {"bijouterie_id": 5, "bijouterie": "Almadies", "quantite": 2}
-          ]
-        }
-    ]
-    }
-    """
-    message = serializers.CharField()
-    achat = AchatSerializer()
-    allocations = _LineSummaryOutSerializer(many=True)
+# ===== OUT =====
+class AchatCreateResponseSerializer(serializers.ModelSerializer):
+    lignes = ProduitLineOutSerializer(many=True, read_only=True)
+    achat_id         = serializers.IntegerField(source="achat.id", read_only=True)
+    numero_achat     = serializers.CharField(source="achat.numero_achat", read_only=True)
+    created_at       = serializers.DateTimeField(source="achat.created_at", read_only=True)
+    frais_transport  = serializers.DecimalField(source="achat.frais_transport", max_digits=12, decimal_places=2, read_only=True)
+    frais_douane     = serializers.DecimalField(source="achat.frais_douane", max_digits=12, decimal_places=2, read_only=True)
+    montant_total_ht = serializers.DecimalField(source="achat.montant_total_ht", max_digits=14, decimal_places=2, read_only=True)
+    montant_total_ttc= serializers.DecimalField(source="achat.montant_total_ttc", max_digits=14, decimal_places=2, read_only=True)
+    status           = serializers.CharField(source="achat.status", read_only=True)
+
+    class Meta:
+        model  = Lot
+        fields = [
+            "id", "numero_lot", "description", "received_at",
+            "achat_id", "numero_achat", "created_at", "status",
+            "frais_transport", "frais_douane",
+            "montant_total_ht", "montant_total_ttc",
+            "lignes",
+        ]
+
 # -----------------End Create Response Serializer---------------
-
-
 
 # ---------- UPDATE documentaire de l'achat (pas de stock dans cette vue) ----------
 
@@ -876,7 +1060,6 @@ class AchatListSerializer(serializers.ModelSerializer):
             "fournisseur_nom",
             "fournisseur_prenom",
             "montant_total_ht",
-            "montant_total_tax",
             "montant_total_ttc",
             # annulation
             "cancelled_by",

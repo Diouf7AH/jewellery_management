@@ -1,12 +1,14 @@
 from decimal import Decimal
+
 from django.core.exceptions import ValidationError
-from django.db import transaction, IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import F, Sum
 from django.utils import timezone
 
-from inventory.models import InventoryMovement, MovementType, Bucket
-from vendor.models import VendorProduit
+from inventory.models import Bucket, InventoryMovement, MovementType
 from sale.models import Vente
+from stock.models import VendorStock
+
 
 @transaction.atomic
 def create_sale_out_movements_for_vente(vente, by_user) -> int:
@@ -75,7 +77,7 @@ def create_sale_out_movements_for_vente(vente, by_user) -> int:
         # 3) Décrémenter le stock uniquement si on vient de créer le mouvement
         #    (sinon on risquerait une double décrémentation)
         if mouvement_cree:
-            updated = (VendorProduit.objects
+            updated = (VendorStock.objects
                     .filter(vendor_id=li.vendor_id, produit_id=li.produit_id, quantite__gte=li.quantite)
                     .update(quantite=F("quantite") - li.quantite))
             if not updated:

@@ -1,9 +1,10 @@
 from django.contrib import admin
-
-from .models import Vendor, VendorProduit
 from django.contrib.admin.sites import NotRegistered
 from django.contrib.auth import get_user_model
+
 from store.models import Bijouterie
+
+from .models import Vendor
 
 User = get_user_model()
 
@@ -73,12 +74,6 @@ class VendorAdmin(admin.ModelAdmin):
         u = obj.user
         if not u: return "—"
         return f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip() or "—"
-
-@admin.register(VendorProduit)
-class VendorProduitAdmin(admin.ModelAdmin):
-    list_display = ('id', 'vendor', 'produit', 'quantite',)
-    # exclude = ("slug",)
-    # search_fields = ('slug','nom',)
 
 
 

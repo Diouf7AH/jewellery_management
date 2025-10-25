@@ -1,12 +1,12 @@
 import datetime
-from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
 from io import BytesIO
 
+# NB: on se base sur VenteProduit.vendor et on groupe par vente__created_at
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import User
 from django.db import transaction
-from django.db.models import F, Q, Sum
+from django.db.models import Count, DecimalField, F, Q, Sum
 from django.db.models.functions import TruncDay, TruncMonth, TruncWeek
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
@@ -19,22 +19,21 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from backend.permissions import IsAdminOrManagerOrSelfVendor
 from backend.renderers import UserRenderer
 from inventory.models import Bucket, InventoryMovement, MovementType
 # ⬇️ aligne le chemin du modèle de lot d’achat
 from purchase.models import Lot
-from sale.models import VenteProduit
-from sale.serializers import VenteProduitSerializer
-from stock.models import Stock
+from sale.models import VenteProduit  # 👈 lignes de vente (contient vendor)
+from stock.models import Stock, VendorStock
 from store.models import Bijouterie, Produit
 from store.serializers import ProduitSerializer
 from userauths.models import Role
-from userauths.serializers import UserRegistrationSerializer, UserSerializer
+from vendor.models import Vendor  # 👈 ton modèle Vendor (app vendor)
 
-from .models import Vendor, VendorProduit
-from .serializer import (UserSerializer, VendorProduitSerializer,
-                         VendorReadSerializer, VendorSerializer,
-                         VendorStatusInputSerializer, VendorUpdateSerializer)
+from .models import Vendor
+from .serializer import (VendorReadSerializer, VendorStatusInputSerializer,
+                         VendorUpdateSerializer)
 
 # Create your views here.
 User = get_user_model()
@@ -145,424 +144,181 @@ allowed_roles_admin_manager = ['admin', 'manager',]
 #             "produits_tableau": produits_tableau,
 #         })
 
-class VendorDashboardView(APIView):
-    permission_classes = [IsAuthenticated]
+
+class VendorStatsView(APIView):
+    """
+    GET /api/vendors/stats/?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&group_by=day|week|month
+    - vendor connecté : son dashboard
+    - admin/manager   : ?user_id=... ou ?vendor_email=...
+    - ?export=excel   : export Excel
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
 
     @swagger_auto_schema(
-        operation_id="Dashboard Vendeur (vendeur / admin / manager)",
+        operation_id="vendorStats",
+        operation_summary="Statistiques d’un vendor",
         operation_description=(
-            "Voir les statistiques d’un vendeur. "
-            "Un vendeur voit son propre dashboard. "
+            "Un vendor voit son propre dashboard. "
             "Admin/manager peuvent cibler via ?user_id=... ou ?vendor_email=... "
             "Filtres: ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&group_by=day|week|month "
             "Export Excel: ?export=excel"
         ),
         manual_parameters=[
-            openapi.Parameter("user_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Cibler un user vendeur (admin/manager)"),
-            openapi.Parameter("vendor_email", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Cibler un vendeur par email (admin/manager)"),
-            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Filtre début (YYYY-MM-DD)"),
-            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Filtre fin (YYYY-MM-DD)"),
-            openapi.Parameter("group_by", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="day|week|month (par défaut: month)"),
-            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="excel pour exporter en .xlsx"),
+            openapi.Parameter("user_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
+            openapi.Parameter("vendor_email", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date", required=False),
+            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date", required=False),
+            openapi.Parameter("group_by", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              enum=["day","week","month"], required=False),
+            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, enum=["excel"], required=False),
         ],
-        responses={200: "Statistiques du vendeur ou fichier Excel"}
+        tags=["Analytics"],
+        responses={200: "JSON ou Excel"}
     )
     def get(self, request):
-        user = request.user
-        role = getattr(getattr(user, 'user_role', None), 'role', None)
-        is_admin_or_manager = role in {'admin', 'manager'}
+        u = request.user
+        is_admin = u.is_superuser or u.groups.filter(name__in=["admin","manager"]).exists()
 
-        # -------- Sélection de la cible : vendor_email > user_id > self --------
-        vendor_email = (request.query_params.get("vendor_email") or "").strip()
-        user_id = request.query_params.get("user_id")
-
-        target_user = None
-
-        if vendor_email:
-            # Vendeur ne peut cibler que lui-même
-            if role == 'vendor' and vendor_email.lower() != user.email.lower():
-                return Response({"detail": "Accès refusé: vous ne pouvez cibler que votre propre email."}, status=403)
-
-            if not (is_admin_or_manager or user.is_superuser or role == 'vendor'):
-                return Response({"detail": "Accès refusé."}, status=403)
-
-            target_user = User.objects.filter(email__iexact=vendor_email).first()
-            if not target_user:
-                return Response({"detail": "Utilisateur introuvable pour cet email."}, status=404)
-
-        elif user_id:
-            if not user_id.isdigit():
-                return Response({"detail": "user_id invalide."}, status=400)
-            if not (is_admin_or_manager or user.is_superuser):
-                return Response({"detail": "Accès refusé."}, status=403)
-            target_user = get_object_or_404(User, id=int(user_id))
-
+        # -------- 1) cible vendor --------
+        target_vendor = None
+        if is_admin:
+            user_id = request.GET.get("user_id")
+            vendor_email = request.GET.get("vendor_email")
+            if user_id:
+                target_vendor = Vendor.objects.select_related("user","bijouterie").filter(user_id=user_id).first()
+                if not target_vendor:
+                    return Response({"detail":"Vendor introuvable pour ce user_id."}, status=404)
+            elif vendor_email:
+                User = get_user_model()
+                user = User.objects.filter(email__iexact=vendor_email.strip()).first()
+                if not user:
+                    return Response({"detail":"Utilisateur introuvable pour cet email."}, status=404)
+                target_vendor = Vendor.objects.select_related("user","bijouterie").filter(user=user).first()
+                if not target_vendor:
+                    return Response({"detail":"Aucun profil Vendor lié à cet email."}, status=404)
+            else:
+                # pas de cible → vide
+                if request.GET.get("export") == "excel":
+                    return self._export_excel({}, [], "vendor_stats_empty.xlsx")
+                return Response({"summary": {}, "series": []})
         else:
-            target_user = user
+            target_vendor = getattr(u, "staff_vendor_profile", None)
+            if not target_vendor:
+                return Response({"detail":"Profil vendor non trouvé."}, status=403)
 
-        # Si les deux sont fournis, s'assurer qu'ils pointent vers le même user
-        if vendor_email and user_id:
-            if str(target_user.id) != str(user_id):
-                return Response({"detail": "vendor_email et user_id ne pointent pas vers le même utilisateur."}, status=400)
-
-        if getattr(getattr(target_user, 'user_role', None), 'role', None) != 'vendor':
-            return Response({"detail": "Ce compte n'est pas un vendeur."}, status=400)
-
-        vendor = Vendor.objects.select_related('user').filter(user=target_user).first()
-        if not vendor:
-            return Response({"detail": "Vendeur introuvable."}, status=404)
-
-        # --- QS de base
-        produits_qs = VendorProduit.objects.select_related('produit').filter(vendor=vendor)
-        ventes_qs = (
-            VenteProduit.objects
-            .select_related('produit', 'vente', 'vendor', 'vendor__user')
-            .filter(vendor=vendor)
-        )
-
-        # --- Filtres temporels
-        date_from = request.query_params.get('date_from')
-        date_to   = request.query_params.get('date_to')
-        if date_from:
-            ventes_qs = ventes_qs.filter(vente__created_at__date__gte=date_from)
-        if date_to:
-            ventes_qs = ventes_qs.filter(vente__created_at__date__lte=date_to)
-
-        # --- Stats globales
-        total_produits    = produits_qs.count()
-        total_ventes      = ventes_qs.count()
-        total_qte_vendue  = ventes_qs.aggregate(s=Sum('quantite'))['s'] or 0
-        total_montant_ht  = ventes_qs.aggregate(s=Sum('sous_total_prix_vente_ht'))['s'] or 0
-        total_montant_ttc = ventes_qs.aggregate(s=Sum('prix_ttc'))['s'] or 0
-        stock_total       = produits_qs.aggregate(s=Sum('quantite'))['s'] or 0
-        total_remise      = ventes_qs.aggregate(s=Sum('remise'))['s'] or 0
-
-        # --- Regroupement (day/week/month)
-        group_by = (request.query_params.get('group_by') or 'month').lower()
-        if group_by == 'day':
-            trunc = TruncDay('vente__created_at')
-        elif group_by == 'week':
-            trunc = TruncWeek('vente__created_at')
-        else:
-            trunc = TruncMonth('vente__created_at')
-
-        stats_grouped = list(
-            ventes_qs.annotate(period=trunc)
-            .values('period')
-            .annotate(
-                total_qte=Sum('quantite'),
-                total_montant_ht=Sum('sous_total_prix_vente_ht'),
-                total_montant_ttc=Sum('prix_ttc'),
-            )
-            .order_by('period')
-        )
-
-        # --- Top produits
-        top_produits = list(
-            ventes_qs.values('produit__id', 'produit__nom', 'produit__slug')
-            .annotate(total_qte=Sum('quantite'))
-            .order_by('-total_qte')[:5]
-        )
-
-        # --- Tableau produits synthèse
-        produits_tableau = list(
-            ventes_qs.values('produit__id', 'produit__slug', 'produit__nom')
-            .annotate(
-                quantite_vendue=Sum('quantite'),
-                montant_total_ht=Sum('sous_total_prix_vente_ht'),
-                remise_totale=Sum('remise'),
-            )
-            .order_by('-quantite_vendue')
-        )
-
-        # --- Export Excel ?
-        if (request.query_params.get("export") or "").lower() == "excel":
-            return self._export_excel(
-                vendor=vendor,
-                stats={
-                    "total_produits": total_produits,
-                    "total_ventes": total_ventes,
-                    "total_qte_vendue": total_qte_vendue,
-                    "stock_total": stock_total,
-                    "total_montant_ht": total_montant_ht,
-                    "total_montant_ttc": total_montant_ttc,
-                    "total_remise": total_remise,
-                },
-                ventes=list(ventes_qs),
-                produits_tableau=produits_tableau,
-                stats_grouped=stats_grouped,
-                group_by=group_by,
-            )
-
-        # --- JSON par défaut
+        # -------- 2) bornes & groupement --------
+        today = timezone.localdate()
+        date_from_str = request.GET.get("date_from")
+        date_to_str   = request.GET.get("date_to")
         try:
-            from sale.serializers import VenteProduitSerializer as VPSerializer
-            ventes_payload = VPSerializer(ventes_qs, many=True).data
-        except Exception:
-            ventes_payload = list(ventes_qs.values('id', 'vente_id', 'produit_id', 'quantite'))
+            date_from = datetime.fromisoformat(date_from_str).date() if date_from_str else (today - timedelta(days=29))
+            date_to   = datetime.fromisoformat(date_to_str).date()   if date_to_str   else today
+        except ValueError:
+            return Response({"detail":"Paramètres date invalides."}, status=400)
+        if date_from > date_to:
+            return Response({"detail":"date_from doit être ≤ date_to."}, status=400)
 
-        return Response({
-            "vendeur": VendorSerializer(vendor).data,
-            "user": {"id": target_user.id, "email": target_user.email, "slug": getattr(target_user, "slug", None)},
-            "stats": {
-                "produits": total_produits,
-                "ventes": total_ventes,
-                "quantite_totale_vendue": total_qte_vendue,
-                "stock_restant": stock_total,
-                "montant_total_ht": total_montant_ht,
-                "montant_total_ttc": total_montant_ttc,
-                "remise_totale": total_remise,
+        group_by = (request.GET.get("group_by") or "day").lower()
+        if group_by not in ("day","week","month"):
+            group_by = "day"
+
+        trunc, fmt = {
+            "day":   (TruncDay("vente__created_at"),   "%Y-%m-%d"),
+            "week":  (TruncWeek("vente__created_at"),  "%G-W%V"),
+            "month": (TruncMonth("vente__created_at"), "%Y-%m"),
+        }[group_by]
+
+        # -------- 3) base: lignes du vendor --------
+        lines = (VenteProduit.objects
+                 .filter(vendor=target_vendor,
+                         vente__created_at__date__gte=date_from,
+                         vente__created_at__date__lte=date_to))
+
+        # KPI globaux
+        agg_revenue = lines.aggregate(rev=Sum("prix_ttc"))["rev"] or Decimal("0.00")
+        agg_qty     = lines.aggregate(q=Sum("quantite"))["q"] or 0
+        # nb ventes distinctes (commandes)
+        orders_cnt  = (lines.values("vente_id").distinct().count()) or 0
+        avg_ticket  = (agg_revenue / orders_cnt) if orders_cnt else Decimal("0.00")
+
+        summary = {
+            "vendor": {
+                "id": target_vendor.id,
+                "username": getattr(target_vendor.user, "username", None),
+                "email": getattr(target_vendor.user, "email", None),
+                "bijouterie": getattr(target_vendor.bijouterie, "nom", None),
             },
-            "stats_groupees": stats_grouped,
-            "top_produits": top_produits,
-            "produits": VendorProduitSerializer(produits_qs, many=True).data,
-            "ventes": ventes_payload,
-            "produits_tableau": produits_tableau,
-        })
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "orders_count": orders_cnt,
+            "quantity_sold": int(agg_qty),
+            "revenue_total": str(agg_revenue.quantize(Decimal("0.01"))),
+            "avg_ticket": str(avg_ticket.quantize(Decimal("0.01"))),
+        }
 
-    # ---------- Export Excel helper (inchangé) ----------
-    # def _export_excel(self, vendor, stats, ventes, produits_tableau, stats_grouped, group_by):
-    #     try:
-    #         from openpyxl import Workbook
-    #         from openpyxl.utils import get_column_letter
-    #     except ImportError:
-    #         return Response({"detail": "openpyxl manquant. Installez-le : pip install openpyxl"}, status=500)
+        # Série temporelle
+        series_qr = (lines
+                     .annotate(bucket=trunc)
+                     .values("bucket")
+                     .annotate(
+                         orders=Count("vente_id", distinct=True),
+                         quantity=Sum("quantite"),
+                         revenue=Sum("prix_ttc"),
+                     )
+                     .order_by("bucket"))
 
-    #     wb = Workbook()
-    #     ws = wb.active; ws.title = "Résumé"
-    #     ws.append(["Dashboard vendeur"])
-    #     ws.append(["Vendeur", getattr(getattr(vendor, "user", None), "email", "")])
-    #     ws.append(["Slug", getattr(getattr(vendor, "user", None), "slug", "")])
-    #     ws.append([])
-    #     ws.append(["Indicateur", "Valeur"])
-    #     ws.append(["Produits en stock", stats["total_produits"]])
-    #     ws.append(["Ventes (lignes)", stats["total_ventes"]])
-    #     ws.append(["Quantité totale vendue", stats["total_qte_vendue"]])
-    #     ws.append(["Stock restant", stats["stock_total"]])
-    #     ws.append(["Montant total HT", float(stats["total_montant_ht"] or 0)])
-    #     ws.append(["Montant total TTC", float(stats["total_montant_ttc"] or 0)])
-    #     ws.append(["Remise totale", float(stats["total_remise"] or 0)])
+        series = []
+        for row in series_qr:
+            b = row["bucket"]
+            label = b.strftime(fmt) if hasattr(b, "strftime") else str(b)
+            series.append({
+                "bucket": label,
+                "orders": row["orders"] or 0,
+                "quantity": int(row["quantity"] or 0),
+                "revenue": str((row["revenue"] or Decimal("0.00")).quantize(Decimal("0.01"))),
+            })
 
-    #     ws2 = wb.create_sheet(title="Ventes")
-    #     ws2.append(["Date vente", "N° vente", "Produit", "Slug", "Quantité", "Prix/gr.", "Sous-total HT", "Tax", "TTC", "Remise", "Autres", "Vendeur (email)"])
-    #     for vp in ventes:
-    #         vente = getattr(vp, "vente", None)
-    #         produit = getattr(vp, "produit", None)
-    #         vendeur = getattr(vp, "vendor", None)
-    #         ws2.append([
-    #             getattr(vente, "created_at", None).strftime("%Y-%m-%d %H:%M") if getattr(vente, "created_at", None) else "",
-    #             getattr(vente, "numero_vente", ""),
-    #             getattr(produit, "nom", "") if produit else "",
-    #             getattr(produit, "slug", "") if produit else "",
-    #             int(getattr(vp, "quantite", 0) or 0),
-    #             float(getattr(vp, "prix_vente_grammes", 0) or 0),
-    #             float(getattr(vp, "sous_total_prix_vente_ht", 0) or 0),
-    #             float(getattr(vp, "tax", 0) or 0),
-    #             float(getattr(vp, "prix_ttc", 0) or 0),
-    #             float(getattr(vp, "remise", 0) or 0),
-    #             float(getattr(vp, "autres", 0) or 0),
-    #             getattr(getattr(vendeur, "user", None), "email", "") if vendeur else "",
-    #         ])
+        # export ?
+        if request.GET.get("export") == "excel":
+            return self._export_excel(summary, series, f"vendor_stats_{target_vendor.id}.xlsx")
 
-    #     ws3 = wb.create_sheet(title="Produits (agrégés)")
-    #     ws3.append(["Produit ID", "Slug", "Nom", "Quantité vendue", "Montant total HT", "Remise totale"])
-    #     for row in produits_tableau:
-    #         ws3.append([
-    #             row.get("produit__id"),
-    #             row.get("produit__slug"),
-    #             row.get("produit__nom"),
-    #             int(row.get("quantite_vendue") or 0),
-    #             float(row.get("montant_total_ht") or 0),
-    #             float(row.get("remise_totale") or 0),
-    #         ])
+        return Response({"summary": summary, "series": series}, status=200)
 
-    #     title_map = {"day": "Journalier", "week": "Hebdomadaire", "month": "Mensuel"}
-    #     ws4 = wb.create_sheet(title=f"Série {title_map.get(group_by, group_by)}")
-    #     ws4.append(["Période", "Total quantité", "Total HT", "Total TTC"])
-    #     for r in stats_grouped:
-    #         per = r.get("period")
-    #         label = per.strftime("%Y-%m-%d") if hasattr(per, "strftime") else str(per)
-    #         ws4.append([
-    #             label,
-    #             int(r.get("total_qte") or 0),
-    #             float(r.get("total_montant_ht") or 0),
-    #             float(r.get("total_montant_ttc") or 0),
-    #         ])
+    # ------ helper export ------
+    def _export_excel(self, summary: dict, series: list[dict], filename: str):
+        from io import BytesIO
 
-    #     for sheet in wb.worksheets:
-    #         for col_idx, _ in enumerate(next(sheet.iter_rows(min_row=1, max_row=1)), start=1):
-    #             sheet.column_dimensions[get_column_letter(col_idx)].width = 18
+        from openpyxl import Workbook
 
-    #     stream = BytesIO(); wb.save(stream); stream.seek(0)
-    #     filename = f"dashboard_vendeur_{getattr(getattr(vendor, 'user', None), 'slug', 'vendeur')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    #     resp = HttpResponse(stream.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    #     resp["Content-Disposition"] = f'attachment; filename="{filename}"'
-    #     return resp
+        wb = Workbook()
+        ws1 = wb.active
+        ws1.title = "Summary"
+        ws1.append(["Clé", "Valeur"])
+        for k, v in summary.items():
+            if isinstance(v, dict):
+                ws1.append([k, ""])
+                for sk, sv in v.items():
+                    ws1.append([f"  {sk}", sv if sv is not None else ""])
+            else:
+                ws1.append([k, v if v is not None else ""])
 
-# Un endpoint PATCH pour que le vendeur mette à jour son profil et son compte
-# class VendorProfileView(APIView):
-#     permission_classes = [IsAuthenticated]
+        ws2 = wb.create_sheet("Timeseries")
+        ws2.append(["bucket","orders","quantity","revenue"])
+        for r in series:
+            ws2.append([r["bucket"], r["orders"], r["quantity"], float(r["revenue"])])
 
-#     # @swagger_auto_schema(
-#     #     operation_id="Vendeur - Voir mon profil",
-#     #     operation_description="Voir son profil vendeur avec statistiques groupées par période.",
-#     #     manual_parameters=[
-#     #         openapi.Parameter('group_by', openapi.IN_QUERY, description="Période de regroupement (day, week, month)", type=openapi.TYPE_STRING, enum=['day', 'week', 'month'], default='month'),
-#     #         openapi.Parameter('start_date', openapi.IN_QUERY, description="Date de début (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-#     #         openapi.Parameter('end_date', openapi.IN_QUERY, description="Date de fin (YYYY-MM-DD)", type=openapi.TYPE_STRING),
-#     #     ],
-#     #     responses={200: openapi.Response("Détails du profil vendeur", VendorSerializer)}
-#     # )
-#     # def get(self, request, user_id=None):
-#     #     user = request.user
+        out = BytesIO()
+        wb.save(out)
+        out.seek(0)
+        resp = HttpResponse(
+            out.read(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return resp
 
-#     #     # if user_id and (not user.user_role or user.user_role.role != 'admin'):
-#     #     #     return Response({"detail": "Accès refusé."}, status=403)
-#     #     if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
-#     #         return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
-#     #     target_user = user if not user_id else get_object_or_404(User, id=user_id)
 
-#     #     if not target_user.user_role or target_user.user_role.role != 'vendor':
-#     #         return Response({"detail": "Ce compte n'est pas un vendeur."}, status=400)
-
-#     #     try:
-#     #         vendor = Vendor.objects.get(user=target_user)
-#     #     except Vendor.DoesNotExist:
-#     #         return Response({"detail": "Vendeur introuvable."}, status=404)
-
-#     #     produits = VendorProduit.objects.filter(vendor=vendor)
-#     #     ventes = VenteProduit.objects.filter(produit__in=produits.values('produit'))
-
-#     #     # 🔎 Application de la période personnalisée si fournie
-#     #     start_date = request.GET.get('start_date')
-#     #     end_date = request.GET.get('end_date')
-#     #     if start_date:
-#     #         ventes = ventes.filter(vente__created_at__date__gte=parse_date(start_date))
-#     #     if end_date:
-#     #         ventes = ventes.filter(vente__created_at__date__lte=parse_date(end_date))
-
-#     #     # 📊 Stats globales
-#     #     total_produits = produits.count()
-#     #     total_ventes = ventes.count()
-#     #     total_qte_vendue = ventes.aggregate(total=Sum('quantite'))['total'] or 0
-#     #     total_montant_ventes = ventes.aggregate(montant=Sum('sous_total_prix_vent'))['montant'] or 0
-#     #     stock_total = produits.aggregate(stock=Sum('quantite'))['stock'] or 0
-
-#     #     # 📆 Regroupement par période
-#     #     group_by = request.GET.get('group_by', 'month')
-#     #     if group_by == 'day':
-#     #         trunc = TruncDay('vente__created_at')
-#     #     elif group_by == 'week':
-#     #         trunc = TruncWeek('vente__created_at')
-#     #     else:
-#     #         trunc = TruncMonth('vente__created_at')
-
-#     #     stats_grouped = (
-#     #         ventes
-#     #         .annotate(period=trunc)
-#     #         .values('period')
-#     #         .annotate(
-#     #             total_qte=Sum('quantite'),
-#     #             total_montant=Sum('sous_total_prix_vent')
-#     #         )
-#     #         .order_by('period')
-#     #     )
-
-#     #     top_produits = (
-#     #         ventes
-#     #         .values('produit__id', 'produit__nom')
-#     #         .annotate(total_qte=Sum('quantite'))
-#     #         .order_by('-total_qte')[:5]
-#     #     )
-
-#     #     return Response({
-#     #         "vendeur": VendorSerializer(vendor).data,
-#     #         "user": UserSerializer(target_user).data,
-#     #         "stats": {
-#     #             "produits": total_produits,
-#     #             "ventes": total_ventes,
-#     #             "quantite_totale_vendue": total_qte_vendue,
-#     #             "stock_restant": stock_total,
-#     #             "montant_total_ventes": total_montant_ventes
-#     #         },
-#     #         "stats_groupées": stats_grouped,
-#     #         "top_produits": top_produits,
-#     #         "mode_groupement": group_by,
-#     #         "produits": VendorProduitSerializer(produits, many=True).data,
-#     #         "ventes": VenteProduitSerializer(ventes, many=True).data
-#     #     })
-
-#     @swagger_auto_schema(
-#         operation_id="Vendeur - Modifier mon profil",
-#         operation_description="Modifier son profil vendeur et utilisateur.",
-#         request_body=VendorSerializer,
-#         responses={200: VendorSerializer}
-#     )
-#     def patch(self, request):
-#         user = request.user
-#         if not user.user_role or user.user_role.role != 'vendor':
-#             return Response({"detail": "⛔ Accès refusé."}, status=403)
-
-#         try:
-#             vendor = Vendor.objects.get(user=user)
-#         except Vendor.DoesNotExist:
-#             return Response({"detail": "Vendeur introuvable."}, status=404)
-
-#         vendor_serializer = VendorSerializer(vendor, data=request.data, partial=True)
-
-#         user_data = {
-#             field: request.data.get(field)
-#             for field in ['first_name', 'last_name', 'username', 'email', 'phone']
-#             if field in request.data
-#         }
-#         user_serializer = UserSerializer(user, data=user_data, partial=True)
-
-#         if vendor_serializer.is_valid() and user_serializer.is_valid():
-#             vendor_serializer.save()
-#             user_serializer.save()
-#             return Response({
-#                 "message": "✅ Profil mis à jour.",
-#                 "user": user_serializer.data,
-#                 "vendeur": vendor_serializer.data
-#             })
-
-#         return Response({
-#             "errors": {
-#                 "user": user_serializer.errors,
-#                 "vendor": vendor_serializer.errors
-#             }
-#         }, status=400)
-
-#     @swagger_auto_schema(
-#         operation_id="Admin - Désactiver un vendeur",
-#         operation_description="Désactiver un vendeur (admin uniquement).",
-#         responses={204: "Vendeur désactivé avec succès."}
-#     )
-#     def delete(self, request, user_id=None):
-#         allowed_roles_admin_manager = ['admin', 'manager']  # 🔧 ligne à ajouter
-#         # if not request.user.user_role or request.user.user_role.role != 'admin':
-#         #     return Response({"detail": "Accès refusé."}, status=403)
-#         if not request.user.user_role or request.user.user_role.role not in self.allowed_roles_admin_manager:
-#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         if not user_id:
-#             return Response({"detail": "ID utilisateur requis."}, status=400)
-
-#         try:
-#             target_user = User.objects.get(id=user_id)
-#             if target_user.user_role.role != 'vendor':
-#                 return Response({"detail": "Ce n'est pas un vendeur."}, status=400)
-#             vendor = Vendor.objects.get(user=target_user)
-#             vendor.verifie = False
-#             vendor.raison_desactivation = request.data.get('raison', 'Désactivation par l’administrateur')
-#             vendor.save()
-#             return Response({"message": "✅ Vendeur désactivé."}, status=204)
-#         except User.DoesNotExist:
-#             return Response({"detail": "Utilisateur introuvable."}, status=404)
-#         except Vendor.DoesNotExist:
-#             return Response({"detail": "Vendeur introuvable."}, status=404)
-        
 
 # Un vendeur authentifié peut appeler GET /api/vendor/produits/
 # Il recevra la liste des produits associés à son stock
@@ -585,7 +341,7 @@ class VendorProduitListView(APIView):
         except Vendor.DoesNotExist:
             return Response({"error": "Aucun vendeur associé à cet utilisateur."}, status=400)
 
-        vendor_produits = VendorProduit.objects.filter(vendor=vendor).select_related('produit')
+        vendor_produits = VendorStock.objects.filter(vendor=vendor).select_related('produit')
         produits = [vp.produit for vp in vendor_produits]
         serializer = ProduitSerializer(produits, many=True)
 
@@ -1539,16 +1295,16 @@ class VendorProduitAssociationAPIView(APIView):
             stock.refresh_from_db(fields=["quantite"])
 
             # 6.b Incrément du stock vendeur (VendorProduit)
-            vp = (VendorProduit.objects
+            vs = (VendorStock.objects
                   .select_for_update()
                   .filter(vendor=vendor, produit_id=pid)
                   .first())
-            if vp:
-                VendorProduit.objects.filter(pk=vp.pk).update(quantite=F("quantite") + qty)
-                vp.refresh_from_db(fields=["quantite"])
+            if vs:
+                VendorStock.objects.filter(pk=vs.pk).update(quantite=F("quantite") + qty)
+                vs.refresh_from_db(fields=["quantite"])
                 status_item = "mis à jour"
             else:
-                vp = VendorProduit.objects.create(vendor=vendor, produit_id=pid, quantite=qty)
+                vs = VendorStock.objects.create(vendor=vendor, produit_id=pid, quantite=qty)
                 status_item = "créé"
 
             # 6.c Mouvement VENDOR_ASSIGN (traçabilité + origine bijouterie)
@@ -1575,7 +1331,7 @@ class VendorProduitAssociationAPIView(APIView):
                 "nom": produit.nom,
                 "quantite_attribuee": qty,
                 "lot_id": lot_id,
-                "stock_vendeur": vp.quantite,
+                "stock_vendeur": vs.quantite,
                 "stock_restant_bijouterie": stock.quantite,
                 "status": status_item,
             })

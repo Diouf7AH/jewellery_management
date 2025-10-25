@@ -1,15 +1,42 @@
 # Register your models here.
 from django.contrib import admin
+from django.db.models import (Count, DecimalField, ExpressionWrapper, F,
+                              IntegerField, Sum)
 
 from store.models import Produit
 
-from .models import Achat, Fournisseur
+from .models import Achat, Fournisseur, Lot
 
 
 @admin.register(Fournisseur)
 class FournisseurAdmin(admin.ModelAdmin):
     list_display = ('id', 'nom', 'prenom', 'address', 'telephone')
     search_fields = ('nom',)
+
+
+@admin.register(Lot)
+class LotAdmin(admin.ModelAdmin):
+    list_display = ("numero_lot", "received_at", "achat", "nb_lignes_admin", "qte_totale_admin", "poids_total_admin")
+    search_fields = ("numero_lot", "description", "achat__numero_achat", "achat__fournisseur__nom")
+    list_filter = ("received_at",)
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request).select_related("achat", "achat__fournisseur")
+        poids_total_expr = ExpressionWrapper(
+            F("lignes__quantite_total") * F("lignes__produit__poids"),
+            output_field=DecimalField(max_digits=18, decimal_places=3)
+        )
+        return (qs
+                .annotate(
+                    nb_lignes=Count("lignes", distinct=True),
+                    qte_totale=Sum("lignes__quantite_total", output_field=IntegerField()),
+                    poids_total=Sum(poids_total_expr),
+                ))
+
+    def nb_lignes_admin(self, obj): return obj.nb_lignes
+    def qte_totale_admin(self, obj): return obj.qte_totale
+    def poids_total_admin(self, obj): return obj.poids_total
+
 
 # @admin.register(Achat)
 # class AchatAdmin(admin.ModelAdmin):

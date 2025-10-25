@@ -1,95 +1,69 @@
+from django.db import models
 from django.db.models import Sum
 from rest_framework import serializers
-from .models import Client, Vente, VenteProduit, Facture, Paiement
-from django.db import models
-from store.models import Produit, MarquePurete
-from vendor.models import Vendor 
-from decimal import Decimal
 
-from store.serializers import ProduitSerializer, BijouterieSerializer
-from vendor.serializer import VendorSerializer 
+from store.models import Bijouterie, MarquePurete, Produit
+from store.serializers import BijouterieSerializer, ProduitSerializer
+from vendor.models import Vendor
+from vendor.serializer import VendorSerializer
 
-# class ProduitMiniSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = Produit
-#         fields = ['id', 'nom', 'slug', 'poids']
+from .models import Client, Facture, Paiement, Vente, VenteProduit
 
-class ClientSerializer(serializers.ModelSerializer):
+
+# ---- store serializers light ----
+class BijouterieSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Client
-        fields = ['id', 'nom', 'prenom',]
+        model = Bijouterie
+        fields = ["id", "nom", "telephone_portable_1", "adresse", "nom_de_domaine"]
+        ref_name = "BijouterieOut"
 
+class ProduitSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Produit
+        fields = ["id", "nom", "slug", "poids"]
+        ref_name = "ProduitOutLight"
 
-# class VenteProduitSerializer(serializers.ModelSerializer):
-#     produit_nom = serializers.SerializerMethodField()
-#     produit_slug = serializers.SerializerMethodField()
-#     # produit = ProduitSerializer()
-#     # prix_vente_grammes = serializers.DecimalField(max_digits=12, decimal_places=2)
-#     # remise = serializers.DecimalField(max_digits=5, decimal_places=2)
-#     # autres = serializers.DecimalField(max_digits=5, decimal_places=2)
-#     # sous_total_prix_vent = serializers.DecimalField(max_digits=12, decimal_places=2)
+# ---- vendor serializer light ----
+class VendorSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+    email    = serializers.EmailField(source="user.email", read_only=True)
+    bijouterie = BijouterieSerializer(read_only=True)
 
-#     class Meta:
-#         model = VenteProduit
-#         fields = [
-#             'produit',
-#             'produit_nom',
-#             'produit_slug',
-#             'vendor',
-#             'quantite',
-#             'prix_vente_grammes',
-#             'tax',
-#             'prix_ttc',
-#             'remise',
-#             'autres',
-#             'sous_total_prix_vente_ht',
-#         ]
-    
-#     def get_produit_nom(self, obj):
-#         return obj.produit.nom if obj.produit else None
-    
-#     def get_produit_slug(self, obj):
-#         return obj.produit.slug if obj.produit else None
+    class Meta:
+        model = Vendor
+        fields = ["id", "username", "email", "bijouterie"]
+        ref_name = "VendorOutLight"
+# ----End vendor serializer light ----
 
+# ----------------------------------------
 class VenteProduitSerializer(serializers.ModelSerializer):
-    # ÉCRITURE (IDs)
     slug = serializers.SlugField()
     produit_id = serializers.PrimaryKeyRelatedField(
-        source="produit",
-        queryset=Produit.objects.all(),
-        write_only=True,
+        source="produit", queryset=Produit.objects.all(), write_only=True,
     )
     vendor_id = serializers.PrimaryKeyRelatedField(
-        source="vendor",
-        queryset=Vendor.objects.all(),
-        write_only=True,
-        required=False,
-        allow_null=True,
+        source="vendor", queryset=Vendor.objects.all(),
+        write_only=True, required=False, allow_null=True,
     )
 
-    # LECTURE (objets imbriqués)
     produit = ProduitSerializer(read_only=True)
     vendor  = VendorSerializer(read_only=True)
 
-    # Alias lisible
     sous_total_ht = serializers.DecimalField(
         max_digits=12, decimal_places=2, read_only=True, source="sous_total_prix_vente_ht"
     )
 
     class Meta:
         model = VenteProduit
+        ref_name = "VenteProduitLine"
         fields = [
             "id",
             "slug",
-            # écriture
             "produit_id", "vendor_id",
-            # lecture imbriquée
             "produit", "vendor",
-            # données de ligne
             "quantite",
             "prix_vente_grammes",
             "remise", "autres", "tax",
-            # calculés (read-only)
             "sous_total_ht",
             "sous_total_prix_vente_ht",
             "prix_ttc",
@@ -97,13 +71,14 @@ class VenteProduitSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "sous_total_prix_vente_ht", "prix_ttc")
         extra_kwargs = {
             "quantite": {"min_value": 1},
-            "prix_vente_grammes": {"required": False},  # tu fais le fallback dans la view
+            "prix_vente_grammes": {"required": False},
             "remise": {"required": False},
             "autres": {"required": False},
             "tax": {"required": False},
         }
 
     def validate(self, attrs):
+        # valeurs non négatives
         for f in ("prix_vente_grammes", "remise", "autres", "tax"):
             v = attrs.get(f)
             if v is not None and v < 0:
@@ -113,146 +88,76 @@ class VenteProduitSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"quantite": "Doit être ≥ 1."})
         return attrs
 
+    # Optionnel: cohérence slug <-> produit_id
+    def validate_slug(self, value):
+        # Si tu veux forcer cohérence, vérifie ici (ex: Produit.objects.filter(slug=value).exists())
+        return value
+# ----------------------------------------
 
-# class VenteProduitSerializer(serializers.ModelSerializer):
-#     produit_nom = serializers.SerializerMethodField()
-#     produit_slug = serializers.SerializerMethodField()
-
-#     class Meta:
-#         model = VenteProduit
-#         fields = [
-#             'id', 'produit', 'quantite', 'prix_vente_grammes',
-#             'sous_total_prix_vente_ht', 'tax', 'prix_ttc',
-#             'produit_nom', 'produit_slug',
-#         ]
-
-#     def get_produit_nom(self, obj):
-#         return obj.produit.nom if obj.produit else None
-    
-
-#     def get_produit_slug(self, obj):
-#         return obj.produit.slug if obj.produit else None
+# -----Serializer “in” pour la vue (payload)--
+class ClientInSerializer(serializers.ModelSerializer):
+    telephone = serializers.CharField(required=False, allow_blank=True)
+    class Meta:
+        model = Client
+        fields = ["prenom", "nom", "telephone"]
+        ref_name = "VenteClientIn"
 
 
-class VenteSerializer(serializers.ModelSerializer):
-    client = ClientSerializer()
-    produits = VenteProduitSerializer(many=True)
+class VenteListSerializer(serializers.ModelSerializer):
+    client = serializers.SerializerMethodField()
+
     class Meta:
         model = Vente
-        fields = ['id', 'numero_vente', 'client', 'created_by', 'produits', 'created_at', 'montant_total',]
+        fields = ["id", "numero_vente", "created_at", "montant_total", "client"]
+        ref_name = "VenteList_V1"
+
+    def get_client(self, obj):
+        c = getattr(obj, "client", None)
+        return {"prenom": c.prenom, "nom": c.nom, "telephone": c.telephone} if c else None
 
 
-class VenteProduitInlineForFactureSerializer(serializers.ModelSerializer):
-    """Ligne affichée dans la facture, enrichie avec infos produit et vendeur."""
-    produit = serializers.SerializerMethodField()
-    vendor  = serializers.SerializerMethodField()
+class VenteProduitInSerializer(serializers.Serializer):
+    slug = serializers.SlugField()
+    quantite = serializers.IntegerField(min_value=1)
+    prix_vente_grammes = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    remise = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    autres = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    tax    = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    # Manager uniquement (selection du vendor)
+    vendor_email = serializers.EmailField(required=False)
 
     class Meta:
-        model = VenteProduit
-        fields = [
-            "quantite",
-            "prix_vente_grammes",
-            "sous_total_prix_vente_ht",
-            "remise",
-            "autres",
-            "tax",
-            "prix_ttc",
-            "produit",
-            "vendor",
-        ]
-        read_only_fields = fields
+        ref_name = "VenteProduitIn"
 
-    # -- helpers privés --
-    def _get_weight(self, p):
-        # supporte p.poids ou p.poids_grammes
-        raw = getattr(p, "poids", None) or getattr(p, "poids_grammes", None)
-        try:
-            return Decimal(str(raw)) if raw not in (None, "", 0, "0") else None
-        except Exception:
-            return None
+class VenteCreateInSerializer(serializers.Serializer):
+    client   = ClientInSerializer()
+    produits = VenteProduitInSerializer(many=True)
 
-    def _get_mp_price(self, p):
-        """Prix par gramme issu du couple (marque, purete) si disponible."""
-        if getattr(p, "marque_id", None) and getattr(p, "purete_id", None):
-            # MarquePurete = apps.get_model("store", "MarquePurete")
-            return MarquePurete.objects.filter(
-                marque_id=p.marque_id, purete_id=p.purete_id
-            ).values_list("prix", flat=True).first()
-        return None
+    class Meta:
+        ref_name = "VenteCreateIn"
+# -----End Serializer “in” pour la vue (payload)--
 
-    def get_produit(self, obj):
-        p = obj.produit
-        if not p:
-            return None
-
-        poids = self._get_weight(p)
-        # prix au gramme utilisé: vendeur > 0 sinon tarif MP
-        prix_mp = self._get_mp_price(p)
-        prix_gramme = obj.prix_vente_grammes if (obj.prix_vente_grammes and obj.prix_vente_grammes > 0) else prix_mp
-
-        cat = getattr(p, "categorie", None)
-        mar = getattr(p, "marque", None)
-        pur = getattr(p, "purete", None)
-
-        return {
-            "id": p.id,
-            "nom": getattr(p, "nom", None),
-            "matiere": getattr(p, "matiere", None),
-            "slug": getattr(p, "slug", None),
-            "poids_grammes": poids,
-            "prix_gramme": prix_gramme,  # prix au gramme réellement utilisé
-            "categorie": {
-                "id": getattr(cat, "id", None),
-                "nom": getattr(cat, "nom", getattr(cat, "name", None)),
-            } if cat else None,
-            "marque": {
-                "id": getattr(mar, "id", None),
-                "marque": getattr(mar, "marque", getattr(mar, "name", None)),
-            } if mar else None,
-            "purete": {
-                "id": getattr(pur, "id", None),
-                "purete": getattr(pur, "purete", getattr(pur, "name", None)),
-            } if pur else None,
-        }
-
-    def get_vendor(self, obj):
-        v = obj.vendor
-        if not v:
-            return None
-        u = getattr(v, "user", None)
-        return {
-            "id": v.id,
-            "email": getattr(u, "email", None),
-            "first_name": getattr(u, "first_name", None),
-            "last_name": getattr(u, "last_name", None),
-            "slug": getattr(u, "slug", None),
-        }
+# -----Serializers de sortie avec HT/TTC, vendor et bijouterie-----------
 
 class FactureSerializer(serializers.ModelSerializer):
     total_paye = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
     reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
+    remise_totale = serializers.SerializerMethodField()
     date_creation = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
-    vente = serializers.SerializerMethodField()
     client = serializers.SerializerMethodField()
-    lignes = VenteProduitInlineForFactureSerializer(source="vente.produits", many=True, read_only=True)
-    bijouterie = BijouterieSerializer(read_only=True)
+    produits = serializers.SerializerMethodField()
+    # paiements = PaiementSerializer(many=True, read_only=True)
+    vente = serializers.SerializerMethodField()
+
     class Meta:
         model = Facture
         fields = [
-            'numero_facture', 'vente', 'montant_total', 'total_paye',
-            'reste_a_payer', 'status', 'date_creation', 'client', 'fichier_pdf', 'lignes', 'bijouterie'
+            'vente', 'numero_facture', 'montant_total',
+            'total_paye', 'remise_totale', 'reste_a_payer',
+            'status', 'date_creation', 'client',
+            'produits'
         ]
 
-    def get_client(self, obj):
-        if obj.vente and obj.vente.client:
-            client = obj.vente.client
-            return {
-                "nom": client.nom,
-                "prenom": client.prenom,
-                "telephone": client.telephone
-            }
-        return None
-    
     def get_vente(self, obj):
         vente = obj.vente
         if vente:
@@ -261,26 +166,33 @@ class FactureSerializer(serializers.ModelSerializer):
                 "numero_vente": vente.numero_vente
             }
         return None
-    
-    
-    def to_representation(self, instance):
-            data = super().to_representation(instance)
-            # Réassigner les champs enrichis
-            data['client'] = self.get_client(instance)
-            data['vente'] = self.get_vente(instance)
-            return data
+
+    def get_client(self, obj):
+        client = getattr(obj.vente, 'client', None)
+        if client:
+            return {
+                "nom": client.nom,
+                "prenom": client.prenom,
+                "telephone": client.telephone
+            }
+        return None
+
+    def get_remise_totale(self, obj):
+        if obj.vente and hasattr(obj.vente, 'produits'):
+            return float(sum(vp.remise or 0 for vp in obj.vente.produits.all()))
+        return 0.0
+
+    def get_produits(self, obj):
+        if obj.vente and hasattr(obj.vente, 'produits'):
+            return VenteProduitSerializer(obj.vente.produits.all(), many=True).data
+        return []
 
 
-class ClientSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Client
-        fields = ['nom', 'prenom', 'telephone']
 
 class VenteDetailSerializer(serializers.ModelSerializer):
     client = serializers.SerializerMethodField()
     produits = serializers.SerializerMethodField()
     vente = serializers.SerializerMethodField()
-    # source_commande = serializers.SerializerMethodField()
     facture = serializers.SerializerMethodField()
     total_remise = serializers.SerializerMethodField()
     total_ht = serializers.SerializerMethodField()
@@ -292,67 +204,66 @@ class VenteDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Vente
-        fields = ['id', 'client', 'produits', 'vente', 'facture', 'montant_total', 'total_autres','total_ttc', 'total_remise', 'total_taxes', 'total_ht',  'totaux']
+        ref_name = "VenteDetailOut_V1"
+        fields = [
+            'id', 'client', 'produits', 'vente', 'facture', 'bijouterie',
+            'montant_total', 'total_autres', 'total_ttc', 'total_remise', 'total_taxes', 'total_ht', 'totaux'
+        ]
 
     def get_client(self, obj):
-        client = obj.client
-        return {
-            "nom": client.nom,
-            "prenom": client.prenom,
-            "telephone": client.telephone
-        } if client else None
+        c = obj.client
+        return {"nom": c.nom, "prenom": c.prenom, "telephone": c.telephone} if c else None
 
     def get_produits(self, obj):
-        return [
-            {
+        # expose HT/TTC ligne + vendor
+        data = []
+        for p in obj.produits.select_related("produit", "vendor__user", "vendor__bijouterie"):
+            data.append({
                 "nom": p.produit.nom if p.produit else "Produit supprimé",
+                "slug": getattr(p.produit, "slug", None),
                 "quantite": p.quantite,
                 "prix_vente_grammes": str(p.prix_vente_grammes),
                 "sous_total_prix_vente_ht": str(p.sous_total_prix_vente_ht),
                 "remise": str(p.remise),
                 "autres": str(p.autres),
-                "prix_ttc": str(p.prix_ttc)
-            }
-            for p in obj.produits.all()
-        ]
+                "tax": str(p.tax),
+                "prix_ttc": str(p.prix_ttc),
+                "vendor": {
+                    "id": getattr(p.vendor, "id", None),
+                    "username": getattr(getattr(p.vendor, "user", None), "username", None),
+                    "email": getattr(getattr(p.vendor, "user", None), "email", None),
+                    "bijouterie": {
+                        "id": getattr(getattr(p.vendor, "bijouterie", None), "id", None),
+                        "nom": getattr(getattr(p.vendor, "bijouterie", None), "nom", None),
+                        "telephone_portable_1": getattr(getattr(p.vendor, "bijouterie", None), "telephone_portable_1", None),
+                        "telephone_fix": getattr(getattr(p.vendor, "bijouterie", None), "telephone_fix", None),
+                        "nom_de_domaine": getattr(getattr(p.vendor, "bijouterie", None), "nom_de_domaine", None),
+                        "adresse": getattr(getattr(p.vendor, "bijouterie", None), "adresse", None),
+                    } if getattr(p.vendor, "bijouterie", None) else None
+                } if p.vendor_id else None
+            })
+        return data
 
     def get_vente(self, obj):
-        return {
-            "id": obj.id,
-            "numero_vente": obj.numero_vente
-        }
-        
-    # def get_source_commande(self, obj):
-    #     return obj.commande_source.numero_commande if obj.commande_source else "Vente directe"
-    
+        return {"id": obj.id, "numero_vente": obj.numero_vente}
+
     def get_facture(self, obj):
-        facture = getattr(obj, "facture_vente", None)
-        if not facture:
-            return None
+        f = getattr(obj, "facture_vente", None)
+        if not f: return None
         return {
-            "numero_facture": facture.numero_facture,
-            "montant_total": str(facture.montant_total),
-            "status": facture.status,
-            "date": facture.date_creation
+            "numero_facture": f.numero_facture,
+            "montant_total": str(f.montant_total),
+            "status": f.status,
+            "date": f.date_creation,
+            "bijouterie": {"id": f.bijouterie_id, "nom": getattr(f.bijouterie, "nom", None)} if f.bijouterie_id else None
         }
-        
-    def get_total_remise(self, obj):
-        return str(obj.produits.aggregate(
-            total=models.Sum('remise')
-        )['total'] or 0)
-        
-    def get_total_ht(self, obj):
-        return obj.produits.aggregate(total=Sum('sous_total_prix_vente_ht'))['total'] or 0
 
-    def get_total_ttc(self, obj):
-        return obj.produits.aggregate(total=Sum('prix_ttc'))['total'] or 0
-
-    def get_total_taxes(self, obj):
-        return obj.produits.aggregate(total=Sum('tax'))['total'] or 0
-
-    def get_total_autres(self, obj):
-        return obj.produits.aggregate(total=Sum('autres'))['total'] or 0
-    
+    from django.db.models import Sum
+    def get_total_remise(self, obj): return str(obj.produits.aggregate(total=Sum('remise'))['total'] or 0)
+    def get_total_ht(self, obj):     return str(obj.produits.aggregate(total=Sum('sous_total_prix_vente_ht'))['total'] or 0)
+    def get_total_ttc(self, obj):    return str(obj.produits.aggregate(total=Sum('prix_ttc'))['total'] or 0)
+    def get_total_taxes(self, obj):  return str(obj.produits.aggregate(total=Sum('tax'))['total'] or 0)
+    def get_total_autres(self, obj): return str(obj.produits.aggregate(total=Sum('autres'))['total'] or 0)
     def get_totaux(self, obj):
         return {
             "total_ht": self.get_total_ht(obj),
@@ -360,8 +271,16 @@ class VenteDetailSerializer(serializers.ModelSerializer):
             "total_taxes": self.get_total_taxes(obj),
             "total_remise": self.get_total_remise(obj),
             "total_autres": self.get_total_autres(obj),
-            "montant_total": obj.montant_total,
+            "montant_total": str(obj.montant_total),
         }
+
+class VenteOutWrapperSerializer(serializers.Serializer):
+    facture = FactureSerializer()
+    vente   = VenteDetailSerializer()
+
+    class Meta:
+        ref_name = "VenteCreateOut"
+# -----Serializers de sortie avec HT/TTC, vendor et bijouterie-----------
 
 
 # PaiementSerializer pour l’input et l’output 
@@ -396,61 +315,3 @@ class PaiementSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "numero_facture", "date_paiement", "cashier", "created_by"]
 
-
-
-
-        
-# class PaiementSerializer(serializers.ModelSerializer):
-#     reste_a_payer = serializers.SerializerMethodField()
-#     facture = serializers.SerializerMethodField()
-#     class Meta:
-#         model = Paiement
-#         fields = ("id", "caishier", "facture", "montant_paye", "mode_paiement", "date_paiement", "reste_a_payer")
-#         read_only_fields = ("created_by",)  # 👈 NE PAS inclure dans Swagger POST
-        
-#     def validate_montant_paye(self, value):
-#         if value <= 0:
-#             raise serializers.ValidationError("Le montant payé doit être un montant positif.")
-#         return value
-
-#     def validate_mode_paiement(self, value):
-#         MODES_VALIDES = dict(Paiement._meta.get_field('mode_paiement').choices).keys()
-#         if value not in MODES_VALIDES:
-#             raise serializers.ValidationError(f"Mode de paiement invalide. Choix valides : {', '.join(MODES_VALIDES)}")
-#         return value
-    
-#     def get_facture(self, obj):
-#         facture = obj.facture
-#         if not facture:
-#             return None
-
-#         return {
-#             "id": facture.id,
-#             "numero_facture": facture.numero_facture,
-#             "vente": {
-#                 "id": facture.vente.id,
-#                 "numero_vente": facture.vente.numero_vente,
-#                 "client": facture.vente.client.full_name if facture.vente.client else None,
-#             } if facture.vente else None,
-#             "montant_total": facture.montant_total,
-#             "status": facture.status,
-#             "date_creation": facture.date_creation,
-#         }
-        
-#     def get_reste_a_payer(self, obj):
-#         facture = obj.facture
-#         return facture.reste_a_payer if facture else None
-    
-#     def get_created_by(self, obj):
-#         user = obj.created_by
-#         if not user:
-#             return None
-#         return {
-#             "id": user.id,
-#             "nom": user.get_full_name() or user.username
-#         }
-
-#     def to_representation(self, instance):
-#         data = super().to_representation(instance)
-#         data['created_by'] = self.get_created_by(instance)
-#         return data
