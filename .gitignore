@@ -1,69 +1,16 @@
-# --- Environnements virtuels ---
-venv/
-ENV/
+# Virtualenv
 env/
-.VENV/
-.venv/
+venv/
+**/env/
+**/venv/
 
-# --- Fichiers Python compilés ---
+# Python
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
-__pycache__/
+*.sqlite3
 
-
-
-# --- Base de données locale ---
-db.sqlite3
-
-# --- Fichiers et répertoires Django ---
-/media/
-/static/
-/staticfiles/
-/logs/
-/backups/
-
-# --- Environnements et secrets ---
-.env
-.env.*
-*.env
-
-# --- Fichiers système ---
-.DS_Store
-Thumbs.db
-
-# --- Node.js / Frontend ---
-node/
-node_modules/
-dist/
-build/
-npm-debug.log
-yarn-error.log
-package-lock.json
-pnpm-lock.yaml
-
-# --- IDE / Éditeurs ---
+# IDE
 .vscode/
 .idea/
-*.sublime-project
-*.sublime-workspace
-
-# --- Migrations inutiles (optionnel, si tu veux éviter de versionner les auto-mig) ---
-# **/migrations/*.py
-# !**/migrations/__init__.py
-
-# --- Logs et temporaires ---
-*.log
-*.tmp
-*.swp
-*.bak
-
-# --- Cache / Tests ---
-.coverage
-htmlcov/
-pytest_cache/
-.tox/
-.cache/
-
-# --- OS divers ---
-*.~lock.*
