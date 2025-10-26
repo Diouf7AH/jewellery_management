@@ -2,18 +2,16 @@ import string
 from decimal import Decimal
 from random import SystemRandom
 
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
 from django.template.defaultfilters import slugify
 
-from django.db.models import Q
-from store.models import Produit, Bijouterie
+from store.models import Bijouterie, Produit
 
 # from shortuuid.django_fields import ShortUUIDField
 
 
-
-from django.core.exceptions import ValidationError
-from django.db import models
 
 class Stock(models.Model):
     # un seul enregistrement de stock par produit
@@ -47,10 +45,6 @@ class Stock(models.Model):
 
 # add bijouterie
 
-
-from django.core.exceptions import ValidationError
-from django.db import models
-from django.db.models import Q
 
 class Stock(models.Model):
     produit = models.ForeignKey(
