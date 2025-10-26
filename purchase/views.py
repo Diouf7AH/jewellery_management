@@ -12,8 +12,9 @@ from typing import Dict, Optional, Tuple
 from dateutil.relativedelta import relativedelta
 from django.core.exceptions import MultipleObjectsReturned, ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import (Count, DecimalField, ExpressionWrapper, F,
-                              IntegerField, Q, Sum, UniqueConstraint)
+from django.db.models import (Case, Count, DecimalField, ExpressionWrapper, F,
+                              IntegerField, Q, Sum, Value, When)
+from django.db.models.functions import Coalesce
 from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 # import phonenumbers
@@ -1664,9 +1665,9 @@ class LotListView(ListAPIView):
     permission_classes = [IsAuthenticated, IsAdminOrManager]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
 
-    # Filtres
+    # Filtres simples via django-filter
     filterset_fields = {
-        "achat__fournisseur__id": ["exact"],  # ?achat__fournisseur__id=12  (alias ci-dessous)
+        "achat__fournisseur__id": ["exact"],  # alias ci-dessous: ?fournisseur=ID
     }
     search_fields = ["numero_lot", "description", "achat__numero_achat", "achat__fournisseur__nom"]
     ordering_fields = ["received_at", "numero_lot", "nb_lignes", "quantite_total", "poids_total"]
@@ -1676,27 +1677,58 @@ class LotListView(ListAPIView):
         operation_id="listLots",
         operation_summary="Lister les lots (avec totaux quantité/poids)",
         operation_description=dedent("""
-                                    Requête (exemples)
-                                        GET /api/lots/
-                                        GET /api/lots/?search=LOT-2025&date_min=2025-10-01&date_max=2025
-                                        -10-31&fournisseur=12&ordering=-received_at&page=2&page_size=20
-                                    
-                                    Query params
+            Filtres:
+            - `search` : texte (numéro de lot, description, numéro d’achat, fournisseur)
+            - `date_min` : YYYY-MM-DD (inclus)
+            - `date_max` : YYYY-MM-DD (inclus)
+            - `fournisseur` : ID du fournisseur (alias de `achat__fournisseur__id`)
+            - `ordering` : `received_at`, `-received_at`, `numero_lot`, `nb_lignes`, `quantite_total`, `poids_total`
+            - `page`, `page_size`
 
-                                        search: texte libre (numéro de lot, description, numéro d’achat, fournisseur)
-                                        date_min: YYYY-MM-DD
-                                        date_max: YYYY-MM-DD
-                                        fournisseur: ID du fournisseur
-                                        ordering: received_at, -received_at, numero_lot, nb_lignes, quantite_total, poids_total
-                                        page, page_size: pagination
-        
-            "Retourne les lots avec nombre de lignes, quantités totales/restantes et poids totaux/restants "
-            "(poids = quantités × produit.poids). Filtres: date_min, date_max, fournisseur, search."
+            Le poids cumulé est calculé par ligne ainsi :
+            - si `lignes.poids_total` est renseigné → on l’utilise
+            - sinon `lignes.quantite_total × lignes.produit.poids`
         """),
-        
+        manual_parameters=[
+            openapi.Parameter(
+                name="search", in_=openapi.IN_QUERY, required=False,
+                type=openapi.TYPE_STRING, description="Recherche texte"
+            ),
+            openapi.Parameter(
+                name="date_min", in_=openapi.IN_QUERY, required=False,
+                type=openapi.TYPE_STRING, description="Date min (YYYY-MM-DD, inclus)"
+            ),
+            openapi.Parameter(
+                name="date_max", in_=openapi.IN_QUERY, required=False,
+                type=openapi.TYPE_STRING, description="Date max (YYYY-MM-DD, inclus)"
+            ),
+            openapi.Parameter(
+                name="fournisseur", in_=openapi.IN_QUERY, required=False,
+                type=openapi.TYPE_INTEGER, description="ID du fournisseur (alias)"
+            ),
+            openapi.Parameter(
+                name="ordering", in_=openapi.IN_QUERY, required=False,
+                type=openapi.TYPE_STRING,
+                description="received_at, -received_at, numero_lot, nb_lignes, quantite_total, poids_total"
+            ),
+            openapi.Parameter(
+                name="page", in_=openapi.IN_QUERY, required=False,
+                type=openapi.TYPE_INTEGER, description="Numéro de page (>=1)"
+            ),
+            openapi.Parameter(
+                name="page_size", in_=openapi.IN_QUERY, required=False,
+                type=openapi.TYPE_INTEGER, description="Taille de page"
+            ),
+        ],
         tags=["Achats / Arrivages"],
     )
     def get(self, request, *args, **kwargs):
+        # validation des dates (format ISO)
+        date_min_s = request.query_params.get("date_min")
+        date_max_s = request.query_params.get("date_max")
+        for label, val in (("date_min", date_min_s), ("date_max", date_max_s)):
+            if val and parse_date(val) is None:
+                raise ValidationError({label: "Format invalide. Utiliser YYYY-MM-DD."})
         return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
@@ -1704,37 +1736,50 @@ class LotListView(ListAPIView):
               .select_related("achat", "achat__fournisseur")
               .prefetch_related("lignes__produit"))
 
-        # Filtres custom (date + fournisseur alias)
-        date_min = self.request.query_params.get("date_min")
-        date_max = self.request.query_params.get("date_max")
+        # Filtres custom (date + alias fournisseur)
+        date_min_s = self.request.query_params.get("date_min")
+        date_max_s = self.request.query_params.get("date_max")
         fournisseur = self.request.query_params.get("fournisseur")
-        if date_min:
-            qs = qs.filter(received_at__date__gte=date_min)
-        if date_max:
-            qs = qs.filter(received_at__date__lte=date_max)
+
+        if date_min_s:
+            qs = qs.filter(received_at__date__gte=date_min_s)
+        if date_max_s:
+            qs = qs.filter(received_at__date__lte=date_max_s)
         if fournisseur:
             qs = qs.filter(achat__fournisseur__id=fournisseur)
 
-        # Annotations (nb lignes, quantités, poids)
-        poids_total_expr = ExpressionWrapper(
-            F("lignes__quantite_total") * F("lignes__produit__poids"),
-            output_field=DecimalField(max_digits=18, decimal_places=3)
+        # Poids par ligne :
+        # - utilise poids_total si présent
+        # - sinon quantite_total * produit.poids (0 si l'un est NULL)
+        poids_par_ligne = Case(
+            When(lignes__poids_total__isnull=False, then=F("lignes__poids_total")),
+            default=ExpressionWrapper(
+                Coalesce(F("lignes__quantite_total"), Value(0)) *
+                Coalesce(F("lignes__produit__poids"), Value(0.0)),
+                output_field=DecimalField(max_digits=18, decimal_places=3)
+            ),
+            output_field=DecimalField(max_digits=18, decimal_places=3),
         )
-        poids_restant_expr = ExpressionWrapper(
-            F("lignes__quantite_restante") * F("lignes__produit__poids"),
-            output_field=DecimalField(max_digits=18, decimal_places=3)
+        poids_restant_par_ligne = Case(
+            When(lignes__poids_restant__isnull=False, then=F("lignes__poids_restant")),
+            default=ExpressionWrapper(
+                Coalesce(F("lignes__quantite_restante"), Value(0)) *
+                Coalesce(F("lignes__produit__poids"), Value(0.0)),
+                output_field=DecimalField(max_digits=18, decimal_places=3)
+            ),
+            output_field=DecimalField(max_digits=18, decimal_places=3),
         )
 
-        qs = (qs
-              .annotate(
-                  nb_lignes=Count("lignes", distinct=True),
-                  quantite_total=Sum("lignes__quantite_total", output_field=IntegerField()),
-                  quantite_restante=Sum("lignes__quantite_restante", output_field=IntegerField()),
-                  poids_total=Sum(poids_total_expr),
-                  poids_restant=Sum(poids_restant_expr),
-              ))
+        qs = qs.annotate(
+            nb_lignes=Count("lignes", distinct=True),
+            quantite_total=Coalesce(Sum("lignes__quantite_total", output_field=IntegerField()), Value(0)),
+            quantite_restante=Coalesce(Sum("lignes__quantite_restante", output_field=IntegerField()), Value(0)),
+            poids_total=Coalesce(Sum(poids_par_ligne), Value(0.0)),
+            poids_restant=Coalesce(Sum(poids_restant_par_ligne), Value(0.0)),
+        )
 
         return qs
+    
 
 # -----------------------------End list------------------------------------------
 
