@@ -1079,3 +1079,58 @@ class AchatListSerializer(serializers.ModelSerializer):
                     codes.add(lot.lot_code)
         return sorted(codes)
 # ---------------END Serializers dédiés à la liste------------
+
+
+# -----------update and adjustement---------------------------
+# ---------- META ONLY ----------
+class FournisseurRefSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False)
+    nom = serializers.CharField(required=False, allow_blank=True)
+    prenom = serializers.CharField(required=False, allow_blank=True)
+    telephone = serializers.CharField(required=False, allow_blank=True)
+
+class AchatMetaSerializer(serializers.Serializer):
+    description = serializers.CharField(required=False, allow_blank=True)
+    frais_transport = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    frais_douane = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    fournisseur = FournisseurRefSerializer(required=False)
+
+class LotMetaSerializer(serializers.Serializer):
+    description = serializers.CharField(required=False, allow_blank=True)
+    received_at = serializers.DateTimeField(required=False)
+
+class ArrivageMetaUpdateInSerializer(serializers.Serializer):
+    achat = AchatMetaSerializer(required=False)
+    lot = LotMetaSerializer(required=False)
+
+
+# ---------- ADJUSTMENTS ----------
+# Ajout d'une nouvelle ligne (amendement) => PURCHASE_IN
+class AdjustmentAddLineSerializer(serializers.Serializer):
+    type = serializers.ChoiceField(choices=["PURCHASE_IN"])
+    produit_id = serializers.IntegerField()
+    quantite = serializers.IntegerField(min_value=1)
+    prix_achat_gramme = serializers.DecimalField(max_digits=14, decimal_places=2, required=False, allow_null=True)
+    reason = serializers.CharField(required=False, allow_blank=True)
+
+# Retrait partiel d’une ligne existante => CANCEL_PURCHASE (sortie vers EXTERNAL)
+class AdjustmentRemoveQtySerializer(serializers.Serializer):
+    type = serializers.ChoiceField(choices=["CANCEL_PURCHASE"])
+    produit_line_id = serializers.IntegerField()
+    quantite = serializers.IntegerField(min_value=1)
+    reason = serializers.CharField(required=False, allow_blank=True)
+
+class ArrivageAdjustmentsInSerializer(serializers.Serializer):
+    actions = serializers.ListField(
+        child=serializers.DictField(), allow_empty=False,
+        help_text="Liste d'actions PURCHASE_IN ou CANCEL_PURCHASE"
+    )
+
+    def validate(self, data):
+        # contrôle simple: chaque dict doit contenir une clé 'type'
+        for i, act in enumerate(data["actions"]):
+            if "type" not in act:
+                raise serializers.ValidationError({f"actions[{i}]": "Champ 'type' requis"})
+        return data
+    
+# -----------And update and adjustement-----------------------

@@ -1,88 +1,47 @@
-from collections import defaultdict
+from decimal import Decimal
 
-from django.db import transaction
-from django.db.models import F
+from django.shortcuts import get_object_or_404
 
-from purchase.models import ProduitLine
-from stock.models import Stock
-from store.models import Bijouterie
+from purchase.models import Achat, Fournisseur, Lot, ProduitLine
 
 
-@transaction.atomic
-def transfer_reserve_to_bijouterie(*, bijouterie_id:int, mouvements:list[dict], note:str=""):
-    """
-    mouvements: [{"produit_line_id": int, "quantite": int}, ...]
-    Déplace la quantité depuis Réserve (bijouterie=None) vers bijouterie_id.
-    """
-    # 0) Bijouterie existe ?
-    bijouterie = Bijouterie.objects.select_for_update().get(id=bijouterie_id)
-
-    # 1) Regrouper si doublons sur la même ligne
-    wanted = defaultdict(int)
-    for mv in mouvements:
-        wanted[int(mv["produit_line_id"])] += int(mv["quantite"])
-
-    # 2) Lock des lignes concernées
+# ---------------------Update and Adjustement--------------------------
+# --------- helpers communs ----------
+def _recalc_totaux_achat(achat: Achat):
+    """Recalcule HT/TTC depuis les ProduitLine du/des lots de l'achat (au gramme si dispo)."""
+    total_ht = Decimal("0.00")
     lignes = (ProduitLine.objects
-              .select_for_update()
-              .filter(id__in=wanted.keys())
-              .select_related("lot", "produit"))
-    found_ids = {pl.id for pl in lignes}
-    missing = set(wanted.keys()) - found_ids
-    if missing:
-        raise ValueError(f"Lignes introuvables: {sorted(list(missing))}")
-
-    results = []
+              .filter(lot__achat=achat)
+              .select_related("produit", "lot"))
     for pl in lignes:
-        qty = wanted[pl.id]
+        if pl.prix_gramme_achat:
+            p_po = Decimal(pl.produit.poids or 0)
+            q   = Decimal(pl.quantite_total or 0)
+            total_ht += p_po * q * Decimal(pl.prix_gramme_achat)
+    achat.montant_total_ht = total_ht + Decimal(achat.frais_transport or 0) + Decimal(achat.frais_douane or 0) - Decimal(achat.frais_transport or 0) - Decimal(achat.frais_douane or 0)
+    # ci-dessus: on ne double pas les frais; la ligne sert juste d'explicitation
+    achat.montant_total_ht = total_ht + Decimal(achat.frais_transport or 0) + Decimal(achat.frais_douane or 0)
+    achat.montant_total_ttc = achat.montant_total_ht  # TAX=0 par défaut (adapter si TVA)
+    achat.full_clean()
+    achat.save(update_fields=["montant_total_ht", "montant_total_ttc"])
 
-        # Réserve
-        stock_res = (Stock.objects
-                     .select_for_update()
-                     .filter(produit_line=pl, bijouterie__isnull=True)
-                     .first())
-        if not stock_res:
-            # si la ligne n'a pas encore de stock en Réserve
-            raise ValueError(f"Réserve inexistante pour la ligne {pl.id}")
 
-        if (stock_res.quantite_disponible or 0) < qty:
-            raise ValueError(f"Quantité insuffisante en Réserve pour la ligne {pl.id} (demande {qty}, dispo {stock_res.quantite_disponible})")
+def _get_or_upsert_fournisseur(data):
+    """data = {id|nom/prenom/telephone}. Priorité à id, sinon upsert par téléphone si fourni."""
+    if not data:
+        return None
+    if "id" in data:
+        return get_object_or_404(Fournisseur, pk=data["id"])
+    tel = (data.get("telephone") or "").strip() or None
+    if tel:
+        obj, _ = Fournisseur.objects.get_or_create(
+            telephone=tel,
+            defaults={"nom": data.get("nom", "") or "", "prenom": data.get("prenom", "") or ""},
+        )
+        return obj
+    return Fournisseur.objects.create(
+        nom=data.get("nom", "") or "", prenom=data.get("prenom", "") or "", telephone=None
+    )
 
-        # Destination
-        stock_dst = (Stock.objects
-                     .select_for_update()
-                     .filter(produit_line=pl, bijouterie=bijouterie)
-                     .first())
-        if not stock_dst:
-            stock_dst = Stock.objects.create(
-                produit_line=pl, bijouterie=bijouterie,
-                quantite_allouee=0, quantite_disponible=0
-            )
 
-        # Mouvement: Réserve --
-        stock_res.quantite_allouee = (stock_res.quantite_allouee or 0) - qty
-        stock_res.quantite_disponible = (stock_res.quantite_disponible or 0) - qty
-        if stock_res.quantite_allouee < 0 or stock_res.quantite_disponible < 0:
-            raise ValueError(f"Incohérence sur Réserve (ligne {pl.id})")
-        stock_res.save(update_fields=["quantite_allouee", "quantite_disponible"])
-
-        # Mouvement: Destination ++
-        stock_dst.quantite_allouee = (stock_dst.quantite_allouee or 0) + qty
-        stock_dst.quantite_disponible = (stock_dst.quantite_disponible or 0) + qty
-        stock_dst.save(update_fields=["quantite_allouee", "quantite_disponible"])
-
-        results.append({
-            "produit_line_id": pl.id,
-            "transfere": qty,
-            "reserve_disponible": stock_res.quantite_disponible,
-            "bijouterie_disponible": stock_dst.quantite_disponible,
-        })
-
-    # (Optionnel) journaliser 'note' dans un modèle MouvementStock si tu en as un.
-    return {
-        "bijouterie_id": bijouterie.id,
-        "bijouterie_nom": bijouterie.nom,
-        "lignes": results,
-        "note": note or "",
-    }
-    
+# ---------------------And Update and Adjustement----------------------
