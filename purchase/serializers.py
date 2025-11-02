@@ -676,7 +676,10 @@ class ProduitRefField(serializers.IntegerField):
 class LotListSerializer(serializers.ModelSerializer):
     achat_id = serializers.IntegerField(source="achat.id", read_only=True)
     numero_achat = serializers.CharField(source="achat.numero_achat", read_only=True)
-    fournisseur = serializers.CharField(source="achat.fournisseur.nom", read_only=True)
+    fournisseur_id = serializers.IntegerField(source="achat.fournisseur.id", read_only=True)
+    fournisseur_nom = serializers.CharField(source="achat.fournisseur.nom", read_only=True)
+    fournisseur_prenom = serializers.CharField(source="achat.fournisseur.prenom", read_only=True)
+    fournisseur_telephone = serializers.CharField(source="achat.fournisseur.telephone", read_only=True)
 
     nb_lignes = serializers.IntegerField(read_only=True)
     quantite_total = serializers.IntegerField(read_only=True)
@@ -690,7 +693,8 @@ class LotListSerializer(serializers.ModelSerializer):
         model = Lot
         fields = [
             "id", "numero_lot", "description", "received_at",
-            "achat_id", "numero_achat", "fournisseur",
+            "achat_id", "numero_achat",
+            "fournisseur_id", "fournisseur_nom", "fournisseur_prenom", "fournisseur_telephone",
             "nb_lignes", "quantite_total", "quantite_restante",
             "poids_total", "poids_restant",
         ]
@@ -802,14 +806,16 @@ class AchatSerializer(serializers.ModelSerializer):
 
 
 class AchatListSerializer(serializers.ModelSerializer):
-    fournisseur = serializers.CharField(source="fournisseur.nom", read_only=True)
+    fournisseur_nom = serializers.CharField(source="fournisseur.nom", read_only=True)
+    fournisseur_prenom = serializers.CharField(source="fournisseur.prenom", read_only=True)
+    fournisseur_telephone = serializers.CharField(source="fournisseur.telephone", read_only=True)
     nb_lots = serializers.IntegerField(source="lots.count", read_only=True)
 
     class Meta:
         model = Achat
         fields = [
             "id", "numero_achat", "created_at", "status",
-            "fournisseur", "montant_total_ttc", "nb_lots",
+            "fournisseur_nom", "fournisseur_prenom", "fournisseur_telephone", "montant_total_ttc", "nb_lots",
         ]
         read_only_fields = fields
         

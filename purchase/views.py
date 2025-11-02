@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
 # ---------- (facultatif) mixin réutilisé pour Excel ----------
@@ -13,8 +13,8 @@ from dateutil.relativedelta import relativedelta
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import (Case, Count, DecimalField, ExpressionWrapper, F,
-                              IntegerField, Q, Sum, Value, When)
-from django.db.models.functions import Coalesce
+                              IntegerField, Prefetch, Q, Sum, Value, When)
+from django.db.models.functions import Cast, Coalesce
 from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.template.loader import get_template
@@ -228,171 +228,239 @@ class AchatPagination(PageNumberPagination):
 
 
 
-class AchatListView(ExportXlsxMixin, APIView):
+# class AchatListView(ListAPIView):
+#     """
+#     Liste *complète* de tous les achats, sans pagination.
+#     Tri par défaut: -created_at.
+#     """
+#     permission_classes = [IsAuthenticated, IsAdminOrManager]
+#     serializer_class = AchatSerializer
+#     pagination_class = None  # ✅ désactive toute pagination
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister tous les achats (sans pagination)",
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                 description="Tri: -created_at (défaut), created_at, -numero_achat, numero_achat"
+#             ),
+#         ],
+#         responses={200: AchatSerializer(many=True)},
+#         tags=["Achats"],
+#     )
+#     def get_queryset(self):
+#         ordering = self.request.GET.get("ordering") or "-created_at"
+#         allowed = {"created_at", "-created_at", "numero_achat", "-numero_achat"}
+#         if ordering not in allowed:
+#             ordering = "-created_at"
+#         return Achat.objects.all().order_by(ordering)
+
+
+# class AchatListView(ListAPIView):
+#     """
+#     Liste *complète* de tous les achats, sans pagination.
+#     Tri par défaut: -created_at.
+#     """
+#     permission_classes = [IsAuthenticated, IsAdminOrManager]
+#     serializer_class = AchatSerializer         # <- si lourd, préfère AchatSimpleSerializer
+#     pagination_class = None                    # ✅ désactive la pagination
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister tous les achats (sans pagination)",
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 name="ordering",
+#                 in_=openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description="Tri: -created_at (défaut), created_at, -numero_achat, numero_achat"
+#             ),
+#         ],
+#         responses={200: AchatSerializer(many=True)},
+#         tags=["Achats"],
+#     )
+#     def get_queryset(self):
+#         ordering = self.request.GET.get("ordering") or "-created_at"
+#         allowed = {"created_at", "-created_at", "numero_achat", "-numero_achat"}
+#         if ordering not in allowed:
+#             ordering = "-created_at"
+
+#         # ⚡️ Optimisations d’accès aux FK courantes
+#         qs = (Achat.objects
+#               .select_related("fournisseur", "cancelled_by")
+#               .order_by(ordering))
+
+#         return qs
+
+
+# class AchatListView(ListAPIView):
+#     """
+#     Liste des achats :
+#     - par défaut : année courante
+#     - si date_from & date_to sont fournis : intervalle [date_from, date_to] (inclus)
+#     """
+#     permission_classes = [IsAuthenticated, IsAdminOrManager]
+#     serializer_class = AchatSerializer
+#     pagination_class = None  # ✅ pas de pagination
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les achats (année courante par défaut, sinon entre deux dates)",
+#         operation_description=(
+#             "Règles :\n"
+#             "• Si `date_from` **et** `date_to` sont fournis → filtre par intervalle **inclusif**.\n"
+#             "• Sinon → achats de l’**année courante**.\n"
+#             "Formats attendus : `YYYY-MM-DD`."
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                 description="Borne min incluse (YYYY-MM-DD). Utiliser avec date_to."
+#             ),
+#             openapi.Parameter(
+#                 "date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                 description="Borne max incluse (YYYY-MM-DD). Utiliser avec date_from."
+#             ),
+#             openapi.Parameter(
+#                 "ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                 description="Tri: -created_at (défaut), created_at, numero_achat, -numero_achat"
+#             ),
+#         ],
+#         responses={200: AchatSerializer(many=True)},
+#         tags=["Achats"],
+#     )
+#     def get(self, request, *args, **kwargs):
+#         # validation légère des dates ici pour remonter un 400 propre si besoin
+#         def _check_date(label, val):
+#             if not val:
+#                 return
+#             try:
+#                 datetime.strptime(val, "%Y-%m-%d").date()
+#             except Exception:
+#                 from rest_framework.exceptions import ValidationError
+#                 raise ValidationError({label: "Format invalide. Utiliser YYYY-MM-DD."})
+#         _check_date("date_from", request.query_params.get("date_from"))
+#         _check_date("date_to", request.query_params.get("date_to"))
+#         return super().get(request, *args, **kwargs)
+
+#     def get_queryset(self):
+#         params = self.request.query_params
+#         getf = params.get
+
+#         # Tri
+#         ordering = getf("ordering") or "-created_at"
+#         allowed = {"created_at", "-created_at", "numero_achat", "-numero_achat"}
+#         if ordering not in allowed:
+#             ordering = "-created_at"
+
+#         qs = (
+#             Achat.objects
+#             .select_related("fournisseur", "cancelled_by")
+#             .only(
+#                 "id", "created_at", "description",
+#                 "frais_transport", "frais_douane", "note",
+#                 "numero_achat", "montant_total_ht", "montant_total_ttc",
+#                 "status", "cancel_reason", "cancelled_at", "cancelled_by_id",
+#                 "fournisseur_id",
+#             )
+#         )
+
+#         # Logique de dates
+#         date_from_s = getf("date_from")
+#         date_to_s   = getf("date_to")
+
+#         if date_from_s and date_to_s:
+#             # intervalle inclusif
+#             df = datetime.strptime(date_from_s, "%Y-%m-%d").date()
+#             dt = datetime.strptime(date_to_s, "%Y-%m-%d").date()
+#             if df > dt:
+#                 from rest_framework.exceptions import ValidationError
+#                 raise ValidationError({"detail": "date_from doit être ≤ date_to."})
+#             qs = qs.filter(created_at__date__gte=df, created_at__date__lte=dt)
+#         else:
+#             # année courante
+#             y = timezone.localdate().year
+#             start = date(y, 1, 1)
+#             end   = date(y, 12, 31)
+#             qs = qs.filter(created_at__date__gte=start, created_at__date__lte=end)
+
+#         return qs.order_by(ordering)
+
+
+class AchatListView(ListAPIView):
     """
-    Liste paginée des achats (+ export Excel).
-    Inclut : n° de lot, status, description, cancelled_by/at/reason.
+    Liste des achats :
+    - par défaut : année courante
+    - si date_from & date_to sont fournis : intervalle [date_from, date_to] (inclus)
     """
     permission_classes = [IsAuthenticated, IsAdminOrManager]
+    serializer_class = AchatSerializer
+    pagination_class = None  # pas de pagination
 
     @swagger_auto_schema(
-        operation_summary="Lister les achats (paginé) + export Excel",
+        operation_summary="Lister les achats (année courante par défaut, sinon entre deux dates)",
+        operation_description=(
+            "• Si `date_from` **et** `date_to` sont fournis → filtre inclusif.\n"
+            "• Sinon → achats de l’**année courante**.\n"
+            "Formats : `YYYY-MM-DD`."
+        ),
         manual_parameters=[
-            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Recherche (numero_achat, fournisseur nom/prénom/téléphone, lot_code)"),
-            openapi.Parameter("fournisseur_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Filtrer par fournisseur"),
-            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Filtrer par produit présent dans l'achat"),
-            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="(Optionnel) Filtrer par bijouterie si applicable"),
             openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="AAAA-MM-JJ (inclus)"),
+                              description="Borne min incluse (YYYY-MM-DD). Avec date_to."),
             openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="AAAA-MM-JJ (inclus)"),
-            openapi.Parameter("min_total", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Montant TTC minimum"),
-            openapi.Parameter("max_total", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Montant TTC maximum"),
-            openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Statut (si champ présent sur Achat)"),
+                              description="Borne max incluse (YYYY-MM-DD). Avec date_from."),
             openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Tri: -created_at (défaut), created_at, +/-montant_total_ttc, +/-numero_achat"),
-            openapi.Parameter("page", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Numéro de page"),
-            openapi.Parameter("page_size", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Taille de page"),
-            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="xlsx pour export Excel"),
+                              description="Tri: -created_at (défaut), created_at, numero_achat, -numero_achat"),
         ],
+        responses={200: AchatSerializer(many=True)},
         tags=["Achats"],
-        responses={200: "OK", 403: "Accès refusé – admin/manager uniquement"}
     )
-    def get(self, request):
-        fields = {f.name for f in Achat._meta.get_fields()}
+    def get(self, request, *args, **kwargs):
+        def _check_date(label, val):
+            if not val:
+                return
+            try:
+                datetime.strptime(val, "%Y-%m-%d").date()
+            except Exception:
+                raise ValidationError({label: "Format invalide. Utiliser YYYY-MM-DD."})
+        _check_date("date_from", request.query_params.get("date_from"))
+        _check_date("date_to", request.query_params.get("date_to"))
+        return super().get(request, *args, **kwargs)
+
+    def get_queryset(self):
+        params = self.request.query_params
+        getf = params.get
+
+        ordering = getf("ordering") or "-created_at"
+        allowed = {"created_at", "-created_at", "numero_achat", "-numero_achat"}
+        if ordering not in allowed:
+            ordering = "-created_at"
 
         qs = (
             Achat.objects
             .select_related("fournisseur", "cancelled_by")
-            .prefetch_related("produits__produit", "produits__lots")  # ← lots
+            .only(
+                "id", "created_at", "description",
+                "frais_transport", "frais_douane", "note",
+                "numero_achat", "montant_total_ht", "montant_total_ttc",
+                "status", "cancel_reason", "cancelled_at", "cancelled_by_id",
+                "fournisseur_id",
+            )
         )
 
-        getf = request.GET.get
+        date_from_s = getf("date_from")
+        date_to_s   = getf("date_to")
 
-        # --- Recherche plein texte (inclut lot_code) ---
-        q = (getf("q") or "").strip()
-        if q:
-            filt = (
-                Q(fournisseur__nom__icontains=q) |
-                Q(fournisseur__prenom__icontains=q) |
-                Q(fournisseur__telephone__icontains=q) |
-                Q(produits__lots__lot_code__icontains=q)
-            )
-            if "numero_achat" in fields:
-                filt |= Q(numero_achat__icontains=q)
-            qs = qs.filter(filt).distinct()
+        if date_from_s and date_to_s:
+            df = datetime.strptime(date_from_s, "%Y-%m-%d").date()
+            dt = datetime.strptime(date_to_s, "%Y-%m-%d").date()
+            if df > dt:
+                raise ValidationError({"detail": "date_from doit être ≤ date_to."})
+            qs = qs.filter(created_at__date__gte=df, created_at__date__lte=dt)
+        else:
+            # ✅ beaucoup plus robuste pour “année courante”
+            y = timezone.localdate().year
+            qs = qs.filter(created_at__year=y)
 
-        # --- Filtres ---
-        if getf("fournisseur_id"):
-            qs = qs.filter(fournisseur_id=getf("fournisseur_id"))
-        if getf("produit_id"):
-            qs = qs.filter(produits__produit_id=getf("produit_id")).distinct()
-        if getf("bijouterie_id") and "bijouterie" in fields:
-            qs = qs.filter(bijouterie_id=getf("bijouterie_id"))
-
-        # Dates
-        def _d(s):
-            try: return datetime.strptime(s, "%Y-%m-%d").date()
-            except Exception: return None
-        df = _d(getf("date_from") or "")
-        dt = _d(getf("date_to") or "")
-        if df: qs = qs.filter(created_at__date__gte=df)
-        if dt: qs = qs.filter(created_at__date__lte=dt)
-
-        # Totaux TTC
-        def _dec(s):
-            if not s: return None
-            try: return Decimal(str(s))
-            except (InvalidOperation, TypeError): return None
-        min_total = _dec(getf("min_total"))
-        max_total = _dec(getf("max_total"))
-        if min_total is not None: qs = qs.filter(montant_total_ttc__gte=min_total)
-        if max_total is not None: qs = qs.filter(montant_total_ttc__lte=max_total)
-
-        # Statut
-        if getf("status") and "status" in fields:
-            qs = qs.filter(status=getf("status"))
-
-        # --- Tri ---
-        ordering = getf("ordering") or "-created_at"
-        allowed = {"created_at","-created_at","montant_total_ttc","-montant_total_ttc","numero_achat","-numero_achat"}
-        if ordering not in allowed or ("numero_achat" in ordering and "numero_achat" not in fields):
-            ordering = "-created_at"
-        qs = qs.order_by(ordering)
-
-        # --- Export Excel ? ---
-        if (getf("export") or "").lower() == "xlsx":
-            qs_export = qs.annotate(nb_lignes=Count("produits"))
-
-            # achat_id -> "LOT-..., LOT-..."
-            lot_codes_by_achat = {}
-            for a in qs_export:
-                codes = set()
-                for lp in a.produits.all():
-                    for lot in lp.lots.all():
-                        if lot.lot_code:
-                            codes.add(lot.lot_code)
-                lot_codes_by_achat[a.id] = ", ".join(sorted(codes))
-
-            from openpyxl import Workbook
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Achats"
-
-            headers = [
-                "id", "created_at", "numero_achat",
-                "status", "description",
-                "cancelled_by", "cancelled_at", "cancel_reason",
-                "fournisseur_id", "fournisseur_nom", "fournisseur_prenom", "fournisseur_telephone",
-                "montant_total_ht", "montant_total_tax", "montant_total_ttc",
-                "nb_lignes",
-                "lot_codes",
-            ]
-            ws.append(headers)
-
-            for a in qs_export:
-                f = a.fournisseur
-                cancelled_by_display = None
-                if getattr(a, "cancelled_by", None):
-                    u = a.cancelled_by
-                    cancelled_by_display = (u.get_full_name() or u.username)
-
-                ws.append([
-                    a.id,
-                    getattr(a, "created_at", None),
-                    getattr(a, "numero_achat", None) if "numero_achat" in fields else None,
-                    getattr(a, "status", None) if "status" in fields else None,
-                    getattr(a, "description", None) if "description" in fields else None,
-                    cancelled_by_display if "cancelled_by" in fields else None,
-                    getattr(a, "cancelled_at", None) if "cancelled_at" in fields else None,
-                    getattr(a, "cancel_reason", None) if "cancel_reason" in fields else None,
-                    getattr(f, "id", None) if f else None,
-                    getattr(f, "nom", None) if f else None,
-                    getattr(f, "prenom", None) if f else None,
-                    getattr(f, "telephone", None) if f else None,
-                    getattr(a, "montant_total_ht", None),
-                    getattr(a, "montant_total_tax", None),
-                    getattr(a, "montant_total_ttc", None),
-                    getattr(a, "nb_lignes", None),
-                    lot_codes_by_achat.get(a.id),
-                ])
-
-            self._autosize(ws)
-            return self._xlsx_response(wb, "achats.xlsx")
-
-        # --- Pagination + JSON (avec lots & champs d’annulation) ---
-        paginator = AchatPagination()
-        page = paginator.paginate_queryset(qs, request)
-        data = AchatListSerializer(page, many=True).data
-        return paginator.get_paginated_response(data)
-
+        return qs.order_by(ordering)
 
 
 class AchatDashboardView(APIView):
@@ -448,310 +516,112 @@ class AchatDashboardView(APIView):
         })
 
 
-
-
-# --------------------------------------EXCEL AND CSV -----------------------------------------------
-# ---------- helpers communs ----------
-def _filter_and_annotate_lots(request):
-    qs = (Lot.objects
-          .select_related("achat", "achat__fournisseur")
-          .prefetch_related("lignes__produit"))
-
-    # Filtres
-    date_min = request.GET.get("date_min")
-    date_max = request.GET.get("date_max")
-    fournisseur = request.GET.get("fournisseur")
-    search = request.GET.get("search")
-    ordering = request.GET.get("ordering") or "-received_at"
-
-    if date_min:
-        qs = qs.filter(received_at__date__gte=date_min)
-    if date_max:
-        qs = qs.filter(received_at__date__lte=date_max)
-    if fournisseur:
-        qs = qs.filter(achat__fournisseur__id=fournisseur)
-    if search:
-        qs = qs.filter(
-            Q(numero_lot__icontains=search) |
-            Q(description__icontains=search) |
-            Q(achat__numero_achat__icontains=search) |
-            Q(achat__fournisseur__nom__icontains=search)
-        )
-
-    poids_total_expr = ExpressionWrapper(
-        F("lignes__quantite_total") * F("lignes__produit__poids"),
-        output_field=DecimalField(max_digits=18, decimal_places=3)
-    )
-    poids_restant_expr = ExpressionWrapper(
-        F("lignes__quantite_restante") * F("lignes__produit__poids"),
-        output_field=DecimalField(max_digits=18, decimal_places=3)
-    )
-
-    qs = (qs
-          .annotate(
-              nb_lignes=Count("lignes", distinct=True),
-              quantite_total=Sum("lignes__quantite_total", output_field=IntegerField()),
-              quantite_restante=Sum("lignes__quantite_restante", output_field=IntegerField()),
-              poids_total=Sum(poids_total_expr),
-              poids_restant=Sum(poids_restant_expr),
-          )
-          .order_by(ordering))
-
-    return qs
-
-
-
-# ---------- CSV ----------
-class LotExportCSVView(APIView):
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-
-    @swagger_auto_schema(
-        operation_id="exportLotsCSV",
-        operation_summary="Exporter la liste des lots en CSV (non paginé)",
-        manual_parameters=[
-            openapi.Parameter("date_min", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date"),
-            openapi.Parameter("date_max", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date"),
-            openapi.Parameter("fournisseur", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("search", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="received_at, -received_at, numero_lot, nb_lignes, quantite_total, poids_total"),
-        ],
-        tags=["Achats / Arrivages"],
-        responses={200: "CSV file"},
-    )
-    def get(self, request):
-        qs = _filter_and_annotate_lots(request)
-
-        # En-têtes CSV
-        headers = [
-            "numero_lot", "received_at", "numero_achat", "fournisseur",
-            "nb_lignes", "quantite_total", "quantite_restante",
-            "poids_total", "poids_restant",
-            "frais_transport", "frais_douane", "description",
-        ]
-
-        buf = StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(headers)
-
-        for lot in qs:
-            writer.writerow([
-                lot.numero_lot,
-                lot.received_at.isoformat(),
-                getattr(lot.achat, "numero_achat", ""),
-                getattr(lot.achat.fournisseur, "nom", "") if lot.achat and lot.achat.fournisseur else "",
-                lot.nb_lignes or 0,
-                lot.quantite_total or 0,
-                lot.quantite_restante or 0,
-                f"{(lot.poids_total or Decimal('0')).quantize(Decimal('0.001'))}",
-                f"{(lot.poids_restant or Decimal('0')).quantize(Decimal('0.001'))}",
-                f"{getattr(lot.achat, 'frais_transport', 0)}",
-                f"{getattr(lot.achat, 'frais_douane', 0)}",
-                lot.description or "",
-            ])
-
-        resp = StreamingHttpResponse(iter([buf.getvalue()]), content_type="text/csv; charset=utf-8")
-        resp["Content-Disposition"] = f'attachment; filename="lots_{timezone.localdate().isoformat()}.csv"'
-        return resp
-
-
-
-# ---------- EXCEL (.xlsx) ----------
-class LotExportExcelView(APIView):
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-
-    @swagger_auto_schema(
-        operation_id="exportLotsXLSX",
-        operation_summary="Exporter la liste des lots en Excel (non paginé)",
-        manual_parameters=[
-            openapi.Parameter("date_min", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date"),
-            openapi.Parameter("date_max", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date"),
-            openapi.Parameter("fournisseur", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("search", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-        ],
-        tags=["Achats / Arrivages"],
-        responses={200: "XLSX file"},
-    )
-    def get(self, request):
-        # openpyxl doit être installé:  pip install openpyxl
-        from openpyxl import Workbook
-        from openpyxl.utils import get_column_letter
-
-        qs = _filter_and_annotate_lots(request)
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Lots"
-
-        headers = [
-            "numero_lot", "received_at", "numero_achat", "fournisseur",
-            "nb_lignes", "quantite_total", "quantite_restante",
-            "poids_total", "poids_restant",
-            "frais_transport", "frais_douane", "description",
-        ]
-        ws.append(headers)
-
-        for lot in qs:
-            ws.append([
-                lot.numero_lot,
-                lot.received_at.isoformat(),
-                getattr(lot.achat, "numero_achat", ""),
-                getattr(lot.achat.fournisseur, "nom", "") if lot.achat and lot.achat.fournisseur else "",
-                lot.nb_lignes or 0,
-                lot.quantite_total or 0,
-                lot.quantite_restante or 0,
-                float(lot.poids_total or 0),
-                float(lot.poids_restant or 0),
-                float(getattr(lot.achat, "frais_transport", 0) or 0),
-                float(getattr(lot.achat, "frais_douane", 0) or 0),
-                lot.description or "",
-            ])
-
-        # Auto-width simple
-        for col_idx, header in enumerate(headers, start=1):
-            max_len = max(len(str(header)), *[len(str(c.value)) for c in ws.iter_cols(min_col=col_idx, max_col=col_idx, min_row=1, values_only=False)])
-            ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 60)
-
-        out = BytesIO()
-        wb.save(out)
-        out.seek(0)
-
-        resp = HttpResponse(
-            out.read(),
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        resp["Content-Disposition"] = f'attachment; filename="lots_{timezone.localdate().isoformat()}.xlsx"'
-        return resp
-# -------------------------------------END EXCEL CSV ------------------------------------------------
-
-
+# -----------------------------End list------------------------------------------
 
 class LotListView(ListAPIView):
     """
-    GET /api/lots/?search=LOT-2025&date_min=2025-10-01&date_max=2025-10-31&fournisseur=12&ordering=-received_at
+    Liste des lots :
+    - par défaut : année courante (received_at)
+    - si date_from & date_to sont fournis : intervalle [date_from, date_to] (inclus)
     """
-    serializer_class = LotListSerializer
     permission_classes = [IsAuthenticated, IsAdminOrManager]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-
-    # Filtres simples via django-filter
-    filterset_fields = {
-        "achat__fournisseur__id": ["exact"],  # alias ci-dessous: ?fournisseur=ID
-    }
-    search_fields = ["numero_lot", "description", "achat__numero_achat", "achat__fournisseur__nom"]
-    ordering_fields = ["received_at", "numero_lot", "nb_lignes", "quantite_total", "poids_total"]
-    ordering = ["-received_at"]
+    serializer_class = LotListSerializer
+    pagination_class = None  # pas de pagination
 
     @swagger_auto_schema(
-        operation_id="listLots",
-        operation_summary="Lister les lots (avec totaux quantité/poids)",
-        operation_description=dedent("""
-            Filtres:
-            - `search` : texte (numéro de lot, description, numéro d’achat, fournisseur)
-            - `date_min` : YYYY-MM-DD (inclus)
-            - `date_max` : YYYY-MM-DD (inclus)
-            - `fournisseur` : ID du fournisseur (alias de `achat__fournisseur__id`)
-            - `ordering` : `received_at`, `-received_at`, `numero_lot`, `nb_lignes`, `quantite_total`, `poids_total`
-            - `page`, `page_size`
-
-            Le poids cumulé est calculé par ligne ainsi :
-            - si `lignes.poids_total` est renseigné → on l’utilise
-            - sinon `lignes.quantite_total × lignes.produit.poids`
-        """),
+        operation_summary="Lister les lots (année courante par défaut, sinon entre deux dates)",
+        operation_description=(
+            "• Si `date_from` **et** `date_to` sont fournis → filtre **inclusif**.\n"
+            "• Sinon → lots de l’**année courante** (champ `received_at`).\n"
+            "Formats attendus : `YYYY-MM-DD`."
+        ),
         manual_parameters=[
-            openapi.Parameter(
-                name="search", in_=openapi.IN_QUERY, required=False,
-                type=openapi.TYPE_STRING, description="Recherche texte"
-            ),
-            openapi.Parameter(
-                name="date_min", in_=openapi.IN_QUERY, required=False,
-                type=openapi.TYPE_STRING, description="Date min (YYYY-MM-DD, inclus)"
-            ),
-            openapi.Parameter(
-                name="date_max", in_=openapi.IN_QUERY, required=False,
-                type=openapi.TYPE_STRING, description="Date max (YYYY-MM-DD, inclus)"
-            ),
-            openapi.Parameter(
-                name="fournisseur", in_=openapi.IN_QUERY, required=False,
-                type=openapi.TYPE_INTEGER, description="ID du fournisseur (alias)"
-            ),
-            openapi.Parameter(
-                name="ordering", in_=openapi.IN_QUERY, required=False,
-                type=openapi.TYPE_STRING,
-                description="received_at, -received_at, numero_lot, nb_lignes, quantite_total, poids_total"
-            ),
-            openapi.Parameter(
-                name="page", in_=openapi.IN_QUERY, required=False,
-                type=openapi.TYPE_INTEGER, description="Numéro de page (>=1)"
-            ),
-            openapi.Parameter(
-                name="page_size", in_=openapi.IN_QUERY, required=False,
-                type=openapi.TYPE_INTEGER, description="Taille de page"
-            ),
+            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description="Borne min incluse (YYYY-MM-DD). À utiliser avec date_to."),
+            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description="Borne max incluse (YYYY-MM-DD). À utiliser avec date_from."),
+            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+                              description=("Tri: -received_at (défaut), received_at, "
+                                           "numero_lot, -numero_lot, "
+                                           "nb_lignes, -nb_lignes, "
+                                           "quantite_total, -quantite_total, "
+                                           "poids_total, -poids_total")),
         ],
+        responses={200: LotListSerializer(many=True)},
         tags=["Achats / Arrivages"],
     )
     def get(self, request, *args, **kwargs):
-        # validation des dates (format ISO)
-        date_min_s = request.query_params.get("date_min")
-        date_max_s = request.query_params.get("date_max")
-        for label, val in (("date_min", date_min_s), ("date_max", date_max_s)):
-            if val and parse_date(val) is None:
+        # Validation légère des dates (retourne 400 propre si invalide)
+        def _check_date(label, val):
+            if not val:
+                return
+            try:
+                datetime.strptime(val, "%Y-%m-%d").date()
+            except Exception:
                 raise ValidationError({label: "Format invalide. Utiliser YYYY-MM-DD."})
+
+        _check_date("date_from", request.query_params.get("date_from"))
+        _check_date("date_to", request.query_params.get("date_to"))
         return super().get(request, *args, **kwargs)
 
     def get_queryset(self):
-        qs = (Lot.objects
-              .select_related("achat", "achat__fournisseur")
-              .prefetch_related("lignes__produit"))
+        params = self.request.query_params
+        getf = params.get
 
-        # Filtres custom (date + alias fournisseur)
-        date_min_s = self.request.query_params.get("date_min")
-        date_max_s = self.request.query_params.get("date_max")
-        fournisseur = self.request.query_params.get("fournisseur")
+        # Tri autorisé
+        ordering = getf("ordering") or "-received_at"
+        allowed = {
+            "received_at", "-received_at",
+            "numero_lot", "-numero_lot",
+            "nb_lignes", "-nb_lignes",
+            "quantite_total", "-quantite_total",
+            "poids_total", "-poids_total",
+        }
+        if ordering not in allowed:
+            ordering = "-received_at"
 
-        if date_min_s:
-            qs = qs.filter(received_at__date__gte=date_min_s)
-        if date_max_s:
-            qs = qs.filter(received_at__date__lte=date_max_s)
-        if fournisseur:
-            qs = qs.filter(achat__fournisseur__id=fournisseur)
+        # Base queryset (+ préchargements)
+        qs = (
+            Lot.objects
+            .select_related("achat", "achat__fournisseur")
+            .prefetch_related(
+                Prefetch("lignes", queryset=ProduitLine.objects.select_related("produit"))
+            )
+        )
 
-        # Poids par ligne :
-        # - utilise poids_total si présent
-        # - sinon quantite_total * produit.poids (0 si l'un est NULL)
-        poids_par_ligne = Case(
-            When(lignes__poids_total__isnull=False, then=F("lignes__poids_total")),
-            default=ExpressionWrapper(
-                Coalesce(F("lignes__quantite_total"), Value(0)) *
-                Coalesce(F("lignes__produit__poids"), Value(0.0)),
-                output_field=DecimalField(max_digits=18, decimal_places=3)
-            ),
+        # Filtres dates (année courante OU intervalle inclusif)
+        date_from_s = getf("date_from")
+        date_to_s   = getf("date_to")
+        if date_from_s and date_to_s:
+            df = datetime.strptime(date_from_s, "%Y-%m-%d").date()
+            dt = datetime.strptime(date_to_s, "%Y-%m-%d").date()
+            if df > dt:
+                raise ValidationError({"detail": "date_from doit être ≤ date_to."})
+            qs = qs.filter(received_at__date__gte=df, received_at__date__lte=dt)
+        else:
+            y = timezone.localdate().year
+            qs = qs.filter(received_at__year=y)
+
+        # Agrégats
+        I0 = Value(0)
+        D0 = Value(Decimal("0.000"), output_field=DecimalField(max_digits=18, decimal_places=3))
+        poids_produit = Cast(
+            F("lignes__produit__poids"),
             output_field=DecimalField(max_digits=18, decimal_places=3),
         )
-        poids_restant_par_ligne = Case(
-            When(lignes__poids_restant__isnull=False, then=F("lignes__poids_restant")),
-            default=ExpressionWrapper(
-                Coalesce(F("lignes__quantite_restante"), Value(0)) *
-                Coalesce(F("lignes__produit__poids"), Value(0.0)),
-                output_field=DecimalField(max_digits=18, decimal_places=3)
-            ),
+        poids_par_ligne = ExpressionWrapper(
+            Coalesce(F("lignes__quantite_total"), I0) * Coalesce(poids_produit, D0),
             output_field=DecimalField(max_digits=18, decimal_places=3),
         )
 
         qs = qs.annotate(
             nb_lignes=Count("lignes", distinct=True),
-            quantite_total=Coalesce(Sum("lignes__quantite_total", output_field=IntegerField()), Value(0)),
-            quantite_restante=Coalesce(Sum("lignes__quantite_restante", output_field=IntegerField()), Value(0)),
-            poids_total=Coalesce(Sum(poids_par_ligne), Value(0.0)),
-            poids_restant=Coalesce(Sum(poids_restant_par_ligne), Value(0.0)),
+            quantite_total=Coalesce(Sum("lignes__quantite_total", output_field=IntegerField()), I0),
+            quantite_restante=Coalesce(Sum("lignes__quantite_restante", output_field=IntegerField()), I0),
+            poids_total=Coalesce(Sum(poids_par_ligne), D0),
         )
 
-        return qs
-# -----------------------------End list------------------------------------------
-
-
+        return qs.order_by(ordering)
 
 # ------------------------------------Lots display-------------------------------
 class LotDetailView(RetrieveAPIView):
@@ -974,9 +844,70 @@ class ArrivageMetaUpdateView(APIView):
 
 
 # ========== 2) ADJUSTMENTS ==========
+
+# ---------- Schémas Swagger ----------
+purchase_in_schema = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=["type", "produit_id", "quantite"],
+    properties={
+        "type": openapi.Schema(type=openapi.TYPE_STRING, enum=["PURCHASE_IN"]),
+        "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
+        "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
+        # number/double s’affiche mieux que string/decimal dans Swagger UI
+        "prix_achat_gramme": openapi.Schema(type=openapi.TYPE_NUMBER, format="double"),
+        "reason": openapi.Schema(type=openapi.TYPE_STRING),
+    },
+)
+
+cancel_purchase_schema = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=["type", "produit_line_id", "quantite"],
+    properties={
+        "type": openapi.Schema(type=openapi.TYPE_STRING, enum=["CANCEL_PURCHASE"]),
+        "produit_line_id": openapi.Schema(type=openapi.TYPE_INTEGER),
+        "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, minimum=1),
+        "reason": openapi.Schema(type=openapi.TYPE_STRING),
+    },
+)
+
+actions_schema = openapi.Schema(
+    type=openapi.TYPE_ARRAY,
+    items=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        oneOf=[purchase_in_schema, cancel_purchase_schema],
+    ),
+)
+
+# ✅ L’exemple que tu veux voir tel quel
+arrivage_adjustments_example = {
+  "actions": [
+    {
+      "type": "PURCHASE_IN",
+      "produit_id": 55,
+      "quantite": 30,
+      "prix_achat_gramme": 42000.00,
+      "reason": "Complément de réception"
+    },
+    {
+      "type": "CANCEL_PURCHASE",
+      "produit_line_id": 101,
+      "quantite": 12,
+      "reason": "Retour fournisseur (qualité)"
+    }
+  ]
+}
+
+arrivage_adjustments_request_schema = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    required=["actions"],
+    properties={"actions": actions_schema},
+    example=arrivage_adjustments_example,   # 👈 affiché dans Swagger
+)
+
+
 class ArrivageAdjustmentsView(APIView):
     """
-    POST /api/purchase/arrivage/<lot_id>/adjustments/
+    POST /api/achat/arrivage/{lot_id}/adjustments/
     """
     permission_classes = [IsAuthenticated, IsAdminOrManager]
     http_method_names = ["post"]
@@ -984,40 +915,29 @@ class ArrivageAdjustmentsView(APIView):
     @swagger_auto_schema(
         operation_id="arrivageAdjustments",
         operation_summary="Ajustements d’arrivage (mouvements d’inventaire normalisés)",
-        # operation_description=(
-        #     "**Ajouts**: PURCHASE_IN (nouvelle ligne) → EXTERNAL → RESERVED\n"
-        #     "**Retraits**: CANCEL_PURCHASE (réduction ligne existante) → RESERVED → EXTERNAL\n"
-        #     "Règles: réduction limitée au disponible en Réserve; aucune suppression si allocations bijouterie existent."
-        # ),
-        operation_description=dedent("""
-                                    **Ajouts**: PURCHASE_IN (nouvelle ligne) → EXTERNAL → RESERVED\n
-                                    **Retraits**: CANCEL_PURCHASE (réduction ligne existante) → RESERVED → EXTERNAL\n
-                                    Règles: réduction limitée au disponible en Réserve; aucune suppression si allocations bijouterie existent.
-                                    
-                                    ADJUSTMENTS (POST)
-                                    
-                                    ```json
-                                    {
-                                    "actions": [
-                                            {
-                                            "type": "PURCHASE_IN",
-                                            "produit_id": 55,
-                                            "quantite": 30,
-                                            "prix_achat_gramme": 42000.00,
-                                            "reason": "Complément de réception"
-                                            },
-                                            {
-                                            "type": "CANCEL_PURCHASE",
-                                            "produit_line_id": 101,
-                                            "quantite": 12,
-                                            "reason": "Retour fournisseur (qualité)"
-                                            }
-                                        ]
-                                    }
-                                    ```
-                                    """),
-        request_body=ArrivageAdjustmentsInSerializer,
-        responses={200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found"},
+        operation_description=(
+            "Ajouts: PURCHASE_IN (nouvelle ligne) → EXTERNAL → RESERVED\n"
+            "PURCHASE_IN → ajouter une nouvelle ligne (quantité supplémentaire) dans ce lot\n\n"
+            "Retraits: CANCEL_PURCHASE (réduction ligne existante) → RESERVED → EXTERNAL\n"
+            "CANCEL_PURCHASE → retirer une partie d’une ligne existante de ce lot\n\n"
+            "Règles: réduction limitée au disponible en Réserve; aucune suppression si allocations bijouterie existent."
+        ),
+        request_body=arrivage_adjustments_request_schema,
+        responses={
+            200: openapi.Response(
+                description="OK",
+                examples={
+                    "application/json": {
+                        "detail": "Ajustements appliqués.",
+                        "lot_id": 1,
+                        "achat_id": 1
+                    }
+                },
+            ),
+            400: "Bad Request",
+            403: "Forbidden",
+            404: "Not Found",
+        },
         tags=["Achats / Arrivages"],
     )
     @transaction.atomic
@@ -1032,14 +952,14 @@ class ArrivageAdjustmentsView(APIView):
         for i, act in enumerate(actions):
             t = act.get("type")
 
-            # ----- PURCHASE_IN (ajout ligne) -----
+            # ----- PURCHASE_IN (ajout d’une nouvelle ligne) -----
             if t == "PURCHASE_IN":
                 pid = int(act["produit_id"])
                 q   = int(act["quantite"])
                 ppo = act.get("prix_achat_gramme")  # peut être None
+
                 produit = get_object_or_404(Produit.objects.only("id", "poids"), pk=pid)
 
-                # créer ligne
                 pl = ProduitLine.objects.create(
                     lot=lot,
                     produit=produit,
@@ -1047,17 +967,19 @@ class ArrivageAdjustmentsView(APIView):
                     quantite_total=q,
                     quantite_restante=q,
                 )
-                # stock réserve
+
+                # stock réserve initial pour cette ligne
                 Stock.objects.create(
                     produit_line=pl, bijouterie=None,
                     quantite_allouee=q, quantite_disponible=q,
                 )
+
                 # mouvement inventaire
                 InventoryMovement.objects.create(
                     produit=produit,
                     movement_type=MovementType.PURCHASE_IN,
                     qty=q,
-                    unit_cost=None,  # option: Decimal(produit.poids)*ppo si tu veux un coût unitaire pièce
+                    unit_cost=None,  # (option) Decimal(produit.poids) * ppo si tu veux valoriser à la pièce
                     lot=lot,
                     reason=act.get("reason") or "Ajout ligne (amendement)",
                     src_bucket=Bucket.EXTERNAL,
@@ -1067,33 +989,41 @@ class ArrivageAdjustmentsView(APIView):
                     created_by=request.user,
                 )
 
-            # ----- CANCEL_PURCHASE (retrait partiel) -----
+            # ----- CANCEL_PURCHASE (retrait partiel d’une ligne existante) -----
             elif t == "CANCEL_PURCHASE":
                 pl_id = int(act["produit_line_id"])
                 q     = int(act["quantite"])
-                pl = get_object_or_404(ProduitLine.objects.select_related("produit", "lot"), pk=pl_id)
 
+                pl = get_object_or_404(
+                    ProduitLine.objects.select_related("produit", "lot"),
+                    pk=pl_id
+                )
                 if pl.lot_id != lot.id:
                     return Response(
-                        {f"actions[{i}]": f"ProduitLine {pl_id} n'appartient pas au lot {lot.id}."}, status=400
+                        {f"actions[{i}]": f"ProduitLine {pl_id} n'appartient pas au lot {lot.id}."},
+                        status=status.HTTP_400_BAD_REQUEST
                     )
 
-                # refuse si allocations bijouterie existent
-                if Stock.objects.filter(produit_line=pl, bijouterie__isnull=False, quantite_allouee__gt=0).exists():
+                # interdit si allocations bijouterie existent
+                has_alloc = Stock.objects.filter(
+                    produit_line=pl, bijouterie__isnull=False, quantite_allouee__gt=0
+                ).exists()
+                if has_alloc:
                     return Response(
                         {f"actions[{i}]": f"Ligne {pl_id}: des allocations bijouterie existent (retrait interdit)."},
-                        status=400
+                        status=status.HTTP_400_BAD_REQUEST
                     )
 
+                # vérifier la réserve
                 reserve = Stock.objects.filter(produit_line=pl, bijouterie__isnull=True).first()
                 disp = int(reserve.quantite_disponible or 0) if reserve else 0
                 if q > disp:
                     return Response(
                         {f"actions[{i}]": f"Réduction {q} > disponible réserve ({disp}) pour ligne {pl_id}."},
-                        status=400
+                        status=status.HTTP_400_BAD_REQUEST
                     )
 
-                # appliquer la réduction
+                # appliquer la réduction sur la ligne et la réserve
                 pl.quantite_total = max(0, int((pl.quantite_total or 0) - q))
                 pl.quantite_restante = max(0, int((pl.quantite_restante or 0) - q))
                 pl.save(update_fields=["quantite_total", "quantite_restante"])
@@ -1119,11 +1049,18 @@ class ArrivageAdjustmentsView(APIView):
                 )
 
             else:
-                return Response({f"actions[{i}]": f"Type inconnu: {t}"}, status=400)
+                return Response(
+                    {f"actions[{i}]": f"Type inconnu: {t}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
-        # Recalc totaux achat
-        _recalc_totaux_achat(achat)
-        return Response({"detail": "Ajustements appliqués.", "lot_id": lot.id, "achat_id": achat.id}, status=200)
+        # (option) Recalcul des totaux de l’achat si tu as une fonction utilitaire
+        # _recalc_totaux_achat(achat)
+
+        return Response(
+            {"detail": "Ajustements appliqués.", "lot_id": lot.id, "achat_id": achat.id},
+            status=status.HTTP_200_OK
+        )
 # ========= AND VIEW ArrivageMetaUpdateView and ArrivageAdjustmentsView ======================
 
 
