@@ -9,6 +9,9 @@ from django.db import transaction
 from django.http import Http404
 from django.shortcuts import redirect, render
 from django.utils import timezone
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_protect
+from django.views.decorators.http import require_GET, require_http_methods
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import parsers, status
@@ -97,7 +100,7 @@ class UserRegistrationView(APIView):
             email=data["email"],
             username=data.get("username") or "",
             telephone=data.get("telephone") or "",
-            is_active=True,             # ou False si tu veux bloquer avant confirmation
+            is_active=False,             # ✅ conseillé: actif après confirmation
             is_email_verified=False,    # champ bool custom si tu l’as
         )
         user.set_password(data["password"])
@@ -109,9 +112,12 @@ class UserRegistrationView(APIView):
 
         # --- Lien de confirmation (FORCE frontend) ---
         token = generate_email_token(user)
-        frontend = getattr(settings, "FRONTEND_BASE_URL", "").rstrip("/")
+        # frontend = getattr(settings, "FRONTEND_BASE_URL", "").rstrip("/")
         # Option A (recommandé) : lien vers le frontend
-        confirm_url = f"{frontend}/confirm-email?token={token}" if frontend else None
+        # confirm_url = f"{frontend}/confirm-email?token={token}" if frontend else None
+        
+        frontend = (settings.FRONTEND_BASE_URL or settings.FRONTEND_URL).rstrip("/")
+        confirm_url = f"{frontend}/confirm-email?token={token}"
         home_url = frontend or "/"
 
         # Si tu préfères le backend pour vérifier (Option B), dé-commente:
@@ -155,63 +161,166 @@ class UserRegistrationView(APIView):
 
 
 
+# class EmailVerificationView(APIView):
+#     permission_classes = []
+
+#     def get(self, request):
+#         token = request.GET.get('token')
+#         result = verify_email_token(token)
+#         status_token = result.get("status")
+#         email = result.get("email")
+
+#         if status_token == "invalid":
+#             return render(request, "emails/email_invalid.html", status=400)
+#         elif status_token == "expired":
+#             return render(request, "emails/email_expired.html", status=410)
+
+#         try:
+#             user = User.objects.get(email=email)
+#             if not user.is_email_verified:
+#                 user.is_active = True
+#                 user.is_email_verified = True
+#                 user.save()
+#             return render(request, "emails/email_confirmed.html")
+#         except User.DoesNotExist:
+#             return render(request, "emails/email_invalid.html", status=404)
+
+
+@method_decorator(require_GET, name="dispatch")
 class EmailVerificationView(APIView):
-    permission_classes = []
+    permission_classes = []  # public
 
     def get(self, request):
         token = request.GET.get('token')
-        result = verify_email_token(token)
+        if not token:
+            # Pas de token → 400
+            return render(request, "emails/email_invalid.html", status=400)
+
+        # Doit renvoyer un dict {status: "ok|invalid|expired", email: "..."}
+        result = verify_email_token(token) or {}
         status_token = result.get("status")
         email = result.get("email")
 
-        if status_token == "invalid":
+        if status_token == "invalid" or not email:
             return render(request, "emails/email_invalid.html", status=400)
-        elif status_token == "expired":
+        if status_token == "expired":
             return render(request, "emails/email_expired.html", status=410)
 
         try:
             user = User.objects.get(email=email)
-            if not user.is_email_verified:
-                user.is_email_verified = True
-                user.save()
-            return render(request, "emails/email_confirmed.html")
         except User.DoesNotExist:
             return render(request, "emails/email_invalid.html", status=404)
 
+        # Déjà vérifié ? on affiche la page de succès (ou on redirige)
+        if getattr(user, "is_email_verified", False) and getattr(user, "is_active", True):
+            # Option: rediriger vers le front si tu as une URL
+            # return redirect(settings.FRONTEND_BASE_URL + "/email-confirmed")
+            return render(request, "emails/email_confirmed.html")
+
+        # Marquer vérifié (et activer le compte si tu bloques avant)
+        user.is_email_verified = True
+        # Active si tu avais créé l'utilisateur inactif avant confirmation
+        if hasattr(user, "is_active") and not user.is_active:
+            user.is_active = True
+            user.save(update_fields=["is_email_verified", "is_active"])
+        else:
+            user.save(update_fields=["is_email_verified"])
+
+        # Option: redirection front après succès
+        # if getattr(settings, "FRONTEND_BASE_URL", ""):
+        #     return redirect(settings.FRONTEND_BASE_URL.rstrip("/") + "/email-confirmed")
+
+        return render(request, "emails/email_confirmed.html")
+
+
+# def resend_confirmation_form(request):
+#     return render(request, 'emails/resend_confirmation_form.html')
+
+# MIN_RESEND_INTERVAL = timedelta(minutes=5)  # ⏱️ délai entre deux renvois
+# def resend_confirmation_submit(request):
+#     if request.method == 'POST':
+#         email = request.POST.get('email')
+#         try:
+#             user = User.objects.get(email=email)
+
+#             if user.is_email_verified:
+#                 messages.info(request, "Cet email est déjà vérifié.")
+#                 return redirect('resend-confirmation-form')
+
+#             # ⏱️ Vérification du délai
+#             if user.last_confirmation_email_sent:
+#                 since_last = timezone.now() - user.last_confirmation_email_sent
+#                 if since_last < MIN_RESEND_INTERVAL:
+#                     minutes = int(MIN_RESEND_INTERVAL.total_seconds() // 60)
+#                     messages.warning(request, f"Veuillez attendre au moins {minutes} minutes entre deux envois.")
+#                     return redirect('resend-confirmation-form')
+
+
+#             # ✅ Envoi autorisé
+#             send_confirmation_email(user, request)
+#             user.last_confirmation_email_sent = timezone.now()
+#             user.save()
+
+#             messages.success(request, "Lien de confirmation renvoyé avec succès.")
+#         except User.DoesNotExist:
+#             messages.error(request, "Aucun utilisateur avec cet email.")
+#         return redirect('resend-confirmation-form')
+#     return redirect('resend-confirmation-form')
+
+
+MIN_RESEND_INTERVAL = timedelta(minutes=5)
 
 def resend_confirmation_form(request):
-    return render(request, 'emails/resend_confirmation_form.html')
+    return render(request, "emails/resend_confirmation_form.html")
 
-MIN_RESEND_INTERVAL = timedelta(minutes=5)  # ⏱️ délai entre deux renvois
+
+@csrf_protect
+@require_http_methods(["POST"])
 def resend_confirmation_submit(request):
-    if request.method == 'POST':
-        email = request.POST.get('email')
-        try:
-            user = User.objects.get(email=email)
+    email = (request.POST.get("email") or "").strip().lower()
+    if not email:
+        messages.error(request, "Veuillez saisir un email.")
+        return redirect("resend-confirmation-form")
 
-            if user.is_email_verified:
-                messages.info(request, "Cet email est déjà vérifié.")
-                return redirect('resend-confirmation-form')
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        messages.error(request, "Aucun utilisateur avec cet email.")
+        return redirect("resend-confirmation-form")
 
-            # ⏱️ Vérification du délai
-            if user.last_confirmation_email_sent:
-                since_last = timezone.now() - user.last_confirmation_email_sent
-                if since_last < MIN_RESEND_INTERVAL:
-                    minutes = int(MIN_RESEND_INTERVAL.total_seconds() // 60)
-                    messages.warning(request, f"Veuillez attendre au moins {minutes} minutes entre deux envois.")
-                    return redirect('resend-confirmation-form')
+    # Déjà vérifié ?
+    if getattr(user, "is_email_verified", False):
+        messages.info(request, "Cet email est déjà vérifié.")
+        return redirect("resend-confirmation-form")
 
+    # Throttle: délai minimum entre deux envois
+    last = getattr(user, "last_confirmation_email_sent", None)
+    if last:
+        since_last = timezone.now() - last
+        if since_last < MIN_RESEND_INTERVAL:
+            minutes = int(MIN_RESEND_INTERVAL.total_seconds() // 60)
+            messages.warning(request, f"Veuillez attendre au moins {minutes} minutes avant un nouvel envoi.")
+            return redirect("resend-confirmation-form")
 
-            # ✅ Envoi autorisé
-            send_confirmation_email(user, request)
-            user.last_confirmation_email_sent = timezone.now()
-            user.save()
+    # Construire l’URL de confirmation (aligne AVEC TA ROUTE)
+    # Route attendue dans urls.py: path('verify-email/', EmailVerificationView.as_view(), name='verify-email')
+    token = generate_email_token(user)  # ta fonction existante
+    path = reverse("verify-email")      # -> "/verify-email/"
+    confirm_url = request.build_absolute_uri(f"{path}?token={token}")
+    home_url = request.build_absolute_uri("/")  # utile si ton template email a besoin d'un lien "Accueil"
 
-            messages.success(request, "Lien de confirmation renvoyé avec succès.")
-        except User.DoesNotExist:
-            messages.error(request, "Aucun utilisateur avec cet email.")
-        return redirect('resend-confirmation-form')
-    return redirect('resend-confirmation-form')
+    try:
+        # Envoi de l’email — adapte la signature à ta fonction
+        send_confirmation_email(user, request=request, confirm_url=confirm_url, home_url=home_url)
+        # Mémoriser le timestamp d’envoi
+        user.last_confirmation_email_sent = timezone.now()
+        user.save(update_fields=["last_confirmation_email_sent"])
+        messages.success(request, "Lien de confirmation renvoyé avec succès.")
+    except Exception as e:
+        # Log en interne si besoin
+        messages.error(request, "Une erreur est survenue lors de l’envoi. Réessayez plus tard.")
+    return redirect("resend-confirmation-form")
+
 
 class UserLoginView(APIView):
     @swagger_auto_schema(

@@ -130,10 +130,10 @@ urlpatterns = [
     # path("achat/lots/export/xlsx", achat_views.LotExportExcelView.as_view(), name="lots-export-xlsx"),
     # path('achat-produit/create-achats', achat_views.AchatCreateView.as_view(), name='achats-create'),
     # path("achats-produit-update/<int:achat_id>/", achat_views.AchatUpdateView.as_view(), name="achats-update"),
+    path("stocks/list", stock_views.StockListView.as_view(), name="stock-list"),
     path("stocks/transfer/reserve-to-bijouterie", stock_views.ReserveToBijouterieTransferView.as_view(), name="reserve-to-bijouterie"),
     # path("stock/affectations/reserve", achat_views.StockReserveAffectationView.as_view(), name="stock-reserve-affect"),
     path("stocks/transfer/bijouterie-to-vendor", stock_views.BijouterieToVendorTransferView.as_view(),name="bijouterie-to-vendor"),
-    path("stocks", stock_views.StockListView.as_view(), name="stock-list"),
     path("stocks/summary", stock_views.StockSummaryView.as_view(), name="stock-summary"),
 
     path("achats/<int:achat_id>/cancel", achat_views.AchatCancelView.as_view(), name="achat-cancel"),
@@ -146,16 +146,16 @@ urlpatterns = [
     # END ACHAT
     
     # INVENTORY
-    path("api/inventory/movements/", inv_views.InventoryMovementListView.as_view(), name="inventory-movement-list"),
+    path("inventory/movements/", inv_views.InventoryMovementListView.as_view(), name="inventory-movement-list"),
     # END INVENTORY
     
     # staff
-    path('staff/add-staff', staff_views.CreateStaffMemberView.as_view(), name='add_staff'),
+    path('staff/add-staff', staff_views.AddStaffView.as_view(), name='add_staff'),
     
     #VENDOR
     # path('vendor/list/', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
     # path('vendor/add-vendor', vendor_views.CreateVendorView.as_view(), name='add_vendor'),
-    path("vendors/", vendor_views.VendorListView.as_view(), name="vendor-list"),
+    path("vendors", vendor_views.VendorListView.as_view(), name="vendor-list"),
     path("vendor/<int:id>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail"),
     path("vendor/by-slug/<slug:slug>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail-by-slug"),
     path('vendor/association-produit-to-vendor', vendor_views.VendorProduitAssociationAPIView.as_view(), name='association-du-produit-au-vendor'),

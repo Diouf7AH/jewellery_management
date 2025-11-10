@@ -1,13 +1,14 @@
-import datetime
+from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
-from io import BytesIO
 
 # NB: on se base sur VenteProduit.vendor et on groupe par vente__created_at
 from django.contrib.auth import get_user_model
-from django.db import transaction
-from django.db.models import Count, DecimalField, F, Q, Sum
-from django.db.models.functions import TruncDay, TruncMonth, TruncWeek
+from django.db import models, transaction
+from django.db.models import (Count, DecimalField, F, IntegerField, Q, Sum,
+                              Value)
+from django.db.models.functions import (Coalesce, TruncDay, TruncMonth,
+                                        TruncWeek)
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -28,7 +29,6 @@ from sale.models import VenteProduit  # 👈 lignes de vente (contient vendor)
 from stock.models import Stock, VendorStock
 from store.models import Bijouterie, Produit
 from store.serializers import ProduitSerializer
-from userauths.models import Role
 from vendor.models import Vendor  # 👈 ton modèle Vendor (app vendor)
 
 from .models import Vendor
@@ -322,31 +322,122 @@ class VendorStatsView(APIView):
 
 # Un vendeur authentifié peut appeler GET /api/vendor/produits/
 # Il recevra la liste des produits associés à son stock
+def _get_role(user):
+    if getattr(user, "is_superuser", False):
+        return "admin"
+    return getattr(getattr(user, "user_role", None), "role", None)
+
 class VendorProduitListView(APIView):
+    """
+    GET /api/vendor/produits/
+    - Vendeur connecté : ses produits
+    - Admin : ?vendor_id=<id> requis
+    Retourne: nom, marque, modele, categorie, purete, poids, prix,
+              quantite_allouee, quantite_disponible, quantite_stock(=allouee)
+    """
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Lister les produits associés au vendeur connecté",
-        responses={200: ProduitSerializer(many=True)},
+        operation_summary="Produits du stock vendeur (allouée + disponible)",
+        manual_parameters=[
+            openapi.Parameter(
+                "vendor_id", openapi.IN_QUERY,
+                description="ID du vendeur (requis pour admin)",
+                type=openapi.TYPE_INTEGER, required=False
+            )
+        ],
+        responses={200: openapi.Response("OK")},
+        tags=["vendor"]
     )
     def get(self, request):
         user = request.user
-        role = getattr(user.user_role, 'role', None)
+        role = _get_role(user)
 
-        if role != 'vendor':
-            return Response({"error": "Seul un vendeur peut accéder à ses produits."}, status=403)
+        # 1) Vendeur ciblé
+        if role == "vendor":
+            try:
+                vendor = Vendor.objects.select_related("user", "bijouterie").get(user=user)
+            except Vendor.DoesNotExist:
+                return Response({"error": "Aucun vendeur associé à cet utilisateur."}, status=400)
+        elif role == "admin":
+            vendor_id = request.query_params.get("vendor_id")
+            if not vendor_id:
+                return Response({"error": "Paramètre 'vendor_id' requis pour admin."}, status=400)
+            try:
+                vendor = Vendor.objects.select_related("user", "bijouterie").get(pk=vendor_id)
+            except Vendor.DoesNotExist:
+                return Response({"error": f"Vendeur #{vendor_id} introuvable."}, status=404)
+        else:
+            return Response({"error": "Accès réservé aux vendeurs ou admins."}, status=403)
 
-        try:
-            vendor = Vendor.objects.get(user=user)
-        except Vendor.DoesNotExist:
-            return Response({"error": "Aucun vendeur associé à cet utilisateur."}, status=400)
+        if not getattr(vendor, "verifie", True):
+            return Response({"error": "Ce vendeur est désactivé."}, status=403)
 
-        vendor_produits = VendorStock.objects.filter(vendor=vendor).select_related('produit')
-        produits = [vp.produit for vp in vendor_produits]
-        serializer = ProduitSerializer(produits, many=True)
+        # 2) Charger le stock vendeur et agréger par produit
+        vstocks = (
+            VendorStock.objects
+            .filter(vendor=vendor)
+            .select_related(
+                "produit_line",
+                "produit_line__produit",
+                "produit_line__produit__marque",
+                "produit_line__produit__modele",
+                "produit_line__produit__categorie",
+                "produit_line__produit__purete",
+            )
+        )
 
-        return Response(serializer.data)
-    
+        # Agrégat Python : par produit → somme allouée & disponible
+        by_prod = defaultdict(lambda: {"q_allouee": 0, "q_dispo": 0, "obj": None})
+        for vs in vstocks:
+            pl = getattr(vs, "produit_line", None)
+            if not pl:
+                continue
+            prod = getattr(pl, "produit", None)
+            if not prod:
+                continue
+            by_prod[prod.id]["q_allouee"] += int(getattr(vs, "quantite_allouee", 0) or 0)
+            by_prod[prod.id]["q_dispo"]   += int(getattr(vs, "quantite_disponible", 0) or 0)
+            by_prod[prod.id]["obj"] = prod
+
+        # 3) Réponse plate
+        rows = []
+        for _, info in by_prod.items():
+            p = info["obj"]
+            if p is None:
+                continue
+
+            marque = getattr(getattr(p, "marque", None), "nom", "") or getattr(p, "marque_nom", "") or ""
+            modele = getattr(getattr(p, "modele", None), "nom", "") or getattr(p, "modele_nom", "") or ""
+            categorie = getattr(getattr(p, "categorie", None), "nom", "") or getattr(p, "categorie_nom", "") or ""
+            purete = getattr(getattr(p, "purete", None), "nom", "") or getattr(p, "purete_nom", "") or ""
+
+            poids = None
+            for attr in ("poids", "poids_grammes", "poids_g"):
+                if hasattr(p, attr):
+                    poids = getattr(p, attr); break
+
+            prix = None
+            for attr in ("prix", "prix_vente", "prix_unitaire", "prix_par_gramme"):
+                if hasattr(p, attr):
+                    prix = getattr(p, attr); break
+
+            rows.append({
+                "produit_id": p.id,
+                "nom": getattr(p, "nom", f"Produit #{p.id}"),
+                "marque": marque,
+                "modele": modele,
+                "categorie": categorie,
+                "purete": purete,
+                "poids": poids,
+                "prix": prix,
+                "quantite_allouee": info["q_allouee"],
+                "quantite_disponible": info["q_dispo"],
+                # "quantite_stock": info["q_allouee"],  # alias (compat) quantite_stock = quantite_allouee
+            })
+
+        rows.sort(key=lambda r: (r["nom"] or "").lower())
+        return Response(rows, status=200)
 
 # class DashboardVendeurStatsAPIView(APIView):
 #     permission_classes = [IsAuthenticated]
@@ -424,49 +515,22 @@ class VendorProduitListView(APIView):
 # ---------- LISTE / LECTURE ----------
 class VendorListView(generics.ListAPIView):
     """
-    GET /api/vendors/?q=&bijouterie_id=&verifie=true|false
+    GET /api/vendors/
+    Retourne la liste de tous les vendeurs (sans filtre).
     """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = VendorReadSerializer
 
     def get_queryset(self):
-        qs = Vendor.objects.select_related("user", "bijouterie").all()
+        return Vendor.objects.select_related("user", "bijouterie").order_by("-id")
 
-        q = self.request.query_params.get("q")
-        if q:
-            qs = qs.filter(
-                Q(user__email__icontains=q) |
-                Q(user__username__icontains=q) |
-                Q(user__first_name__icontains=q) |
-                Q(user__last_name__icontains=q) |
-                Q(user__telephone__icontains=q)
-            )
-
-        bijouterie_id = self.request.query_params.get("bijouterie_id")
-        if bijouterie_id:
-            qs = qs.filter(bijouterie_id=bijouterie_id)
-
-        verifie = self.request.query_params.get("verifie")
-        if verifie is not None:
-            if verifie.lower() in ("true", "1", "yes", "oui"):
-                qs = qs.filter(verifie=True)
-            elif verifie.lower() in ("false", "0", "no", "non"):
-                qs = qs.filter(verifie=False)
-
-        return qs.order_by("-id")
-
-    # Swagger
     @swagger_auto_schema(
-        manual_parameters=[
-            openapi.Parameter("q", openapi.IN_QUERY, description="Recherche (email, username, nom, prénom, téléphone)", type=openapi.TYPE_STRING),
-            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, description="Filtrer par bijouterie id", type=openapi.TYPE_INTEGER),
-            openapi.Parameter("verifie", openapi.IN_QUERY, description="true/false", type=openapi.TYPE_STRING),
-        ],
-        responses={200: VendorReadSerializer(many=True)}
+        operation_summary="Lister tous les vendeurs",
+        responses={200: VendorReadSerializer(many=True)},
+        tags=["vendor"]
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
-
 
 # ---------- DÉTAIL / LECTURE + MÀJ ----------
 class VendorDetailView(APIView):
@@ -519,6 +583,7 @@ class VendorDetailView(APIView):
     @swagger_auto_schema(
         request_body=VendorUpdateSerializer,
         responses={200: VendorReadSerializer, 403: "Access Denied"},
+        tags=["vendor"],
     )
     def patch(self, request, *args, **kwargs):
         vendor = self._get_obj(**kwargs)
@@ -534,6 +599,7 @@ class VendorDetailView(APIView):
     @swagger_auto_schema(
         request_body=VendorUpdateSerializer,
         responses={200: VendorReadSerializer, 403: "Access Denied"},
+        tags=["vendor"]
     )
     def put(self, request, *args, **kwargs):
         vendor = self._get_obj(**kwargs)

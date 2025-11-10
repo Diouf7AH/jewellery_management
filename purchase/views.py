@@ -393,7 +393,7 @@ class AchatListView(ListAPIView):
     """
     permission_classes = [IsAuthenticated, IsAdminOrManager]
     serializer_class = AchatSerializer
-    pagination_class = None  # pas de pagination
+    # pagination_class = None  # pas de pagination
 
     @swagger_auto_schema(
         operation_summary="Lister les achats (année courante par défaut, sinon entre deux dates)",

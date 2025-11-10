@@ -169,3 +169,4 @@ class IsAdminOrManagerOrSelfVendor(BasePermission):
     #         return owner_id == request.user.id
     #     return False
     
+

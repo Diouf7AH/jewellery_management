@@ -161,7 +161,7 @@ def transfer_bijouterie_to_vendor(*, vendor_id:int, mouvements:list[dict], note:
     # TODO: journaliser 'note' si tu as un modèle de mouvements
     return {
         "vendor_id": vendor.id,
-        "vendeur_nom": vendor.nom,
+        "vendeur_full_name": vendor.full_name,
         "bijouterie_id": bijouterie.id,
         "bijouterie_nom": bijouterie.nom,
         "lignes": results,

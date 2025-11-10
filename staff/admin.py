@@ -1,91 +1,117 @@
-# staff/admin.py
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import Cashier  # + (éventuelles) autres sous-classes StaffCore
 
-# --- Filtres custom -----------------------------------------
-class HasUserFilter(admin.SimpleListFilter):
-    title = "a un utilisateur lié ?"
-    parameter_name = "has_user"
-
-    def lookups(self, request, model_admin):
-        return (("yes", "Oui"), ("no", "Non"))
-
-    def queryset(self, request, queryset):
-        if self.value() == "yes":
-            return queryset.filter(user__isnull=False)
-        if self.value() == "no":
-            return queryset.filter(user__isnull=True)
-        return queryset
+# ⬇️ ADAPTE les chemins si besoin
+from staff.models import Cashier, Manager  # ex: app "cashier"
+from store.models import Bijouterie  # pour autocomplete_fields
+from vendor.models import Vendor  # facultatif si tu veux aussi l’avoir ici
 
 
-# --- Base admin réutilisable pour toutes tes sous-classes ----
-class BaseStaffAdmin(admin.ModelAdmin):
-    list_display = ("id", "user_display", "bijouterie", "verifie", "created_at", "updated_at")
-    list_filter = ("verifie", HasUserFilter, "bijouterie", "created_at")
+# ---------- Utils communs ----------
+class StaffBaseAdmin(admin.ModelAdmin):
+    """
+    Base admin pour profils staff rattachés à un User et à une Bijouterie.
+    Suppose que le modèle a (au moins) : user(FK), bijouterie(FK), verifie(bool?), created_at/updated_at (optionnel).
+    """
+
+    # Affichage compact & utile
+    list_display = (
+        "id",
+        "user_email",
+        "user_full_name",
+        "bijouterie",
+        "verifie_badge",
+        "created_at",
+        "updated_at",
+    )
+    list_select_related = ("user", "bijouterie")
+    list_per_page = 25
+
+    # Filtres et recherche
+    list_filter = ("bijouterie", "verifie")
     search_fields = (
-        "user__username",
         "user__email",
         "user__first_name",
         "user__last_name",
+        "user__username",
         "bijouterie__nom",
     )
-    # ⚠️ Pour que l'autocomplete fonctionne :
-    #  - le UserAdmin a déjà des search_fields par défaut (ok)
-    #  - assure-toi que BijouterieAdmin a bien search_fields = ("nom",) par ex.
+
+    # Confort d’édition
     autocomplete_fields = ("user", "bijouterie")
-
     readonly_fields = ("created_at", "updated_at")
-    date_hierarchy = "created_at"
-    ordering = ("-id",)
-    list_editable = ("verifie",)
-    actions = ("action_activate", "action_deactivate", "action_detach_user")
 
-    def get_queryset(self, request):
-        return (
-            super()
-            .get_queryset(request)
-            .select_related("user", "bijouterie")
-        )
+    # Actions rapides
+    actions = ("action_activer", "action_desactiver")
 
-    @admin.display(ordering="user__username", description="Utilisateur")
-    def user_display(self, obj):
-        u = obj.user
-        if not u:
-            return "—"
-        name = u.get_full_name() or u.get_username()
-        email = f" &lt;{u.email}&gt;" if u.email else ""
-        # petit plus visuel, cliquable vers le change de l’utilisateur
-        return format_html(
-            '<a href="/admin/auth/user/{}/change/">{}</a>{}',
-            u.pk, name, email
-        )
+    # ---- Helpers colonnes ----
+    def user_email(self, obj):
+        return getattr(getattr(obj, "user", None), "email", "")
+    user_email.short_description = "Email"
 
-    # --- Actions de masse ---
-    @admin.action(description="Activer (vérifié = Oui)")
-    def action_activate(self, request, queryset):
-        updated = queryset.update(verifie=True)
-        self.message_user(request, f"{updated} profil(s) activé(s).")
+    def user_full_name(self, obj):
+        u = getattr(obj, "user", None)
+        first = getattr(u, "first_name", "") or ""
+        last = getattr(u, "last_name", "") or ""
+        full = (first + " " + last).strip()
+        return full or getattr(u, "username", "") or u.email
+    user_full_name.short_description = "Nom complet"
 
-    @admin.action(description="Désactiver (vérifié = Non)")
-    def action_deactivate(self, request, queryset):
-        updated = queryset.update(verifie=False)
-        self.message_user(request, f"{updated} profil(s) désactivé(s).")
+    def verifie_badge(self, obj):
+        v = getattr(obj, "verifie", None)
+        if v is True:
+            return format_html('<b style="color:#15803d;">✔</b>')
+        if v is False:
+            return format_html('<b style="color:#b91c1c;">✘</b>')
+        return "—"
+    verifie_badge.short_description = "Vérifié"
 
-    @admin.action(description="Détacher l’utilisateur (user = NULL)")
-    def action_detach_user(self, request, queryset):
-        updated = queryset.update(user=None)
-        self.message_user(request, f"{updated} profil(s) détaché(s) de l’utilisateur.")
+    # ---- Actions ----
+    def action_activer(self, request, queryset):
+        if "verifie" in [f.name for f in queryset.model._meta.fields]:
+            queryset.update(verifie=True)
+            self.message_user(request, f"{queryset.count()} élément(s) activé(s).")
+        else:
+            self.message_user(request, "Ce modèle n’a pas de champ 'verifie'.", level="warning")
+    action_activer.short_description = "Activer (verifie=True)"
+
+    def action_desactiver(self, request, queryset):
+        if "verifie" in [f.name for f in queryset.model._meta.fields]:
+            queryset.update(verifie=False)
+            self.message_user(request, f"{queryset.count()} élément(s) désactivé(s).")
+        else:
+            self.message_user(request, "Ce modèle n’a pas de champ 'verifie'.", level="warning")
+    action_desactiver.short_description = "Désactiver (verifie=False)"
 
 
-# --- Enregistrements ----------------------------------------
+# ---------- Admins concrets ----------
+@admin.register(Manager)
+class ManagerAdmin(StaffBaseAdmin):
+    """
+    Manager : souvent staff avec verifie + bijouterie obligatoire.
+    """
+    fieldsets = (
+        (None, {
+            "fields": ("user", "bijouterie", "verifie")
+        }),
+        ("Métadonnées", {
+            "classes": ("collapse",),
+            "fields": ("created_at", "updated_at"),
+        }),
+    )
+
+
 @admin.register(Cashier)
-class CashierAdmin(BaseStaffAdmin):
-    pass
-
-
-# Si tu as d'autres sous-classes (ex: Manager), réutilise la base :
-# from .models import Manager
-# @admin.register(Manager)
-# class ManagerAdmin(BaseStaffAdmin):
-#     pass
+class CashierAdmin(StaffBaseAdmin):
+    """
+    Cashier : rattaché à une bijouterie, verifie optionnel selon ton modèle.
+    """
+    fieldsets = (
+        (None, {
+            "fields": ("user", "bijouterie", "verifie")
+        }),
+        ("Métadonnées", {
+            "classes": ("collapse",),
+            "fields": ("created_at", "updated_at"),
+        }),
+    )
