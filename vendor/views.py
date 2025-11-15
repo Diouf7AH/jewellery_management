@@ -1,14 +1,13 @@
-from collections import defaultdict
+import datetime
 from datetime import datetime, timedelta
 from decimal import Decimal
+from io import BytesIO
 
 # NB: on se base sur VenteProduit.vendor et on groupe par vente__created_at
 from django.contrib.auth import get_user_model
-from django.db import models, transaction
-from django.db.models import (Count, DecimalField, F, IntegerField, Q, Sum,
-                              Value)
-from django.db.models.functions import (Coalesce, TruncDay, TruncMonth,
-                                        TruncWeek)
+from django.db import transaction
+from django.db.models import Count, DecimalField, F, Q, Sum
+from django.db.models.functions import TruncDay, TruncMonth, TruncWeek
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -20,15 +19,18 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.permissions import IsAdminOrManagerOrSelfVendor
+from backend.permissions import (ROLE_ADMIN, ROLE_MANAGER, IsAdminOrManager,
+                                 IsAdminOrManagerOrSelfVendor, get_role_name)
 from backend.renderers import UserRenderer
 from inventory.models import Bucket, InventoryMovement, MovementType
 # ⬇️ aligne le chemin du modèle de lot d’achat
 from purchase.models import Lot
 from sale.models import VenteProduit  # 👈 lignes de vente (contient vendor)
+from staff.models import Manager
 from stock.models import Stock, VendorStock
 from store.models import Bijouterie, Produit
 from store.serializers import ProduitSerializer
+from userauths.models import Role
 from vendor.models import Vendor  # 👈 ton modèle Vendor (app vendor)
 
 from .models import Vendor
@@ -322,122 +324,31 @@ class VendorStatsView(APIView):
 
 # Un vendeur authentifié peut appeler GET /api/vendor/produits/
 # Il recevra la liste des produits associés à son stock
-def _get_role(user):
-    if getattr(user, "is_superuser", False):
-        return "admin"
-    return getattr(getattr(user, "user_role", None), "role", None)
-
 class VendorProduitListView(APIView):
-    """
-    GET /api/vendor/produits/
-    - Vendeur connecté : ses produits
-    - Admin : ?vendor_id=<id> requis
-    Retourne: nom, marque, modele, categorie, purete, poids, prix,
-              quantite_allouee, quantite_disponible, quantite_stock(=allouee)
-    """
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Produits du stock vendeur (allouée + disponible)",
-        manual_parameters=[
-            openapi.Parameter(
-                "vendor_id", openapi.IN_QUERY,
-                description="ID du vendeur (requis pour admin)",
-                type=openapi.TYPE_INTEGER, required=False
-            )
-        ],
-        responses={200: openapi.Response("OK")},
-        tags=["vendor"]
+        operation_description="Lister les produits associés au vendeur connecté",
+        responses={200: ProduitSerializer(many=True)},
     )
     def get(self, request):
         user = request.user
-        role = _get_role(user)
+        role = getattr(user.user_role, 'role', None)
 
-        # 1) Vendeur ciblé
-        if role == "vendor":
-            try:
-                vendor = Vendor.objects.select_related("user", "bijouterie").get(user=user)
-            except Vendor.DoesNotExist:
-                return Response({"error": "Aucun vendeur associé à cet utilisateur."}, status=400)
-        elif role == "admin":
-            vendor_id = request.query_params.get("vendor_id")
-            if not vendor_id:
-                return Response({"error": "Paramètre 'vendor_id' requis pour admin."}, status=400)
-            try:
-                vendor = Vendor.objects.select_related("user", "bijouterie").get(pk=vendor_id)
-            except Vendor.DoesNotExist:
-                return Response({"error": f"Vendeur #{vendor_id} introuvable."}, status=404)
-        else:
-            return Response({"error": "Accès réservé aux vendeurs ou admins."}, status=403)
+        if role != 'vendor':
+            return Response({"error": "Seul un vendeur peut accéder à ses produits."}, status=403)
 
-        if not getattr(vendor, "verifie", True):
-            return Response({"error": "Ce vendeur est désactivé."}, status=403)
+        try:
+            vendor = Vendor.objects.get(user=user)
+        except Vendor.DoesNotExist:
+            return Response({"error": "Aucun vendeur associé à cet utilisateur."}, status=400)
 
-        # 2) Charger le stock vendeur et agréger par produit
-        vstocks = (
-            VendorStock.objects
-            .filter(vendor=vendor)
-            .select_related(
-                "produit_line",
-                "produit_line__produit",
-                "produit_line__produit__marque",
-                "produit_line__produit__modele",
-                "produit_line__produit__categorie",
-                "produit_line__produit__purete",
-            )
-        )
+        vendor_produits = VendorStock.objects.filter(vendor=vendor).select_related('produit')
+        produits = [vp.produit for vp in vendor_produits]
+        serializer = ProduitSerializer(produits, many=True)
 
-        # Agrégat Python : par produit → somme allouée & disponible
-        by_prod = defaultdict(lambda: {"q_allouee": 0, "q_dispo": 0, "obj": None})
-        for vs in vstocks:
-            pl = getattr(vs, "produit_line", None)
-            if not pl:
-                continue
-            prod = getattr(pl, "produit", None)
-            if not prod:
-                continue
-            by_prod[prod.id]["q_allouee"] += int(getattr(vs, "quantite_allouee", 0) or 0)
-            by_prod[prod.id]["q_dispo"]   += int(getattr(vs, "quantite_disponible", 0) or 0)
-            by_prod[prod.id]["obj"] = prod
-
-        # 3) Réponse plate
-        rows = []
-        for _, info in by_prod.items():
-            p = info["obj"]
-            if p is None:
-                continue
-
-            marque = getattr(getattr(p, "marque", None), "nom", "") or getattr(p, "marque_nom", "") or ""
-            modele = getattr(getattr(p, "modele", None), "nom", "") or getattr(p, "modele_nom", "") or ""
-            categorie = getattr(getattr(p, "categorie", None), "nom", "") or getattr(p, "categorie_nom", "") or ""
-            purete = getattr(getattr(p, "purete", None), "nom", "") or getattr(p, "purete_nom", "") or ""
-
-            poids = None
-            for attr in ("poids", "poids_grammes", "poids_g"):
-                if hasattr(p, attr):
-                    poids = getattr(p, attr); break
-
-            prix = None
-            for attr in ("prix", "prix_vente", "prix_unitaire", "prix_par_gramme"):
-                if hasattr(p, attr):
-                    prix = getattr(p, attr); break
-
-            rows.append({
-                "produit_id": p.id,
-                "nom": getattr(p, "nom", f"Produit #{p.id}"),
-                "marque": marque,
-                "modele": modele,
-                "categorie": categorie,
-                "purete": purete,
-                "poids": poids,
-                "prix": prix,
-                "quantite_allouee": info["q_allouee"],
-                "quantite_disponible": info["q_dispo"],
-                # "quantite_stock": info["q_allouee"],  # alias (compat) quantite_stock = quantite_allouee
-            })
-
-        rows.sort(key=lambda r: (r["nom"] or "").lower())
-        return Response(rows, status=200)
+        return Response(serializer.data)
+    
 
 # class DashboardVendeurStatsAPIView(APIView):
 #     permission_classes = [IsAuthenticated]
@@ -515,148 +426,295 @@ class VendorProduitListView(APIView):
 # ---------- LISTE / LECTURE ----------
 class VendorListView(generics.ListAPIView):
     """
-    GET /api/vendors/
-    Retourne la liste de tous les vendeurs (sans filtre).
+    GET /api/vendors/?q=&bijouterie_id=&verifie=true|false
     """
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = VendorReadSerializer
 
     def get_queryset(self):
-        return Vendor.objects.select_related("user", "bijouterie").order_by("-id")
+        qs = Vendor.objects.select_related("user", "bijouterie").all()
 
+        q = self.request.query_params.get("q")
+        if q:
+            qs = qs.filter(
+                Q(user__email__icontains=q) |
+                Q(user__username__icontains=q) |
+                Q(user__first_name__icontains=q) |
+                Q(user__last_name__icontains=q) |
+                Q(user__telephone__icontains=q)
+            )
+
+        bijouterie_id = self.request.query_params.get("bijouterie_id")
+        if bijouterie_id:
+            qs = qs.filter(bijouterie_id=bijouterie_id)
+
+        verifie = self.request.query_params.get("verifie")
+        if verifie is not None:
+            if verifie.lower() in ("true", "1", "yes", "oui"):
+                qs = qs.filter(verifie=True)
+            elif verifie.lower() in ("false", "0", "no", "non"):
+                qs = qs.filter(verifie=False)
+
+        return qs.order_by("-id")
+
+    # Swagger
     @swagger_auto_schema(
-        operation_summary="Lister tous les vendeurs",
-        responses={200: VendorReadSerializer(many=True)},
-        tags=["vendor"]
+        manual_parameters=[
+            openapi.Parameter("q", openapi.IN_QUERY, description="Recherche (email, username, nom, prénom, téléphone)", type=openapi.TYPE_STRING),
+            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, description="Filtrer par bijouterie id", type=openapi.TYPE_INTEGER),
+            openapi.Parameter("verifie", openapi.IN_QUERY, description="true/false", type=openapi.TYPE_STRING),
+        ],
+        responses={200: VendorReadSerializer(many=True)}
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
 
-# ---------- DÉTAIL / LECTURE + MÀJ ----------
-class VendorDetailView(APIView):
-    """
-    GET  /api/vendors/<int:id>/
-    GET  /api/vendors/by-slug/<slug:slug>/
-    PATCH/PUT idem (avec VendorUpdateSerializer)
-    """
-    permission_classes = [permissions.IsAuthenticated]
 
-    def _get_obj(self, **kwargs):
-        vendor_id = kwargs.get("id") or kwargs.get("pk")
-        slug = kwargs.get("slug") or self.request.query_params.get("slug")
+# # ---------- DÉTAIL / LECTURE + MÀJ ----------
+# class VendorDetailView(APIView):
+#     """
+#     GET  /api/vendors/<int:id>/
+#     GET  /api/vendors/by-slug/<slug:slug>/
+#     PATCH/PUT idem (avec VendorUpdateSerializer)
+#     """
+#     permission_classes = [permissions.IsAuthenticated]
 
-        if vendor_id:
-            return get_object_or_404(
-                Vendor.objects.select_related("user", "bijouterie"),
-                pk=vendor_id
+#     def _get_obj(self, **kwargs):
+#         vendor_id = kwargs.get("id") or kwargs.get("pk")
+#         slug = kwargs.get("slug") or self.request.query_params.get("slug")
+
+#         if vendor_id:
+#             return get_object_or_404(
+#                 Vendor.objects.select_related("user", "bijouterie"),
+#                 pk=vendor_id
+#             )
+#         if slug:
+#             return get_object_or_404(
+#                 Vendor.objects.select_related("user", "bijouterie"),
+#                 user__slug=slug
+#             )
+#         # Fallback explicite
+#         return get_object_or_404(
+#             Vendor.objects.select_related("user", "bijouterie"),
+#             pk=self.request.query_params.get("id")
+#         )
+
+#     def _can_update(self, request, vendor: Vendor) -> bool:
+#         role = getattr(getattr(request.user, "user_role", None), "role", None)
+#         is_admin_or_manager = role in {"admin", "manager"}
+#         is_owner = vendor.user_id == request.user.id
+#         return bool(is_admin_or_manager or is_owner)
+
+#     # --- GET ---
+#     @swagger_auto_schema(
+#         responses={200: VendorReadSerializer},
+#         manual_parameters=[
+#             openapi.Parameter("slug", openapi.IN_QUERY, description="(optionnel si non fourni dans l'URL) user.slug", type=openapi.TYPE_STRING),
+#             openapi.Parameter("id", openapi.IN_QUERY, description="(optionnel si non fourni dans l'URL) vendor id", type=openapi.TYPE_INTEGER),
+#         ],
+#     )
+#     def get(self, request, *args, **kwargs):
+#         vendor = self._get_obj(**kwargs)
+#         return Response(VendorReadSerializer(vendor).data)
+
+#     # --- PATCH ---
+#     @swagger_auto_schema(
+#         request_body=VendorUpdateSerializer,
+#         responses={200: VendorReadSerializer, 403: "Access Denied"},
+#     )
+#     def patch(self, request, *args, **kwargs):
+#         vendor = self._get_obj(**kwargs)
+#         if not self._can_update(request, vendor):
+#             return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         s = VendorUpdateSerializer(vendor, data=request.data, partial=True)
+#         s.is_valid(raise_exception=True)
+#         s.save()
+#         return Response(VendorReadSerializer(vendor).data, status=200)
+
+#     # --- PUT (comportement identique, mais non-partial) ---
+#     @swagger_auto_schema(
+#         request_body=VendorUpdateSerializer,
+#         responses={200: VendorReadSerializer, 403: "Access Denied"},
+#     )
+#     def put(self, request, *args, **kwargs):
+#         vendor = self._get_obj(**kwargs)
+#         if not self._can_update(request, vendor):
+#             return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         s = VendorUpdateSerializer(vendor, data=request.data, partial=False)
+#         s.is_valid(raise_exception=True)
+#         s.save()
+#         return Response(VendorReadSerializer(vendor).data, status=200)
+
+
+# class UpdateVendorStatusAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
+#     ALLOWED_ROLES = {"admin", "manager"}
+
+#     @swagger_auto_schema(
+#         operation_summary="Mise à jour du statut vendeur (verifie)",
+#         operation_description="Active/Désactive un vendeur via le champ booléen 'verifie'. "
+#                               "Autorisé: admin, manager.",
+#         request_body=VendorStatusInputSerializer,
+#         responses={200: "Statut mis à jour", 403: "Accès refusé", 404: "Vendeur introuvable"}
+#     )
+#     def patch(self, request, user_id: int):
+#         # 1) Rôle
+#         role = getattr(getattr(request.user, "user_role", None), "role", None)
+#         if role not in self.ALLOWED_ROLES:
+#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
+#         # 2) Vendeur
+#         vendor = Vendor.objects.select_related("user").filter(user_id=user_id).first()
+#         if not vendor:
+#             return Response({"detail": "Vendeur introuvable."}, status=status.HTTP_404_NOT_FOUND)
+
+#         # 3) (Optionnel) Si manager, vérifier même bijouterie
+#         # my_shop_id = getattr(getattr(request.user, "staff_manager_profile", None), "bijouterie_id", None)
+#         # if role == "manager" and my_shop_id and vendor.bijouterie_id != my_shop_id:
+#         #     return Response({"detail": "Vendeur d'une autre bijouterie."}, status=status.HTTP_403_FORBIDDEN)
+
+#         # 4) Validation du champ 'verifie'
+#         s = VendorStatusInputSerializer(data=request.data)
+#         s.is_valid(raise_exception=True)
+
+#         old = bool(vendor.verifie)
+#         vendor.verifie = s.validated_data["verifie"]
+#         vendor.save(update_fields=["verifie"])
+
+#         return Response({
+#             "message": f"✅ Vendeur {'activé' if vendor.verifie else 'désactivé'}.",
+#             "vendor_id": vendor.id,
+#             "user_id": vendor.user_id,
+#             "verifie_avant": old,
+#             "verifie_apres": vendor.verifie,
+#             "email": getattr(vendor.user, "email", None),
+#         }, status=status.HTTP_200_OK)
+
+
+class VendorUpdateView(APIView):
+    """
+    PUT /api/staff/vendor/<vendor_id>/update
+
+    - Admin : peut modifier n’importe quel vendeur
+    - Manager : ne peut modifier que les vendeurs de SA bijouterie
+    - Champs modifiables :
+        - email (user.email)
+        - bijouterie_nom (rattacher à une autre bijouterie)
+        - verifie, raison_desactivation (profil Vendor)
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+    @swagger_auto_schema(
+        operation_summary="Mettre à jour un vendeur (email, bijouterie, statut)",
+        manual_parameters=[
+            openapi.Parameter(
+                name="vendor_id",
+                in_=openapi.IN_PATH,
+                type=openapi.TYPE_INTEGER,
+                description="ID du vendeur à mettre à jour",
+                required=True,
             )
-        if slug:
-            return get_object_or_404(
-                Vendor.objects.select_related("user", "bijouterie"),
-                user__slug=slug
-            )
-        # Fallback explicite
-        return get_object_or_404(
+        ],
+        request_body=VendorUpdateSerializer,
+        responses={
+            200: openapi.Response(
+                description="Vendeur mis à jour",
+                examples={
+                    "application/json": {
+                        "message": "Vendeur mis à jour avec succès.",
+                        "vendor": {
+                            "id": 3,
+                            "full_name": "Jean Dupont",
+                            "email": "vendor@example.com",
+                            "verifie": True,
+                            "raison_desactivation": None,
+                            "bijouterie": {
+                                "id": 2,
+                                "nom": "Bijouterie Centre",
+                            },
+                        },
+                    }
+                },
+            ),
+            400: "Requête invalide",
+            403: "Accès refusé",
+            404: "Vendeur introuvable",
+        },
+        tags=["Staff"],
+    )
+    def put(self, request, vendor_id):
+        # 1) Récupération du vendeur
+        vendor = get_object_or_404(
             Vendor.objects.select_related("user", "bijouterie"),
-            pk=self.request.query_params.get("id")
+            pk=vendor_id
         )
 
-    def _can_update(self, request, vendor: Vendor) -> bool:
-        role = getattr(getattr(request.user, "user_role", None), "role", None)
-        is_admin_or_manager = role in {"admin", "manager"}
-        is_owner = vendor.user_id == request.user.id
-        return bool(is_admin_or_manager or is_owner)
+        # 2) Vérification périmètre manager
+        role = get_role_name(request.user)
+        if role == ROLE_MANAGER:
+            mgr = (
+                Manager.objects
+                .filter(user=request.user)
+                .select_related("bijouterie")
+                .first()
+            )
+            mgr_bj_id = getattr(getattr(mgr, "bijouterie", None), "id", None)
+            if not mgr_bj_id or vendor.bijouterie_id != mgr_bj_id:
+                return Response(
+                    {"detail": "Vous ne pouvez modifier que les vendeurs de votre bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-    # --- GET ---
-    @swagger_auto_schema(
-        responses={200: VendorReadSerializer},
-        manual_parameters=[
-            openapi.Parameter("slug", openapi.IN_QUERY, description="(optionnel si non fourni dans l'URL) user.slug", type=openapi.TYPE_STRING),
-            openapi.Parameter("id", openapi.IN_QUERY, description="(optionnel si non fourni dans l'URL) vendor id", type=openapi.TYPE_INTEGER),
-        ],
-    )
-    def get(self, request, *args, **kwargs):
-        vendor = self._get_obj(**kwargs)
-        return Response(VendorReadSerializer(vendor).data)
+        # 3) Validation des données
+        ser = VendorUpdateSerializer(
+            data=request.data,
+            context={"user_id": vendor.user_id}
+        )
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
 
-    # --- PATCH ---
-    @swagger_auto_schema(
-        request_body=VendorUpdateSerializer,
-        responses={200: VendorReadSerializer, 403: "Access Denied"},
-        tags=["vendor"],
-    )
-    def patch(self, request, *args, **kwargs):
-        vendor = self._get_obj(**kwargs)
-        if not self._can_update(request, vendor):
-            return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        user = vendor.user
 
-        s = VendorUpdateSerializer(vendor, data=request.data, partial=True)
-        s.is_valid(raise_exception=True)
-        s.save()
-        return Response(VendorReadSerializer(vendor).data, status=200)
+        # 4) Appliquer les modifications
+        # email user
+        if "email" in data:
+            user.email = data["email"]
+            user.save(update_fields=["email"])
 
-    # --- PUT (comportement identique, mais non-partial) ---
-    @swagger_auto_schema(
-        request_body=VendorUpdateSerializer,
-        responses={200: VendorReadSerializer, 403: "Access Denied"},
-        tags=["vendor"]
-    )
-    def put(self, request, *args, **kwargs):
-        vendor = self._get_obj(**kwargs)
-        if not self._can_update(request, vendor):
-            return Response({"detail": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        # bijouterie (via bijouterie_nom => instance)
+        if "bijouterie_nom" in data:
+            bj = data["bijouterie_nom"]  # ici c’est une instance ou None
+            vendor.bijouterie = bj
 
-        s = VendorUpdateSerializer(vendor, data=request.data, partial=False)
-        s.is_valid(raise_exception=True)
-        s.save()
-        return Response(VendorReadSerializer(vendor).data, status=200)
+        # verifie / raison_desactivation
+        if "verifie" in data:
+            vendor.verifie = data["verifie"]
+        if "raison_desactivation" in data:
+            vendor.raison_desactivation = data["raison_desactivation"]
 
+        vendor.save()
 
-class UpdateVendorStatusAPIView(APIView):
-    renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
-    ALLOWED_ROLES = {"admin", "manager"}
+        # 5) Réponse
+        bj = vendor.bijouterie
+        payload = {
+            "message": "Vendeur mis à jour avec succès.",
+            "vendor": {
+                "id": vendor.id,
+                "full_name": getattr(vendor, "full_name", "") or "",
+                "email": user.email if user else None,
+                "verifie": vendor.verifie,
+                "raison_desactivation": vendor.raison_desactivation,
+                "bijouterie": {
+                    "id": bj.id,
+                    "nom": bj.nom,
+                } if bj else None,
+            },
+        }
+        return Response(payload, status=status.HTTP_200_OK)
 
-    @swagger_auto_schema(
-        operation_summary="Mise à jour du statut vendeur (verifie)",
-        operation_description="Active/Désactive un vendeur via le champ booléen 'verifie'. "
-                              "Autorisé: admin, manager.",
-        request_body=VendorStatusInputSerializer,
-        responses={200: "Statut mis à jour", 403: "Accès refusé", 404: "Vendeur introuvable"}
-    )
-    def patch(self, request, user_id: int):
-        # 1) Rôle
-        role = getattr(getattr(request.user, "user_role", None), "role", None)
-        if role not in self.ALLOWED_ROLES:
-            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-        # 2) Vendeur
-        vendor = Vendor.objects.select_related("user").filter(user_id=user_id).first()
-        if not vendor:
-            return Response({"detail": "Vendeur introuvable."}, status=status.HTTP_404_NOT_FOUND)
-
-        # 3) (Optionnel) Si manager, vérifier même bijouterie
-        # my_shop_id = getattr(getattr(request.user, "staff_manager_profile", None), "bijouterie_id", None)
-        # if role == "manager" and my_shop_id and vendor.bijouterie_id != my_shop_id:
-        #     return Response({"detail": "Vendeur d'une autre bijouterie."}, status=status.HTTP_403_FORBIDDEN)
-
-        # 4) Validation du champ 'verifie'
-        s = VendorStatusInputSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
-
-        old = bool(vendor.verifie)
-        vendor.verifie = s.validated_data["verifie"]
-        vendor.save(update_fields=["verifie"])
-
-        return Response({
-            "message": f"✅ Vendeur {'activé' if vendor.verifie else 'désactivé'}.",
-            "vendor_id": vendor.id,
-            "user_id": vendor.user_id,
-            "verifie_avant": old,
-            "verifie_apres": vendor.verifie,
-            "email": getattr(vendor.user, "email", None),
-        }, status=status.HTTP_200_OK)
-    
 
 # class VendorProduitAssociationAPIView(APIView):
 #     renderer_classes = [UserRenderer]

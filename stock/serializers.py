@@ -48,20 +48,12 @@ class BijouterieToVendorLineInSerializer(serializers.Serializer):
     produit_line_id = serializers.IntegerField()
     quantite = serializers.IntegerField(min_value=1)
 
-# ---------------Bijouterie to vendeur--------------------------
-class TransferLineIn(serializers.Serializer):
-    produit_line_id = serializers.IntegerField(min_value=1)
-    quantite = serializers.IntegerField(min_value=1)
-
-class TransferIn(serializers.Serializer):
-    vendor_id = serializers.IntegerField(min_value=1)
-    lignes = TransferLineIn(many=True)
+class BijouterieToVendorInSerializer(serializers.Serializer):
+    vendor_email = serializers.EmailField(
+        help_text="Email de l'utilisateur associé au vendeur"
+    )
+    lignes = BijouterieToVendorLineInSerializer(many=True)
     note = serializers.CharField(required=False, allow_blank=True)
-
-    def validate_lignes(self, lignes):
-        if not lignes:
-            raise serializers.ValidationError("La liste 'lignes' ne peut pas être vide.")
-        return lignes
 # ---------------End Bijouterie to vendeur-----------------------
 
 

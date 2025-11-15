@@ -131,8 +131,9 @@ from store.models import Bijouterie
 from vendor.models import Vendor
 
 from .models import Stock
-from .serializers import (ReserveToBijouterieInSerializer, StockSerializer,
-                          StockSummarySerializer, TransferIn)
+from .serializers import (BijouterieToVendorInSerializer,
+                          ReserveToBijouterieInSerializer, StockSerializer,
+                          StockSummarySerializer)
 from .services import (transfer_bijouterie_to_vendor,
                        transfer_reserve_to_bijouterie)
 from .utils_role import get_manager_bijouterie_id, vendor_stock_filter
@@ -162,7 +163,7 @@ class ReserveToBijouterieTransferView(APIView):
         operation_summary="Affecter du stock de la Réserve vers une Bijouterie",
         request_body=ReserveToBijouterieInSerializer,
         responses={200: "Résumé du transfert", 400: "Erreur de validation"},
-        tags=["stock"],
+        tags=["Stock"],
     )
     def post(self, request):
         s = ReserveToBijouterieInSerializer(data=request.data)
@@ -181,7 +182,7 @@ class ReserveToBijouterieTransferView(APIView):
 # class BijouterieToVendorTransferView(APIView):
 #     """
 #         {
-#             "vendor_id": 42,
+#             "vendor_email": vendeur@live.com,
 #             "vendor_label": "Vendor john",
 #             "bijouterie_id": 5,
 #             "bijouterie_nom": "Sandaga",
@@ -195,16 +196,70 @@ class ReserveToBijouterieTransferView(APIView):
 #     @swagger_auto_schema(
 #         operation_summary="Affecter du stock d’une Bijouterie vers un Vendor",
 #         request_body=BijouterieToVendorInSerializer,
-#         tags=["Stocks"],
+#         tags=["Stock"],
 #     )
 #     def post(self, request):
 #         s = BijouterieToVendorInSerializer(data=request.data)
 #         s.is_valid(raise_exception=True)
 #         res = transfer_bijouterie_to_vendor(
-#             vendor_id=s.validated_data["vendor_id"],
+#             vendor_email=s.validated_data["vendor_email"],
 #             mouvements=s.validated_data["lignes"],
 #             note=s.validated_data.get("note", "")
 #         )
+#         return Response(res, status=200)
+
+# class BijouterieToVendorTransferView(APIView):
+#     permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+#     @swagger_auto_schema(
+#         operation_summary="Transférer du stock d’une bijouterie vers un vendeur (via vendor_email)",
+#         request_body=BijouterieToVendorInSerializer,
+#         tags=["Stock"],
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         ser = BijouterieToVendorInSerializer(data=request.data)
+#         ser.is_valid(raise_exception=True)
+#         data = ser.validated_data
+
+#         email = data["vendor_email"]
+#         lignes = data["lignes"]
+#         note   = data.get("note", "")
+
+#         # 1) Récupérer le vendeur via son user.email
+#         vendor = Vendor.objects.select_related("user", "bijouterie").filter(
+#             user__email__iexact=email
+#         ).first()
+#         if not vendor:
+#             return Response(
+#                 {"error": f"Aucun vendeur trouvé pour l’email {email}."},
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
+
+#         if not getattr(vendor, "verifie", False):
+#             return Response(
+#                 {"error": "Ce vendeur est désactivé (verifie=False)."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # 2) Appeler ton service de transfert
+#         res = transfer_bijouterie_to_vendor(
+#             vendor_id=vendor.id,
+#             mouvements=lignes,
+#             note=note,
+#         )
+
+#         # 3) Compléter la réponse avec quelques infos utiles
+#         if not isinstance(res, dict):
+#             res = {}
+
+#         res.setdefault("vendor", {
+#             "id": vendor.id,
+#             "email": vendor.user.email if vendor.user else None,
+#             "bijouterie_id": vendor.bijouterie_id,
+#             "bijouterie_nom": getattr(vendor.bijouterie, "nom", None),
+#         })
+
 #         return Response(res, status=200)
 
 
@@ -212,75 +267,71 @@ class BijouterieToVendorTransferView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
 
     @swagger_auto_schema(
-        operation_summary="Transférer du stock d’une bijouterie vers un vendeur",
-        request_body=TransferIn,
+        operation_summary="Transférer du stock d’une bijouterie vers un vendeur (par vendor_email)",
+        request_body=BijouterieToVendorInSerializer,
         responses={200: "Transfert réussi", 400: "Erreur", 403: "Refusé", 404: "Introuvable", 409: "Conflit"},
-        examples={
-            "application/json": {
-                "vendor_id": 1,
-                "lignes": [
-                    {"produit_line_id": 123, "quantite": 2},
-                    {"produit_line_id": 124, "quantite": 1}
-                ],
-                "note": "Dotation stand"
-            }
-        },
-        tags=["stock"],
+        tags=["Stock"],
     )
     @transaction.atomic
     def post(self, request):
-        ser = TransferIn(data=request.data)
+        ser = BijouterieToVendorInSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        # 1) Vendeur
+        # 1) Récupérer le vendeur via vendor_email
+        email = data["vendor_email"].strip().lower()
+
         try:
-            vendor = Vendor.objects.select_related("user", "bijouterie").get(pk=data["vendor_id"])
+            vendor = (
+                Vendor.objects
+                .select_related("user", "bijouterie")
+                .get(user__email__iexact=email)
+            )
         except Vendor.DoesNotExist:
-            return Response({"error": f"Vendor #{data['vendor_id']} introuvable."}, status=404)
+            return Response(
+                {"error": f"Aucun vendeur associé à l'email {email}."},
+                status=404,
+            )
 
-        if not getattr(vendor, "verifie", False):
-            return Response({"error": "Ce vendeur est désactivé (verifie=False)."}, status=403)
+        if not getattr(vendor, "verifie", True):
+            return Response(
+                {"error": "Ce vendeur est désactivé (verifie=False)."},
+                status=403,
+            )
 
-        # 2) Appel du service (reçoit déjà {produit_line_id, quantite})
+        # 2) Appel du service métier
         try:
             res = transfer_bijouterie_to_vendor(
                 vendor_id=vendor.id,
                 mouvements=data["lignes"],
-                note=data.get("note", "")
+                note=data.get("note", ""),
             )
         except Bijouterie.DoesNotExist:
             return Response({"error": "Bijouterie introuvable."}, status=404)
         except Exception as e:
-            # Ajuste si tu as des exceptions métier → 409 pour stock insuffisant, etc.
             return Response({"detail": "Erreur inattendue", "error": str(e)}, status=400)
 
-        # 3) Réponse simple si le service ne fournit pas déjà un dict
+        # 3) Compléter la réponse avec les infos du vendeur
         if not isinstance(res, dict):
-            res = {
-                "message": "Transfert effectué",
-                "moves": [{"produit_line_id": l["produit_line_id"], "moved": l["quantite"]} for l in data["lignes"]],
-                "totals": {
-                    "count_lines": len(data["lignes"]),
-                    "qty_moved": sum(l["quantite"] for l in data["lignes"])
-                },
-                "note": data.get("note", "")
-            }
-
-        # Infos basiques sur le vendeur
-        nom_complet = ""
-        if getattr(vendor, "user", None):
-            nom_complet = vendor.user.get_full_name() or getattr(vendor.user, "username", "") or ""
+            res = {}
 
         res.setdefault("vendor", {
             "id": vendor.id,
-            "email": getattr(getattr(vendor, "user", None), "email", "") or "",
-            "nom_complet": nom_complet,
-            "bijouterie_id": getattr(vendor, "bijouterie_id", None),
-            "bijouterie_nom": getattr(getattr(vendor, "bijouterie", None), "nom", None),
+            "email": vendor.user.email if vendor.user else email,
+            # "first_name": vendor.user.first_name if vendor.user else "",
+            # "last_name": vendor.user.last_name if vendor.user else "",
+            "full_name": (
+                f"{(vendor.user.first_name or '').strip()} {(vendor.user.last_name or '').strip()}"
+                if vendor.user else ""
+            ).strip(),
+            # "full_name": getattr(vendor, "full_name", "") or "",
+            "bijouterie_id": getattr(vendor.bijouterie, "id", None),
+            "bijouterie_nom": getattr(vendor.bijouterie, "nom", None),
         })
-        return Response(res, status=200)
 
+        return Response(res, status=200)
+    
+    
 
 # class StockListView(generics.ListAPIView):
 #     permission_classes = [permissions.IsAuthenticated]
@@ -358,170 +409,61 @@ class BijouterieToVendorTransferView(APIView):
 #         return qs  # "all"
 
 
+# ---- Pagination par défaut ----
+class DefaultPagination(PageNumberPagination):
+    page_size = api_settings.PAGE_SIZE or 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
 
 # ---- Vue principale ----
-# class StockListView(APIView):
-#     permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les stocks (admin : tout | manager : sa bijouterie | vendor : son stock)",
-#         operation_description=dedent("""
-#             Retourne les lignes de stock.
-
-#             **Règles d'accès**
-#             - admin : accès à tout
-#             - manager : accès **uniquement** aux stocks de **sa bijouterie**
-#             - vendor : accès **uniquement** à **son stock** (par sa bijouterie)
-
-#             **Filtre `status`**
-#             - `reserved` : en réserve (bijouterie=NULL, disponible>0)
-#             - `allocated` : alloués à une bijouterie (allouée>0)
-#             - `in_stock` : tout ce qui a disponible>0 (réserve + alloués)
-#             - `all` : sans filtre
-            
-#             Exemple de réponse (extrait) :
-#             ```json
-#             [
-#                 {
-#                     "id": 12,
-#                     "produit_line": 5,
-#                     "bijouterie": null,
-#                     "bijouterie_nom": null,
-#                     "quantite_allouee": 100,
-#                     "quantite_disponible": 60,
-#                     "status": "reserved",
-#                     "created_at": "2025-10-22T10:00:00Z",
-#                     "updated_at": "2025-10-22T10:10:00Z"
-#                 },
-#                 {
-#                     "id": 13,
-#                     "produit_line": 5,
-#                     "bijouterie": 2,
-#                     "bijouterie_nom": "Bijouterie Centre",
-#                     "quantite_allouee": 40,
-#                     "quantite_disponible": 30,
-#                     "status": "allocated",
-#                     "created_at": "2025-10-22T10:01:00Z",
-#                     "updated_at": "2025-10-22T10:02:00Z"
-#                 }
-#             ]
-#             ```
-#         """),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 name="status",
-#                 in_=openapi.IN_QUERY,
-#                 required=False,
-#                 type=openapi.TYPE_STRING,
-#                 enum=list(STATUS_CHOICES),
-#                 default="in_stock",
-#                 description="Filtre par statut",
-#             ),
-#             openapi.Parameter(
-#                 name="page",
-#                 in_=openapi.IN_QUERY,
-#                 required=False,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="Numéro de page (>=1)",
-#             ),
-#             openapi.Parameter(
-#                 name="page_size",
-#                 in_=openapi.IN_QUERY,
-#                 required=False,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="Taille de page (max 100)",
-#             ),
-#         ],
-#         responses={
-#             200: openapi.Response(
-#                 "Liste des stocks",
-#                 StockSerializer(many=True),
-#                 examples={
-#                     "application/json": [
-#                         {
-#                             "id": 12,
-#                             "produit_line": 5,
-#                             "bijouterie": None,
-#                             "bijouterie_nom": None,
-#                             "quantite_allouee": 100,
-#                             "quantite_disponible": 60,
-#                             "status": "reserved",
-#                             "created_at": "2025-10-22T10:00:00Z",
-#                             "updated_at": "2025-10-22T10:10:00Z",
-#                         },
-#                         {
-#                             "id": 13,
-#                             "produit_line": 5,
-#                             "bijouterie": 2,
-#                             "bijouterie_nom": "Bijouterie Centre",
-#                             "quantite_allouee": 40,
-#                             "quantite_disponible": 30,
-#                             "status": "allocated",
-#                             "created_at": "2025-10-22T10:01:00Z",
-#                             "updated_at": "2025-10-22T10:02:00Z",
-#                         },
-#                     ]
-#                 },
-#             )
-#         },
-#         tags=["stock"],
-#     )
-#     def get(self, request, *args, **kwargs):
-#         # 1) Valider le paramètre
-#         status_param = request.query_params.get("status", "in_stock")
-#         if status_param not in STATUS_CHOICES:
-#             raise ValidationError({"status": f"Valeur invalide. Choisir parmi {STATUS_CHOICES}."})
-
-#         # 2) Base queryset
-#         qs = Stock.objects.select_related("produit_line", "bijouterie").order_by("-id")
-
-#         # 3) Périmètre par rôle
-#         role = get_role_name(request.user)
-
-#         # Manager → restreindre à SA bijouterie
-#         if role == ROLE_MANAGER:
-#             bj_id = get_manager_bijouterie_id(request.user)
-#             qs = qs.filter(bijouterie_id=bj_id) if bj_id else qs.none()
-
-#         # Vendor → restreindre à SON stock
-#         if role == ROLE_VENDOR:
-#             qs = qs.filter(vendor_stock_filter(request.user))
-
-#         # 4) Filtre métier
-#         if status_param == "reserved":
-#             qs = qs.filter(bijouterie__isnull=True, quantite_disponible__gt=0)
-#         elif status_param == "allocated":
-#             qs = qs.filter(bijouterie__isnull=False, quantite_allouee__gt=0)
-#         elif status_param == "in_stock":
-#             qs = qs.filter(quantite_disponible__gt=0)
-#         # "all" => pas de filtre supplémentaire
-
-#         # 5) Pagination + réponse
-#         paginator = self.pagination_class()
-#         page = paginator.paginate_queryset(qs, request, view=self)
-#         data = StockSerializer(page or qs, many=True).data
-#         return paginator.get_paginated_response(data) if page is not None else Response(data)
-
-
 class StockListView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
-    pagination_class = None  # ⬅️ pas de pagination
+    pagination_class = DefaultPagination
 
     @swagger_auto_schema(
         operation_summary="Lister les stocks (admin : tout | manager : sa bijouterie | vendor : son stock)",
         operation_description=dedent("""
-            Retourne les lignes de stock (⚠️ sans pagination).
+            Retourne les lignes de stock.
 
             **Règles d'accès**
             - admin : accès à tout
-            - manager : accès uniquement aux stocks de sa bijouterie
-            - vendor : accès uniquement à son stock (par sa bijouterie)
+            - manager : accès **uniquement** aux stocks de **sa bijouterie**
+            - vendor : accès **uniquement** à **son stock** (par sa bijouterie)
 
             **Filtre `status`**
             - `reserved` : en réserve (bijouterie=NULL, disponible>0)
             - `allocated` : alloués à une bijouterie (allouée>0)
             - `in_stock` : tout ce qui a disponible>0 (réserve + alloués)
             - `all` : sans filtre
+            
+            Exemple de réponse (extrait) :
+            ```json
+            [
+                {
+                    "id": 12,
+                    "produit_line": 5,
+                    "bijouterie": null,
+                    "bijouterie_nom": null,
+                    "quantite_allouee": 100,
+                    "quantite_disponible": 60,
+                    "status": "reserved",
+                    "created_at": "2025-10-22T10:00:00Z",
+                    "updated_at": "2025-10-22T10:10:00Z"
+                },
+                {
+                    "id": 13,
+                    "produit_line": 5,
+                    "bijouterie": 2,
+                    "bijouterie_nom": "Bijouterie Centre",
+                    "quantite_allouee": 40,
+                    "quantite_disponible": 30,
+                    "status": "allocated",
+                    "created_at": "2025-10-22T10:01:00Z",
+                    "updated_at": "2025-10-22T10:02:00Z"
+                }
+            ]
+            ```
         """),
         manual_parameters=[
             openapi.Parameter(
@@ -533,14 +475,54 @@ class StockListView(APIView):
                 default="in_stock",
                 description="Filtre par statut",
             ),
+            openapi.Parameter(
+                name="page",
+                in_=openapi.IN_QUERY,
+                required=False,
+                type=openapi.TYPE_INTEGER,
+                description="Numéro de page (>=1)",
+            ),
+            openapi.Parameter(
+                name="page_size",
+                in_=openapi.IN_QUERY,
+                required=False,
+                type=openapi.TYPE_INTEGER,
+                description="Taille de page (max 100)",
+            ),
         ],
         responses={
             200: openapi.Response(
                 "Liste des stocks",
                 StockSerializer(many=True),
+                examples={
+                    "application/json": [
+                        {
+                            "id": 12,
+                            "produit_line": 5,
+                            "bijouterie": None,
+                            "bijouterie_nom": None,
+                            "quantite_allouee": 100,
+                            "quantite_disponible": 60,
+                            "status": "reserved",
+                            "created_at": "2025-10-22T10:00:00Z",
+                            "updated_at": "2025-10-22T10:10:00Z",
+                        },
+                        {
+                            "id": 13,
+                            "produit_line": 5,
+                            "bijouterie": 2,
+                            "bijouterie_nom": "Bijouterie Centre",
+                            "quantite_allouee": 40,
+                            "quantite_disponible": 30,
+                            "status": "allocated",
+                            "created_at": "2025-10-22T10:01:00Z",
+                            "updated_at": "2025-10-22T10:02:00Z",
+                        },
+                    ]
+                },
             )
         },
-        tags=["stock"],
+        tags=["Stock"],
     )
     def get(self, request, *args, **kwargs):
         # 1) Valider le paramètre
@@ -554,10 +536,12 @@ class StockListView(APIView):
         # 3) Périmètre par rôle
         role = get_role_name(request.user)
 
+        # Manager → restreindre à SA bijouterie
         if role == ROLE_MANAGER:
             bj_id = get_manager_bijouterie_id(request.user)
             qs = qs.filter(bijouterie_id=bj_id) if bj_id else qs.none()
 
+        # Vendor → restreindre à SON stock
         if role == ROLE_VENDOR:
             qs = qs.filter(vendor_stock_filter(request.user))
 
@@ -570,10 +554,11 @@ class StockListView(APIView):
             qs = qs.filter(quantite_disponible__gt=0)
         # "all" => pas de filtre supplémentaire
 
-        # 5) Réponse (sans pagination)
-        data = StockSerializer(qs, many=True).data
-        return Response(data)
-    
+        # 5) Pagination + réponse
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        data = StockSerializer(page or qs, many=True).data
+        return paginator.get_paginated_response(data) if page is not None else Response(data)
 
 
 # class StockSummaryView(APIView):
@@ -617,7 +602,7 @@ class StockListView(APIView):
 
 TOTAL_BY_CHOICES = ("disponible", "allouee")
 class StockSummaryView(APIView):
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
 
     @swagger_auto_schema(
         operation_summary="Résumé des stocks (agrégats)",
@@ -661,7 +646,7 @@ class StockSummaryView(APIView):
             ),
         ],
         responses={200: openapi.Response("Résumé des stocks", StockSummarySerializer)},
-        tags=["stock"],
+        tags=["Stock"],
     )
     def get(self, request):
         # Périmètre

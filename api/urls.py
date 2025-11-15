@@ -38,8 +38,8 @@ urlpatterns = [
     
     path('verify-email/', userauths_views.EmailVerificationView.as_view(), name='verify-email'),
     # path('resend-confirmation/', userauths_views.ResendConfirmationView.as_view(), name='resend-confirmation'),
-    # path('resend-confirmation-form/', userauths_views.resend_confirmation_form, name='resend-confirmation-form'),
-    # path('resend-confirmation-submit/', userauths_views.resend_confirmation_submit, name='resend-confirmation-submit'),
+    path('resend-confirmation-form/', userauths_views.resend_confirmation_form, name='resend-confirmation-form'),
+    path('resend-confirmation-submit/', userauths_views.resend_confirmation_submit, name='resend-confirmation-submit'),
     
     path('user/<int:pk>',userauths_views.UserDetailUpdateView.as_view(),name="detail"),
     path('user/list',userauths_views.UsersView.as_view(),name="users_list"),
@@ -51,7 +51,7 @@ urlpatterns = [
     path('role/delete/<int:pk>',userauths_views.DeleteRoleAPIView.as_view(),name="delete-role"),
     
     # path('user/profile/<user_id>', userauths_views.ProfileView.as_view(), name='profile'),
-    path("me/profile/", userauths_views.MeProfileView.as_view(), name="me-profile"),
+    path("me/profile/", userauths_views.ProfileView.as_view(), name="me-profile"),
     
     path('password_reset/', include('django_rest_passwordreset.urls')),
     # Validate Token
@@ -150,16 +150,18 @@ urlpatterns = [
     # END INVENTORY
     
     # staff
-    path('staff/add-staff', staff_views.AddStaffView.as_view(), name='add_staff'),
+    path('staff/add-staff', staff_views.CreateStaffMemberView.as_view(), name='add_staff'),
+    path("staff/<int:staff_id>/update", staff_views.UpdateStaffView.as_view(), name="staff-update"),
     
     #VENDOR
     # path('vendor/list/', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
     # path('vendor/add-vendor', vendor_views.CreateVendorView.as_view(), name='add_vendor'),
     path("vendors", vendor_views.VendorListView.as_view(), name="vendor-list"),
-    path("vendor/<int:id>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail"),
-    path("vendor/by-slug/<slug:slug>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail-by-slug"),
+    # path("vendor/<int:id>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail"),
+    # path("vendor/by-slug/<slug:slug>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail-by-slug"),
+    path("vendor/<int:vendor_id>/update", vendor_views.VendorUpdateView.as_view(), name="vendor-update"),
     path('vendor/association-produit-to-vendor', vendor_views.VendorProduitAssociationAPIView.as_view(), name='association-du-produit-au-vendor'),
-    path("vendor/<int:user_id>/status/", vendor_views.UpdateVendorStatusAPIView.as_view(), name="vendor-status"),
+    # path("vendor/<int:user_id>/status", vendor_views.UpdateVendorStatusAPIView.as_view(), name="vendor-status"),
     # path('vendor/find', vendor_views.RetrieveVendorView.as_view(), name='vendor-find'),
     # path('vendor/<int:user_id>/update-status', vendor_views.UpdateVendorStatusAPIView.as_view(), name='update_vendor_status'),
     # END VENDOR

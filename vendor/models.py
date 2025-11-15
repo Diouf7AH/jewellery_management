@@ -29,13 +29,6 @@ class Vendor(StaffCore):
         related_query_name="vendor",
     )
 
-    @property
-    def full_name(self) -> str:
-        first = (getattr(self.user, "first_name", "") or "").strip()
-        last  = (getattr(self.user, "last_name", "") or "").strip()
-        return (f"{first} {last}".strip() or getattr(self.user, "username", "") or getattr(self.user, "email", "") or f"Vendeur #{self.id}")
-    
-    
     class Meta:
         verbose_name = "Vendor"
         verbose_name_plural = "Vendors"
@@ -43,4 +36,26 @@ class Vendor(StaffCore):
 
     def __str__(self):
         return f"Vendor {getattr(self.user, 'username', self.user_id) if self.user else '#'+str(self.pk)}"
+
+
+# # VendorProduct is a many-to-many relationship between Product and Vendor 
+# # that includes the quantity
+# class VendorProduit(models.Model):
+#     # related_name='vendor_produits'vous permet d'accéder à tous les produits 
+#     # liés à un fournisseur à partir du Vendormodèle (c'est-à-dire vendor.products.all()).
+#     vendor = models.ForeignKey(Vendor, related_name="vendor_produits", on_delete=models.SET_NULL, null=True, blank=True)
+#     # related_name='vendor_vendors'vous permet d'accéder à tous les vendeur 
+#     # liés à un produit à partir du Productmodèle (c'est-à-dire product.vendors.all())
+#     produit = models.ForeignKey(Produit, related_name="vendor_vendors", on_delete=models.SET_NULL, null=True, blank=True)
+#     quantite = models.PositiveIntegerField()
+#     # stock_out = models.PositiveIntegerField()
+    
+#     class Meta:
+#         unique_together = ('vendor', 'produit')  # Prevents duplicate entries of the same product for the same vendor
+    
+    
+#     def __str__(self):
+#         if self.vendor and self.vendor.user:
+#             return f'{self.vendor.bijouterie} - {self.vendor.user.first_name} - {self.vendor.user.last_name} - {self.quantite}'
+#         return f"Produit de vendeur inconnu ({self.produit})"
 

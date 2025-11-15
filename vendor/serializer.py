@@ -59,7 +59,58 @@ class VendorSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Vendor
-        fields = ['email', 'bijouterie', 'active', 'description', 'verifie', 'raison_desactivation']
+        fields = ['email', 'bijouterie', 'verifie']
+
+
+class VendorUpdateSerializer(serializers.Serializer):
+    """
+    Serializer pour mettre à jour un vendeur:
+      - email (User)
+      - bijouterie_nom (-> bijouterie)
+      - verifie, raison_desactivation (Vendor)
+    """
+    email = serializers.EmailField(required=False)
+    bijouterie_nom = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Nom de la bijouterie à rattacher (optionnel)."
+    )
+    verifie = serializers.BooleanField(required=False)
+    raison_desactivation = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True
+    )
+
+    def validate_email(self, value):
+        """
+        Vérifie que l’email n’est pas utilisé par un autre utilisateur.
+        """
+        email = value.strip().lower()
+        user_id = self.context.get("user_id")  # on passe ça depuis la vue
+
+        qs = User.objects.filter(email=email)
+        if user_id:
+            qs = qs.exclude(id=user_id)
+        if qs.exists():
+            raise serializers.ValidationError("Cet email est déjà utilisé par un autre utilisateur.")
+        return email
+
+    def validate_bijouterie_nom(self, value):
+        """
+        On reçoit le nom de la bijouterie, on le transforme en instance.
+        Si string vide → None (pas de changement ou décrochage explicite).
+        """
+        value = (value or "").strip()
+        if not value:
+            return None
+        try:
+            bj = Bijouterie.objects.get(nom=value)
+        except Bijouterie.DoesNotExist:
+            raise serializers.ValidationError("Aucune bijouterie trouvée avec ce nom.")
+        return bj
+    
+
 
 # # class VendorSerializer(serializers.ModelSerializer):
 # #     email = serializers.EmailField(source='user.email', read_only=True)
@@ -151,24 +202,6 @@ class VendorSerializer(serializers.ModelSerializer):
 
 #     mode_groupement = serializers.CharField(required=False)
 
-
-class CreateStaffMemberSerializer(serializers.Serializer):
-    email = serializers.EmailField(
-        validators=[EmailValidator()],
-        help_text="Email de l’utilisateur existant"
-    )
-    bijouterie = serializers.PrimaryKeyRelatedField(
-        queryset=Bijouterie.objects.all(),
-        help_text="ID de la bijouterie valide"
-    )
-    role = serializers.ChoiceField(
-        choices=[("vendor", "Vendor"), ("cashier", "Cashier")],
-        help_text="Type de staff à créer"
-    )
-    # description = serializers.CharField(
-    #     required=False, allow_blank=True, max_length=255
-    # )
-
 # # ----- Lecture -----
 
 class UserSerializer(serializers.ModelSerializer):
@@ -182,100 +215,103 @@ class BijouterieMiniSerializer(serializers.ModelSerializer):
         model = Bijouterie
         fields = ["id", "nom"]
 
-
 class VendorReadSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
-    slug = serializers.CharField(source="user.slug", read_only=True)
-    bijouterie = BijouterieMiniSerializer(read_only=True)
-    user_email = serializers.EmailField(source="user.email", read_only=True)
-    user_full_name = serializers.SerializerMethodField(read_only=True)
-    user_telephone = serializers.CharField(source="user.telephone", read_only=True)
+    email = serializers.EmailField(source="user.email", read_only=True)
+    full_name = serializers.SerializerMethodField()
+    bijouterie_id = serializers.IntegerField(source="bijouterie.id", read_only=True)
+    bijouterie_nom = serializers.CharField(source="bijouterie.nom", read_only=True)
 
     class Meta:
         model = Vendor
         fields = [
             "id",
-            "slug",
-            "user", "user_email", "user_full_name", "user_telephone",
-            "bijouterie",
-            "verifie", "raison_desactivation",
+            "email",
+            "full_name",
+            "bijouterie_id",
+            "bijouterie_nom",
+            "verifie",          # <-- remplace 'active' par 'verifie'
+            "created_at",
+            "updated_at",
         ]
+        read_only_fields = ["id", "email", "bijouterie_id", "bijouterie_nom", "created_at", "updated_at"]
 
-    def get_user_full_name(self, obj):
-        u = obj.user
+    def get_full_name(self, obj):
+        u = getattr(obj, "user", None)
         if not u:
             return ""
-        fn = (u.first_name or "").strip()
-        ln = (u.last_name or "").strip()
-        return (f"{fn} {ln}").strip() or (u.username or u.email or "")
+        first = (u.first_name or "").strip()
+        last  = (u.last_name or "").strip()
+        return (first + " " + last).strip() or (u.username or u.email or "")
+    
 
 
 # # ----- Écriture / Update -----
 # # Permet de mettre à jour Vendor + quelques champs du User.
 
-class VendorUpdateSerializer(serializers.ModelSerializer):
-    # lier/délier la bijouterie par id
-    bijouterie_id = serializers.PrimaryKeyRelatedField(
-        source="bijouterie",
-        queryset=Bijouterie.objects.all(),
-        write_only=True,
-        required=False,
-        allow_null=True,
-    )
-    # patch “user” minimal : email/username/prénom/nom/téléphone
-    user = serializers.DictField(write_only=True, required=False)
+# class VendorUpdateSerializer(serializers.ModelSerializer):
+#     # lier/délier la bijouterie par id
+#     bijouterie_id = serializers.PrimaryKeyRelatedField(
+#         source="bijouterie",
+#         queryset=Bijouterie.objects.all(),
+#         write_only=True,
+#         required=False,
+#         allow_null=True,
+#     )
+#     # patch “user” minimal : email/username/prénom/nom/téléphone
+#     user = serializers.DictField(write_only=True, required=False)
 
-    class Meta:
-        model = Vendor
-        fields = ["verifie", "raison_desactivation", "bijouterie_id", "user"]
+#     class Meta:
+#         model = Vendor
+#         fields = ["verifie", "raison_desactivation", "bijouterie_id", "user"]
 
-    def validate_user(self, data):
-        """Contrôles simples d’unicité (si fournis)."""
-        user = getattr(self.instance, "user", None)
-        if not user:
-            return data
+#     def validate_user(self, data):
+#         """Contrôles simples d’unicité (si fournis)."""
+#         user = getattr(self.instance, "user", None)
+#         if not user:
+#             return data
 
-        email = data.get("email")
-        if email and User.objects.exclude(pk=user.pk).filter(email__iexact=email).exists():
-            raise serializers.ValidationError({"email": "Cet email est déjà utilisé."})
+#         email = data.get("email")
+#         if email and User.objects.exclude(pk=user.pk).filter(email__iexact=email).exists():
+#             raise serializers.ValidationError({"email": "Cet email est déjà utilisé."})
 
-        username = data.get("username")
-        if username and User.objects.exclude(pk=user.pk).filter(username__iexact=username).exists():
-            raise serializers.ValidationError({"username": "Ce nom d’utilisateur est déjà utilisé."})
+#         username = data.get("username")
+#         if username and User.objects.exclude(pk=user.pk).filter(username__iexact=username).exists():
+#             raise serializers.ValidationError({"username": "Ce nom d’utilisateur est déjà utilisé."})
 
-        telephone = data.get("telephone")
-        if telephone and User.objects.exclude(pk=user.pk).filter(telephone__iexact=telephone).exists():
-            raise serializers.ValidationError({"telephone": "Ce téléphone est déjà utilisé."})
+#         telephone = data.get("telephone")
+#         if telephone and User.objects.exclude(pk=user.pk).filter(telephone__iexact=telephone).exists():
+#             raise serializers.ValidationError({"telephone": "Ce téléphone est déjà utilisé."})
 
-        return data
+#         return data
 
-    def update(self, instance, validated_data):
-        # update Vendor
-        bijouterie = validated_data.pop("bijouterie", serializers.empty)
-        if bijouterie is not serializers.empty:
-            instance.bijouterie = bijouterie
+#     def update(self, instance, validated_data):
+#         # update Vendor
+#         bijouterie = validated_data.pop("bijouterie", serializers.empty)
+#         if bijouterie is not serializers.empty:
+#             instance.bijouterie = bijouterie
 
-        instance.verifie = validated_data.get("verifie", instance.verifie)
-        instance.raison_desactivation = validated_data.get("raison_desactivation", instance.raison_desactivation)
-        instance.save()
+#         instance.verifie = validated_data.get("verifie", instance.verifie)
+#         instance.raison_desactivation = validated_data.get("raison_desactivation", instance.raison_desactivation)
+#         instance.save()
 
-        # update User (optionnel)
-        user_data = validated_data.pop("user", {})
-        u = instance.user
-        if u and user_data:
-            for field in ("email", "username", "first_name", "last_name", "telephone"):
-                if field in user_data:
-                    setattr(u, field, user_data[field])
-            u.save()
+#         # update User (optionnel)
+#         user_data = validated_data.pop("user", {})
+#         u = instance.user
+#         if u and user_data:
+#             for field in ("email", "username", "first_name", "last_name", "telephone"):
+#                 if field in user_data:
+#                     setattr(u, field, user_data[field])
+#             u.save()
 
-        return instance
+#         return instance
 
 
 class CashierSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
+    email = serializers.EmailField(source='user.email', read_only=True)
+
     class Meta:
         model = Cashier
-        fields = ["id", "user", "verifie", "raison_desactivation"]
+        fields = ['email', 'bijouterie', 'verifie']
 
 
 class CashierReadSerializer(serializers.ModelSerializer):

@@ -1,78 +1,171 @@
+
 from django.contrib.auth import get_user_model
+from django.core.validators import EmailValidator
 from rest_framework import serializers
 
-from store.models import Bijouterie  # adapte
-from vendor.models import Vendor
+from store.models import Bijouterie
 
-from .models import Cashier  # adapte si ton app diffère
+from .models import Manager
 
 User = get_user_model()
 
-class AddStaffSerializer(serializers.Serializer):
-    role = serializers.ChoiceField(choices=["vendor", "cashier"])
-    email = serializers.EmailField()
-    bijouterie_id = serializers.IntegerField(required=False)
 
-    def validate(self, data):
-        role = data["role"]
-        if role == "vendor" and not data.get("bijouterie_id"):
-            raise serializers.ValidationError({"bijouterie_id": "Requis pour un vendeur."})
-        return data
-
-    def create(self, validated):
-        email = validated["email"].lower()
-
-        user, _ = User.objects.get_or_create(
-            email=email,
-        )
-        
-        user.save()
-
-        role = validated["role"]
-        if role == "vendor":
-            bijouterie = Bijouterie.objects.get(id=validated["bijouterie_id"])
-            vendor, _ = Vendor.objects.get_or_create(user=user, defaults={"bijouterie": bijouterie})
-            if vendor.bijouterie_id != bijouterie.id:
-                vendor.bijouterie = bijouterie
-                vendor.save()
-            return {"user": user, "role": "vendor", "profile_id": vendor.id}
-
-        # cashier
-        cashier, _ = Cashier.objects.get_or_create(user=user)
-        return {"user": user, "role": "cashier", "profile_id": cashier.id}
-
-# ---------------------------  out-put ---------------------------
-class BijouterieMiniSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Bijouterie
-        fields = ["id", "nom", "adresse", "telephone"]  # adapte aux champs que tu as
-
-class UserMiniSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ["id", "email", "first_name", "last_name", "telephone"]  # adapte
-
-class VendorOutSerializer(serializers.ModelSerializer):
-    user = UserMiniSerializer(read_only=True)
-    bijouterie = BijouterieMiniSerializer(read_only=True)
+class ManagerSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(source='user.email', read_only=True)
 
     class Meta:
-        model = Vendor
-        fields = ["id", "verifie", "created_at", "user", "bijouterie"]
-        
-# ---------------------------  end out-put ---------------------------
+        model = Manager
+        fields = ['email', 'bijouterie', 'verifie']
 
 
-# -------------------------------addd-----------------------------------
-ROLE_ADMIN   = "admin"
-ROLE_MANAGER = "manager"
 ROLE_VENDOR  = "vendor"
 ROLE_CASHIER = "cashier"
+ROLE_MANAGER = "manager"
 
-class AddStaffSerializer(serializers.Serializer):
-    role = serializers.ChoiceField(choices=[ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER])
+
+class CreateStaffMemberSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    bijouterie_id = serializers.IntegerField(required=False)
-    verifie = serializers.BooleanField(required=False, default=True)
+    bijouterie = serializers.SlugRelatedField(
+        queryset=Bijouterie.objects.all(),
+        slug_field="nom",   # on envoie "rio-gold" par exemple
+        help_text="Nom de la bijouterie (champ 'nom')"
+    )
+    role = serializers.ChoiceField(
+        choices=[
+            (ROLE_VENDOR, "vendor"),
+            (ROLE_CASHIER, "cashier"),
+            (ROLE_MANAGER, "manager"),
+        ],
+        help_text="Type de staff à créer: vendor, cashier ou manager"
+    )
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+
+# class CreateStaffMemberSerializer(serializers.Serializer):
+#     email = serializers.EmailField(validators=[EmailValidator()],
+#         help_text="Email de l’utilisateur existant"
+#     )
+#     # bijouterie = serializers.PrimaryKeyRelatedField(queryset=Bijouterie.objects.all(),
+#     #     help_text="ID de la bijouterie valide"
+#     # )
+#     bijouterie = serializers.SlugRelatedField(
+#         queryset=Bijouterie.objects.all(),
+#         slug_field='nom',
+#         write_only=True
+#     )
+#     role = serializers.ChoiceField(choices=[("vendor", "Vendor"), ("cashier", "Cashier")],
+#         help_text="Type de staff à créer"
+#     )
+#     # description = serializers.CharField(
+#     #     required=False, allow_blank=True, max_length=255
+#     # )
+
+
+
+# class UpdateStaffSerializer(serializers.Serializer):
+#     email = serializers.EmailField(required=False)
+
+#     # On envoie le NOM de la bijouterie, ça renvoie directement une instance de Bijouterie
+#     bijouterie_nom = serializers.SlugRelatedField(
+#         queryset=Bijouterie.objects.all(),
+#         slug_field='nom',
+#         required=False,
+#         allow_null=True
+#     )
+
+#     verifie = serializers.BooleanField(required=False)
+#     raison_desactivation = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+#     def validate_email(self, value):
+#         email = value.strip().lower()
+#         user_id = self.context.get("user_id")
+#         if user_id:
+#             # L’email ne doit pas être pris par un autre user
+#             if User.objects.filter(email=email).exclude(id=user_id).exists():
+#                 raise serializers.ValidationError("Cet email est déjà utilisé par un autre utilisateur.")
+#         return email
+
+
+# class UpdateStaffSerializer(serializers.Serializer):
+#     """
+#     Payload de mise à jour d’un staff (manager / cashier) :
+
+#     {
+#       "role": "manager" | "cashier",
+#       "email": "nouveau@mail.com",
+#       "bijouterie_nom": "Sandaga",
+#       "verifie": true,
+#       "raison_desactivation": "En congé"
+#     }
+#     """
+#     role = serializers.ChoiceField(
+#         choices=[("manager", "Manager"), ("cashier", "Cashier")],
+#         help_text="Type de staff à mettre à jour"
+#     )
+#     email = serializers.EmailField(required=False)
+
+#     # On envoie le NOM de la bijouterie, et SlugRelatedField récupère l’instance
+#     bijouterie_nom = serializers.SlugRelatedField(
+#         queryset=Bijouterie.objects.all(),
+#         slug_field="nom",
+#         required=False,
+#         allow_null=True,
+#         help_text="Nom de la bijouterie (ex: 'Sandaga')"
+#     )
+
+#     verifie = serializers.BooleanField(required=False)
+#     raison_desactivation = serializers.CharField(
+#         required=False,
+#         allow_blank=True,
+#         allow_null=True
+#     )
+
+#     def validate_email(self, value):
+#         """
+#         Vérifie que l'email n'est pas utilisé par un autre utilisateur.
+#         On passe user_id dans le context depuis la vue.
+#         """
+#         email = value.strip().lower()
+#         user_id = self.context.get("user_id")
+#         qs = User.objects.filter(email=email)
+#         if user_id:
+#             qs = qs.exclude(id=user_id)
+#         if qs.exists():
+#             raise serializers.ValidationError("Cet email est déjà utilisé par un autre utilisateur.")
+#         return email
     
-# ---------------------------------End Add------------------------------
+
+
+class UpdateStaffSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(
+        choices=[("manager", "Manager"), ("cashier", "Cashier")],
+        help_text="Type de staff à mettre à jour",
+    )
+    email = serializers.EmailField(required=False)
+    bijouterie_nom = serializers.SlugRelatedField(
+        queryset=Bijouterie.objects.all(),
+        slug_field='nom',
+        required=False,
+        allow_null=True,
+        help_text="Nom de la bijouterie à rattacher",
+    )
+    verifie = serializers.BooleanField(required=False)
+    raison_desactivation = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+
+    def validate_email(self, value):
+        email = value.strip().lower()
+        user_id = self.context.get("user_id")
+        if user_id:
+            if User.objects.filter(email=email).exclude(id=user_id).exists():
+                raise serializers.ValidationError("Cet email est déjà utilisé par un autre utilisateur.")
+        else:
+            if User.objects.filter(email=email).exists():
+                raise serializers.ValidationError("Cet email est déjà utilisé.")
+        return email
+

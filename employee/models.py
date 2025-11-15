@@ -1,7 +1,9 @@
 from django.db import models
+from django.utils import timezone
 from django.utils.html import mark_safe
 
 from store.models import Bijouterie
+
 # from userauths.models import user_directory_path
 
 
@@ -32,7 +34,9 @@ class Employee(models.Model):
     bijouterie = models.ForeignKey(Bijouterie, on_delete=models.SET_NULL, null=True, blank=True, related_name="employees",)
     description = models.TextField(null=True, blank=True)
     active = models.BooleanField(default=True)
-    date = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    joined_at = models.DateTimeField(default=timezone.now,help_text="Date d’entrée dans l’entreprise",)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         verbose_name = "Employé"

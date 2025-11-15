@@ -257,15 +257,15 @@ EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
 EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
 EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=20, cast=int)
 # DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=f"Rio Gold <{EMAIL_HOST_USER}>")
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', 'Rio Gold <no-reply@rio-gold.com>')
 
-EMAIL_TOKEN_EXPIRATION = config('EMAIL_TOKEN_EXPIRATION', default=3600, cast=int)  # en secondes
 
 
 
 # --- Frontend / URLs (pour tes emails) ---
 FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='https://rio-gold.com')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', 'Rio Gold <no-reply@rio-gold.com>')
 FRONTEND_URL = config('FRONTEND_URL', default='https://rio-gold.com')
+EMAIL_TOKEN_EXPIRATION = config('EMAIL_TOKEN_EXPIRATION', default=3600, cast=int)  # en secondes
 
 # send_confirmation_email
 # En dev, mets un backend sûr
@@ -279,8 +279,8 @@ FRONTEND_URL = config('FRONTEND_URL', default='https://rio-gold.com')
 # CSRF_COOKIE_SECURE = True
 
 # --- Proxy/HTTPS (si Nginx) ---
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-USE_X_FORWARDED_HOST = True
+# SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+# USE_X_FORWARDED_HOST = True
 
 # --- Sécurité prod (active quand tout est prêt) ---
 # SECURE_SSL_REDIRECT = True

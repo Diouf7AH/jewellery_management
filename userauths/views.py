@@ -5,9 +5,10 @@ from smtplib import (SMTPDataError, SMTPException, SMTPRecipientsRefused,
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.http import Http404
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect
@@ -27,11 +28,16 @@ from userauths.utils import send_confirmation_email, verify_email_token
 from .auth_backend import EmailPhoneUsernameAuthenticationBackend as EoP
 from .models import Profile, Role
 # (optionnel) si tu mets en place la file d’attente :
-from .outbox import enqueue_email  # voir 2.b
 from .serializers import (ProfileSerializer, RoleSerializer,
                           UserChangePasswordSerializer, UserDetailSerializer,
                           UserLoginSerializer, UserRegistrationSerializer)
 from .utils import generate_email_token, send_confirmation_email
+
+# versio angular
+# from userauths.tokens import generate_email_token, verify_email_token
+# Dans UserRegistrationView → tu appelles generate_email_token(user)
+# Dans EmailVerificationView → tu appelles verify_email_token(token)
+
 
 User = get_user_model()
 
@@ -69,13 +75,108 @@ def get_tokens_for_user(user):
 #         return Response(data, status=status.HTTP_201_CREATED)
 
 
-try:
-    from .outbox import enqueue_email  # si tu as mis en place l’outbox
-    HAS_OUTBOX = True
-except Exception:
-    HAS_OUTBOX = False
 
-User = get_user_model()
+# class UserRegistrationView(APIView):
+#     permission_classes = [AllowAny]
+
+#     @swagger_auto_schema(
+#         operation_summary="Inscription d’un nouvel utilisateur avec confirmation email",
+#         operation_description="Crée l'utilisateur, génère les tokens JWT et envoie l'email de confirmation.",
+#         request_body=UserRegistrationSerializer,
+#         responses={
+#             201: openapi.Response('Inscription réussie'),
+#             400: openapi.Response('Requête invalide')
+#         }
+#     )
+#     @transaction.atomic
+#     def post(self, request, format=None):
+#         s = UserRegistrationSerializer(data=request.data)
+#         s.is_valid(raise_exception=True)
+#         data = s.validated_data
+
+#         # --- Création utilisateur ---
+#         email_norm = (data["email"] or "").strip().lower()
+#         username = (data.get("username") or "").strip()
+#         telephone = (data.get("telephone") or "").strip()
+
+#         try:
+#             user = User(
+#                 email=email_norm,
+#                 username=username,
+#                 telephone=telephone,
+#                 is_active=False,          # actif après confirmation
+#                 is_email_verified=False,
+#             )
+#             user.set_password(data["password"])
+#             user.save()
+#         except IntegrityError:
+#             return Response(
+#                 {"email": ["Cet email est déjà utilisé."]},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         # --- JWT tokens ---
+#         refresh = RefreshToken.for_user(user)
+#         tokens = {
+#             "access": str(refresh.access_token),
+#             "refresh": str(refresh),
+#         }
+
+#         # --- Lien de confirmation ---
+#         token = generate_email_token(user)
+
+#         frontend = (
+#             getattr(settings, "FRONTEND_BASE_URL", "")
+#             or getattr(settings, "FRONTEND_URL", "")
+#             or ""
+#         ).rstrip("/")
+
+#         if frontend:
+#             # URL front : https://rio-gold.com/confirm-email?token=...
+#             confirm_url = f"{frontend}/confirm-email?token={token}"
+#             home_url = frontend
+#         else:
+#             # Fallback backend
+#             from django.urls import reverse
+#             confirm_url = request.build_absolute_uri(
+#                 reverse("verify-email") + f"?token={token}"
+#             )
+#             home_url = request.build_absolute_uri("/")
+
+#         # --- Envoi direct (pas d'outbox) ---
+#         email_status = "sent"
+#         try:
+#             send_confirmation_email(
+#                 user,
+#                 request=None,
+#                 confirm_url=confirm_url,
+#                 home_url=home_url,
+#             )
+#         except (SMTPRecipientsRefused, SMTPDataError, SMTPSenderRefused, SMTPException) as e:
+#             print("ERREUR SMTP >>>", e)  # utile en dev
+#             email_status = "failed"
+#         except Exception as e:
+#             print("ERREUR ENVOI EMAIL >>>", e)
+#             email_status = "failed"
+
+#         # --- Réponse ---
+#         return Response(
+#             {
+#                 "message": "Inscription réussie ✅. Vérifiez votre email.",
+#                 "user": {
+#                     "id": user.id,
+#                     "email": user.email,
+#                     "username": user.username,
+#                     "telephone": user.telephone,
+#                     "is_active": user.is_active,
+#                     "is_email_verified": getattr(user, "is_email_verified", False),
+#                 },
+#                 "tokens": tokens,
+#                 "email_status": email_status,  # "sent" ou "failed"
+#             },
+#             status=status.HTTP_201_CREATED,
+#         )
+
 
 class UserRegistrationView(APIView):
     permission_classes = [AllowAny]
@@ -95,53 +196,52 @@ class UserRegistrationView(APIView):
         s.is_valid(raise_exception=True)
         data = s.validated_data
 
-        # --- Création utilisateur (désormais ici) ---
+        # --- Création utilisateur ---
+        email_norm = (data["email"] or "").strip().lower()
+        username = (data.get("username") or "").strip()
+        telephone = (data.get("telephone") or "").strip()
+
         user = User(
-            email=data["email"],
-            username=data.get("username") or "",
-            telephone=data.get("telephone") or "",
-            is_active=False,             # ✅ conseillé: actif après confirmation
-            is_email_verified=False,    # champ bool custom si tu l’as
+            email=email_norm,
+            username=username,
+            telephone=telephone,
+            is_active=False,
+            is_email_verified=False,
         )
         user.set_password(data["password"])
         user.save()
 
         # --- JWT tokens ---
         refresh = RefreshToken.for_user(user)
-        tokens = {"access": str(refresh.access_token), "refresh": str(refresh)}
+        tokens = {
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+        }
 
-        # --- Lien de confirmation (FORCE frontend) ---
+        # --- Lien de confirmation (BACKEND) ---
         token = generate_email_token(user)
-        # frontend = getattr(settings, "FRONTEND_BASE_URL", "").rstrip("/")
-        # Option A (recommandé) : lien vers le frontend
-        # confirm_url = f"{frontend}/confirm-email?token={token}" if frontend else None
-        
-        frontend = (settings.FRONTEND_BASE_URL or settings.FRONTEND_URL).rstrip("/")
-        confirm_url = f"{frontend}/confirm-email?token={token}"
-        home_url = frontend or "/"
 
-        # Si tu préfères le backend pour vérifier (Option B), dé-commente:
-        # from django.urls import reverse
-        # confirm_url = request.build_absolute_uri(reverse('verify-email') + f"?token={token}")
-        # home_url = request.build_absolute_uri('/')
+        confirm_url = request.build_absolute_uri(
+            reverse("verify-email") + f"?token={token}"
+        )
+        home_url = request.build_absolute_uri("/")
 
-        # --- Envoi email (ou enfile si erreur SMTP) ---
+        # --- Envoi email direct ---
         email_status = "sent"
         try:
-            send_confirmation_email(user, request=None, confirm_url=confirm_url, home_url=home_url)
+            send_confirmation_email(
+                user,
+                request=None,
+                confirm_url=confirm_url,
+                home_url=home_url,
+            )
         except (SMTPRecipientsRefused, SMTPDataError, SMTPSenderRefused, SMTPException) as e:
-            if HAS_OUTBOX:
-                enqueue_email(
-                    to=user.email,
-                    template="confirm_email",
-                    context={"user_id": user.id, "confirm_url": confirm_url, "home_url": home_url},
-                    reason=f"{e.__class__.__name__}: {e}"
-                )
-                email_status = "queued"
-            else:
-                email_status = "failed"
+            print("ERREUR SMTP >>>", e)
+            email_status = "failed"
+        except Exception as e:
+            print("ERREUR ENVOI EMAIL >>>", e)
+            email_status = "failed"
 
-        # --- Réponse ---
         return Response(
             {
                 "message": "Inscription réussie ✅. Vérifiez votre email.",
@@ -154,12 +254,13 @@ class UserRegistrationView(APIView):
                     "is_email_verified": getattr(user, "is_email_verified", False),
                 },
                 "tokens": tokens,
-                "email_status": email_status,  # "sent" | "queued" | "failed"
+                "email_status": email_status,
             },
-            status=status.HTTP_201_CREATED
+            status=status.HTTP_201_CREATED,
         )
 
-
+        
+    
 
 # class EmailVerificationView(APIView):
 #     permission_classes = []
@@ -231,6 +332,50 @@ class EmailVerificationView(APIView):
         #     return redirect(settings.FRONTEND_BASE_URL.rstrip("/") + "/email-confirmed")
 
         return render(request, "emails/email_confirmed.html")
+
+# # version Angular
+# class EmailVerificationView(APIView):
+#     permission_classes = []  # public
+
+#     def get(self, request):
+#         token = request.GET.get("token")
+#         if not token:
+#             return Response(
+#                 {"status": "invalid", "detail": "Token manquant."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         result = verify_email_token(token) or {}
+#         status_token = (result.get("status") or "").lower()
+#         email = (result.get("email") or "").strip().lower()
+
+#         # Token expiré
+#         if status_token == "expired":
+#             return Response({"status": "expired"}, status=status.HTTP_410_GONE)
+
+#         # Token invalide
+#         if status_token not in ("valid", "ok") or not email:
+#             return Response({"status": "invalid"}, status=status.HTTP_400_BAD_REQUEST)
+
+#         # Récupérer l'utilisateur
+#         try:
+#             user = User.objects.get(email=email)
+#         except User.DoesNotExist:
+#             return Response({"status": "invalid"}, status=status.HTTP_404_NOT_FOUND)
+
+#         # Déjà vérifié → idempotent
+#         if getattr(user, "is_email_verified", False) and getattr(user, "is_active", True):
+#             return Response({"status": "ok"}, status=status.HTTP_200_OK)
+
+#         # Marquer vérifié (+ activer si besoin)
+#         user.is_email_verified = True
+#         update_fields = ["is_email_verified"]
+#         if hasattr(user, "is_active") and not user.is_active:
+#             user.is_active = True
+#             update_fields.append("is_active")
+#         user.save(update_fields=update_fields)
+
+#         return Response({"status": "ok"}, status=status.HTTP_200_OK)
 
 
 # def resend_confirmation_form(request):
@@ -713,7 +858,7 @@ class DeleteRoleAPIView(APIView):
 #         return Response(serializer.errors, status=400)
 
 
-class MeProfileView(APIView):
+class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
     # ← autorise JSON, form-data et multipart (pour image)
     parser_classes = [parsers.JSONParser, parsers.FormParser, parsers.MultiPartParser]
