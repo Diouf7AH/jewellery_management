@@ -19,7 +19,7 @@ urlpatterns = [
     # Store API Endpoints
     # path('', userauths_views.getRoutes),
     
-    path("vendors/stats/", vendor_views.VendorStatsView.as_view(), name="vendor-stats"),
+    path("vendors/dashboard/", vendor_views.VendorDashboardView.as_view(), name="vendor-dashboar"),
     path('dashboard/achat/dashboard', achat_views.AchatDashboardView.as_view(), name='dashboard-achat'),
     # path('vendor/me/', vendor_views.VendorMeView.as_view(), name='vendor-me'),
     
@@ -35,6 +35,7 @@ urlpatterns = [
     path('logout/', userauths_views.UserLogoutView.as_view(), name='logout'),
     # path('changepassword/<int:pk>', userauths_views.UserChangePasswordView.as_view(), name='changepassword'),
     path('user/register', userauths_views.UserRegistrationView.as_view(), name='register'),
+    path("auth/resend-verification/", userauths_views.ResendVerificationEmailView.as_view(), name="resend-verification"),
     
     path('verify-email/', userauths_views.EmailVerificationView.as_view(), name='verify-email'),
     # path('resend-confirmation/', userauths_views.ResendConfirmationView.as_view(), name='resend-confirmation'),
@@ -146,7 +147,15 @@ urlpatterns = [
     # END ACHAT
     
     # INVENTORY
-    path("inventory/movements/", inv_views.InventoryMovementListView.as_view(), name="inventory-movement-list"),
+    # Journal détaillé des mouvements
+     # 🔹 Journal détaillé des mouvements (grand livre inventaire)
+    path("inventory/movements/", inv_views.InventoryMovementListView.as_view(),name="movement-list",),
+    # 🔹 Tableau d’inventaire par PRODUIT ET BIJOUTERIE
+    path("inventory/table-per-bijouterie/", inv_views.InventoryMovementTablePerBijouterieView.as_view(),name="table-per-bijouterie",),
+    # 🔹 V3 combinée : inventaire bijouterie + vendor (par produit)
+    path("inventory/bijouterie-vendor/", inv_views.InventoryBijouterieVendorTableView.as_view(),name="bijouterie-vendor-table",),
+    # 🔹 Stats d’allocations par vendor / année
+    path("inventory/vendors/<int:vendor_id>/allocations/", inv_views.VendorAllocationStatsView.as_view(),name="vendor-allocation-stats",),
     # END INVENTORY
     
     # staff

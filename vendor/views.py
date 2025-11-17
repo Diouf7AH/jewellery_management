@@ -6,11 +6,12 @@ from io import BytesIO
 # NB: on se base sur VenteProduit.vendor et on groupe par vente__created_at
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Count, DecimalField, F, Q, Sum
+from django.db.models import Avg, Count, DecimalField, F, Q, Sum
 from django.db.models.functions import TruncDay, TruncMonth, TruncWeek
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import generics, permissions, status
@@ -147,180 +148,623 @@ allowed_roles_admin_manager = ['admin', 'manager',]
 #         })
 
 
-class VendorStatsView(APIView):
-    """
-    GET /api/vendors/stats/?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&group_by=day|week|month
-    - vendor connecté : son dashboard
-    - admin/manager   : ?user_id=... ou ?vendor_email=...
-    - ?export=excel   : export Excel
-    """
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
+# class VendorStatsView(APIView):
+#     """
+#     GET /api/vendors/stats/?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&group_by=day|week|month
+#     - vendor connecté : son dashboard
+#     - admin/manager   : ?user_id=... ou ?vendor_email=...
+#     - ?export=excel   : export Excel
+#     """
+#     permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
 
-    @swagger_auto_schema(
-        operation_id="vendorStats",
-        operation_summary="Statistiques d’un vendor",
-        operation_description=(
-            "Un vendor voit son propre dashboard. "
-            "Admin/manager peuvent cibler via ?user_id=... ou ?vendor_email=... "
-            "Filtres: ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&group_by=day|week|month "
-            "Export Excel: ?export=excel"
-        ),
-        manual_parameters=[
-            openapi.Parameter("user_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
-            openapi.Parameter("vendor_email", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
-            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date", required=False),
-            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date", required=False),
-            openapi.Parameter("group_by", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              enum=["day","week","month"], required=False),
-            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, enum=["excel"], required=False),
-        ],
-        tags=["Analytics"],
-        responses={200: "JSON ou Excel"}
-    )
+#     @swagger_auto_schema(
+#         operation_id="vendorStats",
+#         operation_summary="Statistiques d’un vendor",
+#         operation_description=(
+#             "Un vendor voit son propre dashboard. "
+#             "Admin/manager peuvent cibler via ?user_id=... ou ?vendor_email=... "
+#             "Filtres: ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&group_by=day|week|month "
+#             "Export Excel: ?export=excel"
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter("user_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
+#             openapi.Parameter("vendor_email", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+#             openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date", required=False),
+#             openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date", required=False),
+#             openapi.Parameter("group_by", openapi.IN_QUERY, type=openapi.TYPE_STRING,
+#                               enum=["day","week","month"], required=False),
+#             openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, enum=["excel"], required=False),
+#         ],
+#         tags=["Analytics"],
+#         responses={200: "JSON ou Excel"}
+#     )
+#     def get(self, request):
+#         u = request.user
+#         is_admin = u.is_superuser or u.groups.filter(name__in=["admin","manager"]).exists()
+
+#         # -------- 1) cible vendor --------
+#         target_vendor = None
+#         if is_admin:
+#             user_id = request.GET.get("user_id")
+#             vendor_email = request.GET.get("vendor_email")
+#             if user_id:
+#                 target_vendor = Vendor.objects.select_related("user","bijouterie").filter(user_id=user_id).first()
+#                 if not target_vendor:
+#                     return Response({"detail":"Vendor introuvable pour ce user_id."}, status=404)
+#             elif vendor_email:
+#                 User = get_user_model()
+#                 user = User.objects.filter(email__iexact=vendor_email.strip()).first()
+#                 if not user:
+#                     return Response({"detail":"Utilisateur introuvable pour cet email."}, status=404)
+#                 target_vendor = Vendor.objects.select_related("user","bijouterie").filter(user=user).first()
+#                 if not target_vendor:
+#                     return Response({"detail":"Aucun profil Vendor lié à cet email."}, status=404)
+#             else:
+#                 # pas de cible → vide
+#                 if request.GET.get("export") == "excel":
+#                     return self._export_excel({}, [], "vendor_stats_empty.xlsx")
+#                 return Response({"summary": {}, "series": []})
+#         else:
+#             target_vendor = getattr(u, "staff_vendor_profile", None)
+#             if not target_vendor:
+#                 return Response({"detail":"Profil vendor non trouvé."}, status=403)
+
+#         # -------- 2) bornes & groupement --------
+#         today = timezone.localdate()
+#         date_from_str = request.GET.get("date_from")
+#         date_to_str   = request.GET.get("date_to")
+#         try:
+#             date_from = datetime.fromisoformat(date_from_str).date() if date_from_str else (today - timedelta(days=29))
+#             date_to   = datetime.fromisoformat(date_to_str).date()   if date_to_str   else today
+#         except ValueError:
+#             return Response({"detail":"Paramètres date invalides."}, status=400)
+#         if date_from > date_to:
+#             return Response({"detail":"date_from doit être ≤ date_to."}, status=400)
+
+#         group_by = (request.GET.get("group_by") or "day").lower()
+#         if group_by not in ("day","week","month"):
+#             group_by = "day"
+
+#         trunc, fmt = {
+#             "day":   (TruncDay("vente__created_at"),   "%Y-%m-%d"),
+#             "week":  (TruncWeek("vente__created_at"),  "%G-W%V"),
+#             "month": (TruncMonth("vente__created_at"), "%Y-%m"),
+#         }[group_by]
+
+#         # -------- 3) base: lignes du vendor --------
+#         lines = (VenteProduit.objects
+#                  .filter(vendor=target_vendor,
+#                          vente__created_at__date__gte=date_from,
+#                          vente__created_at__date__lte=date_to))
+
+#         # KPI globaux
+#         agg_revenue = lines.aggregate(rev=Sum("prix_ttc"))["rev"] or Decimal("0.00")
+#         agg_qty     = lines.aggregate(q=Sum("quantite"))["q"] or 0
+#         # nb ventes distinctes (commandes)
+#         orders_cnt  = (lines.values("vente_id").distinct().count()) or 0
+#         avg_ticket  = (agg_revenue / orders_cnt) if orders_cnt else Decimal("0.00")
+
+#         summary = {
+#             "vendor": {
+#                 "id": target_vendor.id,
+#                 "username": getattr(target_vendor.user, "username", None),
+#                 "email": getattr(target_vendor.user, "email", None),
+#                 "bijouterie": getattr(target_vendor.bijouterie, "nom", None),
+#             },
+#             "date_from": date_from.isoformat(),
+#             "date_to": date_to.isoformat(),
+#             "orders_count": orders_cnt,
+#             "quantity_sold": int(agg_qty),
+#             "revenue_total": str(agg_revenue.quantize(Decimal("0.01"))),
+#             "avg_ticket": str(avg_ticket.quantize(Decimal("0.01"))),
+#         }
+
+#         # Série temporelle
+#         series_qr = (lines
+#                      .annotate(bucket=trunc)
+#                      .values("bucket")
+#                      .annotate(
+#                          orders=Count("vente_id", distinct=True),
+#                          quantity=Sum("quantite"),
+#                          revenue=Sum("prix_ttc"),
+#                      )
+#                      .order_by("bucket"))
+
+#         series = []
+#         for row in series_qr:
+#             b = row["bucket"]
+#             label = b.strftime(fmt) if hasattr(b, "strftime") else str(b)
+#             series.append({
+#                 "bucket": label,
+#                 "orders": row["orders"] or 0,
+#                 "quantity": int(row["quantity"] or 0),
+#                 "revenue": str((row["revenue"] or Decimal("0.00")).quantize(Decimal("0.01"))),
+#             })
+
+#         # export ?
+#         if request.GET.get("export") == "excel":
+#             return self._export_excel(summary, series, f"vendor_stats_{target_vendor.id}.xlsx")
+
+#         return Response({"summary": summary, "series": series}, status=200)
+
+#     # ------ helper export ------
+#     def _export_excel(self, summary: dict, series: list[dict], filename: str):
+#         from io import BytesIO
+
+#         from openpyxl import Workbook
+
+#         wb = Workbook()
+#         ws1 = wb.active
+#         ws1.title = "Summary"
+#         ws1.append(["Clé", "Valeur"])
+#         for k, v in summary.items():
+#             if isinstance(v, dict):
+#                 ws1.append([k, ""])
+#                 for sk, sv in v.items():
+#                     ws1.append([f"  {sk}", sv if sv is not None else ""])
+#             else:
+#                 ws1.append([k, v if v is not None else ""])
+
+#         ws2 = wb.create_sheet("Timeseries")
+#         ws2.append(["bucket","orders","quantity","revenue"])
+#         for r in series:
+#             ws2.append([r["bucket"], r["orders"], r["quantity"], float(r["revenue"])])
+
+#         out = BytesIO()
+#         wb.save(out)
+#         out.seek(0)
+#         resp = HttpResponse(
+#             out.read(),
+#             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+#         )
+#         resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+#         return resp
+
+
+class VendorDashboardView(APIView):
+    """
+    GET /api/vendors/dashboard/
+      - Vendor  : voit son propre dashboard (limité à 1 an)
+      - Manager : vendeurs de SA bijouterie (limité à 3 ans)
+      - Admin   : global, filtrage par bijouterie + vendor
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
     def get(self, request):
-        u = request.user
-        is_admin = u.is_superuser or u.groups.filter(name__in=["admin","manager"]).exists()
+        user = request.user
 
-        # -------- 1) cible vendor --------
-        target_vendor = None
-        if is_admin:
-            user_id = request.GET.get("user_id")
-            vendor_email = request.GET.get("vendor_email")
-            if user_id:
-                target_vendor = Vendor.objects.select_related("user","bijouterie").filter(user_id=user_id).first()
-                if not target_vendor:
-                    return Response({"detail":"Vendor introuvable pour ce user_id."}, status=404)
-            elif vendor_email:
-                User = get_user_model()
-                user = User.objects.filter(email__iexact=vendor_email.strip()).first()
-                if not user:
-                    return Response({"detail":"Utilisateur introuvable pour cet email."}, status=404)
-                target_vendor = Vendor.objects.select_related("user","bijouterie").filter(user=user).first()
-                if not target_vendor:
-                    return Response({"detail":"Aucun profil Vendor lié à cet email."}, status=404)
-            else:
-                # pas de cible → vide
-                if request.GET.get("export") == "excel":
-                    return self._export_excel({}, [], "vendor_stats_empty.xlsx")
-                return Response({"summary": {}, "series": []})
+        # Rôle logique basé sur Role.role + is_superuser
+        role_slug = getattr(getattr(user, "user_role", None), "role", None)
+        if user.is_superuser:
+            role_slug = "admin"
+
+        vendor_filter = None
+        bijouterie_filter = None
+
+        # 1) Période
+        date_from, date_to = self._get_date_range(request)
+        delta_days = (date_to - date_from).days
+
+        # Limitation de durée
+        if role_slug == "vendor" and delta_days > 365:
+            return Response(
+                {"detail": "Vous ne pouvez consulter que les données sur une période maximale de 12 mois."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if role_slug == "manager" and delta_days > 3 * 365:
+            return Response(
+                {"detail": "Vous ne pouvez consulter que les données sur une période maximale de 3 ans."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 2) Scope selon rôle
+        if role_slug == "vendor":
+            try:
+                vendor_profile = Vendor.objects.select_related("bijouterie").get(user=user)
+            except Vendor.DoesNotExist:
+                return Response(
+                    {"detail": "Profil vendeur introuvable pour cet utilisateur."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            vendor_filter = vendor_profile
+            bijouterie_filter = vendor_profile.bijouterie
+
+        elif role_slug == "manager":
+            # adapte si tu as un vrai modèle Manager
+            manager_bijouterie = getattr(getattr(user, "manager_profile", None), "bijouterie", None)
+            if manager_bijouterie is None:
+                return Response(
+                    {"detail": "Bijouterie du manager introuvable."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            bijouterie_filter = manager_bijouterie
+
+            vendor_id = request.query_params.get("vendor_id")
+            if vendor_id:
+                try:
+                    vendor_filter = Vendor.objects.get(
+                        id=vendor_id,
+                        bijouterie=manager_bijouterie,
+                    )
+                except Vendor.DoesNotExist:
+                    return Response(
+                        {"detail": "Vendor non trouvé dans votre bijouterie."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        elif role_slug == "admin":
+            bijouterie_id = request.query_params.get("bijouterie_id")
+            vendor_id = request.query_params.get("vendor_id")
+
+            if bijouterie_id:
+                try:
+                    bijouterie_filter = Bijouterie.objects.get(id=bijouterie_id)
+                except Bijouterie.DoesNotExist:
+                    return Response(
+                        {"detail": "Bijouterie introuvable."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            if vendor_id:
+                qs_vendor = Vendor.objects.all()
+                if bijouterie_filter:
+                    qs_vendor = qs_vendor.filter(bijouterie=bijouterie_filter)
+                try:
+                    vendor_filter = qs_vendor.get(id=vendor_id)
+                except Vendor.DoesNotExist:
+                    return Response(
+                        {"detail": "Vendor introuvable pour ces filtres."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
         else:
-            target_vendor = getattr(u, "staff_vendor_profile", None)
-            if not target_vendor:
-                return Response({"detail":"Profil vendor non trouvé."}, status=403)
+            return Response(
+                {"detail": "Rôle utilisateur non autorisé pour ce dashboard."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-        # -------- 2) bornes & groupement --------
-        today = timezone.localdate()
-        date_from_str = request.GET.get("date_from")
-        date_to_str   = request.GET.get("date_to")
-        try:
-            date_from = datetime.fromisoformat(date_from_str).date() if date_from_str else (today - timedelta(days=29))
-            date_to   = datetime.fromisoformat(date_to_str).date()   if date_to_str   else today
-        except ValueError:
-            return Response({"detail":"Paramètres date invalides."}, status=400)
-        if date_from > date_to:
-            return Response({"detail":"date_from doit être ≤ date_to."}, status=400)
+        # 3) Lignes de vente (⚠️ vendor est sur VenteProduit, pas Vente)
+        lignes = (
+            VenteProduit.objects.select_related(
+                "vente",
+                "produit",
+                "produit__categorie",
+                "produit__marque",
+                "produit__purete",
+                "vendor",
+                "vendor__bijouterie",
+            )
+            .filter(
+                vente__created_at__date__gte=date_from,
+                vente__created_at__date__lte=date_to,
+            )
+        )
 
-        group_by = (request.GET.get("group_by") or "day").lower()
-        if group_by not in ("day","week","month"):
-            group_by = "day"
+        if vendor_filter:
+            lignes = lignes.filter(vendor=vendor_filter)
+        elif bijouterie_filter:
+            lignes = lignes.filter(vendor__bijouterie=bijouterie_filter)
 
-        trunc, fmt = {
-            "day":   (TruncDay("vente__created_at"),   "%Y-%m-%d"),
-            "week":  (TruncWeek("vente__created_at"),  "%G-W%V"),
-            "month": (TruncMonth("vente__created_at"), "%Y-%m"),
-        }[group_by]
+        if not lignes.exists():
+            data = self._empty_dashboard(
+                request,
+                role_slug,
+                vendor_filter,
+                bijouterie_filter,
+                date_from,
+                date_to,
+            )
+            return Response(data, status=status.HTTP_200_OK)
 
-        # -------- 3) base: lignes du vendor --------
-        lines = (VenteProduit.objects
-                 .filter(vendor=target_vendor,
-                         vente__created_at__date__gte=date_from,
-                         vente__created_at__date__lte=date_to))
+        # 4) Stock vendeur
+        stock_by_product, stock_by_marque, stock_by_purete = self._get_vendorstock_maps(
+            vendor_filter,
+            bijouterie_filter,
+        )
 
-        # KPI globaux
-        agg_revenue = lines.aggregate(rev=Sum("prix_ttc"))["rev"] or Decimal("0.00")
-        agg_qty     = lines.aggregate(q=Sum("quantite"))["q"] or 0
-        # nb ventes distinctes (commandes)
-        orders_cnt  = (lines.values("vente_id").distinct().count()) or 0
-        avg_ticket  = (agg_revenue / orders_cnt) if orders_cnt else Decimal("0.00")
+        # 5) Réponse finale (SANS courbe)
+        data = {
+            "filters": self._build_filters_block(
+                request,
+                role_slug,
+                vendor_filter,
+                bijouterie_filter,
+                date_from,
+                date_to,
+            ),
+            "kpis": self._compute_kpis(lignes),
+            "by_purete": self._by_purete(lignes, stock_by_purete),
+            "by_marque": self._by_marque(lignes, stock_by_marque),
+            "by_categorie": self._by_categorie(lignes),
+            "top_products": self._top_products(lignes, stock_by_product),
+        }
+        return Response(data, status=status.HTTP_200_OK)
 
-        summary = {
-            "vendor": {
-                "id": target_vendor.id,
-                "username": getattr(target_vendor.user, "username", None),
-                "email": getattr(target_vendor.user, "email", None),
-                "bijouterie": getattr(target_vendor.bijouterie, "nom", None),
-            },
+    # ---------- Dates & filtres ----------
+
+    def _get_date_range(self, request):
+        today = datetime.today().date()
+        default_from = today - timedelta(days=30)
+
+        date_from_str = request.query_params.get("date_from")
+        date_to_str = request.query_params.get("date_to")
+
+        date_from = parse_date(date_from_str) if date_from_str else default_from
+        date_to = parse_date(date_to_str) if date_to_str else today
+
+        if date_from is None:
+            date_from = default_from
+        if date_to is None:
+            date_to = today
+
+        return date_from, date_to
+
+    def _build_filters_block(self, request, role_slug, vendor, bijouterie, date_from, date_to):
+        if role_slug == "vendor":
+            scope = "self"
+        elif role_slug == "manager":
+            scope = "bijouterie"
+        else:
+            scope = "global"
+
+        return {
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
-            "orders_count": orders_cnt,
-            "quantity_sold": int(agg_qty),
-            "revenue_total": str(agg_revenue.quantize(Decimal("0.01"))),
-            "avg_ticket": str(avg_ticket.quantize(Decimal("0.01"))),
+            "scope": scope,
+            "vendor": {
+                "id": vendor.id,
+                "name": getattr(vendor, "full_name", str(vendor)),
+            } if vendor else None,
+            "bijouterie": {
+                "id": bijouterie.id,
+                "name": getattr(bijouterie, "nom", str(bijouterie)),
+            } if bijouterie else None,
         }
 
-        # Série temporelle
-        series_qr = (lines
-                     .annotate(bucket=trunc)
-                     .values("bucket")
-                     .annotate(
-                         orders=Count("vente_id", distinct=True),
-                         quantity=Sum("quantite"),
-                         revenue=Sum("prix_ttc"),
-                     )
-                     .order_by("bucket"))
+    def _empty_dashboard(self, request, role_slug, vendor, bijouterie, date_from, date_to):
+        return {
+            "filters": self._build_filters_block(
+                request, role_slug, vendor, bijouterie, date_from, date_to
+            ),
+            "kpis": {
+                "total_amount": 0,
+                "currency": "XOF",
+                "total_sales_count": 0,
+                "total_items_sold": 0,
+                "average_ticket": 0,
+                "average_items_per_sale": 0,
+            },
+            "by_purete": [],
+            "by_marque": [],
+            "by_categorie": [],
+            "top_products": [],
+        }
 
-        series = []
-        for row in series_qr:
-            b = row["bucket"]
-            label = b.strftime(fmt) if hasattr(b, "strftime") else str(b)
-            series.append({
-                "bucket": label,
-                "orders": row["orders"] or 0,
-                "quantity": int(row["quantity"] or 0),
-                "revenue": str((row["revenue"] or Decimal("0.00")).quantize(Decimal("0.01"))),
-            })
+    # ---------- VendorStock (avec fallback) ----------
 
-        # export ?
-        if request.GET.get("export") == "excel":
-            return self._export_excel(summary, series, f"vendor_stats_{target_vendor.id}.xlsx")
+    def _get_vendorstock_maps(self, vendor_filter, bijouterie_filter):
+        """
+        Renvoie 3 dicts (par produit, par marque, par pureté).
+        Si la structure de VendorStock / ProduitLine ne correspond pas,
+        on renvoie tout à zéro pour éviter un 500.
+        """
+        try:
+            qs = VendorStock.objects.select_related(
+                "produit_line",
+                "produit_line__produit",
+                "produit_line__produit__marque",
+                "produit_line__produit__purete",
+                "vendor",
+                "vendor__bijouterie",
+            )
 
-        return Response({"summary": summary, "series": series}, status=200)
+            if vendor_filter:
+                qs = qs.filter(vendor=vendor_filter)
+            elif bijouterie_filter:
+                qs = qs.filter(vendor__bijouterie=bijouterie_filter)
 
-    # ------ helper export ------
-    def _export_excel(self, summary: dict, series: list[dict], filename: str):
-        from io import BytesIO
+            # Par produit
+            stock_by_product = {}
+            for row in qs.values("produit_line__produit_id").annotate(
+                total_allouee=Sum("quantite_allouee"),
+                total_vendue=Sum("quantite_vendue"),
+            ):
+                produit_id = row["produit_line__produit_id"]
+                if produit_id is None:
+                    continue
+                total_allouee = row["total_allouee"] or 0
+                total_vendue = row["total_vendue"] or 0
+                stock_by_product[produit_id] = {
+                    "qty_allouee": int(total_allouee),
+                    "qty_disponible": max(0, int(total_allouee) - int(total_vendue)),
+                }
 
-        from openpyxl import Workbook
+            # Par marque
+            stock_by_marque = {}
+            for row in qs.values("produit_line__produit__marque_id").annotate(
+                total_allouee=Sum("quantite_allouee"),
+                total_vendue=Sum("quantite_vendue"),
+            ):
+                marque_id = row["produit_line__produit__marque_id"]
+                if marque_id is None:
+                    continue
+                total_allouee = row["total_allouee"] or 0
+                total_vendue = row["total_vendue"] or 0
+                stock_by_marque[marque_id] = {
+                    "qty_allouee": int(total_allouee),
+                    "qty_disponible": max(0, int(total_allouee) - int(total_vendue)),
+                }
 
-        wb = Workbook()
-        ws1 = wb.active
-        ws1.title = "Summary"
-        ws1.append(["Clé", "Valeur"])
-        for k, v in summary.items():
-            if isinstance(v, dict):
-                ws1.append([k, ""])
-                for sk, sv in v.items():
-                    ws1.append([f"  {sk}", sv if sv is not None else ""])
-            else:
-                ws1.append([k, v if v is not None else ""])
+            # Par pureté
+            stock_by_purete = {}
+            for row in qs.values("produit_line__produit__purete_id").annotate(
+                total_allouee=Sum("quantite_allouee"),
+                total_vendue=Sum("quantite_vendue"),
+            ):
+                purete_id = row["produit_line__produit__purete_id"]
+                if purete_id is None:
+                    continue
+                total_allouee = row["total_allouee"] or 0
+                total_vendue = row["total_vendue"] or 0
+                stock_by_purete[purete_id] = {
+                    "qty_allouee": int(total_allouee),
+                    "qty_disponible": max(0, int(total_allouee) - int(total_vendue)),
+                }
 
-        ws2 = wb.create_sheet("Timeseries")
-        ws2.append(["bucket","orders","quantity","revenue"])
-        for r in series:
-            ws2.append([r["bucket"], r["orders"], r["quantity"], float(r["revenue"])])
+            return stock_by_product, stock_by_marque, stock_by_purete
 
-        out = BytesIO()
-        wb.save(out)
-        out.seek(0)
-        resp = HttpResponse(
-            out.read(),
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        except Exception:
+            # Si ça ne matche pas, on ne casse pas le dashboard.
+            return {}, {}, {}
+
+    # ---------- Agrégations ventes ----------
+
+    def _compute_kpis(self, lignes):
+        agg = lignes.aggregate(
+            total_amount=Sum("prix_ttc"),            # CA TTC
+            total_sales_count=Count("vente", distinct=True),
+            total_items_sold=Sum("quantite"),
         )
-        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
-        return resp
 
+        total_amount = agg["total_amount"] or 0
+        total_sales_count = agg["total_sales_count"] or 0
+        total_items_sold = agg["total_items_sold"] or 0
 
+        average_ticket = total_amount / total_sales_count if total_sales_count else 0
+        average_items_per_sale = total_items_sold / total_sales_count if total_sales_count else 0
 
+        return {
+            "total_amount": float(total_amount),
+            "currency": "XOF",
+            "total_sales_count": int(total_sales_count),
+            "total_items_sold": int(total_items_sold),
+            "average_ticket": float(average_ticket),
+            "average_items_per_sale": float(average_items_per_sale),
+        }
+
+    def _by_purete(self, lignes, stock_by_purete):
+        qs = (
+            lignes
+            .values("produit__purete__id", "produit__purete__purete")
+            .annotate(
+                total_amount=Sum("prix_ttc"),
+                items_sold=Sum("quantite"),
+                sales_count=Count("id"),
+            )
+            .order_by("-total_amount")
+        )
+
+        results = []
+        for row in qs:
+            purete_id = row["produit__purete__id"]
+            stock = stock_by_purete.get(
+                purete_id,
+                {"qty_allouee": 0, "qty_disponible": 0},
+            )
+            results.append({
+                "purete_id": purete_id,
+                "purete": row["produit__purete__purete"],
+                "total_amount": float(row["total_amount"] or 0),
+                "items_sold": int(row["items_sold"] or 0),
+                "sales_count": int(row["sales_count"] or 0),
+                "stock_qty_allouee": stock["qty_allouee"],
+                "stock_qty_disponible": stock["qty_disponible"],
+            })
+        return results
+
+    def _by_marque(self, lignes, stock_by_marque):
+        qs = (
+            lignes
+            .values("produit__marque__id", "produit__marque__marque")
+            .annotate(
+                total_amount=Sum("prix_ttc"),
+                items_sold=Sum("quantite"),
+                sales_count=Count("id"),
+            )
+            .order_by("-total_amount")
+        )
+
+        results = []
+        for row in qs:
+            marque_id = row["produit__marque__id"]
+            stock = stock_by_marque.get(
+                marque_id,
+                {"qty_allouee": 0, "qty_disponible": 0},
+            )
+            results.append({
+                "marque_id": marque_id,
+                "marque": row["produit__marque__marque"],
+                "total_amount": float(row["total_amount"] or 0),
+                "items_sold": int(row["items_sold"] or 0),
+                "sales_count": int(row["sales_count"] or 0),
+                "stock_qty_allouee": stock["qty_allouee"],
+                "stock_qty_disponible": stock["qty_disponible"],
+            })
+        return results
+
+    def _by_categorie(self, lignes):
+        qs = (
+            lignes
+            .values("produit__categorie__id", "produit__categorie__nom")
+            .annotate(
+                total_amount=Sum("prix_ttc"),
+                items_sold=Sum("quantite"),
+                sales_count=Count("id"),
+            )
+            .order_by("-total_amount")
+        )
+
+        return [
+            {
+                "categorie_id": row["produit__categorie__id"],
+                "categorie": row["produit__categorie__nom"],
+                "total_amount": float(row["total_amount"] or 0),
+                "items_sold": int(row["items_sold"] or 0),
+                "sales_count": int(row["sales_count"] or 0),
+            }
+            for row in qs
+        ]
+
+    def _top_products(self, lignes, stock_by_product, limit=10):
+        qs = (
+            lignes
+            .values(
+                "produit_id",
+                "produit__sku",
+                "produit__nom",
+                "produit__categorie__nom",
+                "produit__marque__marque",
+                "produit__purete__purete",
+            )
+            .annotate(
+                quantite_vendue=Sum("quantite"),
+                ca_total=Sum("prix_ttc"),
+            )
+            .order_by("-ca_total")[:limit]
+        )
+
+        results = []
+        for row in qs:
+            produit_id = row["produit_id"]
+            stock = stock_by_product.get(
+                produit_id,
+                {"qty_allouee": 0, "qty_disponible": 0},
+            )
+
+            results.append({
+                "produit_id": produit_id,
+                "sku": row["produit__sku"],
+                "nom": row["produit__nom"],
+                "categorie": row["produit__categorie__nom"],
+                "marque": row["produit__marque__marque"],
+                "purete": row["produit__purete__purete"],
+                "quantite_vendue": int(row["quantite_vendue"] or 0),
+                "ca_total": float(row["ca_total"] or 0),
+                "stock_qty_allouee": stock["qty_allouee"],
+                "stock_qty_disponible": stock["qty_disponible"],
+            })
+        return results
+    
 
 # Un vendeur authentifié peut appeler GET /api/vendor/produits/
 # Il recevra la liste des produits associés à son stock

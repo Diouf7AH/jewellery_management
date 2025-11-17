@@ -1,4 +1,5 @@
 import logging
+import random
 import re
 import string
 from random import SystemRandom
@@ -260,7 +261,7 @@ class User(AbstractUser):
     is_email_verified = models.BooleanField(default=False)
     last_confirmation_email_sent = models.DateTimeField(null=True, blank=True)
 
-    slug = models.SlugField(max_length=20, unique=True, null=True, blank=True)  # ⇒ passera à not null plus tard
+    slug = models.SlugField(max_length=20, unique=True, null=True, blank=True)
 
     objects = UserManager()
     USERNAME_FIELD = 'email'
@@ -276,18 +277,29 @@ class User(AbstractUser):
         role = getattr(self.user_role, "role", "Aucun rôle")
         return f"{self.email} ({role})"
 
-    def generate_slug(self):
-        if self.first_name or self.last_name:
-            base_txt = "-".join(filter(None, [self.first_name, self.last_name]))
-        elif self.username:
-            base_txt = self.username
-        elif self.email:
-            base_txt = self.email.split("@")[0]
-        else:
-            base_txt = "user"
-        base = slugify(base_txt).lower()[:14].rstrip("-") or "user"
-        suffix = ''.join(SystemRandom().choices(string.digits, k=4))
-        return f"{base}-{suffix}"[:20]
+    # ---------- Slug helpers ----------
+
+    @staticmethod
+    def random_slug(length=20):
+        """
+        Génère un slug alphanumérique aléatoire (a-z0-9) de longueur donnée.
+        """
+        chars = string.ascii_lowercase + string.digits
+        return ''.join(random.choices(chars, k=length))
+
+    @classmethod
+    def generate_unique_slug(cls, length=20, field_name="slug"):
+        """
+        Génère un slug aléatoire unique pour le modèle User.
+        """
+        for _ in range(20):  # on essaie 20 fois max
+            slug = cls.random_slug(length=length)
+            if not cls.objects.filter(**{field_name: slug}).exists():
+                return slug
+        # fallback ultra improbable
+        return cls.random_slug(length=length)
+
+    # ---------- Validation ----------
 
     def clean(self):
         super().clean()
@@ -305,7 +317,6 @@ class User(AbstractUser):
             self.is_staff = True
             self.is_active = True
         else:
-            # garde ou non la ligne ci-dessous selon ta politique
             self.is_staff = False
 
         if self.email:
@@ -313,20 +324,13 @@ class User(AbstractUser):
         if self.telephone:
             self.telephone = self.telephone.strip()
 
+        # Génération du slug aléatoire si absent
         if not self.slug:
-            for _ in range(10):
-                self.slug = self.generate_slug()
-                try:
-                    with transaction.atomic():
-                        super().save(*args, **kwargs)
-                    break
-                except IntegrityError:
-                    self.slug = None
-            else:
-                self.slug = ''.join(SystemRandom().choices(string.ascii_lowercase + string.digits, k=20))
-                super().save(*args, **kwargs)
-        else:
-            super().save(*args, **kwargs)
+            # on génère un slug unique avant de sauver
+            self.slug = User.generate_unique_slug()
+
+        # Sauvegarde normale
+        super().save(*args, **kwargs)
 
     # (facultatif)
     def get_full_name(self):
@@ -334,7 +338,6 @@ class User(AbstractUser):
 
     def get_short_name(self):
         return self.first_name or (self.email.split("@")[0] if self.email else self.slug)
-
 
 
 # def send_password_reset_email(reset_password_token):

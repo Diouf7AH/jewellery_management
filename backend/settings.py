@@ -255,17 +255,30 @@ EMAIL_HOST_USER = config('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
 EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
 EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
-EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=20, cast=int)
+# EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=20, cast=int)
 # DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=f"Rio Gold <{EMAIL_HOST_USER}>")
 
 
+# # Durée de vie du lien de vérification (en secondes)
+# # ex : 24h = 24 * 60 * 60
+# EMAIL_VERIFICATION_TOKEN_MAX_AGE = 24 * 60 * 60  # 24h
+# # ou 7 jours : 7 * 24 * 60 * 60
+# # EMAIL_VERIFICATION_TOKEN_MAX_AGE = 7 * 24 * 60 * 60
+
+# Durée de vie du lien de confirmation email (en secondes)
+# Exemple : 3 jours
+# EMAIL_TOKEN_EXPIRATION = 3 * 24 * 60 * 60  # 3 jours
+
+# ou 24h :
+# EMAIL_TOKEN_EXPIRATION = 24 * 60 * 60
+# EMAIL_TOKEN_EXPIRATION = 60
 
 
 # --- Frontend / URLs (pour tes emails) ---
 FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='https://rio-gold.com')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', 'Rio Gold <no-reply@rio-gold.com>')
 FRONTEND_URL = config('FRONTEND_URL', default='https://rio-gold.com')
-EMAIL_TOKEN_EXPIRATION = config('EMAIL_TOKEN_EXPIRATION', default=3600, cast=int)  # en secondes
+EMAIL_TOKEN_EXPIRATION = config('EMAIL_TOKEN_EXPIRATION', default=60, cast=int)  # en secondes
 
 # send_confirmation_email
 # En dev, mets un backend sûr

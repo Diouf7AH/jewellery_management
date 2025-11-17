@@ -259,7 +259,39 @@ class UserRegistrationView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
-        
+
+@method_decorator(require_GET, name="dispatch")
+class EmailVerificationView(APIView):
+    permission_classes = []  # public
+
+    def get(self, request):
+        token = request.GET.get('token')
+        if not token:
+            return render(request, "emails/email_invalid.html", status=400)
+
+        result = verify_email_token(token) or {}
+        status_token = result.get("status")
+        email = result.get("email")
+
+        if status_token == "invalid" or not email:
+            return render(request, "emails/email_invalid.html", status=400)
+
+        if status_token == "expired":
+            # Lien expiré → template avec explication + éventuellement bouton vers ton front
+            return render(request, "emails/email_expired.html", status=410)
+
+        # status == "ok"
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return render(request, "emails/email_invalid.html", status=404)
+
+        if not getattr(user, "is_email_verified", False):
+            user.is_email_verified = True
+            user.save(update_fields=["is_email_verified"])
+
+        return render(request, "emails/email_confirmed.html", status=200)
+    
     
 
 # class EmailVerificationView(APIView):
@@ -286,7 +318,6 @@ class UserRegistrationView(APIView):
 #         except User.DoesNotExist:
 #             return render(request, "emails/email_invalid.html", status=404)
 
-
 @method_decorator(require_GET, name="dispatch")
 class EmailVerificationView(APIView):
     permission_classes = []  # public
@@ -294,44 +325,76 @@ class EmailVerificationView(APIView):
     def get(self, request):
         token = request.GET.get('token')
         if not token:
-            # Pas de token → 400
             return render(request, "emails/email_invalid.html", status=400)
 
-        # Doit renvoyer un dict {status: "ok|invalid|expired", email: "..."}
         result = verify_email_token(token) or {}
         status_token = result.get("status")
         email = result.get("email")
 
-        if status_token == "invalid" or not email:
-            return render(request, "emails/email_invalid.html", status=400)
+        # 1️⃣ D'abord : token expiré
         if status_token == "expired":
             return render(request, "emails/email_expired.html", status=410)
 
+        # 2️⃣ Ensuite : token invalide
+        if status_token == "invalid":
+            return render(request, "emails/email_invalid.html", status=400)
+
+        # 3️⃣ Puis : pas d'email retourné (sécurité)
+        if not email:
+            return render(request, "emails/email_invalid.html", status=400)
+
+        # 4️⃣ Token OK → on vérifie l'utilisateur
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
             return render(request, "emails/email_invalid.html", status=404)
 
-        # Déjà vérifié ? on affiche la page de succès (ou on redirige)
-        if getattr(user, "is_email_verified", False) and getattr(user, "is_active", True):
-            # Option: rediriger vers le front si tu as une URL
-            # return redirect(settings.FRONTEND_BASE_URL + "/email-confirmed")
-            return render(request, "emails/email_confirmed.html")
-
-        # Marquer vérifié (et activer le compte si tu bloques avant)
-        user.is_email_verified = True
-        # Active si tu avais créé l'utilisateur inactif avant confirmation
-        if hasattr(user, "is_active") and not user.is_active:
-            user.is_active = True
-            user.save(update_fields=["is_email_verified", "is_active"])
-        else:
+        if not getattr(user, "is_email_verified", False):
+            user.is_email_verified = True
             user.save(update_fields=["is_email_verified"])
 
-        # Option: redirection front après succès
-        # if getattr(settings, "FRONTEND_BASE_URL", ""):
-        #     return redirect(settings.FRONTEND_BASE_URL.rstrip("/") + "/email-confirmed")
+        return render(request, "emails/email_confirmed.html", status=200)
 
-        return render(request, "emails/email_confirmed.html")
+
+class ResendVerificationEmailView(APIView):
+    permission_classes = []  # public
+
+    def post(self, request):
+        email = request.data.get("email")
+
+        if not email:
+            return Response(
+                {"detail": "L'adresse email est requise."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "Si un compte existe avec cet email, un nouveau lien a été envoyé."},
+                status=status.HTTP_200_OK,
+            )
+
+        if getattr(user, "is_email_verified", False):
+            return Response(
+                {"detail": "Ce compte est déjà vérifié."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            send_confirmation_email(user, request=request)
+        except Exception:
+            return Response(
+                {"detail": "Impossible d'envoyer l'email pour le moment."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {"detail": "Un nouveau lien de vérification a été envoyé à cette adresse email."},
+            status=status.HTTP_200_OK,
+        )
+
 
 # # version Angular
 # class EmailVerificationView(APIView):
