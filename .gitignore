@@ -40,4 +40,4 @@ staticfiles/
 *.pdf  binary
 *.woff binary
 *.woff2 binary
-*.svg  binary
+*.svg  binarystaticfiles/
