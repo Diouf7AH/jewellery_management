@@ -14,30 +14,3 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
-
-# Static collectés par Django
-staticfiles/
-
-# Forcer LF pour le code
-*.py   text eol=lf
-*.js   text eol=lf
-*.ts   text eol=lf
-*.jsx  text eol=lf
-*.tsx  text eol=lf
-*.html text eol=lf
-*.css  text eol=lf
-*.json text eol=lf
-*.yml  text eol=lf
-*.yaml text eol=lf
-*.sh   text eol=lf
-
-# Binaires (pas de conversion)
-*.png  binary
-*.jpg  binary
-*.jpeg binary
-*.gif  binary
-*.ico  binary
-*.pdf  binary
-*.woff binary
-*.woff2 binary
-*.svg  binarystaticfiles/

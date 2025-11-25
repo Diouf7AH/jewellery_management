@@ -20,7 +20,7 @@ urlpatterns = [
     # path('', userauths_views.getRoutes),
     
     path("vendors/dashboard/", vendor_views.VendorDashboardView.as_view(), name="vendor-dashboar"),
-    path('dashboard/achat/dashboard', achat_views.AchatDashboardView.as_view(), name='dashboard-achat'),
+    # path('dashboard/achat/dashboard', achat_views.AchatDashboardView.as_view(), name='dashboard-achat'),
     # path('vendor/me/', vendor_views.VendorMeView.as_view(), name='vendor-me'),
     
     # path('vendor/dashboard/profile', vendor_views.VendorProfileView.as_view(), name='vendor-profile'),
@@ -122,9 +122,10 @@ urlpatterns = [
     # ACHAT
     path("achat/liste/", achat_views.AchatListView.as_view(), name="achat-list"),
     path('achat-produit/get-one-achat/<int:pk>', achat_views.AchatProduitGetOneView.as_view(), name='get_achat_produit'),
-    path("achat/lots/", achat_views.LotListView.as_view(), name="lots-list"),
+    # path("achat/lots/", achat_views.LotListView.as_view(), name="lots-list"),
     path("achat/lots/<int:pk>", achat_views.LotDetailView.as_view(), name="lot-detail"),
     path("achat/arrivage", achat_views.ArrivageCreateView.as_view(), name="arrivage-create"),
+    path("achat/lots/", achat_views.LotListView.as_view(), name="lot-list"),
     path("achat/arrivage/<int:lot_id>/meta/", achat_views.ArrivageMetaUpdateView.as_view(), name="arrivage-meta-update"),
     path("achat/arrivage/<int:lot_id>/adjustments/", achat_views.ArrivageAdjustmentsView.as_view(), name="arrivage-adjustments"),
     # path("achat/lots/export/csv", achat_views.LotExportCSVView.as_view(), name="lots-export-csv"),
@@ -137,13 +138,13 @@ urlpatterns = [
     path("stocks/transfer/bijouterie-to-vendor", stock_views.BijouterieToVendorTransferView.as_view(),name="bijouterie-to-vendor"),
     path("stocks/summary", stock_views.StockSummaryView.as_view(), name="stock-summary"),
 
-    path("achats/<int:achat_id>/cancel", achat_views.AchatCancelView.as_view(), name="achat-cancel"),
+    # path("achats/<int:achat_id>/cancel", achat_views.AchatCancelView.as_view(), name="achat-cancel"),
     # path('achat-produit/update-achat/<int:achat_id>', achat_views.AchatUpdateAPIView.as_view(), name='achat_update_achat'),
     # path('achat-produit/update-achat-produit/<int:achatproduit_id>', achat_views.AchatUpdateAchatProduitAPIView.as_view(), name='achat_produit_update_achat'),
     # path('achat-produit/<int:achatproduit_id>/produits/<int:achat_id>', achat_views.AchatProduitUpdate    APIView.as_view(),name='achat-produit-update'),
     # path('achat-produit/list-achat', achat_views.AchatListView.as_view(), name='achat_produit_list'),
     # path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatPDFView.as_view(), name='achat-facture-pdf'),
-    path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatProduitPDFView.as_view(), name='achat-produit-facture-pdf'),
+    # path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatProduitPDFView.as_view(), name='achat-produit-facture-pdf'),
     # END ACHAT
     
     # INVENTORY

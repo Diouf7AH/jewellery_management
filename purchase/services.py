@@ -5,23 +5,31 @@ from django.shortcuts import get_object_or_404
 from purchase.models import Achat, Fournisseur, Lot, ProduitLine
 
 
-# ---------------------Update and Adjustement--------------------------
-# --------- helpers communs ----------
 def _recalc_totaux_achat(achat: Achat):
-    """Recalcule HT/TTC depuis les ProduitLine du/des lots de l'achat (au gramme si dispo)."""
+    """
+    Recalcule HT/TTC depuis les ProduitLine du/des lots de l'achat (au gramme si dispo).
+
+    base_HT = Σ (quantite * poids_produit * prix_achat_gramme)
+    HT      = base_HT + frais_transport + frais_douane
+    TTC     = HT (pas de TVA pour le moment)
+    """
     total_ht = Decimal("0.00")
-    lignes = (ProduitLine.objects
-              .filter(lot__achat=achat)
-              .select_related("produit", "lot"))
+    lignes = (
+        ProduitLine.objects
+        .filter(lot__achat=achat)
+        .select_related("produit", "lot")
+    )
     for pl in lignes:
-        if pl.prix_gramme_achat:
+        if pl.prix_achat_gramme:
             p_po = Decimal(pl.produit.poids or 0)
-            q   = Decimal(pl.quantite_total or 0)
-            total_ht += p_po * q * Decimal(pl.prix_gramme_achat)
-    achat.montant_total_ht = total_ht + Decimal(achat.frais_transport or 0) + Decimal(achat.frais_douane or 0) - Decimal(achat.frais_transport or 0) - Decimal(achat.frais_douane or 0)
-    # ci-dessus: on ne double pas les frais; la ligne sert juste d'explicitation
-    achat.montant_total_ht = total_ht + Decimal(achat.frais_transport or 0) + Decimal(achat.frais_douane or 0)
-    achat.montant_total_ttc = achat.montant_total_ht  # TAX=0 par défaut (adapter si TVA)
+            q   = Decimal(pl.quantite or 0)
+            total_ht += p_po * q * Decimal(pl.prix_achat_gramme)
+
+    frais_transport = Decimal(achat.frais_transport or 0)
+    frais_douane    = Decimal(achat.frais_douane or 0)
+
+    achat.montant_total_ht = total_ht + frais_transport + frais_douane
+    achat.montant_total_ttc = achat.montant_total_ht  # TAX = 0 par défaut
     achat.full_clean()
     achat.save(update_fields=["montant_total_ht", "montant_total_ttc"])
 
@@ -36,12 +44,14 @@ def _get_or_upsert_fournisseur(data):
     if tel:
         obj, _ = Fournisseur.objects.get_or_create(
             telephone=tel,
-            defaults={"nom": data.get("nom", "") or "", "prenom": data.get("prenom", "") or ""},
+            defaults={
+                "nom": data.get("nom", "") or "",
+                "prenom": data.get("prenom", "") or "",
+            },
         )
         return obj
     return Fournisseur.objects.create(
-        nom=data.get("nom", "") or "", prenom=data.get("prenom", "") or "", telephone=None
+        nom=data.get("nom", "") or "",
+        prenom=data.get("prenom", "") or "",
+        telephone=None,
     )
-
-
-# ---------------------And Update and Adjustement----------------------
