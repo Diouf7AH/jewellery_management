@@ -19,7 +19,7 @@ urlpatterns = [
     # Store API Endpoints
     # path('', userauths_views.getRoutes),
     
-    path("vendors/dashboard/", vendor_views.VendorDashboardView.as_view(), name="vendor-dashboar"),
+    path("vendor/dashboard/", vendor_views.VendorDashboardView.as_view(), name="vendor-dashboar"),
     # path('dashboard/achat/dashboard', achat_views.AchatDashboardView.as_view(), name='dashboard-achat'),
     # path('vendor/me/', vendor_views.VendorMeView.as_view(), name='vendor-me'),
     
@@ -121,7 +121,7 @@ urlpatterns = [
     
     # ACHAT
     path("achat/liste/", achat_views.AchatListView.as_view(), name="achat-list"),
-    path('achat-produit/get-one-achat/<int:pk>', achat_views.AchatProduitGetOneView.as_view(), name='get_achat_produit'),
+    path('achat/get-one-achat/<int:pk>', achat_views.AchatProduitGetOneView.as_view(), name='get_achat_produit'),
     # path("achat/lots/", achat_views.LotListView.as_view(), name="lots-list"),
     path("achat/lots/<int:pk>", achat_views.LotDetailView.as_view(), name="lot-detail"),
     path("achat/arrivage", achat_views.ArrivageCreateView.as_view(), name="arrivage-create"),
@@ -164,9 +164,9 @@ urlpatterns = [
     path("staff/<int:staff_id>/update", staff_views.UpdateStaffView.as_view(), name="staff-update"),
     
     #VENDOR
-    # path('vendor/list/', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
+    path('vendor/list/', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
     # path('vendor/add-vendor', vendor_views.CreateVendorView.as_view(), name='add_vendor'),
-    path("vendors", vendor_views.VendorListView.as_view(), name="vendor-list"),
+    path("staff/vendor/create", vendor_views.CreateVendorView.as_view(), name="create-vendor"),
     # path("vendor/<int:id>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail"),
     # path("vendor/by-slug/<slug:slug>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail-by-slug"),
     path("vendor/<int:vendor_id>/update", vendor_views.VendorUpdateView.as_view(), name="vendor-update"),

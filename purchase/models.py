@@ -206,6 +206,35 @@ class Achat(models.Model):
                         raise ValidationError("Impossible de générer un numéro d'achat unique.")
             return
         super().save(*args, **kwargs)
+        
+    
+    # @property
+    # def has_bijouterie_allocations(self) -> bool:
+    #     """
+    #     Retourne True si AU MOINS une ligne de cet achat est allouée
+    #     à une bijouterie (Stock avec bijouterie != None et quantite_allouee > 0).
+    #     """
+    #     from stock.models import Stock  # import local pour éviter les cycles
+
+    #     return Stock.objects.filter(
+    #         produit_line__lot__achat=self,
+    #         bijouterie__isnull=False,
+    #         quantite_allouee__gt=0,
+    #     ).exists()
+    
+    @property
+    def has_bijouterie_allocations(self) -> bool:
+        """
+        True si au moins UNE ligne de ce achat est déjà allouée à une bijouterie
+        (donc non modifiable).
+        """
+        from stock.models import Stock  # import local pour éviter les cycles
+        
+        return Stock.objects.filter(
+            produit_line__lot__achat=self,
+            bijouterie__isnull=False,
+            quantite_allouee__gt=0,
+        ).exists()
 
 
 class Lot(models.Model):

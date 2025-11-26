@@ -28,6 +28,7 @@ from .serializers import (AchatCreateResponseSerializer, AchatDetailSerializer,
                           ArrivageMetaUpdateInSerializer,
                           FournisseurSerializer, LotDisplaySerializer,
                           LotListSerializer)
+from .utils import recalc_totaux_achat
 
 
 class FournisseurGetView(APIView):
@@ -151,7 +152,7 @@ class AchatProduitGetOneView(APIView):
             404: "Achat non trouvé",
             403: "Accès refusé"
         },
-        tags=["Achats"],
+        tags=["Achats / Arrivages"],
     )
     @transaction.atomic
     def get(self, request, pk):
@@ -646,6 +647,130 @@ class AchatListView(ListAPIView):
 
 
 
+# class ArrivageMetaUpdateView(APIView):
+#     """
+#     PATCH /api/achat/arrivage/{lot_id}/meta/
+
+#     Met à jour UNIQUEMENT les informations documentaires :
+#     - côté Achat : description, frais_transport, frais_douane, fournisseur
+#     - côté Lot   : description, received_at
+
+#     ❌ Aucun impact sur le stock ou les mouvements d'inventaire.
+#     """
+#     permission_classes = [IsAuthenticated, IsAdminOrManager]
+#     http_method_names = ["patch"]
+
+#     @swagger_auto_schema(
+#         operation_id="arrivageMetaUpdate",
+#         operation_summary="Mettre à jour les métadonnées d’un arrivage (Achat + Lot)",
+#         operation_description=(
+#             "Permet de corriger / compléter les infos documentaires d’un arrivage :\n"
+#             "- `achat`: description, frais_transport, frais_douane, fournisseur (ref ou upsert par téléphone)\n"
+#             "- `lot`: description, received_at\n\n"
+#             "Ne touche ni au stock ni aux mouvements d’inventaire."
+#         ),
+#         request_body=ArrivageMetaUpdateInSerializer,
+#         responses={
+#             200: AchatCreateResponseSerializer,
+#             400: "Bad Request",
+#             401: "Unauthorized",
+#             403: "Forbidden",
+#             404: "Not Found",
+#         },
+#         tags=["Achats / Arrivages"],
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "lot_id",
+#                 in_=openapi.IN_PATH,
+#                 type=openapi.TYPE_INTEGER,
+#                 description="ID du lot concerné",
+#                 required=True,
+#             ),
+#         ],
+#     )
+#     @transaction.atomic
+#     def patch(self, request, lot_id: int):
+#         # ----- Récup lot + achat -----
+#         lot = get_object_or_404(
+#             Lot.objects.select_related("achat", "achat__fournisseur"),
+#             pk=lot_id,
+#         )
+#         achat = lot.achat
+
+#         # ----- Validation payload -----
+#         s = ArrivageMetaUpdateInSerializer(data=request.data)
+#         s.is_valid(raise_exception=True)
+#         data = s.validated_data
+
+#         # ====================
+#         #  MAJ côté Achat
+#         # ====================
+#         achat_data = data.get("achat")
+#         if achat_data:
+#             # description
+#             if "description" in achat_data:
+#                 achat.description = achat_data.get("description") or ""
+
+#             # frais
+#             if "frais_transport" in achat_data:
+#                 achat.frais_transport = achat_data["frais_transport"]
+#             if "frais_douane" in achat_data:
+#                 achat.frais_douane = achat_data["frais_douane"]
+
+#             # fournisseur (ref / upsert)
+#             fournisseur_data = achat_data.get("fournisseur")
+#             if fournisseur_data:
+#                 fournisseur_obj = None
+
+#                 # 1) on privilégie l'id s'il est fourni
+#                 fid = fournisseur_data.get("id")
+#                 if fid:
+#                     fournisseur_obj = get_object_or_404(Fournisseur, pk=fid)
+#                 else:
+#                     # 2) sinon upsert par téléphone
+#                     tel = (fournisseur_data.get("telephone") or "").strip() or None
+#                     if tel:
+#                         fournisseur_obj, _ = Fournisseur.objects.get_or_create(
+#                             telephone=tel,
+#                             defaults={
+#                                 "nom": fournisseur_data.get("nom") or "",
+#                                 "prenom": fournisseur_data.get("prenom") or "",
+#                                 "address": "",
+#                             },
+#                         )
+
+#                 if fournisseur_obj:
+#                     achat.fournisseur = fournisseur_obj
+
+#             # on recalculera les totaux plus bas
+#             achat.save()
+
+#         # ====================
+#         #  MAJ côté Lot
+#         # ====================
+#         lot_data = data.get("lot")
+#         if lot_data:
+#             update_fields = []
+#             if "description" in lot_data:
+#                 lot.description = lot_data.get("description") or ""
+#                 update_fields.append("description")
+#             if "received_at" in lot_data:
+#                 lot.received_at = lot_data["received_at"]
+#                 update_fields.append("received_at")
+
+#             if update_fields:
+#                 lot.save(update_fields=update_fields)
+
+#         # Recalcul des totaux achat (car frais peuvent avoir changé)
+#         if achat_data:
+#             achat.update_total(save=True)
+
+#         # ----- Réponse : même format que ArrivageCreateView -----
+#         out = AchatCreateResponseSerializer(lot).data
+#         return Response(out, status=status.HTTP_200_OK)
+    
+
+
 class ArrivageMetaUpdateView(APIView):
     """
     PATCH /api/achat/arrivage/{lot_id}/meta/
@@ -701,10 +826,12 @@ class ArrivageMetaUpdateView(APIView):
         s.is_valid(raise_exception=True)
         data = s.validated_data
 
+        achat_data = data.get("achat")
+        lot_data = data.get("lot")
+
         # ====================
         #  MAJ côté Achat
         # ====================
-        achat_data = data.get("achat")
         if achat_data:
             # description
             if "description" in achat_data:
@@ -721,12 +848,11 @@ class ArrivageMetaUpdateView(APIView):
             if fournisseur_data:
                 fournisseur_obj = None
 
-                # 1) on privilégie l'id s'il est fourni
                 fid = fournisseur_data.get("id")
                 if fid:
+                    # priorité à l'id
                     fournisseur_obj = get_object_or_404(Fournisseur, pk=fid)
                 else:
-                    # 2) sinon upsert par téléphone
                     tel = (fournisseur_data.get("telephone") or "").strip() or None
                     if tel:
                         fournisseur_obj, _ = Fournisseur.objects.get_or_create(
@@ -741,13 +867,11 @@ class ArrivageMetaUpdateView(APIView):
                 if fournisseur_obj:
                     achat.fournisseur = fournisseur_obj
 
-            # on recalculera les totaux plus bas
             achat.save()
 
         # ====================
         #  MAJ côté Lot
         # ====================
-        lot_data = data.get("lot")
         if lot_data:
             update_fields = []
             if "description" in lot_data:
@@ -764,11 +888,10 @@ class ArrivageMetaUpdateView(APIView):
         if achat_data:
             achat.update_total(save=True)
 
-        # ----- Réponse : même format que ArrivageCreateView -----
+        # Réponse : même format que ArrivageCreateView (Lot + achat + lignes)
         out = AchatCreateResponseSerializer(lot).data
         return Response(out, status=status.HTTP_200_OK)
     
-
 
 # ---------------------------Adjustement-----------------------------
 class ArrivageAdjustmentsView(APIView):
@@ -823,8 +946,23 @@ class ArrivageAdjustmentsView(APIView):
     )
     @transaction.atomic
     def post(self, request, lot_id: int):
-        lot = get_object_or_404(Lot.objects.select_related("achat"), pk=lot_id)
+        lot = get_object_or_404(
+            Lot.objects.select_related("achat"),
+            pk=lot_id
+        )
         achat = lot.achat
+
+        # 🔒 Si l'achat a déjà des allocations bijouterie, on bloque TOUT ajustement
+        if achat.has_bijouterie_allocations:
+            return Response(
+                {
+                    "detail": (
+                        "Ajustement impossible : au moins une partie de cet arrivage "
+                        "est déjà allouée à une bijouterie."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         s = ArrivageAdjustmentsInSerializer(data=request.data)
         s.is_valid(raise_exception=True)
@@ -838,7 +976,10 @@ class ArrivageAdjustmentsView(APIView):
             # ------------- PURCHASE_IN : ajout d’une nouvelle ligne -------------
             if t == "PURCHASE_IN":
                 pid = int(act["produit_id"])
-                produit = get_object_or_404(Produit.objects.only("id", "poids"), pk=pid)
+                produit = get_object_or_404(
+                    Produit.objects.only("id", "poids", "nom"),
+                    pk=pid,
+                )
                 prix_achat_gramme = act.get("prix_achat_gramme")
 
                 pl = ProduitLine.objects.create(
@@ -856,12 +997,13 @@ class ArrivageAdjustmentsView(APIView):
                     quantite_disponible=q,
                 )
 
-                # Valorisation unitaire éventuelle
+                # Valorisation éventuelle
                 unit_cost = None
                 if prix_achat_gramme is not None and produit.poids is not None:
                     try:
                         unit_cost = (
-                            Decimal(str(prix_achat_gramme)) * Decimal(str(produit.poids))
+                            Decimal(str(prix_achat_gramme))
+                            * Decimal(str(produit.poids))
                         ).quantize(Decimal("0.01"))
                     except (InvalidOperation, TypeError, ValueError):
                         unit_cost = None
@@ -880,7 +1022,7 @@ class ArrivageAdjustmentsView(APIView):
                     created_by=request.user,
                 )
 
-            # ------------- CANCEL_PURCHASE : retrait partiel d’une ligne -------------
+            # ------------- CANCEL_PURCHASE : retrait partiel -------------
             elif t == "CANCEL_PURCHASE":
                 pl_id = int(act["produit_line_id"])
                 pl = get_object_or_404(
@@ -907,24 +1049,23 @@ class ArrivageAdjustmentsView(APIView):
                     return Response(
                         {
                             f"actions[{idx}]": (
-                                f"Ligne {pl_id}: des allocations bijouterie existent, "
-                                "retrait interdit."
+                                f"Ligne {pl_id}: des allocations bijouterie existent, retrait interdit."
                             )
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                # cherche la réserve
+                # stock de réserve
                 reserve = Stock.objects.filter(
-                    produit_line=pl, bijouterie__isnull=True
+                    produit_line=pl,
+                    bijouterie__isnull=True
                 ).first()
                 disponible = int(reserve.quantite_disponible or 0) if reserve else 0
                 if q > disponible:
                     return Response(
                         {
                             f"actions[{idx}]": (
-                                f"Réduction {q} > disponible en réserve ({disponible}) "
-                                f"pour la ligne {pl_id}."
+                                f"Réduction {q} > disponible en réserve ({disponible}) pour la ligne {pl_id}."
                             )
                         },
                         status=status.HTTP_400_BAD_REQUEST,
@@ -934,7 +1075,7 @@ class ArrivageAdjustmentsView(APIView):
                 pl.quantite = max(0, int((pl.quantite or 0) - q))
                 pl.save(update_fields=["quantite"])
 
-                # met à jour le stock de réserve
+                # met à jour le stock réserve
                 if reserve:
                     reserve.quantite_allouee = max(
                         0, int((reserve.quantite_allouee or 0) - q)
@@ -967,12 +1108,17 @@ class ArrivageAdjustmentsView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # Recalcule les totaux de l'achat après ajustements
-        achat.update_total(save=True)
+        # 🔁 Recalcule les totaux de l'achat après ajustements
+        recalc_totaux_achat(achat, save=True)
 
         return Response(
-            {"detail": "Ajustements appliqués.", "lot_id": lot.id, "achat_id": achat.id},
+            {
+                "detail": "Ajustements appliqués.",
+                "lot_id": lot.id,
+                "achat_id": achat.id,
+                "montant_total_ht": str(achat.montant_total_ht),
+                "montant_total_ttc": str(achat.montant_total_ttc),
+            },
             status=status.HTTP_200_OK,
         )
-        
 

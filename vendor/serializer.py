@@ -11,6 +11,50 @@ from userauths.models import User
 from .models import Vendor
 
 User = get_user_model()
+# -------------------------Create vendor----------------------
+class CreateVendorSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    first_name = serializers.CharField(required=False, allow_blank=True)
+    last_name = serializers.CharField(required=False, allow_blank=True)
+
+    bijouterie_nom = serializers.SlugRelatedField(
+        queryset=Bijouterie.objects.all(),
+        slug_field="nom",
+        required=True,
+        help_text="Nom de la bijouterie (champ 'nom')"
+    )
+
+    verifie = serializers.BooleanField(required=False, default=True)
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+# ------------------------------end create vendor-----------------------
+
+# -----------------------------List endor--------------------------------
+class VendorListSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(source="user.email", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    bijouterie_id = serializers.IntegerField(source="bijouterie.id", read_only=True)
+    bijouterie_nom = serializers.CharField(source="bijouterie.nom", read_only=True)
+
+    class Meta:
+        model = Vendor
+        fields = [
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "verifie",
+            "raison_desactivation",
+            "bijouterie_id",
+            "bijouterie_nom",
+            "created_at",
+        ]
+
+# ------------------------------End List Vendor---------------------------
 
 class VendorStatusInputSerializer(serializers.Serializer):
     verifie = serializers.BooleanField(help_text="True=activer, False=désactiver")

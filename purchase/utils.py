@@ -107,3 +107,43 @@
 #         raise ValueError(f"Stock global insuffisant pour produit={produit_id}. Reste à retirer={qty}")
 
 #     return trace
+
+
+
+from decimal import Decimal
+
+from django.db.models import DecimalField, ExpressionWrapper, F, Sum
+from django.db.models.functions import Coalesce
+
+from purchase.models import Achat, ProduitLine
+
+
+def recalc_totaux_achat(achat: Achat, save: bool = True):
+    """
+    Recalcule :
+      base_HT = Σ (quantite * produit.poids * prix_achat_gramme)
+      HT      = base_HT + frais_transport + frais_douane
+      TTC     = HT (pas de TVA pour l’instant)
+    """
+    expr_ht = ExpressionWrapper(
+        F("quantite")
+        * Coalesce(F("produit__poids"), 1)
+        * Coalesce(F("prix_achat_gramme"), Decimal("0.00")),
+        output_field=DecimalField(max_digits=18, decimal_places=2),
+    )
+
+    agg = (
+        ProduitLine.objects
+        .filter(lot__achat=achat)
+        .aggregate(base_ht=Coalesce(Sum(expr_ht), Decimal("0.00")))
+    )
+
+    base_ht = agg["base_ht"] or Decimal("0.00")
+    frais = (achat.frais_transport or Decimal("0.00")) + (achat.frais_douane or Decimal("0.00"))
+
+    achat.montant_total_ht = base_ht + frais
+    achat.montant_total_ttc = achat.montant_total_ht
+
+    if save:
+        achat.save(update_fields=["montant_total_ht", "montant_total_ttc"])
+        

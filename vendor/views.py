@@ -5,7 +5,7 @@ from io import BytesIO
 
 # NB: on se base sur VenteProduit.vendor et on groupe par vente__created_at
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Avg, Count, DecimalField, F, Q, Sum
 from django.db.models.functions import TruncDay, TruncMonth, TruncWeek
 from django.http import HttpResponse
@@ -20,7 +20,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.permissions import (ROLE_ADMIN, ROLE_MANAGER, IsAdminOrManager,
+from backend.permissions import (ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR,
+                                 IsAdminOrManager,
                                  IsAdminOrManagerOrSelfVendor, get_role_name)
 from backend.renderers import UserRenderer
 from inventory.models import Bucket, InventoryMovement, MovementType
@@ -35,13 +36,178 @@ from userauths.models import Role
 from vendor.models import Vendor  # 👈 ton modèle Vendor (app vendor)
 
 from .models import Vendor
-from .serializer import (VendorReadSerializer, VendorStatusInputSerializer,
+from .serializer import (CreateVendorSerializer, VendorListSerializer,
                          VendorUpdateSerializer)
 
 # Create your views here.
 User = get_user_model()
 allowed_all_roles = ['admin', 'manager', 'vendeur']
 allowed_roles_admin_manager = ['admin', 'manager',]
+
+
+class CreateVendorView(APIView):
+    """
+    POST /api/staff/vendor/create
+
+    - Admin  : peut créer un vendeur pour n’importe quelle bijouterie
+    - Manager: ne peut créer un vendeur que pour *sa* bijouterie
+    - Si l’email existe déjà :
+        - refuse si user est admin/manager/cashier ou déjà vendor
+        - accepte si le user n’a pas encore de rôle ou déjà role=vendor sans profil Vendor
+    - Si l’email n’existe pas : crée User + assigne rôle vendor + crée Vendor
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
+
+    @swagger_auto_schema(
+        operation_summary="Créer un vendeur (User + Vendor)",
+        operation_description=(
+            "Crée un vendeur rattaché à une bijouterie.\n\n"
+            "- Admin : n’importe quelle bijouterie\n"
+            "- Manager : uniquement sa propre bijouterie\n\n"
+            "Champs attendus :\n"
+            "- email (obligatoire)\n"
+            "- password (optionnel, obligatoire si le user n’existe pas)\n"
+            "- first_name / last_name (optionnels)\n"
+            "- bijouterie_nom (nom de la bijouterie)\n"
+            "- verifie (bool, par défaut True)"
+        ),
+        request_body=CreateVendorSerializer,
+        responses={
+            201: openapi.Response(
+                description="Vendeur créé",
+                examples={
+                    "application/json": {
+                        "message": "Vendeur créé avec succès.",
+                        "vendor": {
+                            "id": 5,
+                            "first_name": "Jean",
+                            "last_name": "Dupont",
+                            "email": "vendor@example.com",
+                            "verifie": True,
+                            "bijouterie": {
+                                "id": 2,
+                                "nom": "Rio-Gold Centre",
+                            },
+                        },
+                    }
+                },
+            ),
+            400: "Requête invalide",
+            403: "Accès refusé",
+            404: "Non trouvé",
+            409: "Conflit (rôle ou vendor déjà existant)",
+        },
+        tags=["Staff"],
+    )
+    @transaction.atomic
+    def post(self, request):
+        ser = CreateVendorSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        email = data["email"]
+        password = data.get("password") or None
+        first_name = data.get("first_name") or ""
+        last_name = data.get("last_name") or ""
+        bijouterie = data["bijouterie_nom"]     # instance Bijouterie
+        verifie = data.get("verifie", True)
+
+        # -------- 1) Contrôle périmètre Manager --------
+        caller_role = get_role_name(request.user)
+        if caller_role == ROLE_MANAGER:
+            mgr = (
+                Manager.objects
+                .filter(user=request.user)
+                .select_related("bijouterie")
+                .first()
+            )
+            mgr_bj_id = getattr(getattr(mgr, "bijouterie", None), "id", None)
+            if not mgr_bj_id or mgr_bj_id != bijouterie.id:
+                return Response(
+                    {"detail": "Vous ne pouvez créer un vendeur que pour votre propre bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # -------- 2) Rôles en base --------
+        role_vendor = Role.objects.filter(role=ROLE_VENDOR).first()
+        role_manager = Role.objects.filter(role=ROLE_MANAGER).first()
+        role_admin = Role.objects.filter(role=ROLE_ADMIN).first()
+        if not role_vendor:
+            return Response(
+                {"error": "Le rôle 'vendor' n'existe pas en base."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # -------- 3) User existant ? --------
+        user = User.objects.select_for_update().filter(email__iexact=email).first()
+        created_user = False
+
+        if user is None:
+            # Création du user
+            if not password:
+                return Response(
+                    {"error": "Le mot de passe est obligatoire pour un nouvel utilisateur."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user = User(email=email, first_name=first_name, last_name=last_name)
+            user.set_password(password)
+            user.user_role = role_vendor  # assigne directement le rôle vendor
+            user.is_active = True
+            user.save()
+            created_user = True
+        else:
+            # User existe déjà → protections
+            existing_role = getattr(getattr(user, "user_role", None), "role", None)
+
+            if existing_role in (ROLE_ADMIN, ROLE_MANAGER):
+                return Response(
+                    {"error": f"Utilisateur déjà {existing_role}, on ne peut pas le transformer en vendor."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            # déjà vendor ?
+            if Vendor.objects.filter(user=user).exists():
+                return Response(
+                    {"error": "Ce user est déjà vendeur."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            # s'il n'a pas de rôle, on lui donne vendor
+            if not existing_role:
+                user.user_role = role_vendor
+                user.save(update_fields=["user_role"])
+
+        # -------- 4) Création Vendor --------
+        try:
+            vendor = Vendor.objects.create(
+                user=user,
+                bijouterie=bijouterie,
+                verifie=verifie,
+            )
+        except IntegrityError:
+            return Response(
+                {"error": "Conflit d'intégrité à la création du vendeur."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # -------- 5) Payload de réponse --------
+        bj = vendor.bijouterie
+        payload = {
+            "message": "Vendeur créé avec succès." if created_user else "Vendeur ajouté à cet utilisateur.",
+            "vendor": {
+                "id": vendor.id,
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "email": user.email,
+                "verifie": vendor.verifie,
+                "bijouterie": {
+                    "id": bj.id,
+                    "nom": bj.nom,
+                } if bj else None,
+            },
+        }
+        return Response(payload, status=status.HTTP_201_CREATED)
+
 
 
 # Un dashboard riche avec produits, ventes et stats
@@ -774,7 +940,9 @@ class VendorProduitListView(APIView):
     @swagger_auto_schema(
         operation_description="Lister les produits associés au vendeur connecté",
         responses={200: ProduitSerializer(many=True)},
+        tags=["vendeur"],
     )
+    
     def get(self, request):
         user = request.user
         role = getattr(user.user_role, 'role', None)
@@ -868,50 +1036,100 @@ class VendorProduitListView(APIView):
 
 
 # ---------- LISTE / LECTURE ----------
-class VendorListView(generics.ListAPIView):
+class ListVendorAPIView(APIView):
     """
-    GET /api/vendors/?q=&bijouterie_id=&verifie=true|false
+    GET /api/staff/vendors/
+
+    - Admin  : voit tous les vendeurs
+    - Manager: voit uniquement les vendeurs de SA bijouterie
+
+    Filtres (query params) :
+      - ?bijouterie_id=...
+      - ?bijouterie_nom=...
+      - ?verifie=true|false
+      - ?q=... (email / prénom / nom)
     """
-    permission_classes = [permissions.IsAuthenticated]
-    serializer_class = VendorReadSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
 
-    def get_queryset(self):
-        qs = Vendor.objects.select_related("user", "bijouterie").all()
+    @swagger_auto_schema(
+        operation_summary="Lister les vendeurs (admin / manager)",
+        operation_description=(
+            "Admin : tous les vendeurs.\n"
+            "Manager : uniquement les vendeurs de sa bijouterie.\n\n"
+            "Filtres possibles :\n"
+            "- `bijouterie_id`\n"
+            "- `bijouterie_nom` (contient)\n"
+            "- `verifie` = true|false\n"
+            "- `q` (recherche email / prénom / nom)\n"
+        ),
+        manual_parameters=[
+            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
+            openapi.Parameter("bijouterie_nom", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("verifie", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False,
+                              description="true ou false"),
+            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False,
+                              description="Recherche texte (email, prénom, nom)"),
+        ],
+        tags=["vendeur"],
+        responses={200: VendorListSerializer(many=True)},
+    )
+    def get(self, request):
+        user = request.user
+        role = get_role_name(user)
 
-        q = self.request.query_params.get("q")
-        if q:
-            qs = qs.filter(
-                Q(user__email__icontains=q) |
-                Q(user__username__icontains=q) |
-                Q(user__first_name__icontains=q) |
-                Q(user__last_name__icontains=q) |
-                Q(user__telephone__icontains=q)
+        qs = Vendor.objects.select_related("user", "bijouterie")
+
+        # ---- Périmètre selon le rôle ----
+        if role == ROLE_MANAGER:
+            mgr = (
+                Manager.objects
+                .filter(user=user)
+                .select_related("bijouterie")
+                .first()
             )
+            bj_id = getattr(getattr(mgr, "bijouterie", None), "id", None)
+            if not bj_id:
+                return Response([], status=status.HTTP_200_OK)
+            qs = qs.filter(bijouterie_id=bj_id)
+        elif role == ROLE_ADMIN:
+            # admin → pas de restriction
+            pass
+        else:
+            # En théorie IsAdminOrManager bloque déjà, mais on sécurise
+            return Response({"detail": "Accès refusé."}, status=status.HTTP_403_FORBIDDEN)
 
-        bijouterie_id = self.request.query_params.get("bijouterie_id")
-        if bijouterie_id:
-            qs = qs.filter(bijouterie_id=bijouterie_id)
+        # ---- Filtres query params ----
+        params = request.query_params
 
-        verifie = self.request.query_params.get("verifie")
-        if verifie is not None:
-            if verifie.lower() in ("true", "1", "yes", "oui"):
+        bj_id = params.get("bijouterie_id")
+        if bj_id:
+            qs = qs.filter(bijouterie_id=bj_id)
+
+        bj_nom = params.get("bijouterie_nom")
+        if bj_nom:
+            qs = qs.filter(bijouterie__nom__icontains=bj_nom.strip())
+
+        verifie = params.get("verifie")
+        if verifie not in (None, ""):
+            v = verifie.lower()
+            if v in ("true", "1", "yes", "oui"):
                 qs = qs.filter(verifie=True)
-            elif verifie.lower() in ("false", "0", "no", "non"):
+            elif v in ("false", "0", "no", "non"):
                 qs = qs.filter(verifie=False)
 
-        return qs.order_by("-id")
+        q = params.get("q")
+        if q:
+            q = q.strip()
+            qs = qs.filter(
+                Q(user__email__icontains=q)
+                | Q(user__first_name__icontains=q)
+                | Q(user__last_name__icontains=q)
+            )
 
-    # Swagger
-    @swagger_auto_schema(
-        manual_parameters=[
-            openapi.Parameter("q", openapi.IN_QUERY, description="Recherche (email, username, nom, prénom, téléphone)", type=openapi.TYPE_STRING),
-            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, description="Filtrer par bijouterie id", type=openapi.TYPE_INTEGER),
-            openapi.Parameter("verifie", openapi.IN_QUERY, description="true/false", type=openapi.TYPE_STRING),
-        ],
-        responses={200: VendorReadSerializer(many=True)}
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
+        qs = qs.order_by("-created_at")
+
+        ser = VendorListSerializer(qs, many=True)
+        return Response(ser.data, status=status.HTTP_200_OK)
 
 
 # # ---------- DÉTAIL / LECTURE + MÀJ ----------
@@ -1087,7 +1305,7 @@ class VendorUpdateView(APIView):
             403: "Accès refusé",
             404: "Vendeur introuvable",
         },
-        tags=["Staff"],
+        tags=["vendeur"],
     )
     def put(self, request, vendor_id):
         # 1) Récupération du vendeur
@@ -1744,7 +1962,7 @@ class VendorProduitAssociationAPIView(APIView):
             404: "Ressource introuvable",
             409: "Conflit de stock",
         },
-        tags=["Vendeurs / Affectations"],
+        tags=["vendeur"],
     )
     @transaction.atomic
     def post(self, request):

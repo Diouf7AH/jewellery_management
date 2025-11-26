@@ -3,6 +3,8 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from stock.models import Stock
+
 from .models import Achat, Fournisseur, Lot, ProduitLine
 
 User = get_user_model()
@@ -124,6 +126,7 @@ class AchatSerializer(serializers.ModelSerializer):
     Vue compacte d'un achat (utilisée dans la réponse d'arrivage).
     """
     fournisseur = FournisseurMiniSerializer(read_only=True)
+    has_bijouterie_allocations = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Achat
@@ -137,6 +140,7 @@ class AchatSerializer(serializers.ModelSerializer):
             "frais_douane",
             "montant_total_ht",
             "montant_total_ttc",
+            "has_bijouterie_allocations",
             "fournisseur",
         ]
         read_only_fields = fields
@@ -145,6 +149,11 @@ class AchatSerializer(serializers.ModelSerializer):
 class AchatDetailSerializer(serializers.ModelSerializer):
     fournisseur = FournisseurMiniSerializer(read_only=True)
     lots = LotOutSerializer(many=True, read_only=True)
+    has_bijouterie_allocations = serializers.SerializerMethodField()
+
+    def get_has_bijouterie_allocations(self, obj):
+        # on appelle simplement la propriété du modèle
+        return obj.has_bijouterie_allocations
 
     class Meta:
         model = Achat
@@ -159,11 +168,39 @@ class AchatDetailSerializer(serializers.ModelSerializer):
             "montant_total_ht",
             "montant_total_ttc",
             "fournisseur",
+            "has_bijouterie_allocations",
             "lots",
         ]
         read_only_fields = fields
 # -----------------End AchatProduitGetOneView-------------------------
 
+
+# -----------------------------------------------------------
+class AchatCreateResponseSerializer(serializers.ModelSerializer):
+    lignes = ProduitLineOutSerializer(many=True, read_only=True)
+    achat = AchatSerializer(read_only=True)
+    has_bijouterie_allocations = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Lot
+        fields = [
+            "id",
+            "numero_lot",
+            "description",
+            "received_at",
+            "achat",
+            "lignes",
+            "has_bijouterie_allocations",
+        ]
+
+    def get_has_bijouterie_allocations(self, obj: Lot) -> bool:
+        # True si AU MOINS UNE ligne du lot est allouée à une bijouterie
+        return Stock.objects.filter(
+            produit_line__lot=obj,
+            bijouterie__isnull=False,
+            quantite_allouee__gt=0,
+        ).exists()
+# ---------------------------------------------------------
 
 # --- Ligne produit dans un lot ---
 class LotDisplayLineSerializer(serializers.ModelSerializer):
@@ -313,7 +350,7 @@ class AdjustmentActionSerializer(serializers.Serializer):
     quantite = serializers.IntegerField(min_value=1)
 
     # POUR PURCHASE_IN
-    produit_id = serializers.IntegerField(required=True, min_value=1)
+    produit_id = serializers.IntegerField(required=False)
     prix_achat_gramme = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
@@ -321,10 +358,10 @@ class AdjustmentActionSerializer(serializers.Serializer):
     )
 
     # POUR CANCEL_PURCHASE
-    produit_line_id = serializers.IntegerField(required=True, min_value=1)
+    produit_line_id = serializers.IntegerField(required=False)
 
     # Commentaire libre
-    reason = serializers.CharField(required=False, allow_blank=True)
+    reason = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def validate(self, attrs):
         t = attrs.get("type")
