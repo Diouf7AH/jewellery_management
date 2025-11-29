@@ -82,9 +82,9 @@ class StockSummaryBucketSerializer(serializers.Serializer):
     disponible = serializers.IntegerField(min_value=0)
     produits_totaux = serializers.IntegerField(min_value=0)  # NEW
 
-class StockSummarySerializer(serializers.Serializer):
-    reserved = StockSummaryBucketSerializer()
-    allocated = StockSummaryBucketSerializer()
-    in_stock = StockSummaryBucketSerializer()
+# class StockSummarySerializer(serializers.Serializer):
+#     reserved = StockSummaryBucketSerializer()
+#     allocated = StockSummaryBucketSerializer()
+#     in_stock = StockSummaryBucketSerializer()
 
 # ---------------End lister les stock par bijouterie-------------------

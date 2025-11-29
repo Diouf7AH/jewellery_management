@@ -128,6 +128,9 @@ urlpatterns = [
     path("achat/lots/", achat_views.LotListView.as_view(), name="lot-list"),
     path("achat/arrivage/<int:lot_id>/meta/", achat_views.ArrivageMetaUpdateView.as_view(), name="arrivage-meta-update"),
     path("achat/arrivage/<int:lot_id>/adjustments/", achat_views.ArrivageAdjustmentsView.as_view(), name="arrivage-adjustments"),
+    path("achat/produit-lines/", achat_views.ProduitLineWithInventoryListView.as_view(),name="produitline-list",),
+    
+    
     # path("achat/lots/export/csv", achat_views.LotExportCSVView.as_view(), name="lots-export-csv"),
     # path("achat/lots/export/xlsx", achat_views.LotExportExcelView.as_view(), name="lots-export-xlsx"),
     # path('achat-produit/create-achats', achat_views.AchatCreateView.as_view(), name='achats-create'),
@@ -136,8 +139,8 @@ urlpatterns = [
     path("stocks/transfer/reserve-to-bijouterie", stock_views.ReserveToBijouterieTransferView.as_view(), name="reserve-to-bijouterie"),
     # path("stock/affectations/reserve", achat_views.StockReserveAffectationView.as_view(), name="stock-reserve-affect"),
     path("stocks/transfer/bijouterie-to-vendor", stock_views.BijouterieToVendorTransferView.as_view(),name="bijouterie-to-vendor"),
-    path("stocks/summary", stock_views.StockSummaryView.as_view(), name="stock-summary"),
-
+    # path("stocks/summary", stock_views.StockSummaryView.as_view(), name="stock-summary"),
+    
     # path("achats/<int:achat_id>/cancel", achat_views.AchatCancelView.as_view(), name="achat-cancel"),
     # path('achat-produit/update-achat/<int:achat_id>', achat_views.AchatUpdateAPIView.as_view(), name='achat_update_achat'),
     # path('achat-produit/update-achat-produit/<int:achatproduit_id>', achat_views.AchatUpdateAchatProduitAPIView.as_view(), name='achat_produit_update_achat'),
@@ -152,11 +155,12 @@ urlpatterns = [
      # 🔹 Journal détaillé des mouvements (grand livre inventaire)
     path("inventory/movements/", inv_views.InventoryMovementListView.as_view(),name="movement-list",),
     # 🔹 Tableau d’inventaire par PRODUIT ET BIJOUTERIE
-    path("inventory/table-per-bijouterie/", inv_views.InventoryMovementTablePerBijouterieView.as_view(),name="table-per-bijouterie",),
+    # path("inventory/table-per-bijouterie/", inv_views.InventoryMovementTablePerBijouterieView.as_view(),name="table-per-bijouterie",),
     # 🔹 V3 combinée : inventaire bijouterie + vendor (par produit)
-    path("inventory/bijouterie-vendor/", inv_views.InventoryBijouterieVendorTableView.as_view(),name="bijouterie-vendor-table",),
+    # path("inventory/bijouterie-vendor/", inv_views.InventoryBijouterieVendorTableView.as_view(),name="bijouterie-vendor-table",),
     # 🔹 Stats d’allocations par vendor / année
-    path("inventory/vendors/<int:vendor_id>/allocations/", inv_views.VendorAllocationStatsView.as_view(),name="vendor-allocation-stats",),
+    # path("inventory/vendors/<int:vendor_id>/allocations/", inv_views.VendorAllocationStatsView.as_view(),name="vendor-allocation-stats",),
+    path("inventory/produit-lines/", inv_views.ProduitLineWithInventoryListView.as_view(),name="inventory-produitline-list",),
     # END INVENTORY
     
     # staff

@@ -27,7 +27,7 @@ from .serializers import (AchatCreateResponseSerializer, AchatDetailSerializer,
                           ArrivageCreateInSerializer,
                           ArrivageMetaUpdateInSerializer,
                           FournisseurSerializer, LotDisplaySerializer,
-                          LotListSerializer)
+                          LotListSerializer, ProduitLineMiniSerializer)
 from .utils import recalc_totaux_achat
 
 
@@ -498,6 +498,26 @@ class LotListView(ListAPIView):
 
         return super().get(request, *args, **kwargs)
 
+    # def get_queryset(self):
+    #     params = self.request.query_params
+    #     getf = params.get
+
+    #     # --------- Tri ---------
+    #     ordering = getf("ordering") or "-received_at"
+    #     allowed = {"received_at", "-received_at", "numero_lot", "-numero_lot"}
+    #     if ordering not in allowed:
+    #         ordering = "-received_at"
+
+    #     # --------- Base queryset + agrégats ---------
+    #     qs = (
+    #         Lot.objects
+    #         .select_related("achat", "achat__fournisseur")
+    #         .annotate(
+    #             nb_lignes=Coalesce(Count("lignes", distinct=True), 0),
+    #             quantite_total=Coalesce(Sum("lignes__quantite"), 0),
+    #         )
+    #     )
+    
     def get_queryset(self):
         params = self.request.query_params
         getf = params.get
@@ -512,11 +532,18 @@ class LotListView(ListAPIView):
         qs = (
             Lot.objects
             .select_related("achat", "achat__fournisseur")
+            .prefetch_related(          # 👈 pour les ProduitLine + Produit
+                "lignes",
+                "lignes__produit",
+                "lignes__produit__categorie",
+                "lignes__produit__marque",
+            )
             .annotate(
                 nb_lignes=Coalesce(Count("lignes", distinct=True), 0),
                 quantite_total=Coalesce(Sum("lignes__quantite"), 0),
             )
         )
+
 
         # --------- Filtre par dates (sur received_at) ---------
         date_from_s = getf("date_from")
@@ -1121,4 +1148,71 @@ class ArrivageAdjustmentsView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+# -------------------------ProduitLineWithInventoryListView---------------------
+class ProduitLineWithInventoryListView(ListAPIView):
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+    serializer_class = ProduitLineMiniSerializer     # 👈 MINI
+    pagination_class = None  # ou ta pagination
+    """ProduitLineWithInventoryListView
+        👉 Vue “photo” de l’inventaire (par lot + produit)
+        C’est la meilleure base pour :
+        Manager :
+            voir ce qu’il y a en stock (par lot, par produit, par bijouterie),
+            suivre les quantités (quantité, quantite_allouee, quantite_disponible_total),
+            contrôler les coûts (prix_achat_gramme, poids total, etc.),
+            filtrer par année, lot, produit, numéro de lot, etc.
+    """
+
+    def get_queryset(self):
+        params = self.request.query_params
+        getf = params.get
+
+        year = getf("year")
+        if year:
+            try:
+                year = int(year)
+            except ValueError:
+                year = None
+        if not year:
+            year = timezone.localdate().year
+
+        qs = (
+            ProduitLine.objects
+            .select_related(
+                "lot",
+                "lot__achat",
+                "lot__achat__fournisseur",
+                "produit",
+                "produit__purete",
+            )
+            .annotate(
+                quantite_allouee=Coalesce(Sum("stocks__quantite_allouee"), 0),
+                quantite_disponible_total=Coalesce(Sum("stocks__quantite_disponible"), 0),
+            )
+            .filter(lot__received_at__year=year)
+        )
+
+        lot_id = getf("lot_id")
+        if lot_id:
+            try:
+                qs = qs.filter(lot_id=int(lot_id))
+            except ValueError:
+                pass
+
+        produit_id = getf("produit_id")
+        if produit_id:
+            try:
+                qs = qs.filter(produit_id=int(produit_id))
+            except ValueError:
+                pass
+
+        numero_lot = getf("numero_lot")
+        if numero_lot:
+            qs = qs.filter(lot__numero_lot__icontains=numero_lot)
+
+        return qs.order_by("-lot__received_at", "lot__numero_lot", "id")
+
+# -------------------------End ProduitLineWithInventoryListView---------------------
 

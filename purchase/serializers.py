@@ -88,6 +88,8 @@ class ProduitLineOutSerializer(serializers.ModelSerializer):
     """
     produit_id = serializers.IntegerField(source="produit.id", read_only=True)
     produit_nom = serializers.CharField(source="produit.nom", read_only=True)
+    produit_purete = serializers.CharField(source="produit.purete", read_only=True)
+    poids_total = serializers.DecimalField(source="poids_total_calc",max_digits=14,decimal_places=3,read_only=True,allow_null=True,)
 
     class Meta:
         model = ProduitLine
@@ -95,8 +97,10 @@ class ProduitLineOutSerializer(serializers.ModelSerializer):
             "id",
             "produit_id",
             "produit_nom",
+            "produit_purete",
             "quantite",
             "prix_achat_gramme",
+            "poids_total",
         ]
 
 
@@ -247,6 +251,7 @@ class LotDisplaySerializer(serializers.ModelSerializer):
 
 class LotListSerializer(serializers.ModelSerializer):
     achat = AchatSerializer(read_only=True)
+    lignes = ProduitLineOutSerializer(many=True, read_only=True)
     fournisseur = FournisseurMiniSerializer(read_only=True)
 
     # Seront fournis par annotate() dans la vue
@@ -261,6 +266,7 @@ class LotListSerializer(serializers.ModelSerializer):
             "description",
             "received_at",
             "achat",
+            "lignes",
             "fournisseur",
             "nb_lignes",
             "quantite_total",
@@ -415,3 +421,41 @@ class ArrivageAdjustmentsInSerializer(serializers.Serializer):
         return data
 
 # ---------------------------end Adjustement-----------------------------
+
+# --------------------------ProduitLineMiniSerializer----------------------
+class ProduitLineMiniSerializer(serializers.ModelSerializer):
+    # Lot / achat
+    numero_lot = serializers.CharField(source="lot.numero_lot", read_only=True)
+    received_at = serializers.DateTimeField(source="lot.received_at", read_only=True)
+    numero_achat = serializers.CharField(source="lot.achat.numero_achat", read_only=True)
+    fournisseur_nom = serializers.CharField(source="lot.achat.fournisseur.nom", read_only=True)
+
+    # Produit
+    produit_id = serializers.IntegerField(source="produit.id", read_only=True)
+    produit_nom = serializers.CharField(source="produit.nom", read_only=True)
+    produit_sku = serializers.CharField(source="produit.sku", read_only=True, default=None)
+    purete_purete = serializers.CharField(source="produit.purete", read_only=True, default=None)
+
+    # Ligne achat
+    quantite = serializers.IntegerField(read_only=True)
+    poids_total = serializers.DecimalField(source="poids_total_calc",max_digits=14,decimal_places=3,read_only=True,allow_null=True,)
+    prix_gramme_achat = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+
+    # Stock (annotés dans queryset)
+    quantite_allouee = serializers.IntegerField(read_only=True)
+    quantite_disponible_total = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = ProduitLine
+        fields = [
+            "id",
+            # Lot / achat
+            "numero_lot", "received_at", "numero_achat", "fournisseur_nom",
+            # Produit
+            "produit_id", "produit_nom", "produit_sku", "purete_purete",
+            # Ligne achat
+            "quantite", "poids_total", "prix_gramme_achat",
+            # Stock
+            "quantite_allouee", "quantite_disponible_total",
+        ]
+# ---------------------------ProduitLineMiniSerializer------------------------------

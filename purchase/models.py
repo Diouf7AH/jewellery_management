@@ -277,11 +277,22 @@ class ProduitLine(models.Model):
         return f"{self.lot.numero_lot} · produit={self.produit_id}"
 
     # ---- Helpers (poids dynamiques) ----
+    # @property
+    # def poids_total_calc(self):
+    #     # quantité × poids unitaire courant du produit
+    #     if self.produit.poids is None:
+    #         return None
+    #     return (self.quantite or 0) * self.produit.poids
     @property
     def poids_total_calc(self):
-        # quantité × poids unitaire courant du produit
+        """
+        Retourne le poids total = quantite × produit.poids
+        (ou None si le produit n’a pas de poids renseigné).
+        """
         if self.produit.poids is None:
             return None
-        return (self.quantite or 0) * self.produit.poids
+        q = Decimal(self.quantite or 0)
+        p = Decimal(self.produit.poids)
+        return q * p
 
     
