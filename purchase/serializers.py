@@ -131,12 +131,14 @@ class AchatSerializer(serializers.ModelSerializer):
     """
     fournisseur = FournisseurMiniSerializer(read_only=True)
     has_bijouterie_allocations = serializers.BooleanField(read_only=True)
+    lots = LotOutSerializer(many=True, read_only=True)
 
     class Meta:
         model = Achat
         fields = [
             "id",
             "numero_achat",
+            "lots",
             "created_at",
             "status",
             "description",

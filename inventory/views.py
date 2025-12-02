@@ -117,7 +117,7 @@ class InventoryMovementListView(ExportXlsxMixin, APIView):
         - achat : achat_id
         - auteur / raison : created_by_id, reason
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
 
     @swagger_auto_schema(
         operation_summary="Lister les mouvements d’inventaire (détail) + export Excel",
