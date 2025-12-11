@@ -177,10 +177,11 @@ class ClientInSerializer(serializers.ModelSerializer):
 
 class VenteListSerializer(serializers.ModelSerializer):
     client = serializers.SerializerMethodField()
+    produits = VenteProduitSerializer(many=True, read_only=True)
 
     class Meta:
         model = Vente
-        fields = ["id", "numero_vente", "created_at", "montant_total", "client"]
+        fields = ["id", "produits", "numero_vente", "created_at", "montant_total", "client"]
         ref_name = "VenteList_V1"
 
     def get_client(self, obj):
