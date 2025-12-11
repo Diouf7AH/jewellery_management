@@ -435,19 +435,206 @@ def _current_year_bounds_dates():
     return date(y, 1, 1), date(y, 12, 31)
 
 
+# class ListFactureView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les factures (règles de fenêtre par rôle, recherche, tri)",
+#         operation_description=(
+#             "- **Vendor / Cashier** : fenêtre maximale **3 ans**. Si aucune date fournie → **année en cours**.\n"
+#             "- **Admin / Manager** : filtrage libre (pas de limite), dates optionnelles.\n"
+#             "Paramètres optionnels :\n"
+#             "• `q` (search: n° facture, n° vente, client)\n"
+#             "• `status` (non_paye|paye)\n"
+#             "• `type_facture` (proforma|vente_directe|acompte|finale)\n"
+#             "• `date_from` / `date_to` (YYYY-MM-DD, inclusifs)\n"
+#             "• `bijouterie_id` (ADMIN uniquement)\n"
+#             "• `ordering` (-date_creation|date_creation|-montant_total|montant_total|numero_facture|-numero_facture)\n"
+#             "\n⚠️ Pas de pagination : toutes les factures correspondant aux filtres sont renvoyées."
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "q",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description="Recherche: numéro facture, numéro vente, client (nom/prénom/téléphone)",
+#             ),
+#             openapi.Parameter(
+#                 "status",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description="Statut: non_paye | paye",
+#             ),
+#             openapi.Parameter(
+#                 "type_facture",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description="Type: proforma | vente_directe | acompte | finale",
+#             ),
+#             openapi.Parameter(
+#                 "date_from",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description="Date min (YYYY-MM-DD) sur date_creation",
+#             ),
+#             openapi.Parameter(
+#                 "date_to",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description="Date max (YYYY-MM-DD) sur date_creation",
+#             ),
+#             openapi.Parameter(
+#                 "bijouterie_id",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description="Filtrer par bijouterie (ADMIN uniquement)",
+#             ),
+#             openapi.Parameter(
+#                 "ordering",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description=(
+#                     "Tri: -date_creation (défaut), date_creation, "
+#                     "-montant_total, montant_total, numero_facture, -numero_facture"
+#                 ),
+#             ),
+#         ],
+#         responses={200: FactureSerializer(many=True)},
+#         tags=["Ventes / Factures"],
+#     )
+#     def get(self, request):
+#         user = request.user
+#         role = _user_role(user)
+#         if role not in {"admin", "manager", "vendor", "cashier"}:
+#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
+#         qs = (
+#             Facture.objects
+#             .select_related("vente", "vente__client", "bijouterie")
+#             .prefetch_related("paiements")
+#         )
+
+#         getf = request.GET.get
+
+#         # Portée par rôle (bijouterie)
+#         if role in {"manager", "vendor", "cashier"}:
+#             bij = _user_bijouterie(user)
+#             if not bij:
+#                 return Response(
+#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+#             qs = qs.filter(bijouterie=bij)
+#         elif role == "admin":
+#             bij_id = getf("bijouterie_id")
+#             if bij_id:
+#                 try:
+#                     bij_id = int(bij_id)
+#                 except ValueError:
+#                     return Response(
+#                         {"bijouterie_id": "Doit être un entier."},
+#                         status=status.HTTP_400_BAD_REQUEST,
+#                     )
+#                 qs = qs.filter(bijouterie_id=bij_id)
+
+#         # Recherche plein texte
+#         q = (getf("q") or "").strip()
+#         if q:
+#             qs = qs.filter(
+#                 Q(numero_facture__icontains=q)
+#                 | Q(vente__numero_vente__icontains=q)
+#                 | Q(vente__client__nom__icontains=q)
+#                 | Q(vente__client__prenom__icontains=q)
+#                 | Q(vente__client__telephone__icontains=q)
+#             )
+
+#         # Filtres simples
+#         status_v = (getf("status") or "").strip()
+#         if status_v in {"non_paye", "paye"}:
+#             qs = qs.filter(status=status_v)
+
+#         tf = (getf("type_facture") or "").strip()
+#         if tf in {"proforma", "vente_directe", "acompte", "finale"}:
+#             qs = qs.filter(type_facture=tf)
+
+#         # --- Fenêtre temporelle ---
+#         df = _parse_date(getf("date_from"))
+#         dt = _parse_date(getf("date_to"))
+#         today = timezone.localdate()
+
+#         if role in {"vendor", "cashier"}:
+#             if not df and not dt:
+#                 df, dt = _current_year_bounds_dates()
+#             elif df and not dt:
+#                 dt_cap = min(_add_years(df, 3) - timedelta(days=1), today)
+#                 dt = dt_cap
+#             elif dt and not df:
+#                 df = date(dt.year, 1, 1)
+
+#             if df and dt and df > dt:
+#                 return Response(
+#                     {"error": "`date_from` doit être ≤ `date_to`."},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+
+#             if df and dt:
+#                 max_dt = _add_years(df, 3) - timedelta(days=1)
+#                 if dt > max_dt:
+#                     return Response(
+#                         {"error": f"Fenêtre maximale de 3 ans pour ce rôle. `date_to` autorisé ≤ {max_dt}."},
+#                         status=status.HTTP_400_BAD_REQUEST,
+#                     )
+#                 dt = min(dt, today)
+
+#             if df:
+#                 qs = qs.filter(date_creation__date__gte=df)
+#             if dt:
+#                 qs = qs.filter(date_creation__date__lte=dt)
+
+#         else:  # admin / manager
+#             if df:
+#                 qs = qs.filter(date_creation__date__gte=df)
+#             if dt:
+#                 qs = qs.filter(date_creation__date__lte=dt)
+
+#             if not df and not dt:
+#                 d1, d2 = _current_year_bounds_dates()
+#                 qs = qs.filter(date_creation__date__gte=d1, date_creation__date__lte=d2)
+
+#         # Tri
+#         ordering = getf("ordering") or "-date_creation"
+#         allowed = {
+#             "date_creation",
+#             "-date_creation",
+#             "montant_total",
+#             "-montant_total",
+#             "numero_facture",
+#             "-numero_facture",
+#         }
+#         if ordering not in allowed:
+#             ordering = "-date_creation"
+#         qs = qs.order_by(ordering)
+
+#         # 🔁 Plus de pagination : on renvoie tout
+#         ser = FactureSerializer(qs, many=True)
+#         return Response(ser.data, status=status.HTTP_200_OK)
+   
+
+
 class ListFactureView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Lister les factures (règles de fenêtre par rôle, recherche, tri)",
         operation_description=(
-            "- **Vendor / Cashier** : fenêtre maximale **3 ans**. Si aucune date fournie → **année en cours**.\n"
-            "- **Admin / Manager** : filtrage libre (pas de limite), dates optionnelles.\n"
+            "- **Vendor / Cashier** : fenêtre maximale **3 ans**. "
+            "Si aucune date fournie → **année en cours**.\n"
+            "- **Admin / Manager** : filtrage libre (pas de limite de durée), dates optionnelles.\n\n"
             "Paramètres optionnels :\n"
             "• `q` (search: n° facture, n° vente, client)\n"
             "• `status` (non_paye|paye)\n"
-            "• `type_facture` (proforma|vente_directe|acompte|finale)\n"
-            "• `date_from` / `date_to` (YYYY-MM-DD, inclusifs)\n"
+            "• `type_facture` (proforma|facture|acompte|finale)\n"
+            "• `date_from` / `date_to` (YYYY-MM-DD, inclusifs, appliqués sur `date_creation`)\n"
             "• `bijouterie_id` (ADMIN uniquement)\n"
             "• `ordering` (-date_creation|date_creation|-montant_total|montant_total|numero_facture|-numero_facture)\n"
             "\n⚠️ Pas de pagination : toutes les factures correspondant aux filtres sont renvoyées."
@@ -469,7 +656,7 @@ class ListFactureView(APIView):
                 "type_facture",
                 openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
-                description="Type: proforma | vente_directe | acompte | finale",
+                description="Type: proforma | facture | acompte | finale",
             ),
             openapi.Parameter(
                 "date_from",
@@ -516,7 +703,7 @@ class ListFactureView(APIView):
 
         getf = request.GET.get
 
-        # Portée par rôle (bijouterie)
+        # --- Portée bijouterie par rôle ---
         if role in {"manager", "vendor", "cashier"}:
             bij = _user_bijouterie(user)
             if not bij:
@@ -537,7 +724,7 @@ class ListFactureView(APIView):
                     )
                 qs = qs.filter(bijouterie_id=bij_id)
 
-        # Recherche plein texte
+        # --- Recherche plein texte ---
         q = (getf("q") or "").strip()
         if q:
             qs = qs.filter(
@@ -548,13 +735,13 @@ class ListFactureView(APIView):
                 | Q(vente__client__telephone__icontains=q)
             )
 
-        # Filtres simples
+        # --- Filtres simples ---
         status_v = (getf("status") or "").strip()
         if status_v in {"non_paye", "paye"}:
             qs = qs.filter(status=status_v)
 
         tf = (getf("type_facture") or "").strip()
-        if tf in {"proforma", "vente_directe", "acompte", "finale"}:
+        if tf in {"proforma", "facture", "acompte", "finale"}:
             qs = qs.filter(type_facture=tf)
 
         # --- Fenêtre temporelle ---
@@ -563,13 +750,16 @@ class ListFactureView(APIView):
         today = timezone.localdate()
 
         if role in {"vendor", "cashier"}:
+            # Si aucune date fournie → année en cours (comme tu l’avais documenté)
             if not df and not dt:
                 df, dt = _current_year_bounds_dates()
             elif df and not dt:
+                # dt = min(df + 3 ans - 1 jour, aujourd'hui)
                 dt_cap = min(_add_years(df, 3) - timedelta(days=1), today)
                 dt = dt_cap
             elif dt and not df:
-                df = date(dt.year, 1, 1)
+                # si seulement date_to → on prend 3 ans en arrière max
+                df = max(_add_years(dt, -3), date(dt.year, 1, 1))
 
             if df and dt and df > dt:
                 return Response(
@@ -581,7 +771,10 @@ class ListFactureView(APIView):
                 max_dt = _add_years(df, 3) - timedelta(days=1)
                 if dt > max_dt:
                     return Response(
-                        {"error": f"Fenêtre maximale de 3 ans pour ce rôle. `date_to` autorisé ≤ {max_dt}."},
+                        {
+                            "error": f"Fenêtre maximale de 3 ans pour ce rôle. "
+                                     f"`date_to` autorisé ≤ {max_dt}."
+                        },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 dt = min(dt, today)
@@ -596,12 +789,9 @@ class ListFactureView(APIView):
                 qs = qs.filter(date_creation__date__gte=df)
             if dt:
                 qs = qs.filter(date_creation__date__lte=dt)
+            # si vraiment tu veux aucune limite par défaut, ne filtre pas si df/dt manquants
 
-            if not df and not dt:
-                d1, d2 = _current_year_bounds_dates()
-                qs = qs.filter(date_creation__date__gte=d1, date_creation__date__lte=d2)
-
-        # Tri
+        # --- Tri ---
         ordering = getf("ordering") or "-date_creation"
         allowed = {
             "date_creation",
@@ -615,10 +805,8 @@ class ListFactureView(APIView):
             ordering = "-date_creation"
         qs = qs.order_by(ordering)
 
-        # 🔁 Plus de pagination : on renvoie tout
         ser = FactureSerializer(qs, many=True)
-        return Response(ser.data, status=status.HTTP_200_OK)
-    
+        return Response(ser.data, status=status.HTTP_200_OK) 
 # -------------------------END ListFactureView---------------------------
 
 
