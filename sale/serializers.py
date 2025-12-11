@@ -22,7 +22,7 @@ class BijouterieSerializer(serializers.ModelSerializer):
 class ProduitSerializer(serializers.ModelSerializer):
     class Meta:
         model = Produit
-        fields = ["id", "nom", "slug", "poids", "categorie", "marque", "purete"]
+        fields = ["id", "nom", "sku", "slug", "poids", "categorie", "marque", "purete"]
         ref_name = "ProduitOutLight"
 
 # ---- vendor serializer light ----
@@ -132,7 +132,6 @@ class VenteProduitSerializer(serializers.ModelSerializer):
         ref_name = "VenteProduitLine"
         fields = [
             "id",
-            "sku",
             "slug",                 # maintenant: produit.slug en lecture seule
             "produit_id", "vendor_id",
             "produit", "vendor",
