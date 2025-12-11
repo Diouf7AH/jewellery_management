@@ -132,6 +132,7 @@ class VenteProduitSerializer(serializers.ModelSerializer):
         ref_name = "VenteProduitLine"
         fields = [
             "id",
+            "sku",
             "slug",                 # maintenant: produit.slug en lecture seule
             "produit_id", "vendor_id",
             "produit", "vendor",
