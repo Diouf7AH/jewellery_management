@@ -54,94 +54,218 @@ def _ensure_role_and_bijouterie(user):
         return mp.bijouterie, "manager"
     return None, None
 
+# def _resolve_vendor_for_line(*, role, user, bijouterie, vendor_email: str | None):
+#     if role == "vendor":
+#         v = get_object_or_404(Vendor.objects.select_related("user", "bijouterie"), user=user)
+#         if not v.verifie:
+#             raise PermissionError("Votre compte vendor est désactivé.")
+#         if v.bijouterie_id != bijouterie.id:
+#             raise PermissionError("Le vendor n'appartient pas à votre bijouterie.")
+#         return v
+
+#     # role == manager
+#     email = (vendor_email or "").strip()
+#     if not email:
+#         raise ValueError("Pour un manager, 'vendor_email' est requis pour affecter la vente.")
+#     v = Vendor.objects.select_related("user", "bijouterie").filter(user__email__iexact=email).first()
+#     if not v:
+#         raise Vendor.DoesNotExist(f"Vendor '{email}' introuvable.")
+#     if not v.verifie:
+#         raise PermissionError(f"Le vendor '{email}' est désactivé.")
+#     if v.bijouterie_id != bijouterie.id:
+#         raise PermissionError(f"Le vendor '{email}' n'appartient pas à votre bijouterie.")
+#     return v
+
 def _resolve_vendor_for_line(*, role, user, bijouterie, vendor_email: str | None):
+    """
+    Retourne le Vendor pour une ligne de vente selon le rôle :
+      - vendor : vendeur connecté lui-même (ignore vendor_email)
+      - admin/manager : vendor_email OBLIGATOIRE
+    """
+    from vendor.models import Vendor
+
+    # 1) Vendeur connecté : il vend pour lui-même
     if role == "vendor":
-        v = get_object_or_404(Vendor.objects.select_related("user", "bijouterie"), user=user)
-        if not v.verifie:
-            raise PermissionError("Votre compte vendor est désactivé.")
-        if v.bijouterie_id != bijouterie.id:
-            raise PermissionError("Le vendor n'appartient pas à votre bijouterie.")
-        return v
+        try:
+            return Vendor.objects.get(
+                user=user,
+                bijouterie=bijouterie,
+                verifie=True,
+            )
+        except Vendor.DoesNotExist:
+            raise Vendor.DoesNotExist(
+                "Profil vendeur introuvable pour l'utilisateur connecté dans cette bijouterie."
+            )
 
-    # role == manager
-    email = (vendor_email or "").strip()
-    if not email:
-        raise ValueError("Pour un manager, 'vendor_email' est requis pour affecter la vente.")
-    v = Vendor.objects.select_related("user", "bijouterie").filter(user__email__iexact=email).first()
-    if not v:
-        raise Vendor.DoesNotExist(f"Vendor '{email}' introuvable.")
-    if not v.verifie:
-        raise PermissionError(f"Le vendor '{email}' est désactivé.")
-    if v.bijouterie_id != bijouterie.id:
-        raise PermissionError(f"Le vendor '{email}' n'appartient pas à votre bijouterie.")
-    return v
+    # 2) Admin ou manager : doit renseigner vendor_email
+    if role in {"admin", "manager"}:
+        if not vendor_email:
+            raise ValueError("vendor_email est requis pour vendre à la place d'un vendeur.")
 
-def _consume_vendor_stock_for_product(*, vendor: Vendor, produit: Produit, quantite: int):
-    """
-    Décrémente le stock vendeur pour un produit donné en FIFO par ProduitLine (lot).
-    - décrémente VendorStock.quantite_disponible
-    - décrémente ProduitLine.quantite_restante
-    Retourne: liste de dicts {"pl_id": ..., "qte": ...}
-    """
-    remaining = int(quantite)
-    if remaining <= 0:
-        raise ValueError("Quantité à vendre doit être > 0")
+        email = vendor_email.strip().lower()
+        try:
+            return Vendor.objects.get(
+                user__email__iexact=email,
+                bijouterie=bijouterie,
+                verifie=True,
+            )
+        except Vendor.DoesNotExist:
+            raise Vendor.DoesNotExist(
+                "Vendeur introuvable pour cet email dans cette bijouterie."
+            )
 
-    vstocks = (
-        VendorStock.objects
-        .select_for_update()
-        .select_related("produit_line", "produit_line__lot")
-        .filter(vendor=vendor, produit_line__produit=produit, quantite_disponible__gt=0)
-        .order_by("produit_line__lot__received_at", "produit_line_id")
-    )
-
-    moves = []
-    for vs in vstocks:
-        if remaining == 0:
-            break
-        dispo = int(vs.quantite_disponible or 0)
-        if dispo <= 0:
-            continue
-        take = min(dispo, remaining)
-
-        # 1) décrémente la dispo vendeur (optimiste + verrou)
-        updated_vs = VendorStock.objects.filter(pk=vs.pk, quantite_disponible__gte=take)\
-                                        .update(quantite_disponible=F("quantite_disponible") - take)
-        if not updated_vs:
-            raise ValueError("Conflit de stock détecté, réessayez.")
-
-        # 2) décrémente la quantité restante de la ProduitLine
-        from purchase.models import ProduitLine
-        updated_pl = ProduitLine.objects.filter(pk=vs.produit_line_id, quantite_restante__gte=take)\
-                                        .update(quantite_restante=F("quantite_restante") - take)
-        if not updated_pl:
-            # rollback local VS pour rester cohérent
-            VendorStock.objects.filter(pk=vs.pk).update(quantite_disponible=F("quantite_disponible") + take)
-            raise ValueError("Stock de lot insuffisant (quantite_restante).")
-
-        moves.append({"pl_id": vs.produit_line_id, "qte": take})
-        remaining -= take
-
-    if remaining > 0:
-        raise ValueError(f"Stock vendeur insuffisant pour '{getattr(produit, 'nom', 'produit')}'. Manque {remaining}.")
-
-    return moves
+    # 3) Autres rôles : non autorisés
+    raise PermissionError("Rôle non autorisé pour affecter un vendeur à la ligne.")
 
 # ----------- Vue -----------
 
+# class VenteProduitCreateView(APIView):
+#     """
+#     Crée une vente, décrémente le stock vendor (FIFO par ProduitLine),
+#     met à jour ProduitLine.quantite_restante,
+#     puis génère une facture PROFORMA NON PAYÉE (numérotation par bijouterie).
+#     """
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer une vente (stock FIFO + facture proforma)",
+#         request_body=VenteCreateInSerializer,  # ✅ utilise ton serializer d’entrée
+#         responses={201: openapi.Response("Créé", schema=None)},
+#         tags=["Ventes"]
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         user = request.user
+
+#         # 1) Rôle + bijouterie
+#         bijouterie, role = _ensure_role_and_bijouterie(user)
+#         if role not in {"vendor", "manager"} or not bijouterie:
+#             return Response(
+#                 {"error": "⛔ Accès refusé (vendor/manager vérifié rattaché à une bijouterie requis)."},
+#                 status=status.HTTP_403_FORBIDDEN
+#             )
+
+#         # 2) Valider payload
+#         in_ser = VenteCreateInSerializer(data=request.data)
+#         in_ser.is_valid(raise_exception=True)
+#         payload = in_ser.validated_data
+#         client_in = payload["client"]
+#         items = payload["produits"]
+
+#         # 3) Client (upsert: par téléphone si fourni, sinon nom+prénom)
+#         tel = (client_in.get("telephone") or "").strip()
+#         lookup = {"telephone": tel} if tel else {"nom": client_in["nom"], "prenom": client_in["prenom"]}
+#         client, _ = Client.objects.get_or_create(
+#             defaults={"nom": client_in["nom"], "prenom": client_in["prenom"]},
+#             **lookup
+#         )
+
+#         # 4) Précharge produits par slug
+#         slugs = [it["slug"] for it in items]
+#         produits = {
+#             p.slug: p
+#             for p in Produit.objects.select_related("marque", "purete").filter(slug__in=slugs)
+#         }
+#         missing = [s for s in set(slugs) if s not in produits]
+#         if missing:
+#             return Response({"error": f"Produits introuvables: {', '.join(missing)}"}, status=status.HTTP_404_NOT_FOUND)
+
+#         # 5) Tarifs (marque, pureté)
+#         pairs = {(p.marque_id, p.purete_id) for p in produits.values() if p.marque_id and p.purete_id}
+#         tarifs = {
+#             (mp.marque_id, mp.purete_id): Decimal(str(mp.prix))
+#             for mp in MarquePurete.objects.filter(
+#                 marque_id__in=[m for (m, _) in pairs],
+#                 purete_id__in=[r for (_, r) in pairs]
+#             )
+#         }
+
+#         # 6) Entête de vente
+#         vente = Vente.objects.create(client=client, created_by=user)
+
+#         # 7) Lignes
+#         for it in items:
+#             produit = produits[it["slug"]]
+#             qte = int(it["quantite"])
+
+#             # 7.a Vendor pour la ligne
+#             try:
+#                 vendor = _resolve_vendor_for_line(
+#                     role=role, user=user, bijouterie=bijouterie, vendor_email=it.get("vendor_email")
+#                 )
+#             except Vendor.DoesNotExist as e:
+#                 return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
+#             except PermissionError as e:
+#                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+#             except ValueError as e:
+#                 return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+#             # 7.b Prix par gramme (input prioritaire > 0 ; sinon tarif MP)
+#             pvg = _dec(it.get("prix_vente_grammes"))
+#             if not pvg or pvg <= 0:
+#                 key = (produit.marque_id, produit.purete_id)
+#                 pvg = tarifs.get(key)
+#                 if not pvg or pvg <= 0:
+#                     return Response({
+#                         "error": f"Tarif manquant pour {produit.nom}.",
+#                         "solution": "Fournir 'prix_vente_grammes' > 0 ou renseigner Marque/Pureté."
+#                     }, status=status.HTTP_400_BAD_REQUEST)
+
+#             remise = _dec(it.get("remise")) or Decimal("0.00")
+#             autres = _dec(it.get("autres")) or Decimal("0.00")
+#             tax    = _dec(it.get("tax")) or Decimal("0.00")
+
+#             # 7.c Consommer stock vendeur (FIFO) + MAJ ProduitLine
+#             try:
+#                 fifo_moves = _consume_vendor_stock_for_product(
+#                     vendor=vendor, produit=produit, quantite=qte
+#                 )
+#             except ValueError as e:
+#                 return Response({"error": f"{produit.nom}: {str(e)}"}, status=status.HTTP_409_CONFLICT)
+
+#             # 7.d Créer la ligne de vente (les montants sont calculés dans le modèle)
+#             VenteProduit.objects.create(
+#                 vente=vente, produit=produit, vendor=vendor,
+#                 quantite=qte, prix_vente_grammes=pvg,
+#                 remise=remise, autres=autres, tax=tax,
+#             )
+#             # TODO (optionnel) : journaliser fifo_moves en InventoryMovement (SALE_OUT)
+
+#         # 8) Totaux & facture proforma
+#         try:
+#             vente.mettre_a_jour_montant_total(base="ttc")
+#         except Exception:
+#             pass
+
+#         facture = Facture.objects.create(
+#             vente=vente,
+#             bijouterie=bijouterie,
+#             montant_total=vente.montant_total,
+#             status=Facture.STAT_NON_PAYE,
+#             type_facture=Facture.TYPE_PROFORMA,
+#             numero_facture=Facture.generer_numero_unique(bijouterie),
+#         )
+
+#         return Response(
+#             {"facture": FactureSerializer(facture).data,
+#              "vente": VenteDetailSerializer(vente).data},
+#             status=status.HTTP_201_CREATED
+#         )
+
+
 class VenteProduitCreateView(APIView):
     """
-    Crée une vente, décrémente le stock vendor (FIFO par ProduitLine),
-    met à jour ProduitLine.quantite_restante,
+    Crée une vente (lignes + client), 
     puis génère une facture PROFORMA NON PAYÉE (numérotation par bijouterie).
+    Le stock vendeur sera consommé plus tard, au moment de la livraison/paiement confirmé.
     """
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Créer une vente (stock FIFO + facture proforma)",
-        request_body=VenteCreateInSerializer,  # ✅ utilise ton serializer d’entrée
+        request_body=VenteCreateInSerializer,
         responses={201: openapi.Response("Créé", schema=None)},
-        tags=["Ventes"]
+        tags=["Ventes"],
     )
     @transaction.atomic
     def post(self, request):
@@ -151,8 +275,10 @@ class VenteProduitCreateView(APIView):
         bijouterie, role = _ensure_role_and_bijouterie(user)
         if role not in {"vendor", "manager"} or not bijouterie:
             return Response(
-                {"error": "⛔ Accès refusé (vendor/manager vérifié rattaché à une bijouterie requis)."},
-                status=status.HTTP_403_FORBIDDEN
+                {
+                    "error": "⛔ Accès refusé (vendor/manager rattaché à une bijouterie requis)."
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         # 2) Valider payload
@@ -164,10 +290,14 @@ class VenteProduitCreateView(APIView):
 
         # 3) Client (upsert: par téléphone si fourni, sinon nom+prénom)
         tel = (client_in.get("telephone") or "").strip()
-        lookup = {"telephone": tel} if tel else {"nom": client_in["nom"], "prenom": client_in["prenom"]}
+        if tel:
+            lookup = {"telephone": tel}
+        else:
+            lookup = {"nom": client_in["nom"], "prenom": client_in["prenom"]}
+
         client, _ = Client.objects.get_or_create(
             defaults={"nom": client_in["nom"], "prenom": client_in["prenom"]},
-            **lookup
+            **lookup,
         )
 
         # 4) Précharge produits par slug
@@ -178,20 +308,31 @@ class VenteProduitCreateView(APIView):
         }
         missing = [s for s in set(slugs) if s not in produits]
         if missing:
-            return Response({"error": f"Produits introuvables: {', '.join(missing)}"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": f"Produits introuvables: {', '.join(missing)}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         # 5) Tarifs (marque, pureté)
-        pairs = {(p.marque_id, p.purete_id) for p in produits.values() if p.marque_id and p.purete_id}
+        pairs = {
+            (p.marque_id, p.purete_id)
+            for p in produits.values()
+            if p.marque_id and p.purete_id
+        }
         tarifs = {
             (mp.marque_id, mp.purete_id): Decimal(str(mp.prix))
             for mp in MarquePurete.objects.filter(
                 marque_id__in=[m for (m, _) in pairs],
-                purete_id__in=[r for (_, r) in pairs]
+                purete_id__in=[r for (_, r) in pairs],
             )
         }
 
         # 6) Entête de vente
-        vente = Vente.objects.create(client=client, created_by=user)
+        vente = Vente.objects.create(
+            client=client,
+            created_by=user,
+            bijouterie=bijouterie,  # 💡 important
+        )
 
         # 7) Lignes
         for it in items:
@@ -201,7 +342,10 @@ class VenteProduitCreateView(APIView):
             # 7.a Vendor pour la ligne
             try:
                 vendor = _resolve_vendor_for_line(
-                    role=role, user=user, bijouterie=bijouterie, vendor_email=it.get("vendor_email")
+                    role=role,
+                    user=user,
+                    bijouterie=bijouterie,
+                    vendor_email=it.get("vendor_email"),
                 )
             except Vendor.DoesNotExist as e:
                 return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
@@ -216,35 +360,37 @@ class VenteProduitCreateView(APIView):
                 key = (produit.marque_id, produit.purete_id)
                 pvg = tarifs.get(key)
                 if not pvg or pvg <= 0:
-                    return Response({
-                        "error": f"Tarif manquant pour {produit.nom}.",
-                        "solution": "Fournir 'prix_vente_grammes' > 0 ou renseigner Marque/Pureté."
-                    }, status=status.HTTP_400_BAD_REQUEST)
+                    return Response(
+                        {
+                            "error": f"Tarif manquant pour {produit.nom}.",
+                            "solution": "Fournir 'prix_vente_grammes' > 0 ou renseigner Marque/Pureté.",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             remise = _dec(it.get("remise")) or Decimal("0.00")
             autres = _dec(it.get("autres")) or Decimal("0.00")
-            tax    = _dec(it.get("tax")) or Decimal("0.00")
+            tax = _dec(it.get("tax")) or Decimal("0.00")
 
-            # 7.c Consommer stock vendeur (FIFO) + MAJ ProduitLine
-            try:
-                fifo_moves = _consume_vendor_stock_for_product(
-                    vendor=vendor, produit=produit, quantite=qte
-                )
-            except ValueError as e:
-                return Response({"error": f"{produit.nom}: {str(e)}"}, status=status.HTTP_409_CONFLICT)
 
-            # 7.d Créer la ligne de vente (les montants sont calculés dans le modèle)
+            # 7.d Créer la ligne de vente
             VenteProduit.objects.create(
-                vente=vente, produit=produit, vendor=vendor,
-                quantite=qte, prix_vente_grammes=pvg,
-                remise=remise, autres=autres, tax=tax,
+                vente=vente,
+                produit=produit,
+                vendor=vendor,
+                quantite=qte,
+                prix_vente_grammes=pvg,
+                remise=remise,
+                autres=autres,
+                tax=tax,
             )
-            # TODO (optionnel) : journaliser fifo_moves en InventoryMovement (SALE_OUT)
+            # TODO: le SALE_OUT et le journal d’inventaire seront gérés dans ConfirmerLivraisonView.
 
         # 8) Totaux & facture proforma
         try:
             vente.mettre_a_jour_montant_total(base="ttc")
         except Exception:
+            # on évite de casser la vente pour un problème de calculeur
             pass
 
         facture = Facture.objects.create(
@@ -257,11 +403,12 @@ class VenteProduitCreateView(APIView):
         )
 
         return Response(
-            {"facture": FactureSerializer(facture).data,
-             "vente": VenteDetailSerializer(vente).data},
-            status=status.HTTP_201_CREATED
+            {
+                "facture": FactureSerializer(facture).data,
+                "vente": VenteDetailSerializer(vente).data,
+            },
+            status=status.HTTP_201_CREATED,
         )
-
 
 
 # -------------------------ListFactureView---------------------------
@@ -686,6 +833,7 @@ class ConfirmerLivraisonView(APIView):
         try:
             # À toi d’implémenter l’idempotence dans ce service si nécessaire
             created_count = create_sale_out_movements_for_vente(vente, request.user)
+            # created = create_sale_out_movements_for_vente(vente=facture.vente, by_user=request.user)
         except ValidationError as e:
             msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
             return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)

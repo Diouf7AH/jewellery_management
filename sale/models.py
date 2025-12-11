@@ -44,6 +44,10 @@ class Vente(models.Model):
     client = models.ForeignKey('sale.Client', on_delete=models.SET_NULL, null=True, blank=True, related_name="ventes")
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
                                 on_delete=models.SET_NULL, related_name="ventes_creees")
+    bijouterie = models.ForeignKey(
+        "store.Bijouterie",on_delete=models.PROTECT,
+        null=True,           # on laisse nullable pour la migration
+        blank=True,related_name="ventes",)
     created_at = models.DateTimeField(auto_now_add=True)
     montant_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'), null=True)
 

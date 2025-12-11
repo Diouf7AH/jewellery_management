@@ -26,11 +26,11 @@ from backend.permissions import (ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR,
 from backend.renderers import UserRenderer
 from inventory.models import Bucket, InventoryMovement, MovementType
 # ⬇️ aligne le chemin du modèle de lot d’achat
-from purchase.models import Lot
+from purchase.models import Lot, ProduitLine
 from sale.models import VenteProduit  # 👈 lignes de vente (contient vendor)
 from staff.models import Manager
 from stock.models import Stock, VendorStock
-from store.models import Bijouterie, Produit
+from store.models import Bijouterie, Marque, Produit
 from store.serializers import ProduitSerializer
 from userauths.models import Role
 from vendor.models import Vendor  # 👈 ton modèle Vendor (app vendor)
@@ -839,33 +839,72 @@ class VendorDashboardView(APIView):
         return results
 
     def _by_marque(self, lignes, stock_by_marque):
-        qs = (
+        """
+        Agrégations par marque :
+        - CA, quantité vendue, nombre de ventes (à partir de VenteProduit)
+        - stock alloué / disponible (à partir de VendorStock)
+
+        ⛳ Objectif : afficher TOUTES les marques où le vendeur a du stock,
+        même si aucune vente n'a été faite dans la période.
+        """
+        # 1) Stats de ventes par marque (sur la période)
+        ventes_qs = (
             lignes
-            .values("produit__marque__id", "produit__marque__marque")
+            .values("produit__marque__id")
             .annotate(
                 total_amount=Sum("prix_ttc"),
                 items_sold=Sum("quantite"),
                 sales_count=Count("id"),
             )
-            .order_by("-total_amount")
         )
 
-        results = []
-        for row in qs:
+        ventes_par_marque: dict[int, dict] = {}
+        for row in ventes_qs:
             marque_id = row["produit__marque__id"]
-            stock = stock_by_marque.get(
+            if marque_id is None:
+                continue
+            ventes_par_marque[marque_id] = {
+                "total_amount": row["total_amount"] or 0,
+                "items_sold": row["items_sold"] or 0,
+                "sales_count": row["sales_count"] or 0,
+            }
+
+        # 2) Ensemble de toutes les marques concernées :
+        #    - celles qui ont du stock
+        #    - celles qui ont des ventes
+        all_marque_ids = set(stock_by_marque.keys()) | set(ventes_par_marque.keys())
+        if not all_marque_ids:
+            return []
+
+        # 3) Récupérer les labels des marques
+        marques_labels = {
+            m["id"]: m["marque"]
+            for m in Marque.objects.filter(id__in=all_marque_ids).values("id", "marque")
+        }
+
+        # 4) Construire la réponse fusionnée
+        results = []
+        for marque_id in all_marque_ids:
+            vente_data = ventes_par_marque.get(marque_id, {})
+            stock_data = stock_by_marque.get(
                 marque_id,
                 {"qty_allouee": 0, "qty_disponible": 0},
             )
+
             results.append({
                 "marque_id": marque_id,
-                "marque": row["produit__marque__marque"],
-                "total_amount": float(row["total_amount"] or 0),
-                "items_sold": int(row["items_sold"] or 0),
-                "sales_count": int(row["sales_count"] or 0),
-                "stock_qty_allouee": stock["qty_allouee"],
-                "stock_qty_disponible": stock["qty_disponible"],
+                "marque": marques_labels.get(marque_id, "—"),
+                # ventes
+                "total_amount": float(vente_data.get("total_amount") or 0),
+                "items_sold": int(vente_data.get("items_sold") or 0),
+                "sales_count": int(vente_data.get("sales_count") or 0),
+                # stock vendeur pour cette marque
+                "stock_qty_allouee": int(stock_data["qty_allouee"]),
+                "stock_qty_disponible": int(stock_data["qty_disponible"]),
             })
+
+        # 5) Option : trier par stock alloué (ou par CA, à toi de voir)
+        results.sort(key=lambda x: x["stock_qty_allouee"], reverse=True)
         return results
 
     def _by_categorie(self, lignes):
@@ -937,29 +976,30 @@ class VendorDashboardView(APIView):
 class VendorProduitListView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
-        operation_description="Lister les produits associés au vendeur connecté",
-        responses={200: ProduitSerializer(many=True)},
-        tags=["vendeur"],
-    )
-    
-    def get(self, request):
+    def get(self, request, *args, **kwargs):
         user = request.user
-        role = getattr(user.user_role, 'role', None)
 
-        if role != 'vendor':
-            return Response({"error": "Seul un vendeur peut accéder à ses produits."}, status=403)
+        # récupère le profil vendeur de l'utilisateur
+        vendor = getattr(user, "staff_vendor_profile", None)
+        if vendor is None:
+            return Response(
+                {"detail": "Aucun profil vendeur associé à cet utilisateur."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        try:
-            vendor = Vendor.objects.get(user=user)
-        except Vendor.DoesNotExist:
-            return Response({"error": "Aucun vendeur associé à cet utilisateur."}, status=400)
+        # 🔹 on traverse produit_line → produit
+        vendor_stocks = (
+            VendorStock.objects
+            .filter(vendor=vendor)
+            .select_related("produit_line__produit", "vendor")
+        )
 
-        vendor_produits = VendorStock.objects.filter(vendor=vendor).select_related('produit')
-        produits = [vp.produit for vp in vendor_produits]
+        produits = [vs.produit_line.produit for vs in vendor_stocks]
+        # enlever les doublons
+        produits = list({p.id: p for p in produits}.values())
+
         serializer = ProduitSerializer(produits, many=True)
-
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
     
 
 # class DashboardVendeurStatsAPIView(APIView):
@@ -1879,88 +1919,336 @@ class VendorUpdateView(APIView):
 
 
 
+# class VendorProduitAssociationAPIView(APIView):
+#     """
+#     Affecte des produits d'une **bijouterie source** vers un **vendeur** :
+#       - Détermination automatique de la bijouterie via l'email du vendeur si `src_bijouterie_id` n'est pas fourni.
+#       - Décrément du stock *de la bijouterie source*.
+#       - Mise à jour du stock vendeur (VendorProduit).
+#       - Journalisation `VENDOR_ASSIGN` (traçabilité possible via lot_id).
+#       Explication:
+#       Voici ce que signifie le champ status renvoyé pour chaque ligne de produit :
+
+#     "créé"
+#         → C’est la première fois que ce vendeur reçoit ce produit.
+#     "mis à jour"
+#         → Le vendeur avait déjà ce produit dans son stock.
+#         L’API incrémente simplement la quantité existante (quantite = quantite + attribuée) sur la même ligne VendorProduit. 
+#         On ne crée pas de nouvelle ligne ; on met à jour la ligne existante.
+    
+#     Quelques points à bien retenir :
+
+#         Le statut est par paire (vendeur, produit), pas par lot_id.
+#         Même si tu fournis un lot_id différent, si le vendeur possède déjà ce produit, ce sera "mis à jour" 
+#         (la traçabilité du lot est dans le mouvement InventoryMovement, pas dans VendorProduit).
+    
+#     En résumé :
+#         "créé" = nouvelle ligne VendorProduit(vendor, produit) créée.
+#         "mis à jour" = ligne déjà existante, quantité augmentée (ou ajustée).
+    
+#     Exemple de payload pour “réduction”
+#         {
+#         "email": "vendeur@exemple.com",
+#         "produits": [
+#             { "produit_id": 12, "set_stock_vendeur": 5 }
+#         ]
+#         }
+#     Explication du payload:
+#     S’il en avait 9, on fait –4 côté vendeur et +4 en bijouterie, 
+#     et on journalise un ADJUSTMENT (dst=BIJOUTERIE) pour la traçabilité retour.
+
+#     Remarque lot : le lot_id que tu envoies ici traçera cette opération (nouvelle affectation). 
+#     Ça ne remplace pas le lot_id d’un mouvement passé (on ne réécrit pas l’historique).
+        
+#     """
+#     permission_classes = [IsAuthenticated]
+#     allowed_roles_admin_manager = {"admin", "manager"}
+
+#     @swagger_auto_schema(
+#         operation_summary="Affecter des produits à un vendeur (déduction bijouterie source automatique)",
+#         operation_description=(
+#             "- Si `src_bijouterie_id` est omis, on le déduit de `vendor.bijouterie_id` (via l'email).\n"
+#             "- Si `src_bijouterie_id` est fourni ET que le vendeur a une bijouterie, ils doivent correspondre.\n"
+#             "- `lot_id` est **optionnel** (traçabilité). On **ne décrémente pas** le lot d’achat ici.\n"
+#             "- Le stock décrémenté est celui de la **bijouterie source**, pas le réservé."
+#         ),
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["email", "produits"],
+#             properties={
+#                 "email": openapi.Schema(type=openapi.TYPE_STRING, description="Email du vendeur"),
+#                 "src_bijouterie_id": openapi.Schema(
+#                     type=openapi.TYPE_INTEGER,
+#                     description="Bijouterie source (optionnel si vend. rattaché)"
+#                 ),
+#                 "produits": openapi.Schema(
+#                     type=openapi.TYPE_ARRAY,
+#                     items=openapi.Schema(
+#                         type=openapi.TYPE_OBJECT,
+#                         required=["produit_id", "quantite"],
+#                         properties={
+#                             "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                             "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, description="> 0"),
+#                             "lot_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="Optionnel (traçabilité)"),
+#                         }
+#                     )
+#                 )
+#             }
+#         ),
+#         responses={
+#             201: "Produits affectés",
+#             400: "Requête invalide",
+#             403: "Accès refusé",
+#             404: "Ressource introuvable",
+#             409: "Conflit de stock",
+#         },
+#         tags=["vendeur"],
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         # 1) Permissions
+#         role = getattr(getattr(request.user, "user_role", None), "role", None)
+#         if role not in self.allowed_roles_admin_manager:
+#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
+#         # 2) Entrées de base
+#         email = request.data.get("email")
+#         produits_data = request.data.get("produits", [])
+#         payload_src_bij = request.data.get("src_bijouterie_id")
+
+#         if not email:
+#             return Response({"error": "L'email du vendeur est requis."}, status=400)
+#         if not isinstance(produits_data, list) or not produits_data:
+#             return Response({"error": "La liste des produits est vide ou invalide."}, status=400)
+
+#         # 3) Vendeur + bijouterie source (déduction si nécessaire)
+#         try:
+#             vendor = Vendor.objects.select_related("user", "bijouterie").get(user__email=email)
+#         except Vendor.DoesNotExist:
+#             return Response({"error": "Vendeur introuvable."}, status=404)
+#         if not vendor.verifie:
+#             return Response({"error": "Ce vendeur est désactivé."}, status=403)
+
+#         vendor_bij = getattr(vendor, "bijouterie_id", None)
+#         if payload_src_bij is None and vendor_bij is None:
+#             return Response(
+#                 {"error": "Impossible de déterminer la bijouterie source. "
+#                           "Renseigne 'src_bijouterie_id' ou rattache le vendeur à une bijouterie."},
+#                 status=400
+#             )
+
+#         if payload_src_bij is not None:
+#             try:
+#                 src_bijouterie_id = int(payload_src_bij)
+#             except Exception:
+#                 return Response({"error": "'src_bijouterie_id' doit être un entier."}, status=400)
+
+#             if not Bijouterie.objects.filter(pk=src_bijouterie_id).exists():
+#                 return Response({"error": f"Bijouterie #{src_bijouterie_id} introuvable."}, status=404)
+
+#             if vendor_bij and vendor_bij != src_bijouterie_id:
+#                 return Response(
+#                     {"error": "Incohérence : la bijouterie fournie ne correspond pas à celle du vendeur."},
+#                     status=400
+#                 )
+#         else:
+#             src_bijouterie_id = vendor_bij
+
+#         # 4) Validation/chargement des items (on ne regroupe pas pour préserver lot_id par ligne)
+#         cleaned_items, produit_ids, lot_ids = [], set(), set()
+#         for idx, raw in enumerate(produits_data, start=1):
+#             try:
+#                 pid = int(raw.get("produit_id"))
+#                 qty = int(raw.get("quantite"))
+#             except Exception:
+#                 return Response(
+#                     {"error": f"Item {idx}: 'produit_id' et 'quantite' doivent être des entiers."}, status=400
+#                 )
+#             if pid <= 0 or qty <= 0:
+#                 return Response({"error": f"Item {idx}: 'produit_id' et 'quantite' doivent être > 0."}, status=400)
+
+#             lot_id = raw.get("lot_id")
+#             if lot_id is not None:
+#                 try:
+#                     lot_id = int(lot_id)
+#                     if lot_id <= 0:
+#                         return Response({"error": f"Item {idx}: 'lot_id' doit être > 0."}, status=400)
+#                     lot_ids.add(lot_id)
+#                 except Exception:
+#                     return Response({"error": f"Item {idx}: 'lot_id' doit être un entier."}, status=400)
+
+#             produit_ids.add(pid)
+#             cleaned_items.append({"produit_id": pid, "quantite": qty, "lot_id": lot_id})
+
+#         # 5) Existence produits
+#         produits = Produit.objects.filter(id__in=produit_ids)
+#         if produits.count() != len(produit_ids):
+#             ids_ok = set(produits.values_list("id", flat=True))
+#             manquants = [p for p in produit_ids if p not in ids_ok]
+#             return Response({"error": f"Produit(s) introuvable(s) : {manquants}"}, status=404)
+#         produits_by_id = {p.id: p for p in produits}
+
+#         # 6) Traitement items
+#         result = []
+#         now = timezone.now()
+
+#         for idx, item in enumerate(cleaned_items, start=1):
+#             pid = item["produit_id"]
+#             qty = item["quantite"]
+#             lot_id = item["lot_id"]
+#             produit = produits_by_id[pid]
+
+#             # 6.a Vérrouillage + décrément du stock de la bijouterie source
+#             stock = (Stock.objects
+#                      .select_for_update()
+#                      .filter(produit_id=pid, bijouterie_id=src_bijouterie_id)
+#                      .first())
+#             if not stock:
+#                 return Response(
+#                     {"error": f"Aucun stock en bijouterie #{src_bijouterie_id} pour le produit {produit.nom}."}, status=400
+#                 )
+#             if stock.quantite < qty:
+#                 return Response(
+#                     {"error": f"Stock insuffisant en bijouterie #{src_bijouterie_id} pour {produit.nom}. "
+#                               f"Stock actuel : {stock.quantite}, demandé : {qty}"},
+#                     status=400
+#                 )
+#             updated = (Stock.objects
+#                        .filter(pk=stock.pk, quantite__gte=qty)
+#                        .update(quantite=F("quantite") - qty))
+#             if not updated:
+#                 return Response({"error": "Conflit de stock détecté. Réessayez."}, status=409)
+#             stock.refresh_from_db(fields=["quantite"])
+
+#             # 6.b Incrément du stock vendeur (VendorProduit)
+#             vs = (VendorStock.objects
+#                   .select_for_update()
+#                   .filter(vendor=vendor, produit_id=pid)
+#                   .first())
+#             if vs:
+#                 VendorStock.objects.filter(pk=vs.pk).update(quantite=F("quantite") + qty)
+#                 vs.refresh_from_db(fields=["quantite"])
+#                 status_item = "mis à jour"
+#             else:
+#                 vs = VendorStock.objects.create(vendor=vendor, produit_id=pid, quantite=qty)
+#                 status_item = "créé"
+
+#             # 6.c Mouvement VENDOR_ASSIGN (traçabilité + origine bijouterie)
+#             InventoryMovement.objects.create(
+#                 produit=produit,
+#                 movement_type=MovementType.VENDOR_ASSIGN,
+#                 qty=qty,
+#                 unit_cost=None,              # pas de coût calculé ici
+#                 lot_id=lot_id,               # traçabilité (optionnel)
+#                 reason=f"Affectation au vendeur #{vendor.id} depuis bijouterie #{src_bijouterie_id}",
+#                 src_bucket=Bucket.BIJOUTERIE,
+#                 src_bijouterie_id=src_bijouterie_id,
+#                 dst_bucket=None,
+#                 dst_bijouterie=None,
+#                 achat=None, achat_ligne=None,
+#                 facture=None, vente=None, vente_ligne=None,
+#                 vendor=vendor,
+#                 occurred_at=now,
+#                 created_by=request.user,
+#             )
+
+#             result.append({
+#                 "produit_id": produit.id,
+#                 "nom": produit.nom,
+#                 "quantite_attribuee": qty,
+#                 "lot_id": lot_id,
+#                 "stock_vendeur": vs.quantite,
+#                 "stock_restant_bijouterie": stock.quantite,
+#                 "status": status_item,
+#             })
+
+#         # 7) OK
+#         return Response({
+#             "message": "✅ Produits affectés avec succès.",
+#             "source_bijouterie_id": src_bijouterie_id,
+#             "vendeur": {
+#                 "id": vendor.id,
+#                 "nom_complet": vendor.user.get_full_name() if vendor.user else "",
+#                 "email": vendor.user.email if vendor.user else "",
+#             },
+#             "lignes": result
+#         }, status=201)
+        
+
+
 class VendorProduitAssociationAPIView(APIView):
     """
-    Affecte des produits d'une **bijouterie source** vers un **vendeur** :
-      - Détermination automatique de la bijouterie via l'email du vendeur si `src_bijouterie_id` n'est pas fourni.
-      - Décrément du stock *de la bijouterie source*.
-      - Mise à jour du stock vendeur (VendorProduit).
-      - Journalisation `VENDOR_ASSIGN` (traçabilité possible via lot_id).
-      Explication:
-      Voici ce que signifie le champ status renvoyé pour chaque ligne de produit :
+    Affecte des QUANTITÉS de lignes de produit (ProduitLine) d'une bijouterie vers un vendeur.
 
-    "créé"
-        → C’est la première fois que ce vendeur reçoit ce produit.
-    "mis à jour"
-        → Le vendeur avait déjà ce produit dans son stock.
-        L’API incrémente simplement la quantité existante (quantite = quantite + attribuée) sur la même ligne VendorProduit. 
-        On ne crée pas de nouvelle ligne ; on met à jour la ligne existante.
-    
-    Quelques points à bien retenir :
+    Modèle utilisé :
+      - Stock (par ProduitLine + bijouterie) avec quantite_allouee / quantite_disponible
+      - VendorStock (par ProduitLine + vendor) avec quantite_allouee / quantite_vendue
 
-        Le statut est par paire (vendeur, produit), pas par lot_id.
-        Même si tu fournis un lot_id différent, si le vendeur possède déjà ce produit, ce sera "mis à jour" 
-        (la traçabilité du lot est dans le mouvement InventoryMovement, pas dans VendorProduit).
-    
-    En résumé :
-        "créé" = nouvelle ligne VendorProduit(vendor, produit) créée.
-        "mis à jour" = ligne déjà existante, quantité augmentée (ou ajustée).
-    
-    Exemple de payload pour “réduction”
-        {
-        "email": "vendeur@exemple.com",
-        "produits": [
-            { "produit_id": 12, "set_stock_vendeur": 5 }
-        ]
-        }
-    Explication du payload:
-    S’il en avait 9, on fait –4 côté vendeur et +4 en bijouterie, 
-    et on journalise un ADJUSTMENT (dst=BIJOUTERIE) pour la traçabilité retour.
+    Logique :
+      - On décrémente le **stock disponible** de la bijouterie (Stock.quantite_disponible).
+      - On incrémente l'alloué du vendeur (VendorStock.quantite_allouee).
+      - Une même ProduitLine peut être répartie entre plusieurs vendeurs.
 
-    Remarque lot : le lot_id que tu envoies ici traçera cette opération (nouvelle affectation). 
-    Ça ne remplace pas le lot_id d’un mouvement passé (on ne réécrit pas l’historique).
-        
+    Important :
+      - On utilise les helpers :
+          * Stock.decremente_disponible(qte=…)
+          * VendorStock.add_allocation(qte=…)
+      - On ne touche pas à Stock.quantite_allouee côté bijouterie ici.
     """
+
     permission_classes = [IsAuthenticated]
     allowed_roles_admin_manager = {"admin", "manager"}
 
     @swagger_auto_schema(
-        operation_summary="Affecter des produits à un vendeur (déduction bijouterie source automatique)",
+        operation_summary="Affecter des lignes de produit (ProduitLine) à un vendeur",
         operation_description=(
-            "- Si `src_bijouterie_id` est omis, on le déduit de `vendor.bijouterie_id` (via l'email).\n"
-            "- Si `src_bijouterie_id` est fourni ET que le vendeur a une bijouterie, ils doivent correspondre.\n"
-            "- `lot_id` est **optionnel** (traçabilité). On **ne décrémente pas** le lot d’achat ici.\n"
-            "- Le stock décrémenté est celui de la **bijouterie source**, pas le réservé."
+            "Affecte des quantités de lignes d'achat (ProduitLine) d'une bijouterie vers un vendeur.\n\n"
+            "- On décrémente Stock.quantite_disponible pour la bijouterie source.\n"
+            "- On incrémente VendorStock.quantite_allouee pour cette même ProduitLine.\n"
+            "- Si VendorStock(vendor, produit_line) existe → mise à jour, sinon → création.\n\n"
+            "Une même ProduitLine peut être répartie entre plusieurs vendeurs "
+            "en appelant plusieurs fois cette API avec des emails de vendeurs différents."
         ),
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=["email", "produits"],
+            required=["email", "lignes"],
             properties={
-                "email": openapi.Schema(type=openapi.TYPE_STRING, description="Email du vendeur"),
+                "email": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    description="Email du vendeur destinataire"
+                ),
                 "src_bijouterie_id": openapi.Schema(
                     type=openapi.TYPE_INTEGER,
-                    description="Bijouterie source (optionnel si vend. rattaché)"
+                    description=(
+                        "Bijouterie source. Optionnel si le vendeur est déjà rattaché à une bijouterie. "
+                        "Si fourni, doit correspondre à vendor.bijouterie_id."
+                    )
                 ),
-                "produits": openapi.Schema(
+                "lignes": openapi.Schema(
                     type=openapi.TYPE_ARRAY,
+                    description="Liste des lignes de produit à affecter",
                     items=openapi.Schema(
                         type=openapi.TYPE_OBJECT,
-                        required=["produit_id", "quantite"],
+                        required=["produit_line_id", "quantite"],
                         properties={
-                            "produit_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-                            "quantite": openapi.Schema(type=openapi.TYPE_INTEGER, description="> 0"),
-                            "lot_id": openapi.Schema(type=openapi.TYPE_INTEGER, description="Optionnel (traçabilité)"),
+                            "produit_line_id": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="ID de la ligne d'achat (ProduitLine)"
+                            ),
+                            "quantite": openapi.Schema(
+                                type=openapi.TYPE_INTEGER,
+                                description="Quantité > 0 à affecter au vendeur pour cette ligne"
+                            ),
                         }
                     )
-                )
+                ),
             }
         ),
         responses={
-            201: "Produits affectés",
+            201: "Produits affectés au vendeur",
             400: "Requête invalide",
             403: "Accès refusé",
             404: "Ressource introuvable",
-            409: "Conflit de stock",
         },
         tags=["vendeur"],
     )
@@ -1969,171 +2257,237 @@ class VendorProduitAssociationAPIView(APIView):
         # 1) Permissions
         role = getattr(getattr(request.user, "user_role", None), "role", None)
         if role not in self.allowed_roles_admin_manager:
-            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"message": "⛔ Accès refusé (admin/manager uniquement)."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-        # 2) Entrées de base
+        # 2) Entrées
         email = request.data.get("email")
-        produits_data = request.data.get("produits", [])
+        lignes_data = request.data.get("lignes", [])
         payload_src_bij = request.data.get("src_bijouterie_id")
 
         if not email:
-            return Response({"error": "L'email du vendeur est requis."}, status=400)
-        if not isinstance(produits_data, list) or not produits_data:
-            return Response({"error": "La liste des produits est vide ou invalide."}, status=400)
+            return Response({"error": "L'email du vendeur est requis."}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(lignes_data, list) or not lignes_data:
+            return Response(
+                {"error": "La liste 'lignes' est vide ou invalide."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # 3) Vendeur + bijouterie source (déduction si nécessaire)
+        # 3) Vendeur
         try:
             vendor = Vendor.objects.select_related("user", "bijouterie").get(user__email=email)
         except Vendor.DoesNotExist:
-            return Response({"error": "Vendeur introuvable."}, status=404)
+            return Response({"error": "Vendeur introuvable."}, status=status.HTTP_404_NOT_FOUND)
+
         if not vendor.verifie:
-            return Response({"error": "Ce vendeur est désactivé."}, status=403)
+            return Response({"error": "Ce vendeur est désactivé."}, status=status.HTTP_403_FORBIDDEN)
 
         vendor_bij = getattr(vendor, "bijouterie_id", None)
+
+        # 4) Détermination de la bijouterie source
         if payload_src_bij is None and vendor_bij is None:
             return Response(
-                {"error": "Impossible de déterminer la bijouterie source. "
-                          "Renseigne 'src_bijouterie_id' ou rattache le vendeur à une bijouterie."},
-                status=400
+                {
+                    "error": (
+                        "Impossible de déterminer la bijouterie source. "
+                        "Renseigne 'src_bijouterie_id' ou rattache le vendeur à une bijouterie."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if payload_src_bij is not None:
             try:
                 src_bijouterie_id = int(payload_src_bij)
             except Exception:
-                return Response({"error": "'src_bijouterie_id' doit être un entier."}, status=400)
+                return Response(
+                    {"error": "'src_bijouterie_id' doit être un entier."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             if not Bijouterie.objects.filter(pk=src_bijouterie_id).exists():
-                return Response({"error": f"Bijouterie #{src_bijouterie_id} introuvable."}, status=404)
+                return Response(
+                    {"error": f"Bijouterie #{src_bijouterie_id} introuvable."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
             if vendor_bij and vendor_bij != src_bijouterie_id:
                 return Response(
-                    {"error": "Incohérence : la bijouterie fournie ne correspond pas à celle du vendeur."},
-                    status=400
+                    {
+                        "error": (
+                            "Incohérence : la bijouterie fournie ne correspond pas à celle du vendeur."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
         else:
             src_bijouterie_id = vendor_bij
 
-        # 4) Validation/chargement des items (on ne regroupe pas pour préserver lot_id par ligne)
-        cleaned_items, produit_ids, lot_ids = [], set(), set()
-        for idx, raw in enumerate(produits_data, start=1):
+        # 5) Validation / chargement des ProduitLine
+        cleaned_items = []
+        pl_ids = set()
+
+        for idx, raw in enumerate(lignes_data, start=1):
             try:
-                pid = int(raw.get("produit_id"))
+                pl_id = int(raw.get("produit_line_id"))
                 qty = int(raw.get("quantite"))
             except Exception:
                 return Response(
-                    {"error": f"Item {idx}: 'produit_id' et 'quantite' doivent être des entiers."}, status=400
+                    {
+                        "error": (
+                            f"Ligne {idx}: 'produit_line_id' et 'quantite' "
+                            f"doivent être des entiers."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            if pid <= 0 or qty <= 0:
-                return Response({"error": f"Item {idx}: 'produit_id' et 'quantite' doivent être > 0."}, status=400)
+            if pl_id <= 0 or qty <= 0:
+                return Response(
+                    {
+                        "error": (
+                            f"Ligne {idx}: 'produit_line_id' et 'quantite' doivent être > 0."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-            lot_id = raw.get("lot_id")
-            if lot_id is not None:
-                try:
-                    lot_id = int(lot_id)
-                    if lot_id <= 0:
-                        return Response({"error": f"Item {idx}: 'lot_id' doit être > 0."}, status=400)
-                    lot_ids.add(lot_id)
-                except Exception:
-                    return Response({"error": f"Item {idx}: 'lot_id' doit être un entier."}, status=400)
+            pl_ids.add(pl_id)
+            cleaned_items.append({"produit_line_id": pl_id, "quantite": qty})
 
-            produit_ids.add(pid)
-            cleaned_items.append({"produit_id": pid, "quantite": qty, "lot_id": lot_id})
+        produit_lines = (
+            ProduitLine.objects
+            .select_related("produit", "lot")
+            .filter(id__in=pl_ids)
+        )
+        if produit_lines.count() != len(pl_ids):
+            found_ids = set(produit_lines.values_list("id", flat=True))
+            manquants = [pl for pl in pl_ids if pl not in found_ids]
+            return Response(
+                {"error": f"ProduitLine(s) introuvable(s) : {manquants}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-        # 5) Existence produits
-        produits = Produit.objects.filter(id__in=produit_ids)
-        if produits.count() != len(produit_ids):
-            ids_ok = set(produits.values_list("id", flat=True))
-            manquants = [p for p in produit_ids if p not in ids_ok]
-            return Response({"error": f"Produit(s) introuvable(s) : {manquants}"}, status=404)
-        produits_by_id = {p.id: p for p in produits}
+        pl_by_id = {pl.id: pl for pl in produit_lines}
 
-        # 6) Traitement items
-        result = []
+        # 6) Traitement avec verrouillage
         now = timezone.now()
+        result = []
 
         for idx, item in enumerate(cleaned_items, start=1):
-            pid = item["produit_id"]
+            pl_id = item["produit_line_id"]
             qty = item["quantite"]
-            lot_id = item["lot_id"]
-            produit = produits_by_id[pid]
+            pl = pl_by_id[pl_id]
+            produit = pl.produit
+            lot = getattr(pl, "lot", None)
 
-            # 6.a Vérrouillage + décrément du stock de la bijouterie source
-            stock = (Stock.objects
-                     .select_for_update()
-                     .filter(produit_id=pid, bijouterie_id=src_bijouterie_id)
-                     .first())
+            # 6.a Stock bijouterie pour cette ProduitLine (quantite_disponible)
+            stock = (
+                Stock.objects
+                .select_for_update()
+                .filter(produit_line_id=pl_id, bijouterie_id=src_bijouterie_id)
+                .first()
+            )
             if not stock:
                 return Response(
-                    {"error": f"Aucun stock en bijouterie #{src_bijouterie_id} pour le produit {produit.nom}."}, status=400
+                    {
+                        "error": (
+                            f"Ligne {idx}: Aucun stock en bijouterie #{src_bijouterie_id} "
+                            f"pour ProduitLine #{pl_id} ({produit.nom})."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            if stock.quantite < qty:
+
+            # décrémente uniquement le disponible côté bijouterie
+            try:
+                stock.decremente_disponible(qte=qty, save=True)
+            except ValidationError as e:
                 return Response(
-                    {"error": f"Stock insuffisant en bijouterie #{src_bijouterie_id} pour {produit.nom}. "
-                              f"Stock actuel : {stock.quantite}, demandé : {qty}"},
-                    status=400
+                    {
+                        "error": (
+                            f"Ligne {idx}: Stock disponible insuffisant en bijouterie "
+                            f"#{src_bijouterie_id} pour {produit.nom}. "
+                            f"Détail: {e.messages}"
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            updated = (Stock.objects
-                       .filter(pk=stock.pk, quantite__gte=qty)
-                       .update(quantite=F("quantite") - qty))
-            if not updated:
-                return Response({"error": "Conflit de stock détecté. Réessayez."}, status=409)
-            stock.refresh_from_db(fields=["quantite"])
 
-            # 6.b Incrément du stock vendeur (VendorProduit)
-            vs = (VendorStock.objects
-                  .select_for_update()
-                  .filter(vendor=vendor, produit_id=pid)
-                  .first())
-            if vs:
-                VendorStock.objects.filter(pk=vs.pk).update(quantite=F("quantite") + qty)
-                vs.refresh_from_db(fields=["quantite"])
-                status_item = "mis à jour"
-            else:
-                vs = VendorStock.objects.create(vendor=vendor, produit_id=pid, quantite=qty)
-                status_item = "créé"
+            # 6.b VendorStock (par ProduitLine)
+            vs, created = VendorStock.objects.select_for_update().get_or_create(
+                vendor=vendor,
+                produit_line=pl,
+                defaults={"quantite_allouee": 0, "quantite_vendue": 0},
+            )
 
-            # 6.c Mouvement VENDOR_ASSIGN (traçabilité + origine bijouterie)
+            try:
+                vs.add_allocation(qte=qty, save=True)
+            except ValidationError as e:
+                return Response(
+                    {
+                        "error": (
+                            f"Ligne {idx}: impossible d'allouer au vendeur. "
+                            f"Détail: {e.messages}"
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            status_item = "créé" if created else "mis à jour"
+
+            # 6.c Mouvement VENDOR_ASSIGN
             InventoryMovement.objects.create(
                 produit=produit,
                 movement_type=MovementType.VENDOR_ASSIGN,
                 qty=qty,
-                unit_cost=None,              # pas de coût calculé ici
-                lot_id=lot_id,               # traçabilité (optionnel)
-                reason=f"Affectation au vendeur #{vendor.id} depuis bijouterie #{src_bijouterie_id}",
+                unit_cost=None,   # à remplir si tu veux suivre le coût
+                lot_id=getattr(lot, "id", None),
+                reason=(
+                    f"Affectation ProduitLine #{pl_id} au vendeur #{vendor.id} "
+                    f"depuis bijouterie #{src_bijouterie_id}"
+                ),
                 src_bucket=Bucket.BIJOUTERIE,
                 src_bijouterie_id=src_bijouterie_id,
-                dst_bucket=None,
+                dst_bucket=Bucket.VENDOR if hasattr(Bucket, "VENDOR") else None,
                 dst_bijouterie=None,
-                achat=None, achat_ligne=None,
-                facture=None, vente=None, vente_ligne=None,
+                achat=None,
+                achat_ligne=None,
+                facture=None,
+                vente=None,
+                vente_ligne=None,
                 vendor=vendor,
                 occurred_at=now,
                 created_by=request.user,
             )
 
             result.append({
+                "produit_line_id": pl_id,
                 "produit_id": produit.id,
-                "nom": produit.nom,
+                "produit_nom": produit.nom,
+                "lot_id": getattr(lot, "id", None),
+                "lot_code": getattr(lot, "numero_lot", None),
                 "quantite_attribuee": qty,
-                "lot_id": lot_id,
-                "stock_vendeur": vs.quantite,
-                "stock_restant_bijouterie": stock.quantite,
-                "status": status_item,
+                "stock_vendeur_alloue_total": vs.quantite_allouee,
+                "stock_restant_disponible_bijouterie": stock.quantite_disponible,
+                "status": status_item,   # "créé" ou "mis à jour"
             })
 
         # 7) OK
-        return Response({
-            "message": "✅ Produits affectés avec succès.",
-            "source_bijouterie_id": src_bijouterie_id,
-            "vendeur": {
-                "id": vendor.id,
-                "nom_complet": vendor.user.get_full_name() if vendor.user else "",
-                "email": vendor.user.email if vendor.user else "",
+        return Response(
+            {
+                "message": "✅ Lignes de produit affectées avec succès au vendeur.",
+                "source_bijouterie_id": src_bijouterie_id,
+                "vendeur": {
+                    "id": vendor.id,
+                    "nom_complet": vendor.user.get_full_name() if vendor.user else "",
+                    "email": vendor.user.email if vendor.user else "",
+                },
+                "lignes": result,
             },
-            "lignes": result
-        }, status=201)
-        
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # def _parse_iso_dt(s: str):

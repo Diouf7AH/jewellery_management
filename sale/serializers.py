@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 from django.db.models import Sum
 from rest_framework import serializers
@@ -20,7 +22,7 @@ class BijouterieSerializer(serializers.ModelSerializer):
 class ProduitSerializer(serializers.ModelSerializer):
     class Meta:
         model = Produit
-        fields = ["id", "nom", "slug", "poids"]
+        fields = ["id", "nom", "slug", "poids", "categorie", "marque", "purete"]
         ref_name = "ProduitOutLight"
 
 # ---- vendor serializer light ----
@@ -36,29 +38,101 @@ class VendorSerializer(serializers.ModelSerializer):
 # ----End vendor serializer light ----
 
 # ----------------------------------------
+# class VenteProduitSerializer(serializers.ModelSerializer):
+#     slug = serializers.SlugField()
+#     produit_id = serializers.PrimaryKeyRelatedField(
+#         source="produit", queryset=Produit.objects.all(), write_only=True,
+#     )
+#     vendor_id = serializers.PrimaryKeyRelatedField(
+#         source="vendor", queryset=Vendor.objects.all(),
+#         write_only=True, required=False, allow_null=True,
+#     )
+
+#     produit = ProduitSerializer(read_only=True)
+#     vendor  = VendorSerializer(read_only=True)
+
+#     sous_total_ht = serializers.DecimalField(
+#         max_digits=12, decimal_places=2, read_only=True, source="sous_total_prix_vente_ht"
+#     )
+
+#     class Meta:
+#         model = VenteProduit
+#         ref_name = "VenteProduitLine"
+#         fields = [
+#             "id",
+#             "slug",
+#             "produit_id", "vendor_id",
+#             "produit", "vendor",
+#             "quantite",
+#             "prix_vente_grammes",
+#             "remise", "autres", "tax",
+#             "sous_total_ht",
+#             "sous_total_prix_vente_ht",
+#             "prix_ttc",
+#         ]
+#         read_only_fields = ("id", "sous_total_prix_vente_ht", "prix_ttc")
+#         extra_kwargs = {
+#             "quantite": {"min_value": 1},
+#             "prix_vente_grammes": {"required": False},
+#             "remise": {"required": False},
+#             "autres": {"required": False},
+#             "tax": {"required": False},
+#         }
+
+#     def validate(self, attrs):
+#         # valeurs non négatives
+#         for f in ("prix_vente_grammes", "remise", "autres", "tax"):
+#             v = attrs.get(f)
+#             if v is not None and v < 0:
+#                 raise serializers.ValidationError({f: "Ne peut pas être négatif."})
+#         q = attrs.get("quantite")
+#         if q is not None and q < 1:
+#             raise serializers.ValidationError({"quantite": "Doit être ≥ 1."})
+#         return attrs
+
+#     # Optionnel: cohérence slug <-> produit_id
+#     def validate_slug(self, value):
+#         # Si tu veux forcer cohérence, vérifie ici (ex: Produit.objects.filter(slug=value).exists())
+#         return value
+
 class VenteProduitSerializer(serializers.ModelSerializer):
-    slug = serializers.SlugField()
+    # 🔥 slug vient du produit, et uniquement en lecture
+    slug = serializers.CharField(
+        source="produit.slug",
+        read_only=True,
+    )
+
     produit_id = serializers.PrimaryKeyRelatedField(
-        source="produit", queryset=Produit.objects.all(), write_only=True,
+        source="produit",
+        queryset=Produit.objects.all(),
+        write_only=True,
     )
     vendor_id = serializers.PrimaryKeyRelatedField(
-        source="vendor", queryset=Vendor.objects.all(),
-        write_only=True, required=False, allow_null=True,
+        source="vendor",
+        queryset=Vendor.objects.all(),
+        write_only=True,
+        required=False,
+        allow_null=True,
     )
 
     produit = ProduitSerializer(read_only=True)
     vendor  = VendorSerializer(read_only=True)
 
     sous_total_ht = serializers.DecimalField(
-        max_digits=12, decimal_places=2, read_only=True, source="sous_total_prix_vente_ht"
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+        source="sous_total_prix_vente_ht",
     )
+    # marque = serializers.CharField(source="produit.marque.marque", read_only=True)
+    # purete = serializers.CharField(source="produit.purete.purete", read_only=True)
 
     class Meta:
         model = VenteProduit
         ref_name = "VenteProduitLine"
         fields = [
             "id",
-            "slug",
+            "slug",                 # maintenant: produit.slug en lecture seule
             "produit_id", "vendor_id",
             "produit", "vendor",
             "quantite",
@@ -88,10 +162,8 @@ class VenteProduitSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"quantite": "Doit être ≥ 1."})
         return attrs
 
-    # Optionnel: cohérence slug <-> produit_id
-    def validate_slug(self, value):
-        # Si tu veux forcer cohérence, vérifie ici (ex: Produit.objects.filter(slug=value).exists())
-        return value
+    # validate_slug n’a plus vraiment de sens ici, car slug est read_only
+    # Tu peux le supprimer, ou adapter la logique dans un serializer d’INPUT séparé.
 # ----------------------------------------
 
 # -----Serializer “in” pour la vue (payload)--
@@ -119,12 +191,12 @@ class VenteListSerializer(serializers.ModelSerializer):
 class VenteProduitInSerializer(serializers.Serializer):
     slug = serializers.SlugField()
     quantite = serializers.IntegerField(min_value=1)
-    prix_vente_grammes = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
-    remise = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
-    autres = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
-    tax    = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    prix_vente_grammes = serializers.DecimalField(max_digits=12,required=False,allow_null=True, decimal_places=2)
+    remise = serializers.DecimalField(max_digits=12, required=False,allow_null=True, decimal_places=2, default=Decimal("0.00"),)
+    autres = serializers.DecimalField(max_digits=12, required=False,allow_null=True, decimal_places=2, default=Decimal("0.00"),)
+    tax    = serializers.DecimalField(max_digits=12, required=False,allow_null=True, decimal_places=2, default=Decimal("0.00"),)
     # Manager uniquement (selection du vendor)
-    vendor_email = serializers.EmailField(required=False)
+    vendor_email = serializers.EmailField(required=False, allow_null=True, allow_blank=True,)
 
     class Meta:
         ref_name = "VenteProduitIn"
