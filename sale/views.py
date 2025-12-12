@@ -618,7 +618,6 @@ def _current_year_bounds_dates():
 #         # 🔁 Plus de pagination : on renvoie tout
 #         ser = FactureSerializer(qs, many=True)
 #         return Response(ser.data, status=status.HTTP_200_OK)
-   
 
 
 class ListFactureView(APIView):
@@ -627,7 +626,7 @@ class ListFactureView(APIView):
     @swagger_auto_schema(
         operation_summary="Lister les factures (règles de fenêtre par rôle, recherche, tri)",
         operation_description=(
-            "- **Vendor / Cashier** : fenêtre maximale **3 ans**. "
+            "- **Vendor / Cashier** : factures de leur bijouterie, fenêtre maximale **3 ans**. "
             "Si aucune date fournie → **année en cours**.\n"
             "- **Admin / Manager** : filtrage libre (pas de limite de durée), dates optionnelles.\n\n"
             "Paramètres optionnels :\n"
@@ -692,6 +691,8 @@ class ListFactureView(APIView):
     def get(self, request):
         user = request.user
         role = _user_role(user)
+
+        # ✅ admin, manager, vendor, cashier
         if role not in {"admin", "manager", "vendor", "cashier"}:
             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
@@ -712,6 +713,7 @@ class ListFactureView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             qs = qs.filter(bijouterie=bij)
+
         elif role == "admin":
             bij_id = getf("bijouterie_id")
             if bij_id:
@@ -750,15 +752,13 @@ class ListFactureView(APIView):
         today = timezone.localdate()
 
         if role in {"vendor", "cashier"}:
-            # Si aucune date fournie → année en cours (comme tu l’avais documenté)
+            # Si aucune date fournie → année en cours
             if not df and not dt:
                 df, dt = _current_year_bounds_dates()
             elif df and not dt:
-                # dt = min(df + 3 ans - 1 jour, aujourd'hui)
                 dt_cap = min(_add_years(df, 3) - timedelta(days=1), today)
                 dt = dt_cap
             elif dt and not df:
-                # si seulement date_to → on prend 3 ans en arrière max
                 df = max(_add_years(dt, -3), date(dt.year, 1, 1))
 
             if df and dt and df > dt:
@@ -772,8 +772,10 @@ class ListFactureView(APIView):
                 if dt > max_dt:
                     return Response(
                         {
-                            "error": f"Fenêtre maximale de 3 ans pour ce rôle. "
-                                     f"`date_to` autorisé ≤ {max_dt}."
+                            "error": (
+                                "Fenêtre maximale de 3 ans pour ce rôle. "
+                                f"`date_to` autorisé ≤ {max_dt}."
+                            )
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
@@ -789,7 +791,7 @@ class ListFactureView(APIView):
                 qs = qs.filter(date_creation__date__gte=df)
             if dt:
                 qs = qs.filter(date_creation__date__lte=dt)
-            # si vraiment tu veux aucune limite par défaut, ne filtre pas si df/dt manquants
+            # pas de fenêtre auto si pas de dates
 
         # --- Tri ---
         ordering = getf("ordering") or "-date_creation"
@@ -806,7 +808,7 @@ class ListFactureView(APIView):
         qs = qs.order_by(ordering)
 
         ser = FactureSerializer(qs, many=True)
-        return Response(ser.data, status=status.HTTP_200_OK) 
+        return Response(ser.data, status=status.HTTP_200_OK)
 # -------------------------END ListFactureView---------------------------
 
 
