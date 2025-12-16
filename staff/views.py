@@ -26,7 +26,7 @@ from .serializers import (CreateStaffMemberSerializer, ManagerSerializer,
 
 # Create your views here.
 User = get_user_model()
-allowed_all_roles = ['admin', 'manager', 'vendeur']
+allowed_all_roles = ['admin', 'manager', 'vendeur', 'cashier',]
 allowed_roles_admin_manager = ['admin', 'manager',]
 
 def _parse_iso_dt(s: str):
@@ -46,95 +46,6 @@ def _parse_iso_dt(s: str):
 
 ROLE_ADMIN, ROLE_MANAGER = "admin", "manager"
 ROLE_VENDOR, ROLE_CASHIER = "vendor", "cashier"
-
-# class CreateStaffMemberView(APIView):
-#     permission_classes = [IsAuthenticated]
-#     allowed_roles_admin_manager = (ROLE_ADMIN, ROLE_MANAGER)
-#     MAP = {
-#         ROLE_VENDOR: (Vendor, VendorSerializer),
-#         ROLE_CASHIER: (Cashier, CashierSerializer),
-#     }
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un staff (vendor ou cashier) à partir d’un utilisateur existant",
-#         request_body=CreateStaffMemberSerializer,
-#         responses={201: "Créé", 400: "Erreur", 403: "Accès refusé", 404: "Introuvable", 409: "Conflit"}
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         # 0) Permissions
-#         caller_role = getattr(getattr(request.user, "user_role", None), "role", None)
-#         if caller_role not in self.allowed_roles_admin_manager:
-#             return Response({"error": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         # 1) Validation
-#         serializer = CreateStaffMemberSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-#         data = serializer.validated_data
-
-#         email = data["email"].strip()
-#         bijouterie = data["bijouterie"]                # instance validée par le serializer
-#         wanted_role = data["role"].lower()
-
-#         if wanted_role not in self.MAP:
-#             return Response({"error": "role doit être 'vendor' ou 'cashier'."}, status=400)
-#         Model, OutSer = self.MAP[wanted_role]
-
-#         # 2) User sous verrou
-#         user = User.objects.select_for_update().filter(email__iexact=email).first()
-#         if not user:
-#             return Response({"error": f"Aucun utilisateur trouvé avec l’email {email}."}, status=404)
-
-#         # 3) Rôles présents en base
-#         role_vendor = Role.objects.filter(role=ROLE_VENDOR).first()
-#         role_cashier = Role.objects.filter(role=ROLE_CASHIER).first()
-#         if not role_vendor or not role_cashier:
-#             return Response({"error": "Les rôles vendor/cashier n’existent pas en base."}, status=400)
-
-#         existing_role = getattr(getattr(user, "user_role", None), "role", None)
-
-#         # 4) Protections rôle
-#         if existing_role in self.allowed_roles_admin_manager:
-#             return Response({"error": f"User déjà {existing_role}, impossible de le transformer."}, status=409)
-#         if existing_role and existing_role != wanted_role:
-#             return Response({"error": f"User déjà {existing_role}."}, status=409)
-
-#         # 5) Déjà staff ?
-#         # même type
-#         if Model.objects.select_for_update().filter(user_id=user.id).exists():
-#             return Response({"error": f"Ce user est déjà {wanted_role}."}, status=409)
-#         # autre type
-#         other_model = Cashier if wanted_role == ROLE_VENDOR else Vendor
-#         if other_model.objects.select_for_update().filter(user_id=user.id).exists():
-#             other_name = ROLE_CASHIER if wanted_role == ROLE_VENDOR else ROLE_VENDOR
-#             return Response({"error": f"Ce user est déjà {other_name}."}, status=409)
-
-#         # 6) Assigner le rôle si aucun
-#         if not existing_role:
-#             user.user_role = role_vendor if wanted_role == ROLE_VENDOR else role_cashier
-#             user.save(update_fields=["user_role"])
-
-#         # 7) Création (race-safe)
-#         try:
-#             staff = Model.objects.create(
-#                 user=user,
-#                 bijouterie=bijouterie,
-#                 # description=data.get("description", "")
-#             )
-#         except IntegrityError:
-#             # création concurrente → conflit explicite
-#             return Response({"error": "Conflit de création (intégrité)."}, status=409)
-
-#         return Response(
-#             {
-#                 "staff_type": wanted_role,
-#                 "staff": OutSer(staff).data,
-#                 "user": UserSerializer(user).data,
-#                 "message": "✅ Staff créé avec succès"
-#             },
-#             status=201
-#         )
-
 
 
 class CreateStaffMemberView(APIView):
@@ -253,15 +164,15 @@ class CreateStaffMemberView(APIView):
         if wanted_role == ROLE_MANAGER and (already_vendor or already_cashier or already_manager):
             return Response({"error": "Ce user a déjà un profil staff (vendor/cashier/manager)."}, status=409)
 
-        # 8) Assigner le rôle métier si absent
-        if not existing_role:
-            if wanted_role == ROLE_VENDOR:
-                user.user_role = role_vendor
-            elif wanted_role == ROLE_CASHIER:
-                user.user_role = role_cashier
-            else:  # manager
-                user.user_role = role_manager
-            user.save(update_fields=["user_role"])
+        # 8) Assigner / corriger le rôle métier (IMPORTANT)
+        if wanted_role == ROLE_VENDOR:
+            user.user_role = role_vendor
+        elif wanted_role == ROLE_CASHIER:
+            user.user_role = role_cashier
+        else:  # manager
+            user.user_role = role_manager
+
+        user.save(update_fields=["user_role"])
 
         # 9) Création du staff (race-safe)
         try:
@@ -285,20 +196,28 @@ class CreateStaffMemberView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
-
-
 # class UpdateStaffView(APIView):
 #     """
-#     Met à jour un staff (manager / vendor / cashier) :
+#     Met à jour un staff (manager / cashier) :
 #       - email (User)
 #       - bijouterie (via son nom)
 #       - verifie / raison_desactivation
-#     Accès : admin + manager uniquement.
+
+#     Règles d'accès :
+#       - Admin : peut modifier n'importe quel manager/caissier
+#       - Manager : ne peut modifier que les staff (manager ou caissier)
+#                   rattachés à **sa propre bijouterie**
 #     """
 #     permission_classes = [IsAuthenticated, IsAdminOrManager]
 
 #     @swagger_auto_schema(
-#         operation_summary="Mettre à jour un staff (admin/manager seulement)",
+#         operation_summary="Mettre à jour un staff (manager / caissier)",
+#         operation_description=(
+#             "Met à jour un staff **manager ou caissier**.\n\n"
+#             "- `role`: `manager` ou `cashier`\n"
+#             "- `bijouterie_nom`: nom de la bijouterie à rattacher\n\n"
+#             "Un **manager** ne peut modifier que les staff de **sa** bijouterie."
+#         ),
 #         request_body=UpdateStaffSerializer,
 #         responses={
 #             200: openapi.Response("Staff mis à jour"),
@@ -308,10 +227,49 @@ class CreateStaffMemberView(APIView):
 #         },
 #         tags=["Staff"],
 #     )
-#     def put(self, request, staff_id):
-#         # 👉 ici j’exemple avec Manager, tu peux adapter pour Vendor/Cashier
-#         staff = get_object_or_404(Cashier, pk=staff_id)   # ou Vendor / Cashier / Manager
+#     def put(self, request, staff_id: int):
+#         # 1) On récupère d'abord le rôle ciblé (manager/cashier)
+#         role_payload = request.data.get("role")
+#         if role_payload not in ("manager", "cashier"):
+#             return Response(
+#                 {"error": "Le champ 'role' doit être 'manager' ou 'cashier'."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
 
+#         # 2) On détermine le modèle cible
+#         if role_payload == "manager":
+#             StaffModel = Manager
+#             role_label = "manager"
+#         else:
+#             StaffModel = Cashier
+#             role_label = "cashier"
+
+#         # 3) On récupère l'instance (ou 404)
+#         staff = get_object_or_404(StaffModel, pk=staff_id)
+
+#         # 4) Règles d'autorisation sur la bijouterie
+#         caller_role = get_role_name(request.user)
+
+#         if caller_role == ROLE_MANAGER:
+#             # Manager courant
+#             caller_mgr = Manager.objects.filter(user=request.user).select_related("bijouterie").first()
+#             caller_bj_id = getattr(getattr(caller_mgr, "bijouterie", None), "id", None)
+
+#             if not caller_bj_id:
+#                 return Response(
+#                     {"error": "Votre compte manager n'est rattaché à aucune bijouterie."},
+#                     status=status.HTTP_403_FORBIDDEN,
+#                 )
+
+#             # 🔒 Un manager ne peut modifier que les staff de SA bijouterie
+#             if staff.bijouterie_id != caller_bj_id:
+#                 return Response(
+#                     {"error": "Vous ne pouvez modifier que les staff de votre bijouterie."},
+#                     status=status.HTTP_403_FORBIDDEN,
+#                 )
+#         # si caller_role == ROLE_ADMIN → pas de restriction supplémentaire
+
+#         # 5) Sérializer avec contexte pour contrôler l'email
 #         ser = UpdateStaffSerializer(
 #             data=request.data,
 #             context={"user_id": getattr(staff.user, "id", None)},
@@ -319,19 +277,32 @@ class CreateStaffMemberView(APIView):
 #         ser.is_valid(raise_exception=True)
 #         data = ser.validated_data
 
-#         # ---- Email user ----
+#         # 6) Mise à jour de l'email (si fourni)
 #         if "email" in data and staff.user:
 #             staff.user.email = data["email"]
 #             staff.user.save(update_fields=["email"])
+            
+#         # ✅ Sync du rôle métier dans User.user_role
+#         if staff.user:
+#             role_obj = Role.objects.filter(role=role_payload).first()
+#             if not role_obj:
+#                 return Response(
+#                     {"error": f"Le rôle '{role_payload}' n'existe pas en base."},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+#             if getattr(getattr(staff.user, "user_role", None), "role", None) != role_payload:
+#                 staff.user.user_role = role_obj
+#                 staff.user.save(update_fields=["user_role"])
 
-#         # ---- Bijouterie via nom ----
+#         fields_to_update = []
+
+#         # 7) Mise à jour de la bijouterie via son nom (bijouterie_nom)
 #         if "bijouterie_nom" in data:
-#             bj = data["bijouterie_nom"]  # instance de Bijouterie ou None
-#             staff.bijouterie = bj
+#             bj_instance = data["bijouterie_nom"]  # instance de Bijouterie ou None
+#             staff.bijouterie = bj_instance
+#             fields_to_update.append("bijouterie")
 
-#         fields_to_update = ["bijouterie"] if "bijouterie_nom" in data else []
-
-#         # ---- verifie / raison_desactivation ----
+#         # 8) verifie / raison_desactivation
 #         if "verifie" in data:
 #             staff.verifie = data["verifie"]
 #             fields_to_update.append("verifie")
@@ -347,7 +318,7 @@ class CreateStaffMemberView(APIView):
 #             {
 #                 "message": "Staff mis à jour avec succès",
 #                 "staff_id": staff.id,
-#                 "role": "manager",  # ou "vendor"/"cashier" selon le modèle
+#                 "role": role_label,
 #                 "email": staff.user.email if staff.user else None,
 #                 "bijouterie_id": staff.bijouterie_id,
 #                 "bijouterie_nom": getattr(staff.bijouterie, "nom", None),
@@ -357,27 +328,22 @@ class CreateStaffMemberView(APIView):
 #             status=status.HTTP_200_OK,
 #         )
 
+
 class UpdateStaffView(APIView):
     """
-    Met à jour un staff (manager / cashier) :
-      - email (User)
-      - bijouterie (via son nom)
-      - verifie / raison_desactivation
-
-    Règles d'accès :
-      - Admin : peut modifier n'importe quel manager/caissier
-      - Manager : ne peut modifier que les staff (manager ou caissier)
-                  rattachés à **sa propre bijouterie**
+    PUT /api/staff/<staff_id>/
+    Met à jour un staff (manager/cashier) + synchronise user.user_role.
     """
     permission_classes = [IsAuthenticated, IsAdminOrManager]
 
     @swagger_auto_schema(
-        operation_summary="Mettre à jour un staff (manager / caissier)",
+        operation_summary="Mettre à jour un staff (manager / caissier) + sync user_role",
         operation_description=(
             "Met à jour un staff **manager ou caissier**.\n\n"
             "- `role`: `manager` ou `cashier`\n"
-            "- `bijouterie_nom`: nom de la bijouterie à rattacher\n\n"
-            "Un **manager** ne peut modifier que les staff de **sa** bijouterie."
+            "- `bijouterie_nom`: nom de la bijouterie\n"
+            "- `verifie`, `raison_desactivation`, `email` optionnels\n\n"
+            "✅ Synchronise automatiquement `user.user_role` selon le type de staff."
         ),
         request_body=UpdateStaffSerializer,
         responses={
@@ -388,31 +354,22 @@ class UpdateStaffView(APIView):
         },
         tags=["Staff"],
     )
+    @transaction.atomic
     def put(self, request, staff_id: int):
-        # 1) On récupère d'abord le rôle ciblé (manager/cashier)
-        role_payload = request.data.get("role")
+        role_payload = (request.data.get("role") or "").strip().lower()
         if role_payload not in ("manager", "cashier"):
             return Response(
                 {"error": "Le champ 'role' doit être 'manager' ou 'cashier'."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 2) On détermine le modèle cible
-        if role_payload == "manager":
-            StaffModel = Manager
-            role_label = "manager"
-        else:
-            StaffModel = Cashier
-            role_label = "cashier"
+        # 1) Modèle ciblé
+        StaffModel = Manager if role_payload == "manager" else Cashier
+        staff = get_object_or_404(StaffModel.objects.select_related("user", "bijouterie"), pk=staff_id)
 
-        # 3) On récupère l'instance (ou 404)
-        staff = get_object_or_404(StaffModel, pk=staff_id)
-
-        # 4) Règles d'autorisation sur la bijouterie
+        # 2) Règle d'autorisation: un manager ne modifie que sa bijouterie
         caller_role = get_role_name(request.user)
-
         if caller_role == ROLE_MANAGER:
-            # Manager courant
             caller_mgr = Manager.objects.filter(user=request.user).select_related("bijouterie").first()
             caller_bj_id = getattr(getattr(caller_mgr, "bijouterie", None), "id", None)
 
@@ -421,16 +378,13 @@ class UpdateStaffView(APIView):
                     {"error": "Votre compte manager n'est rattaché à aucune bijouterie."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
-
-            # 🔒 Un manager ne peut modifier que les staff de SA bijouterie
             if staff.bijouterie_id != caller_bj_id:
                 return Response(
                     {"error": "Vous ne pouvez modifier que les staff de votre bijouterie."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
-        # si caller_role == ROLE_ADMIN → pas de restriction supplémentaire
 
-        # 5) Sérializer avec contexte pour contrôler l'email
+        # 3) Valider payload
         ser = UpdateStaffSerializer(
             data=request.data,
             context={"user_id": getattr(staff.user, "id", None)},
@@ -438,20 +392,17 @@ class UpdateStaffView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        # 6) Mise à jour de l'email (si fourni)
-        if "email" in data and staff.user:
+        # 4) Update email
+        if staff.user and "email" in data:
             staff.user.email = data["email"]
             staff.user.save(update_fields=["email"])
 
+        # 5) Update champs staff
         fields_to_update = []
-
-        # 7) Mise à jour de la bijouterie via son nom (bijouterie_nom)
         if "bijouterie_nom" in data:
-            bj_instance = data["bijouterie_nom"]  # instance de Bijouterie ou None
-            staff.bijouterie = bj_instance
+            staff.bijouterie = data["bijouterie_nom"]
             fields_to_update.append("bijouterie")
 
-        # 8) verifie / raison_desactivation
         if "verifie" in data:
             staff.verifie = data["verifie"]
             fields_to_update.append("verifie")
@@ -463,11 +414,18 @@ class UpdateStaffView(APIView):
         if fields_to_update:
             staff.save(update_fields=fields_to_update)
 
+        # ✅ 6) Synchroniser user_role (le point qui te manque)
+        if staff.user:
+            role_obj = Role.objects.filter(role=role_payload).first()
+            if role_obj and staff.user.user_role_id != role_obj.id:
+                staff.user.user_role = role_obj
+                staff.user.save(update_fields=["user_role"])
+
         return Response(
             {
                 "message": "Staff mis à jour avec succès",
                 "staff_id": staff.id,
-                "role": role_label,
+                "role": role_payload,
                 "email": staff.user.email if staff.user else None,
                 "bijouterie_id": staff.bijouterie_id,
                 "bijouterie_nom": getattr(staff.bijouterie, "nom", None),
@@ -476,7 +434,6 @@ class UpdateStaffView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-        
 
 
 class CashierListView(generics.ListAPIView):

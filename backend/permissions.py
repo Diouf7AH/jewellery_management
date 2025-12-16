@@ -37,6 +37,7 @@ from rest_framework.permissions import BasePermission
 ROLE_ADMIN   = "admin"
 ROLE_MANAGER = "manager"
 ROLE_VENDOR  = "vendor"
+ROLE_CASHIER = "cashier"
 
 
 def _normalize_role(value: Optional[str]) -> Optional[str]:
@@ -46,47 +47,42 @@ def _normalize_role(value: Optional[str]) -> Optional[str]:
 
 
 def get_role_name(user) -> Optional[str]:
-    """
-    Détermine le rôle métier de l'utilisateur.
+    if not user or not user.is_authenticated:
+        return None
 
-    Priorité:
-      1) user.user_role.role (FK -> Role.role)
-      2) Groupe Django (names: 'admin' / 'manager' / 'vendor')
-      3) Fallbacks: is_superuser -> admin, is_staff -> manager
+    # 0) superuser
+    if getattr(user, "is_superuser", False):
+        return ROLE_ADMIN
 
-    Note: résultat mémoïsé sur l'instance user (_cached_role_name).
-    """
-    cached = getattr(user, "_cached_role_name", None)
-    if cached is not None:
-        return cached
+    # 1) profils staff (prioritaires)
+    mp = getattr(user, "staff_manager_profile", None)
+    if mp and getattr(mp, "verifie", True):
+        return ROLE_MANAGER
 
-    # 1) via FK Role
-    role_obj = getattr(user, "user_role", None)
-    if role_obj:
-        r = _normalize_role(getattr(role_obj, "role", None))
-        if r:
-            user._cached_role_name = r
+    cp = getattr(user, "staff_cashier_profile", None)
+    if cp and getattr(cp, "verifie", True):
+        return ROLE_CASHIER
+
+    vp = getattr(user, "vendor_profile", None) or getattr(user, "staff_vendor_profile", None)
+    if vp and getattr(vp, "verifie", True):
+        return ROLE_VENDOR
+
+    # 2) user_role (FK)
+    ur = getattr(user, "user_role", None)
+    if ur:
+        r = _normalize_role(getattr(ur, "role", None))
+        if r in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
             return r
 
-    # 2) via groupes Django
+    # 3) groupes Django (fallback)
     try:
-        group_names = { _normalize_role(n) for n in user.groups.values_list("name", flat=True) }
-        for candidate in (ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR):
+        group_names = {_normalize_role(n) for n in user.groups.values_list("name", flat=True)}
+        for candidate in (ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER):
             if candidate in group_names:
-                user._cached_role_name = candidate
                 return candidate
     except Exception:
         pass
 
-    # 3) fallbacks
-    if getattr(user, "is_superuser", False):
-        user._cached_role_name = ROLE_ADMIN
-        return ROLE_ADMIN
-    if getattr(user, "is_staff", False):
-        user._cached_role_name = ROLE_MANAGER
-        return ROLE_MANAGER
-
-    user._cached_role_name = None
     return None
 
 
@@ -168,5 +164,12 @@ class IsAdminOrManagerOrSelfVendor(BasePermission):
     #         owner_id = getattr(obj, "user_id", None) or getattr(obj, "vendor_id", None)
     #         return owner_id == request.user.id
     #     return False
+
+
+class IsAdminManagerVendorCashier(BasePermission):
+    def has_permission(self, request, view):
+        role = get_role_name(request.user)
+        return role in {"admin", "manager", "vendor", "cashier"}
+    
     
 

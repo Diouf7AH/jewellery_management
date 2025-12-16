@@ -4,6 +4,7 @@ from django.core.validators import EmailValidator
 from rest_framework import serializers
 
 from staff.models import Cashier
+from stock.models import VendorStock
 from store.models import Bijouterie, Produit
 from store.serializers import ProduitSerializer
 from userauths.models import User
@@ -447,3 +448,55 @@ class CashierUpdateSerializer(serializers.ModelSerializer):
 
         return instance
 
+
+# -------------- List Produit for vendor-----------------------------
+# class VendorProduitGroupedSerializer(serializers.Serializer):
+#     produit_id = serializers.IntegerField()
+#     produit_nom = serializers.CharField()
+#     produit_sku = serializers.CharField(allow_null=True, required=False)
+
+#     quantite_allouee = serializers.IntegerField()
+#     quantite_vendue = serializers.IntegerField()
+#     quantite_disponible = serializers.IntegerField()
+#     quantite_lot = serializers.IntegerField()
+
+class VendorProduitGroupedSerializer(serializers.Serializer):
+    produit_id = serializers.IntegerField()
+    produit_nom = serializers.CharField()
+    produit_sku = serializers.CharField(allow_null=True, required=False)
+
+    # ✅ STOCK (optionnels si scope=sales)
+    quantite_allouee = serializers.IntegerField(required=False)
+    quantite_vendue = serializers.IntegerField(required=False)
+    quantite_disponible = serializers.IntegerField(required=False)
+    quantite_lot = serializers.IntegerField(required=False)
+
+    # ✅ SALES (optionnel si scope=stock)
+    vendue_periode = serializers.IntegerField(required=False)
+
+
+class VendorProduitLotSerializer(serializers.ModelSerializer):
+    produit_id = serializers.IntegerField(source="produit_line.produit.id", read_only=True)
+    produit_nom = serializers.CharField(source="produit_line.produit.nom", read_only=True)
+    produit_sku = serializers.CharField(source="produit_line.produit.sku", read_only=True)
+
+    produit_line_id = serializers.IntegerField(source="produit_line.id", read_only=True)
+    lot_id = serializers.IntegerField(source="produit_line.lot.id", read_only=True)
+    lot_received_at = serializers.DateTimeField(source="produit_line.lot.received_at", read_only=True)
+    quantite_lot = serializers.IntegerField(source="produit_line.quantite", read_only=True)
+    
+    quantite_disponible = serializers.SerializerMethodField()
+
+    def get_quantite_disponible(self, obj):
+        return int((obj.quantite_allouee or 0) - (obj.quantite_vendue or 0))
+
+    class Meta:
+        model = VendorStock
+        fields = [
+            "id",
+            "produit_id", "produit_nom", "produit_sku",
+            "produit_line_id", "lot_id", "lot_received_at",
+            "quantite_allouee", "quantite_vendue", "quantite_disponible",
+            "quantite_lot",
+        ]
+# ---------------- End List Produit for vendor ----------------------

@@ -1,13 +1,15 @@
 import datetime
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 
 # NB: on se base sur VenteProduit.vendor et on groupe par vente__created_at
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
-from django.db.models import Avg, Count, DecimalField, F, Q, Sum
-from django.db.models.functions import TruncDay, TruncMonth, TruncWeek
+from django.db.models import (Avg, Count, DecimalField, ExpressionWrapper, F,
+                              IntegerField, OuterRef, Q, Subquery, Sum, Value)
+from django.db.models.functions import (Coalesce, TruncDay, TruncMonth,
+                                        TruncWeek)
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -37,7 +39,8 @@ from vendor.models import Vendor  # 👈 ton modèle Vendor (app vendor)
 
 from .models import Vendor
 from .serializer import (CreateVendorSerializer, VendorListSerializer,
-                         VendorUpdateSerializer)
+                         VendorProduitGroupedSerializer,
+                         VendorProduitLotSerializer, VendorUpdateSerializer)
 
 # Create your views here.
 User = get_user_model()
@@ -973,34 +976,491 @@ class VendorDashboardView(APIView):
 
 # Un vendeur authentifié peut appeler GET /api/vendor/produits/
 # Il recevra la liste des produits associés à son stock
+# class VendorProduitListView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, *args, **kwargs):
+#         user = request.user
+
+#         # récupère le profil vendeur de l'utilisateur
+#         vendor = getattr(user, "staff_vendor_profile", None)
+#         if vendor is None:
+#             return Response(
+#                 {"detail": "Aucun profil vendeur associé à cet utilisateur."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         # 🔹 on traverse produit_line → produit
+#         vendor_stocks = (
+#             VendorStock.objects
+#             .filter(vendor=vendor)
+#             .select_related("produit_line__produit", "vendor")
+#         )
+
+#         produits = [vs.produit_line.produit for vs in vendor_stocks]
+#         # enlever les doublons
+#         produits = list({p.id: p for p in produits}.values())
+
+#         serializer = ProduitSerializer(produits, many=True)
+#         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+
+# class VendorProduitListView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, *args, **kwargs):
+#         user = request.user
+#         vendor = getattr(user, "staff_vendor_profile", None)
+#         if vendor is None:
+#             return Response(
+#                 {"detail": "Aucun profil vendeur associé à cet utilisateur."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         detail = (request.GET.get("detail") or "").strip() in {"1", "true", "yes"}
+
+#         # ✅ DÉTAIL LOT / PRODUITLINE
+#         if detail:
+#             vendor_stocks = (
+#                 VendorStock.objects
+#                 .filter(vendor=vendor)
+#                 .select_related("produit_line__produit", "produit_line__lot", "vendor")
+#                 .order_by("produit_line__lot__received_at", "produit_line_id")
+#             )
+#             return Response(
+#                 {
+#                     "mode": "detail",
+#                     "results": VendorProduitLotSerializer(vendor_stocks, many=True).data
+#                 },
+#                 status=status.HTTP_200_OK,
+#             )
+
+#         # ✅ REGROUPÉ PAR PRODUIT (par défaut)
+#         qs = (
+#             VendorStock.objects
+#             .filter(vendor=vendor)
+#             .select_related("produit_line__produit")
+#             .values(
+#                 produit_id=F("produit_line__produit_id"),
+#                 produit_nom=F("produit_line__produit__nom"),
+#                 produit_sku=F("produit_line__produit__sku"),
+#             )
+#             .annotate(
+#                 quantite_allouee=Coalesce(Sum("quantite_allouee"), Value(0), output_field=IntegerField()),
+#                 quantite_vendue=Coalesce(Sum("quantite_vendue"), Value(0), output_field=IntegerField()),
+#                 quantite_disponible=Coalesce(
+#                     Sum(F("quantite_allouee") - F("quantite_vendue")),
+#                     Value(0),
+#                     output_field=IntegerField(),
+#                 ),
+#                 quantite_restante=Coalesce(
+#                     Sum("produit_line__quantite_restante"),
+#                     Value(0),
+#                     output_field=IntegerField(),
+#                 ),
+#             )
+#             .order_by("produit_nom")
+#         )
+
+#         return Response(
+#             {
+#                 "mode": "grouped",
+#                 "results": VendorProduitGroupedSerializer(qs, many=True).data
+#             },
+#             status=status.HTTP_200_OK,
+#         )
+
+
+# --------------------------------------------------------------------------
+# --- Helpers locaux (adapte si tu les as déjà ailleurs) ---
+# def _user_role(user) -> str | None:
+#     return getattr(getattr(user, "user_role", None), "role", None)
+
+def _user_bijouterie(user):
+    vp = getattr(user, "staff_vendor_profile", None)
+    if vp and getattr(vp, "verifie", False) and vp.bijouterie_id:
+        return vp.bijouterie
+    mp = getattr(user, "staff_manager_profile", None)
+    if mp and getattr(mp, "verifie", False) and mp.bijouterie_id:
+        return mp.bijouterie
+    # cp = getattr(user, "staff_cashier_profile", None)
+    # if cp and getattr(cp, "verifie", False) and cp.bijouterie_id:
+    #     return cp.bijouterie
+    return None
+
+# class VendorProduitListView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Stock vendeur (groupé par produit ou détail FIFO par lot)",
+#         operation_description=(
+#             "Retourne le stock **VendorStock** d’un vendeur.\n\n"
+#             "### Accès & portée\n"
+#             "- **vendor** : voit uniquement **son propre** stock.\n"
+#             "- **manager/admin** : peut contrôler un vendeur via `vendor_id`.\n\n"
+#             "### Modes\n"
+#             "- Par défaut : **grouped** (1 ligne par produit) avec totaux `allouee/vendue/disponible/restante`.\n"
+#             "- `detail=1` : **detail** (1 ligne par VendorStock / ProduitLine) trié FIFO.\n\n"
+#             "### Définitions\n"
+#             "- `quantite_disponible = quantite_allouee - quantite_vendue`\n"
+#             "- `quantite` = stock global restant du lot (ProduitLine), tous vendeurs confondus.\n"
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 name="detail",
+#                 in_=openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="`1|true|yes` pour détail FIFO par lot. Par défaut: grouped."
+#             ),
+#             openapi.Parameter(
+#                 name="vendor_id",
+#                 in_=openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 required=False,
+#                 description="(manager/admin) ID du vendeur à contrôler. Ignoré pour vendor."
+#             ),
+#         ],
+#         responses={200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found"},
+#         tags=["Vendor / Stock"],
+#     )
+#     def get(self, request, *args, **kwargs):
+#         user = request.user
+#         role = get_role_name(user)
+#         detail = (request.GET.get("detail") or "").strip().lower() in {"1", "true", "yes"}
+
+#         # 🎯 déterminer le vendeur ciblé (UNE SEULE variable)
+#         if role == "vendor":
+#             target_vendor = getattr(user, "staff_vendor_profile", None)
+#             if not target_vendor:
+#                 return Response({"detail": "Aucun profil vendeur associé à cet utilisateur."}, status=400)
+
+#         elif role in {"manager", "admin"}:
+#             vendor_id = request.GET.get("vendor_id")
+#             if not vendor_id:
+#                 return Response({"error": "Paramètre `vendor_id` requis pour manager/admin."}, status=400)
+
+#             try:
+#                 vendor_id = int(vendor_id)
+#             except ValueError:
+#                 return Response({"vendor_id": "Doit être un entier."}, status=400)
+
+#             target_vendor = Vendor.objects.select_related("bijouterie").filter(id=vendor_id).first()
+#             if not target_vendor:
+#                 return Response({"error": "Vendeur introuvable."}, status=404)
+
+#             # ✅ contrôle bijouterie (manager)
+#             if role == "manager":
+#                 user_shop = _user_bijouterie(user)
+#                 if not user_shop:
+#                     return Response({"error": "Manager non rattaché à une bijouterie."}, status=400)
+#                 if getattr(target_vendor, "bijouterie_id", None) != user_shop.id:
+#                     return Response({"error": "Ce vendeur n’appartient pas à votre bijouterie."}, status=403)
+
+#         else:
+#             return Response({"detail": "⛔ Accès refusé"}, status=403)
+
+#         # ✅ DÉTAIL LOT / PRODUITLINE
+#         if detail:
+#             vendor_stocks = (
+#                 VendorStock.objects
+#                 .filter(vendor=target_vendor)
+#                 .select_related("produit_line__produit", "produit_line__lot", "vendor")
+#                 .order_by("produit_line__lot__received_at", "produit_line_id")
+#             )
+#             return Response(
+#                 {"mode": "detail", "results": VendorProduitLotSerializer(vendor_stocks, many=True).data},
+#                 status=status.HTTP_200_OK,
+#             )
+
+#         # ✅ REGROUPÉ PAR PRODUIT (par défaut)
+#         qs = (
+#             VendorStock.objects
+#             .filter(vendor=target_vendor)  # ✅ ici aussi
+#             .values(
+#                 produit_id=F("produit_line__produit_id"),
+#                 produit_nom=F("produit_line__produit__nom"),
+#                 produit_sku=F("produit_line__produit__sku"),
+#             )
+#             .annotate(
+#                 quantite_allouee=Coalesce(Sum("quantite_allouee"), Value(0), output_field=IntegerField()),
+#                 quantite_vendue=Coalesce(Sum("quantite_vendue"), Value(0), output_field=IntegerField()),
+#                 quantite_lot=Coalesce(Sum("produit_line__quantite"), Value(0), output_field=IntegerField()),
+#             )
+#             .annotate(
+#                 quantite_disponible=ExpressionWrapper(
+#                     F("quantite_allouee") - F("quantite_vendue"),
+#                     output_field=IntegerField(),
+#                 )
+#             )
+#             .order_by("produit_nom")
+#         )
+
+#         return Response(
+#             {"mode": "grouped", "results": VendorProduitGroupedSerializer(qs, many=True).data},
+#             status=status.HTTP_200_OK,
+#         )
+
+# ---- Helpers dates ----
+def _parse_date(s: str | None) -> date | None:
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _add_years(d: date, years: int) -> date:
+    try:
+        return d.replace(year=d.year + years)
+    except ValueError:
+        return d.replace(month=2, day=28, year=d.year + years)
+
+
+def _current_year_bounds_dates():
+    today = timezone.localdate()
+    y = today.year
+    return date(y, 1, 1), date(y, 12, 31)
+
+
 class VendorProduitListView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary="Stock vendeur (groupé ou détail FIFO) + ventes sur période",
+        operation_description=(
+            "Attention : si tu testes avec detail=1, scope est ignoré (tu renvoies toujours le détail stock).\n\n"
+            "Retourne le stock **VendorStock** d’un vendeur.\n\n"
+            "### Accès\n"
+            "- **vendor** : voit uniquement son propre stock\n"
+            "- **manager/admin** : contrôle un vendeur via `vendor_id`\n\n"
+            "### Modes\n"
+            "- **grouped** (défaut) : 1 ligne par produit\n"
+            "- **detail=1** : détail FIFO par lot (VendorStock / ProduitLine)\n\n"
+            "### Scope\n"
+            "- `scope=stock` : stock actuel uniquement\n"
+            "- `scope=sales` : ventes sur période uniquement (`vendue_periode`)\n"
+            "- `scope=both`  : stock + ventes (défaut)\n\n"
+            "### Fenêtre dates (s’applique à `vendue_periode` seulement)\n"
+            "- **vendor** : si aucune date → année en cours\n"
+            "- **manager/admin** : fenêtre max 3 ans\n\n"
+            "### Champs clés\n"
+            "- `quantite_disponible = quantite_allouee - quantite_vendue`\n"
+            "- `vendue_periode` = somme des SALE_OUT sur période\n"
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                name="scope",
+                in_=openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="`stock|sales|both` (défaut: both)."
+            ),
+            openapi.Parameter(
+                name="detail",
+                in_=openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="`1|true|yes` : détail FIFO par lot. Par défaut: grouped."
+            ),
+            openapi.Parameter(
+                name="vendor_id",
+                in_=openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="(manager/admin) ID du vendeur à contrôler. Ignoré pour vendor."
+            ),
+            openapi.Parameter(
+                name="date_from",
+                in_=openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="Début période (YYYY-MM-DD) pour `vendue_periode`."
+            ),
+            openapi.Parameter(
+                name="date_to",
+                in_=openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="Fin période (YYYY-MM-DD) pour `vendue_periode`."
+            ),
+            openapi.Parameter(
+                name="only_sold",
+                in_=openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="`1|true|yes` : seulement produits avec `vendue_periode > 0` (scope sales/both)."
+            ),
+        ],
+        responses={200: openapi.Response("OK")},
+        tags=["Vendor / Stock"],
+    )
     def get(self, request, *args, **kwargs):
         user = request.user
+        role = get_role_name(user)
 
-        # récupère le profil vendeur de l'utilisateur
-        vendor = getattr(user, "staff_vendor_profile", None)
-        if vendor is None:
+        scope = (request.GET.get("scope") or "both").strip().lower()
+        if scope not in {"stock", "sales", "both"}:
+            scope = "both"
+
+        detail = (request.GET.get("detail") or "").strip().lower() in {"1", "true", "yes"}
+        only_sold = (request.GET.get("only_sold") or "").strip().lower() in {"1", "true", "yes"}
+
+        # ✅ déterminer vendeur ciblé
+        if role == "vendor":
+            target_vendor = getattr(user, "staff_vendor_profile", None)
+            if not target_vendor:
+                return Response({"error": "Profil vendeur introuvable."}, status=403)
+
+        elif role in {"manager", "admin"}:
+            vendor_id = request.GET.get("vendor_id")
+            if not vendor_id:
+                return Response({"error": "Paramètre `vendor_id` requis pour manager/admin."}, status=400)
+            try:
+                vendor_id = int(vendor_id)
+            except ValueError:
+                return Response({"vendor_id": "Doit être un entier."}, status=400)
+
+            target_vendor = Vendor.objects.select_related("bijouterie").filter(id=vendor_id).first()
+            if not target_vendor:
+                return Response({"error": "Vendeur introuvable."}, status=404)
+
+            # ✅ contrôle bijouterie manager
+            if role == "manager":
+                user_shop = _user_bijouterie(user)
+                if not user_shop:
+                    return Response({"error": "Manager non rattaché à une bijouterie."}, status=400)
+                if getattr(target_vendor, "bijouterie_id", None) != user_shop.id:
+                    return Response({"error": "Ce vendeur n’appartient pas à votre bijouterie."}, status=403)
+        else:
+            return Response({"error": "⛔ Accès refusé"}, status=403)
+
+        # ✅ Fenêtre dates (pour vendue_periode)
+        df = _parse_date(request.GET.get("date_from"))
+        dt = _parse_date(request.GET.get("date_to"))
+        today = timezone.localdate()
+
+        if role == "vendor":
+            if not df and not dt:
+                df, dt = _current_year_bounds_dates()
+            elif df and not dt:
+                dt = min(_add_years(df, 1) - timedelta(days=1), today)
+            elif dt and not df:
+                df = date(dt.year, 1, 1)
+
+            if df and dt and df > dt:
+                return Response({"error": "`date_from` doit être ≤ `date_to`."}, status=400)
+
+        else:
+            # manager/admin : max 3 ans si bornes fournies
+            if df and not dt:
+                dt = min(_add_years(df, 3) - timedelta(days=1), today)
+
+            if df and dt and df > dt:
+                return Response({"error": "`date_from` doit être ≤ `date_to`."}, status=400)
+
+            if df and dt:
+                max_dt = _add_years(df, 3) - timedelta(days=1)
+                if dt > max_dt:
+                    return Response({"error": f"Fenêtre max 3 ans. `date_to` ≤ {max_dt}."}, status=400)
+                dt = min(dt, today)
+
+        # ✅ Mode detail FIFO (stock actuel uniquement)
+        if detail:
+            vendor_stocks = (
+                VendorStock.objects
+                .filter(vendor=target_vendor)
+                .select_related("produit_line__produit", "produit_line__lot", "vendor")
+                .order_by("produit_line__lot__received_at", "produit_line_id")
+            )
             return Response(
-                {"detail": "Aucun profil vendeur associé à cet utilisateur."},
-                status=status.HTTP_400_BAD_REQUEST,
+                {
+                    "mode": "detail",
+                    "scope": "stock",
+                    "period": {"date_from": str(df) if df else None, "date_to": str(dt) if dt else None},
+                    "results": VendorProduitLotSerializer(vendor_stocks, many=True).data,
+                },
+                status=200,
             )
 
-        # 🔹 on traverse produit_line → produit
-        vendor_stocks = (
+        # ✅ Subquery vendue_periode seulement si scope inclut sales
+        vendue_subquery = None
+        if scope in {"sales", "both"}:
+            # sale_qs = (
+            #     InventoryMovement.objects
+            #     .filter(
+            #         movement_type=MovementType.SALE_OUT,
+            #         vendor=target_vendor,
+            #         produit_id=OuterRef("produit_id"),
+            #     )
+            # )
+            sale_qs = (
+                InventoryMovement.objects
+                .filter(
+                    movement_type=MovementType.SALE_OUT,
+                    vente_ligne__vendor=target_vendor,     # ✅ au lieu de vendor=target_vendor
+                    produit_id=OuterRef("produit_id"),
+                )
+            )
+            if df:
+                sale_qs = sale_qs.filter(occurred_at__date__gte=df)
+            if dt:
+                sale_qs = sale_qs.filter(occurred_at__date__lte=dt)
+
+            vendue_subquery = (
+                sale_qs.values("produit_id")
+                .annotate(total=Coalesce(Sum("qty"), Value(0)))
+                .values("total")[:1]
+            )
+
+        # ✅ base grouped
+        qs = (
             VendorStock.objects
-            .filter(vendor=vendor)
-            .select_related("produit_line__produit", "vendor")
+            .filter(vendor=target_vendor)
+            .values(
+                produit_id=F("produit_line__produit_id"),
+                produit_nom=F("produit_line__produit__nom"),
+                produit_sku=F("produit_line__produit__sku"),
+            )
         )
 
-        produits = [vs.produit_line.produit for vs in vendor_stocks]
-        # enlever les doublons
-        produits = list({p.id: p for p in produits}.values())
+        # ✅ stock fields seulement si scope inclut stock
+        if scope in {"stock", "both"}:
+            qs = qs.annotate(
+                quantite_allouee=Coalesce(Sum("quantite_allouee"), Value(0), output_field=IntegerField()),
+                quantite_vendue=Coalesce(Sum("quantite_vendue"), Value(0), output_field=IntegerField()),
+                quantite_lot=Coalesce(Sum("produit_line__quantite"), Value(0), output_field=IntegerField()),
+            ).annotate(
+                quantite_disponible=ExpressionWrapper(
+                    F("quantite_allouee") - F("quantite_vendue"),
+                    output_field=IntegerField(),
+                )
+            )
 
-        serializer = ProduitSerializer(produits, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-    
+        # ✅ sales fields seulement si scope inclut sales
+        if scope in {"sales", "both"}:
+            qs = qs.annotate(
+                vendue_periode=Coalesce(Subquery(vendue_subquery, output_field=IntegerField()), Value(0)),
+            )
+
+        qs = qs.order_by("produit_nom")
+
+        # ✅ only_sold seulement si vendue_periode existe
+        if only_sold and scope in {"sales", "both"}:
+            qs = qs.filter(vendue_periode__gt=0)
+
+        return Response(
+            {
+                "mode": "grouped",
+                "scope": scope,
+                "period": {"date_from": str(df) if df else None, "date_to": str(dt) if dt else None},
+                "results": VendorProduitGroupedSerializer(qs, many=True).data,
+            },
+            status=200,
+        )
+
 
 # class DashboardVendeurStatsAPIView(APIView):
 #     permission_classes = [IsAuthenticated]

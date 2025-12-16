@@ -261,6 +261,53 @@ class FactureSerializer(serializers.ModelSerializer):
         return []
 
 
+class FactureListSerializer(serializers.ModelSerializer):
+    total_paye = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
+    reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
+    date_creation = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+    client = serializers.SerializerMethodField()
+    vente = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Facture
+        fields = [
+            "vente",
+            "numero_facture",
+            "montant_total",
+            "total_paye",
+            "reste_a_payer",
+            "status",
+            "date_creation",
+            "client",
+        ]
+
+    def get_vente(self, obj):
+        v = obj.vente
+        return {"id": v.id, "numero_vente": v.numero_vente} if v else None
+
+    def get_client(self, obj):
+        c = getattr(getattr(obj, "vente", None), "client", None)
+        if c:
+            return {"nom": c.nom, "prenom": c.prenom, "telephone": c.telephone}
+        return None
+
+
+class FactureDetailSerializer(FactureSerializer):
+    factureList = FactureListSerializer(many=True, read_only=True)
+    produits = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Facture
+        fields = [
+            'factureList',
+            'produits'
+        ]
+        
+    def get_produits(self, obj):
+        if obj.vente and hasattr(obj.vente, 'produits'):
+            return VenteProduitSerializer(obj.vente.produits.all(), many=True).data
+        return []
+
 
 class VenteDetailSerializer(serializers.ModelSerializer):
     client = serializers.SerializerMethodField()
@@ -376,15 +423,14 @@ class PaiementCreateSerializer(serializers.Serializer):
 
 
 class PaiementSerializer(serializers.ModelSerializer):
-    # facture_numero = serializers.CharField(source="facture.numero_facture", read_only=True)
-    # cashier_email = serializers.EmailField(source="cashier.user.email", read_only=True)
+    numero_facture = serializers.CharField(source="facture.numero_facture", read_only=True)
 
     class Meta:
         model = Paiement
         fields = [
             "id", "facture", "numero_facture",
             "montant_paye", "mode_paiement", "date_paiement",
-            "cashier", "cashier_email", "created_by",
+            "cashier", "created_by",
         ]
         read_only_fields = ["id", "numero_facture", "date_paiement", "cashier", "created_by"]
 

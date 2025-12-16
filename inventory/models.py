@@ -58,7 +58,7 @@ class InventoryMovement(models.Model):
 
     # 🔑 Clé technique pour unicité SALE_OUT (MySQL/MariaDB safe)
     sale_out_key = models.PositiveIntegerField(null=True, blank=True, editable=False, db_index=True)
-
+    stock_consumed = models.BooleanField(default=False, db_index=True)
     # Qui / quand
     occurred_at = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(auto_now_add=True)
