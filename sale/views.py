@@ -876,152 +876,149 @@ class ListFactureView(APIView):
 # -------------------------END ListFactureView---------------------------
 
 # --------------------------ListFacturesAPayerView---------------------------
-# class ListFacturesAPayerView(APIView):
-#     permission_classes = [IsAuthenticated]
+class ListFacturesAPayerView(APIView):
+    permission_classes = [IsAuthenticated]
 
-#     @swagger_auto_schema(
-#         operation_summary="Lister les factures à payer (NON PAYÉES)",
-#         operation_description=(
-#             "- **Vendor / Cashier** : factures NON PAYÉES de leur bijouterie, fenêtre maximale **3 ans**. "
-#             "Si aucune date fournie → **année en cours**.\n"
-#             "- **Admin / Manager** : factures NON PAYÉES, filtrage libre (dates optionnelles).\n\n"
-#             "Paramètres optionnels :\n"
-#             "• `q` (search: n° facture, n° vente, client)\n"
-#             "• `type_facture` (proforma|facture|acompte|finale)\n"
-#             "• `date_from` / `date_to` (YYYY-MM-DD, inclusifs, appliqués sur `date_creation`)\n"
-#             "• `bijouterie_id` (ADMIN uniquement)\n"
-#             "• `ordering` (-date_creation|date_creation|-montant_total|montant_total|numero_facture|-numero_facture)\n"
-#         ),
-#         tags=["Ventes / Factures"],
-#         responses={200: FactureSerializer(many=True)},
-#     )
-#     def get(self, request):
-#         user = request.user
-#         role = _user_role(user)
+    @swagger_auto_schema(
+        operation_summary="Lister les factures à payer (NON PAYÉES)",
+        operation_description=(
+            "- **Vendor / Cashier** : factures NON PAYÉES de leur bijouterie, fenêtre maximale **3 ans**. "
+            "Si aucune date fournie → **année en cours**.\n"
+            "- **Admin / Manager** : factures NON PAYÉES, filtrage libre (dates optionnelles).\n\n"
+            "Paramètres optionnels :\n"
+            "• `q` (search: n° facture, n° vente, client)\n"
+            "• `type_facture` (proforma|facture|acompte|finale)\n"
+            "• `date_from` / `date_to` (YYYY-MM-DD, inclusifs, appliqués sur `date_creation`)\n"
+            "• `bijouterie_id` (ADMIN uniquement)\n"
+            "• `ordering` (-date_creation|date_creation|-montant_total|montant_total|numero_facture|-numero_facture)\n"
+        ),
+        tags=["Ventes / Factures"],
+        responses={200: FactureSerializer(many=True)},
+    )
+    # def get(self, request):
+    #     user = request.user
+    #     role = _user_role(user)
 
-#         # 🔐 rôles autorisés (cashier inclus)
-#         if role not in {"admin", "manager", "vendor", "cashier"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+    #     # 🔐 rôles autorisés (cashier inclus)
+    #     if role not in {"admin", "manager", "vendor", "cashier"}:
+    #         return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+    def get(self, request):
+        user = request.user
+        role = get_role_name(user)
 
-#         qs = (
-#             Facture.objects
-#             .select_related("vente", "vente__client", "bijouterie")
-#             .prefetch_related("paiements")
-#             .filter(status=Facture.STAT_NON_PAYE)  # 💡 seulement NON PAYÉES
-#         )
+        if role not in {"admin", "manager", "vendor", "cashier"}:
+            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
-#         getf = request.GET.get
+        qs = (
+            Facture.objects
+            .select_related("vente", "vente__client", "bijouterie")
+            .prefetch_related("paiements")
+            .filter(status=Facture.STAT_NON_PAYE)  # 💡 seulement NON PAYÉES
+        )
 
-#         # --- Portée bijouterie par rôle ---
-#         if role in {"manager", "vendor", "cashier"}:
+        getf = request.GET.get
+
+        # --- Portée bijouterie par rôle ---
+        if role in {"manager", "vendor", "cashier"}:
             
-#             bij = _user_bijouterie(user)
-#             # ---debug---
-#             bij = _user_bijouterie(request.user)
-#             cp = getattr(request.user, "staff_cashier_profile", None)
-#             print("DEBUG role=", role)
-#             print("DEBUG cp_exists=", bool(cp), "cp_verifie=", getattr(cp, "verifie", None), "cp_bij_id=", getattr(cp, "bijouterie_id", None))
-#             print("DEBUG bij=", getattr(bij, "id", None))
-#             print("DEBUG request.user.id =", request.user.id)
-#             print("DEBUG request.user.email =", request.user.email)
-#             # ---end debug---
-#             if not bij:
-#                 return Response(
-#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-#             qs = qs.filter(bijouterie=bij)
+            bij = _user_bijouterie_facture(user)
+            if not bij:
+                return Response(
+                    {"error": "Profil non rattaché à une bijouterie vérifiée."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(bijouterie=bij)
 
-#         elif role == "admin":
-#             bij_id = getf("bijouterie_id")
-#             if bij_id:
-#                 try:
-#                     bij_id = int(bij_id)
-#                 except ValueError:
-#                     return Response(
-#                         {"bijouterie_id": "Doit être un entier."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-#                 qs = qs.filter(bijouterie_id=bij_id)
+        elif role == "admin":
+            bij_id = getf("bijouterie_id")
+            if bij_id:
+                try:
+                    bij_id = int(bij_id)
+                except ValueError:
+                    return Response(
+                        {"bijouterie_id": "Doit être un entier."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                qs = qs.filter(bijouterie_id=bij_id)
 
-#         # --- Recherche plein texte ---
-#         q = (getf("q") or "").strip()
-#         if q:
-#             qs = qs.filter(
-#                 Q(numero_facture__icontains=q)
-#                 | Q(vente__numero_vente__icontains=q)
-#                 | Q(vente__client__nom__icontains=q)
-#                 | Q(vente__client__prenom__icontains=q)
-#                 | Q(vente__client__telephone__icontains=q)
-#             )
+        # --- Recherche plein texte ---
+        q = (getf("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(numero_facture__icontains=q)
+                | Q(vente__numero_vente__icontains=q)
+                | Q(vente__client__nom__icontains=q)
+                | Q(vente__client__prenom__icontains=q)
+                | Q(vente__client__telephone__icontains=q)
+            )
 
-#         # --- Type facture (optionnel) ---
-#         tf = (getf("type_facture") or "").strip()
-#         if tf in {"proforma", "facture", "acompte", "finale"}:
-#             qs = qs.filter(type_facture=tf)
+        # --- Type facture (optionnel) ---
+        tf = (getf("type_facture") or "").strip()
+        if tf in {"proforma", "facture", "acompte", "finale"}:
+            qs = qs.filter(type_facture=tf)
 
-#         # --- Fenêtre temporelle (même logique que ListFactureView) ---
-#         df = _parse_date(getf("date_from"))
-#         dt = _parse_date(getf("date_to"))
-#         today = timezone.localdate()
+        # --- Fenêtre temporelle (même logique que ListFactureView) ---
+        df = _parse_date(getf("date_from"))
+        dt = _parse_date(getf("date_to"))
+        today = timezone.localdate()
 
-#         if role in {"vendor", "cashier"}:
-#             # Si aucune date → année en cours
-#             if not df and not dt:
-#                 df, dt = _current_year_bounds_dates()
-#             elif df and not dt:
-#                 dt_cap = min(_add_years(df, 3) - timedelta(days=1), today)
-#                 dt = dt_cap
-#             elif dt and not df:
-#                 df = max(_add_years(dt, -3), date(dt.year, 1, 1))
+        if role in {"vendor", "cashier"}:
+            # Si aucune date → année en cours
+            if not df and not dt:
+                df, dt = _current_year_bounds_dates()
+            elif df and not dt:
+                dt_cap = min(_add_years(df, 3) - timedelta(days=1), today)
+                dt = dt_cap
+            elif dt and not df:
+                df = max(_add_years(dt, -3), date(dt.year, 1, 1))
 
-#             if df and dt and df > dt:
-#                 return Response(
-#                     {"error": "`date_from` doit être ≤ `date_to`."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
+            if df and dt and df > dt:
+                return Response(
+                    {"error": "`date_from` doit être ≤ `date_to`."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-#             if df and dt:
-#                 max_dt = _add_years(df, 3) - timedelta(days=1)
-#                 if dt > max_dt:
-#                     return Response(
-#                         {
-#                             "error": (
-#                                 "Fenêtre maximale de 3 ans pour ce rôle. "
-#                                 f"`date_to` autorisé ≤ {max_dt}."
-#                             )
-#                         },
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-#                 dt = min(dt, today)
+            if df and dt:
+                max_dt = _add_years(df, 3) - timedelta(days=1)
+                if dt > max_dt:
+                    return Response(
+                        {
+                            "error": (
+                                "Fenêtre maximale de 3 ans pour ce rôle. "
+                                f"`date_to` autorisé ≤ {max_dt}."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                dt = min(dt, today)
 
-#             if df:
-#                 qs = qs.filter(date_creation__date__gte=df)
-#             if dt:
-#                 qs = qs.filter(date_creation__date__lte=dt)
+            if df:
+                qs = qs.filter(date_creation__date__gte=df)
+            if dt:
+                qs = qs.filter(date_creation__date__lte=dt)
 
-#         else:  # admin / manager
-#             if df:
-#                 qs = qs.filter(date_creation__date__gte=df)
-#             if dt:
-#                 qs = qs.filter(date_creation__date__lte=dt)
+        else:  # admin / manager
+            if df:
+                qs = qs.filter(date_creation__date__gte=df)
+            if dt:
+                qs = qs.filter(date_creation__date__lte=dt)
 
-#         # --- Tri ---
-#         ordering = getf("ordering") or "-date_creation"
-#         allowed = {
-#             "date_creation",
-#             "-date_creation",
-#             "montant_total",
-#             "-montant_total",
-#             "numero_facture",
-#             "-numero_facture",
-#         }
-#         if ordering not in allowed:
-#             ordering = "-date_creation"
-#         qs = qs.order_by(ordering)
+        # --- Tri ---
+        ordering = getf("ordering") or "-date_creation"
+        allowed = {
+            "date_creation",
+            "-date_creation",
+            "montant_total",
+            "-montant_total",
+            "numero_facture",
+            "-numero_facture",
+        }
+        if ordering not in allowed:
+            ordering = "-date_creation"
+        qs = qs.order_by(ordering)
 
-#         ser = FactureSerializer(qs, many=True)
-#         return Response(ser.data, status=status.HTTP_200_OK)
+        ser = FactureSerializer(qs, many=True)
+        return Response(ser.data, status=status.HTTP_200_OK)
 # --------------------------------END ListFacturesAPayerView---------------------------
 
 # --------------------------------------------------------------------------
