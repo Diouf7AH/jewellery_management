@@ -791,6 +791,88 @@ def _current_year_bounds_dates():
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 
+# class ListFactureView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les factures (status + fenêtre 18 mois / 3 ans + pagination)",
+#         manual_parameters=[
+#             openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="non_paye | paye (optionnel)"),
+#             openapi.Parameter("numero_facture", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Numéro partiel (optionnel)"),
+#             openapi.Parameter("page", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Page (optionnel)"),
+#             openapi.Parameter("page_size", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Taille page (optionnel, max 100)"),
+#         ],
+#         responses={200: FactureListSerializer(many=True)},
+#         tags=["Ventes / Factures"],
+#     )
+#     def get(self, request):
+#         user = request.user
+#         role = get_role_name(user)
+
+#         if role not in {"admin", "manager", "vendor", "cashier"}:
+#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
+#         qs = Facture.objects.select_related("bijouterie", "vente", "vente__client")
+
+#         # scope bijouterie
+#         if role in {"manager", "vendor", "cashier"}:
+#             bij = _user_bijouterie_facture(user)
+#             if not bij:
+#                 return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=400)
+#             qs = qs.filter(bijouterie=bij)
+
+#         # fenêtre automatique
+#         # today = timezone.localdate()
+#         # months = 36 if role == "admin" else 18
+#         # min_date = subtract_months(today, months)
+#         # qs = qs.filter(date_creation__date__gte=min_date)
+        
+#         now = timezone.now()
+#         months = 36 if role == "admin" else 18
+#         min_datetime = now - timedelta(days=months * 30)
+#         qs = qs.filter(date_creation__gte=min_datetime)
+
+#         # filtre status optionnel
+#         status_q = (request.GET.get("status") or "").strip().lower()
+#         if status_q in {"non_paye", "paye"}:
+#             qs = qs.filter(status=status_q)
+
+#         # filtre numero_facture optionnel
+#         numero = (request.GET.get("numero_facture") or "").strip()
+#         if numero:
+#             qs = qs.filter(numero_facture__icontains=numero)
+
+#         qs = qs.order_by("-date_creation")
+
+#         # pagination
+#         try:
+#             page = int(request.GET.get("page", 1))
+#         except ValueError:
+#             page = 1
+#         try:
+#             page_size = int(request.GET.get("page_size", DEFAULT_PAGE_SIZE))
+#         except ValueError:
+#             page_size = DEFAULT_PAGE_SIZE
+#         page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+
+#         paginator = Paginator(qs, page_size)
+#         try:
+#             page_obj = paginator.page(page)
+#         except EmptyPage:
+#             page_obj = paginator.page(paginator.num_pages)
+
+#         return Response(
+#             {
+#                 "count": paginator.count,
+#                 "page": page_obj.number,
+#                 "page_size": page_size,
+#                 "num_pages": paginator.num_pages,
+#                 "results": FactureListSerializer(page_obj.object_list, many=True).data,
+#             },
+#             status=status.HTTP_200_OK,
+#         )
+
+
 class ListFactureView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -812,7 +894,17 @@ class ListFactureView(APIView):
         if role not in {"admin", "manager", "vendor", "cashier"}:
             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = Facture.objects.select_related("bijouterie", "vente", "vente__client")
+        qs = (
+            Facture.objects
+            .select_related("bijouterie", "vente", "vente__client")
+            .prefetch_related(
+                "vente__produits__produit",
+                "vente__produits__produit__categorie",
+                "vente__produits__produit__marque",
+                "vente__produits__produit__purete",
+                "vente__produits__produit__modele",
+            )
+        )
 
         # scope bijouterie
         if role in {"manager", "vendor", "cashier"}:
@@ -822,11 +914,6 @@ class ListFactureView(APIView):
             qs = qs.filter(bijouterie=bij)
 
         # fenêtre automatique
-        # today = timezone.localdate()
-        # months = 36 if role == "admin" else 18
-        # min_date = subtract_months(today, months)
-        # qs = qs.filter(date_creation__date__gte=min_date)
-        
         now = timezone.now()
         months = 36 if role == "admin" else 18
         min_datetime = now - timedelta(days=months * 30)
@@ -849,10 +936,12 @@ class ListFactureView(APIView):
             page = int(request.GET.get("page", 1))
         except ValueError:
             page = 1
+
         try:
             page_size = int(request.GET.get("page_size", DEFAULT_PAGE_SIZE))
         except ValueError:
             page_size = DEFAULT_PAGE_SIZE
+
         page_size = max(1, min(page_size, MAX_PAGE_SIZE))
 
         paginator = Paginator(qs, page_size)
@@ -1126,6 +1215,69 @@ class ListFactureView(APIView):
 #             status=status.HTTP_200_OK,
 #         )
 
+# class ListFacturesAPayerView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les factures NON PAYÉES (sans pagination)",
+#         operation_description=(
+#             "- **Vendor / Cashier / Manager** : factures NON PAYÉES de leur bijouterie "
+#             "sur une fenêtre de **18 mois**.\n"
+#             "- **Admin** : factures NON PAYÉES toutes bijouteries "
+#             "sur une fenêtre de **36 mois**.\n\n"
+#             "Filtres optionnels :\n"
+#             "• `numero_facture`\n"
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "numero_facture",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description="Numéro de facture (partiel)"
+#             ),
+#         ],
+#         responses={200: FactureListSerializer(many=True)},
+#         tags=["Ventes / Factures"],
+#     )
+#     def get(self, request):
+#         user = request.user
+#         role = get_role_name(user)
+
+#         if role not in {"admin", "manager", "vendor", "cashier"}:
+#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
+#         qs = (
+#             Facture.objects
+#             .select_related("bijouterie", "vente", "vente__client")
+#             .prefetch_related("vente__produits__produit")  # utile pour ton FactureListSerializer.get_produit
+#             .filter(status=Facture.STAT_NON_PAYE)
+#         )
+
+#         # Portée bijouterie
+#         if role in {"manager", "vendor", "cashier"}:
+#             bij = _user_bijouterie_facture(user)
+#             if not bij:
+#                 return Response(
+#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+#             qs = qs.filter(bijouterie=bij)
+
+#         # Fenêtre temporelle automatique
+#         now = timezone.now()
+#         months = 36 if role == "admin" else 18
+#         min_datetime = now - timedelta(days=months * 30)
+#         qs = qs.filter(date_creation__gte=min_datetime)
+
+#         # Filtre numero_facture
+#         numero = (request.GET.get("numero_facture") or "").strip()
+#         if numero:
+#             qs = qs.filter(numero_facture__icontains=numero)
+
+#         qs = qs.order_by("-date_creation")
+
+#         return Response(FactureListSerializer(qs, many=True).data, status=status.HTTP_200_OK)
+
 class ListFacturesAPayerView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -1160,7 +1312,12 @@ class ListFacturesAPayerView(APIView):
         qs = (
             Facture.objects
             .select_related("bijouterie", "vente", "vente__client")
-            .prefetch_related("vente__produits__produit")  # utile pour ton FactureListSerializer.get_produit
+            .prefetch_related(
+                "vente__produits__produit",
+                "vente__produits__produit__categorie",
+                "vente__produits__produit__marque",
+                "vente__produits__produit__purete",
+            )
             .filter(status=Facture.STAT_NON_PAYE)
         )
 
@@ -1168,10 +1325,7 @@ class ListFacturesAPayerView(APIView):
         if role in {"manager", "vendor", "cashier"}:
             bij = _user_bijouterie_facture(user)
             if not bij:
-                return Response(
-                    {"error": "Profil non rattaché à une bijouterie vérifiée."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=400)
             qs = qs.filter(bijouterie=bij)
 
         # Fenêtre temporelle automatique
@@ -1187,7 +1341,8 @@ class ListFacturesAPayerView(APIView):
 
         qs = qs.order_by("-date_creation")
 
-        return Response(FactureListSerializer(qs, many=True).data, status=status.HTTP_200_OK)
+        return Response(FactureListSerializer(qs, many=True).data, status=200)
+    
 # --------------------------------END ListFacturesAPayerView---------------------------
 
 # --------------------------------------------------------------------------

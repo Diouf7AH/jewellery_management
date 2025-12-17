@@ -262,7 +262,6 @@ class FactureSerializer(serializers.ModelSerializer):
 
 
 # class FactureListSerializer(serializers.ModelSerializer):
-#     produit = ProduitSerializer(read_only=True)
 #     total_paye = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
 #     reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
 #     date_creation = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
@@ -273,7 +272,6 @@ class FactureSerializer(serializers.ModelSerializer):
 #         model = Facture
 #         fields = [
 #             "vente",
-#             "produit",
 #             "numero_facture",
 #             "montant_total",
 #             "total_paye",
@@ -287,19 +285,6 @@ class FactureSerializer(serializers.ModelSerializer):
 #         v = obj.vente
 #         return {"id": v.id, "numero_vente": v.numero_vente} if v else None
 
-#     def get_produit(self, obj):
-#         p = getattr(getattr(obj, "vente", None), "produits", None)
-#         if p and p.exists():
-#             first_produit = p.first().produit
-#             if first_produit:
-#                 return {
-#                     "id": first_produit.id,
-#                     "nom": first_produit.nom,
-#                     "sku": first_produit.sku,
-#                     "slug": first_produit.slug,
-#                 }
-#         return None
-    
 #     def get_client(self, obj):
 #         c = getattr(getattr(obj, "vente", None), "client", None)
 #         if c:
@@ -308,25 +293,18 @@ class FactureSerializer(serializers.ModelSerializer):
 
 
 class FactureListSerializer(serializers.ModelSerializer):
-    produit = serializers.SerializerMethodField()
+    total_paye = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
+    reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
+    date_creation = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+
     client = serializers.SerializerMethodField()
     vente = serializers.SerializerMethodField()
-
-    # Ces 2 champs doivent être fournis par annotation (ou propriétés sur le modèle)
-    total_paye = serializers.DecimalField(
-        max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True
-    )
-    reste_a_payer = serializers.DecimalField(
-        max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True
-    )
-
-    date_creation = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
+    produits = serializers.SerializerMethodField()
 
     class Meta:
         model = Facture
         fields = [
             "vente",
-            "produit",
             "numero_facture",
             "montant_total",
             "total_paye",
@@ -334,43 +312,52 @@ class FactureListSerializer(serializers.ModelSerializer):
             "status",
             "date_creation",
             "client",
+            "produits",
         ]
 
     def get_vente(self, obj):
-        v = getattr(obj, "vente", None)
+        v = obj.vente
         return {"id": v.id, "numero_vente": v.numero_vente} if v else None
 
-    def get_produit(self, obj):
-        """
-        Retourne le premier produit de la vente (si la vente a des lignes).
-        ⚠️ Pour éviter N+1: dans la view, fais prefetch_related("vente__produits__produit")
-        """
+    def get_client(self, obj):
+        c = getattr(getattr(obj, "vente", None), "client", None)
+        if c:
+            return {"nom": c.nom, "prenom": c.prenom, "telephone": c.telephone}
+        return None
+
+    def get_produits(self, obj):
         v = getattr(obj, "vente", None)
         if not v:
-            return None
+            return []
 
-        lignes = getattr(v, "produits", None)  # related_name de VenteProduit
+        lignes = getattr(v, "produits", None)
         if not lignes:
-            return None
+            return []
 
-        first_line = lignes.all().first()
-        if not first_line or not getattr(first_line, "produit", None):
-            return None
+        data = []
+        for lp in lignes.all():
+            p = getattr(lp, "produit", None)
+            if not p:
+                continue
 
-        p = first_line.produit
-        return {
-            "id": p.id,
-            "nom": p.nom,
-            "sku": p.sku,
-            "slug": getattr(p, "slug", None),
-        }
+            cat = getattr(p, "categorie", None)
+            mar = getattr(p, "marque", None)
+            pur = getattr(p, "purete", None)
+            mod = getattr(p, "modele", None)
 
-    def get_client(self, obj):
-        v = getattr(obj, "vente", None)
-        c = getattr(v, "client", None) if v else None
-        if not c:
-            return None
-        return {"nom": c.nom, "prenom": c.prenom, "telephone": c.telephone}
+            data.append({
+                "id": p.id,
+                "nom": p.nom,
+                "sku": getattr(p, "sku", None),
+                "quantite": lp.quantite,
+
+                "categorie": getattr(cat, "nom", None) if cat else None,
+                "marque": getattr(mar, "marque", None) if mar else None,
+                "purete": getattr(pur, "purete", None) if pur else None,
+                "modele": getattr(mod, "modele", None) if mod else None,
+            })
+
+        return data
 
 
 class FactureDetailSerializer(FactureSerializer):
