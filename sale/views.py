@@ -1014,11 +1014,123 @@ class ListFactureView(APIView):
 #         ser = FactureSerializer(qs, many=True)
 #         return Response(ser.data, status=status.HTTP_200_OK)
 
+# class ListFacturesAPayerView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les factures NON PAYÉES",
+#         operation_description=(
+#             "- **Vendor / Cashier / Manager** : factures NON PAYÉES de leur bijouterie "
+#             "sur une fenêtre de **18 mois**.\n"
+#             "- **Admin** : factures NON PAYÉES toutes bijouteries "
+#             "sur une fenêtre de **36 mois**.\n\n"
+#             "Filtres optionnels :\n"
+#             "• `numero_facture`\n"
+#             "• `page`\n"
+#             "• `page_size` (max 100)\n"
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "numero_facture",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description="Numéro de facture (partiel)"
+#             ),
+#             openapi.Parameter(
+#                 "page",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description="Numéro de page"
+#             ),
+#             openapi.Parameter(
+#                 "page_size",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description="Taille de page (max 100)"
+#             ),
+#         ],
+#         responses={200: FactureListSerializer(many=True)},
+#         tags=["Ventes / Factures"],
+#     )
+#     def get(self, request):
+#         user = request.user
+#         role = get_role_name(user)
+
+#         if role not in {"admin", "manager", "vendor", "cashier"}:
+#             return Response(
+#                 {"message": "⛔ Accès refusé"},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # 🔹 Base queryset : UNIQUEMENT NON PAYÉES
+#         qs = (
+#             Facture.objects
+#             .select_related("bijouterie", "vente", "vente__client")
+#             .filter(status=Facture.STAT_NON_PAYE)
+#         )
+
+#         # 🔹 Portée bijouterie
+#         if role in {"manager", "vendor", "cashier"}:
+#             bij = _user_bijouterie_facture(user)
+#             if not bij:
+#                 return Response(
+#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+#             qs = qs.filter(bijouterie=bij)
+
+#         # 🔹 Fenêtre temporelle automatique
+#         now = timezone.now()
+#         months = 36 if role == "admin" else 18
+#         min_datetime = now - timedelta(days=months * 30)
+#         qs = qs.filter(date_creation__gte=min_datetime)
+
+#         # 🔹 Filtre numero_facture (optionnel)
+#         numero = (request.GET.get("numero_facture") or "").strip()
+#         if numero:
+#             qs = qs.filter(numero_facture__icontains=numero)
+
+#         # 🔹 Tri
+#         qs = qs.order_by("-date_creation")
+
+#         # 🔹 Pagination
+#         try:
+#             page = int(request.GET.get("page", 1))
+#         except ValueError:
+#             page = 1
+
+#         try:
+#             page_size = int(request.GET.get("page_size", DEFAULT_PAGE_SIZE))
+#         except ValueError:
+#             page_size = DEFAULT_PAGE_SIZE
+
+#         page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+
+#         paginator = Paginator(qs, page_size)
+#         try:
+#             page_obj = paginator.page(page)
+#         except EmptyPage:
+#             page_obj = paginator.page(paginator.num_pages)
+
+#         return Response(
+#             {
+#                 "count": paginator.count,
+#                 "page": page_obj.number,
+#                 "page_size": page_size,
+#                 "num_pages": paginator.num_pages,
+#                 "results": FactureListSerializer(
+#                     page_obj.object_list,
+#                     many=True
+#                 ).data,
+#             },
+#             status=status.HTTP_200_OK,
+#         )
+
 class ListFacturesAPayerView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Lister les factures NON PAYÉES",
+        operation_summary="Lister les factures NON PAYÉES (sans pagination)",
         operation_description=(
             "- **Vendor / Cashier / Manager** : factures NON PAYÉES de leur bijouterie "
             "sur une fenêtre de **18 mois**.\n"
@@ -1026,8 +1138,6 @@ class ListFacturesAPayerView(APIView):
             "sur une fenêtre de **36 mois**.\n\n"
             "Filtres optionnels :\n"
             "• `numero_facture`\n"
-            "• `page`\n"
-            "• `page_size` (max 100)\n"
         ),
         manual_parameters=[
             openapi.Parameter(
@@ -1035,18 +1145,6 @@ class ListFacturesAPayerView(APIView):
                 openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
                 description="Numéro de facture (partiel)"
-            ),
-            openapi.Parameter(
-                "page",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description="Numéro de page"
-            ),
-            openapi.Parameter(
-                "page_size",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description="Taille de page (max 100)"
             ),
         ],
         responses={200: FactureListSerializer(many=True)},
@@ -1057,19 +1155,16 @@ class ListFacturesAPayerView(APIView):
         role = get_role_name(user)
 
         if role not in {"admin", "manager", "vendor", "cashier"}:
-            return Response(
-                {"message": "⛔ Accès refusé"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
-        # 🔹 Base queryset : UNIQUEMENT NON PAYÉES
         qs = (
             Facture.objects
             .select_related("bijouterie", "vente", "vente__client")
+            .prefetch_related("vente__produits__produit")  # utile pour ton FactureListSerializer.get_produit
             .filter(status=Facture.STAT_NON_PAYE)
         )
 
-        # 🔹 Portée bijouterie
+        # Portée bijouterie
         if role in {"manager", "vendor", "cashier"}:
             bij = _user_bijouterie_facture(user)
             if not bij:
@@ -1079,52 +1174,20 @@ class ListFacturesAPayerView(APIView):
                 )
             qs = qs.filter(bijouterie=bij)
 
-        # 🔹 Fenêtre temporelle automatique
+        # Fenêtre temporelle automatique
         now = timezone.now()
         months = 36 if role == "admin" else 18
         min_datetime = now - timedelta(days=months * 30)
         qs = qs.filter(date_creation__gte=min_datetime)
 
-        # 🔹 Filtre numero_facture (optionnel)
+        # Filtre numero_facture
         numero = (request.GET.get("numero_facture") or "").strip()
         if numero:
             qs = qs.filter(numero_facture__icontains=numero)
 
-        # 🔹 Tri
         qs = qs.order_by("-date_creation")
 
-        # 🔹 Pagination
-        try:
-            page = int(request.GET.get("page", 1))
-        except ValueError:
-            page = 1
-
-        try:
-            page_size = int(request.GET.get("page_size", DEFAULT_PAGE_SIZE))
-        except ValueError:
-            page_size = DEFAULT_PAGE_SIZE
-
-        page_size = max(1, min(page_size, MAX_PAGE_SIZE))
-
-        paginator = Paginator(qs, page_size)
-        try:
-            page_obj = paginator.page(page)
-        except EmptyPage:
-            page_obj = paginator.page(paginator.num_pages)
-
-        return Response(
-            {
-                "count": paginator.count,
-                "page": page_obj.number,
-                "page_size": page_size,
-                "num_pages": paginator.num_pages,
-                "results": FactureListSerializer(
-                    page_obj.object_list,
-                    many=True
-                ).data,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response(FactureListSerializer(qs, many=True).data, status=status.HTTP_200_OK)
 # --------------------------------END ListFacturesAPayerView---------------------------
 
 # --------------------------------------------------------------------------
