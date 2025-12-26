@@ -27,7 +27,7 @@ from sale.models import Client, Facture, Paiement, Vente, VenteProduit
 from sale.serializers import (FactureSerializer, PaiementCreateSerializer,
                               PaiementSerializer, VenteCreateInSerializer,
                               VenteDetailSerializer, VenteListSerializer)
-from sale.services import create_sale_out_movements_for_vente
+from sale.services import create_sa, sale_out_now_for_vente
 from store.models import Bijouterie, MarquePurete, Produit
 from vendor.models import Vendor
 
@@ -242,16 +242,150 @@ def _resolve_vendor_for_line(*, role, user, bijouterie, vendor_email: str | None
 #             status=status.HTTP_201_CREATED,
 #         )
 
+# class VenteProduitCreateView(APIView):
+#     """
+#     Crée une vente (lignes + client),
+#     puis génère une facture PROFORMA NON PAYÉE (numérotation par bijouterie).
+#     Le stock vendeur sera consommé plus tard (livraison/paiement confirmé).
+#     """
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer une vente + facture proforma",
+#         request_body=VenteCreateInSerializer,
+#         responses={201: openapi.Response("Créé")},
+#         tags=["Ventes"],
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         user = request.user
+
+#         # 1) Rôle + bijouterie
+#         bijouterie, role = _ensure_role_and_bijouterie(user)
+#         if role not in {"vendor", "manager"} or not bijouterie:
+#             return Response(
+#                 {"error": "⛔ Accès refusé ou bijouterie manquante."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # 2) Valider payload
+#         in_ser = VenteCreateInSerializer(data=request.data)
+#         in_ser.is_valid(raise_exception=True)
+#         payload = in_ser.validated_data
+#         client_in = payload["client"]
+#         items = payload["produits"]
+
+#         # 3) Client (upsert: téléphone si fourni sinon nom+prénom)
+#         tel = (client_in.get("telephone") or "").strip()
+#         lookup = {"telephone": tel} if tel else {"nom": client_in["nom"], "prenom": client_in["prenom"]}
+
+#         client, _ = Client.objects.get_or_create(
+#             defaults={"nom": client_in["nom"], "prenom": client_in["prenom"], "telephone": tel or None},
+#             **lookup,
+#         )
+
+#         # 4) Précharger produits (par slug)
+#         slugs = [it["slug"] for it in items]
+#         produits_qs = Produit.objects.select_related("marque", "purete").filter(slug__in=slugs)
+#         produits = {p.slug: p for p in produits_qs}
+
+#         missing = [s for s in set(slugs) if s not in produits]
+#         if missing:
+#             return Response(
+#                 {"error": f"Produits introuvables: {', '.join(missing)}"},
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
+
+#         # 5) Charger tarifs MarquePurete (fallback prix_vente_grammes)
+#         pairs = {(p.marque_id, p.purete_id) for p in produits.values() if p.marque_id and p.purete_id}
+#         tarifs = {
+#             (mp.marque_id, mp.purete_id): Decimal(str(mp.prix))
+#             for mp in MarquePurete.objects.filter(
+#                 marque_id__in=[m for (m, _) in pairs],
+#                 purete_id__in=[r for (_, r) in pairs],
+#             )
+#         }
+
+#         # 6) Créer vente
+#         vente = Vente.objects.create(
+#             client=client,
+#             created_by=user,
+#             bijouterie=bijouterie,
+#         )
+
+#         # 7) Créer lignes
+#         for it in items:
+#             produit = produits[it["slug"]]
+#             qte = int(it["quantite"])
+
+#             # vendor de la ligne
+#             try:
+#                 vendor = _resolve_vendor_for_line(
+#                     role=role,
+#                     user=user,
+#                     bijouterie=bijouterie,
+#                     vendor_email=it.get("vendor_email"),
+#                 )
+#             except Vendor.DoesNotExist as e:
+#                 return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
+#             except PermissionError as e:
+#                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+#             except ValueError as e:
+#                 return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+#             # prix/gramme
+#             pvg = _dec(it.get("prix_vente_grammes"))
+#             if not pvg or pvg <= 0:
+#                 key = (produit.marque_id, produit.purete_id)
+#                 pvg = tarifs.get(key)
+#                 if not pvg or pvg <= 0:
+#                     return Response(
+#                         {"error": f"Tarif manquant pour {produit.nom}."},
+#                         status=status.HTTP_400_BAD_REQUEST,
+#                     )
+
+#             VenteProduit.objects.create(
+#                 vente=vente,
+#                 produit=produit,
+#                 vendor=vendor,
+#                 quantite=qte,
+#                 prix_vente_grammes=pvg,
+#                 remise=_dec(it.get("remise")) or Decimal("0.00"),
+#                 autres=_dec(it.get("autres")) or Decimal("0.00"),
+#                 tax=_dec(it.get("tax")) or Decimal("0.00"),
+#             )
+
+#         # 8) Totaux + facture proforma
+#         try:
+#             vente.mettre_a_jour_montant_total(base="ttc")
+#         except Exception:
+#             pass
+
+#         facture = Facture.objects.create(
+#             vente=vente,
+#             bijouterie=bijouterie,
+#             montant_total=vente.montant_total,
+#             status=Facture.STAT_NON_PAYE,
+#             type_facture=Facture.TYPE_PROFORMA,
+#             numero_facture=Facture.generer_numero_unique(bijouterie),
+#         )
+
+#         return Response(
+#             {
+#                 "facture": FactureSerializer(facture).data,
+#                 "vente": VenteDetailSerializer(vente).data,
+#             },
+#             status=status.HTTP_201_CREATED,
+#         )
+
 class VenteProduitCreateView(APIView):
     """
-    Crée une vente (lignes + client),
-    puis génère une facture PROFORMA NON PAYÉE (numérotation par bijouterie).
-    Le stock vendeur sera consommé plus tard (livraison/paiement confirmé).
+    Crée une vente + facture proforma, ET décrémente le stock vendeur immédiatement.
     """
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Créer une vente + facture proforma",
+        operation_summary="Créer une vente + facture proforma + sortie stock immédiate",
         request_body=VenteCreateInSerializer,
         responses={201: openapi.Response("Créé")},
         tags=["Ventes"],
@@ -275,7 +409,7 @@ class VenteProduitCreateView(APIView):
         client_in = payload["client"]
         items = payload["produits"]
 
-        # 3) Client (upsert: téléphone si fourni sinon nom+prénom)
+        # 3) Client (upsert)
         tel = (client_in.get("telephone") or "").strip()
         lookup = {"telephone": tel} if tel else {"nom": client_in["nom"], "prenom": client_in["prenom"]}
 
@@ -284,19 +418,16 @@ class VenteProduitCreateView(APIView):
             **lookup,
         )
 
-        # 4) Précharger produits (par slug)
+        # 4) Produits (par slug)
         slugs = [it["slug"] for it in items]
         produits_qs = Produit.objects.select_related("marque", "purete").filter(slug__in=slugs)
         produits = {p.slug: p for p in produits_qs}
 
         missing = [s for s in set(slugs) if s not in produits]
         if missing:
-            return Response(
-                {"error": f"Produits introuvables: {', '.join(missing)}"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+            return Response({"error": f"Produits introuvables: {', '.join(missing)}"}, status=404)
 
-        # 5) Charger tarifs MarquePurete (fallback prix_vente_grammes)
+        # 5) Tarifs MarquePurete (fallback)
         pairs = {(p.marque_id, p.purete_id) for p in produits.values() if p.marque_id and p.purete_id}
         tarifs = {
             (mp.marque_id, mp.purete_id): Decimal(str(mp.prix))
@@ -306,19 +437,14 @@ class VenteProduitCreateView(APIView):
             )
         }
 
-        # 6) Créer vente
-        vente = Vente.objects.create(
-            client=client,
-            created_by=user,
-            bijouterie=bijouterie,
-        )
+        # 6) Vente
+        vente = Vente.objects.create(client=client, created_by=user, bijouterie=bijouterie)
 
-        # 7) Créer lignes
+        # 7) Lignes
         for it in items:
             produit = produits[it["slug"]]
             qte = int(it["quantite"])
 
-            # vendor de la ligne
             try:
                 vendor = _resolve_vendor_for_line(
                     role=role,
@@ -327,22 +453,18 @@ class VenteProduitCreateView(APIView):
                     vendor_email=it.get("vendor_email"),
                 )
             except Vendor.DoesNotExist as e:
-                return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
+                return Response({"error": str(e)}, status=404)
             except PermissionError as e:
-                return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"error": str(e)}, status=403)
             except ValueError as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": str(e)}, status=400)
 
-            # prix/gramme
             pvg = _dec(it.get("prix_vente_grammes"))
             if not pvg or pvg <= 0:
                 key = (produit.marque_id, produit.purete_id)
                 pvg = tarifs.get(key)
                 if not pvg or pvg <= 0:
-                    return Response(
-                        {"error": f"Tarif manquant pour {produit.nom}."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+                    return Response({"error": f"Tarif manquant pour {produit.nom}."}, status=400)
 
             VenteProduit.objects.create(
                 vente=vente,
@@ -370,12 +492,25 @@ class VenteProduitCreateView(APIView):
             numero_facture=Facture.generer_numero_unique(bijouterie),
         )
 
+        # ✅ 9) SORTIE STOCK IMMÉDIATE (mouvements + VendorStock.quantite_vendue)
+        try:
+            mouvements_crees = sale_out_now_for_vente(vente, request.user)
+        except ValidationError as e:
+            # rollback auto (transaction.atomic)
+            msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
+            return Response({"error": msg}, status=400)
+
+        vente.refresh_from_db()
+        facture.refresh_from_db()
+
         return Response(
             {
+                "message": "Vente créée + stock décrémenté.",
+                "mouvements_crees": mouvements_crees,
                 "facture": FactureSerializer(facture).data,
                 "vente": VenteDetailSerializer(vente).data,
             },
-            status=status.HTTP_201_CREATED,
+            status=201,
         )
 
 # -------------------------ListFactureView---------------------------
@@ -1646,106 +1781,185 @@ class PaiementFactureView(APIView):
 
 # ROLES_LIVRAISON = {"vendor", "manager"}
 
-class ConfirmerLivraisonView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+# class ConfirmerLivraisonView(APIView):
+#     permission_classes = [permissions.IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Confirmer la livraison (sortie réelle du stock)",
+#         operation_description=(
+#             "Marque la vente comme livrée et crée les mouvements d’inventaire **SALE_OUT** "
+#             "avec décrément du stock vendor. Requiert **facture payée**. "
+#             "Rôles autorisés : **vendor** / **manager**. "
+#             "La vente doit appartenir à la même bijouterie que l’utilisateur.\n\n"
+#             "- Vendor: peut livrer uniquement ses propres ventes (au moins une ligne avec son vendor).\n"
+#             "- Manager: peut livrer toute vente de sa bijouterie."
+#         ),
+#         responses={200: "OK", 400: "Erreur métier", 403: "Accès refusé", 404: "Introuvable"},
+#         tags=["Ventes"]
+#     )
+#     @transaction.atomic
+#     def post(self, request, vente_id: int):
+#         user = request.user
+#         role = get_role_name(user)
+
+#         if role not in {"manager", "vendor"}:
+#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
+#         # ✅ bijouterie utilisateur (obligatoire)
+#         user_shop = _user_bijouterie_facture(user)
+#         if not user_shop:
+#             return Response(
+#                 {"error": "Profil non rattaché à une bijouterie vérifiée."},
+#                 status=status.HTTP_403_FORBIDDEN
+#             )
+
+#         # ✅ charger la vente d'abord
+#         try:
+#             vente = (
+#                 Vente.objects
+#                 .select_related("facture_vente", "facture_vente__bijouterie")
+#                 .prefetch_related("produits__produit", "produits__vendor")
+#                 .select_for_update()
+#                 .get(pk=vente_id)
+#             )
+#         except Vente.DoesNotExist:
+#             return Response({"error": "Vente introuvable."}, status=status.HTTP_404_NOT_FOUND)
+
+#         facture = getattr(vente, "facture_vente", None)
+#         if not facture:
+#             return Response({"error": "Aucune facture liée à cette vente."}, status=status.HTTP_400_BAD_REQUEST)
+
+#         # ✅ sécurité bijouterie
+#         if facture.bijouterie_id != user_shop.id:
+#             return Response({"error": "Cette vente n’appartient pas à votre bijouterie."},
+#                             status=status.HTTP_403_FORBIDDEN)
+
+#         # ✅ restriction vendor : seulement ses ventes
+#         if role == "vendor":
+#             my_vendor = getattr(user, "staff_vendor_profile", None)
+#             if not my_vendor:
+#                 return Response({"error": "Profil vendeur introuvable."}, status=status.HTTP_403_FORBIDDEN)
+
+#             if not vente.produits.filter(vendor=my_vendor).exists():
+#                 return Response({"error": "Vous ne pouvez livrer que vos propres ventes."},
+#                                 status=status.HTTP_403_FORBIDDEN)
+
+#         # ✅ déjà livrée ?
+#         if vente.delivery_status == Vente.DELIV_DELIVERED:
+#             return Response({
+#                 "message": "Déjà livrée — aucune action.",
+#                 "mouvements_crees": 0,
+#                 "vente": VenteDetailSerializer(vente).data,
+#                 "facture": FactureSerializer(facture).data
+#             }, status=status.HTTP_200_OK)
+
+#         # ✅ facture payée obligatoire
+#         if facture.status != Facture.STAT_PAYE:
+#             return Response({"error": "Facture non payée : livraison impossible."},
+#                             status=status.HTTP_400_BAD_REQUEST)
+
+#         # ✅ mouvements + décrément stock (service idempotent)
+#         try:
+#             created_count = create_sale_out_movements_for_vente(vente, request.user)
+#         except ValidationError as e:
+#             msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
+#             return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
+#         except Exception as e:
+#             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+#         vente.refresh_from_db()
+#         facture.refresh_from_db()
+
+#         return Response(
+#             {
+#                 "message": "Livraison confirmée.",
+#                 "mouvements_crees": created_count,
+#                 "vente": VenteDetailSerializer(vente).data,
+#                 "facture": FactureSerializer(facture).data,
+#             },
+#             status=status.HTTP_200_OK
+#         )
+        
+# --------------------End Confirmer Livraison------------------
+
+
+# ------------------Annulation vente-----------------------
+class AnnulerVenteView(APIView):
+    permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Confirmer la livraison (sortie réelle du stock)",
+        operation_summary="Annuler une vente (RETURN_IN + restauration stock vendeur)",
         operation_description=(
-            "Marque la vente comme livrée et crée les mouvements d’inventaire **SALE_OUT** "
-            "avec décrément du stock vendor. Requiert **facture payée**. "
-            "Rôles autorisés : **vendor** / **manager**. "
-            "La vente doit appartenir à la même bijouterie que l’utilisateur.\n\n"
-            "- Vendor: peut livrer uniquement ses propres ventes (au moins une ligne avec son vendor).\n"
-            "- Manager: peut livrer toute vente de sa bijouterie."
+            "Annule une vente entière :\n"
+            "- crée des mouvements d'inventaire RETURN_IN (EXTERNAL → BIJOUTERIE)\n"
+            "- restaure VendorStock.quantite_vendue\n"
+            "- idempotent (si déjà annulée, ne refait pas)\n\n"
+            "Rôles autorisés : admin / manager / vendor\n"
+            "Sécurité : la vente doit appartenir à la bijouterie du user.\n"
+            "Vendor : ne peut annuler que si la vente contient au moins une ligne à lui."
         ),
         responses={200: "OK", 400: "Erreur métier", 403: "Accès refusé", 404: "Introuvable"},
-        tags=["Ventes"]
+        tags=["Ventes"],
     )
     @transaction.atomic
     def post(self, request, vente_id: int):
         user = request.user
         role = get_role_name(user)
 
-        if role not in {"manager", "vendor"}:
-            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+        if role not in {"admin", "manager", "vendor"}:
+            return Response({"error": "⛔ Accès refusé."}, status=403)
 
-        # ✅ bijouterie utilisateur (obligatoire)
         user_shop = _user_bijouterie_facture(user)
         if not user_shop:
-            return Response(
-                {"error": "Profil non rattaché à une bijouterie vérifiée."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=403)
 
-        # ✅ charger la vente d'abord
+        # charger vente pour contrôles de sécurité
         try:
             vente = (
                 Vente.objects
                 .select_related("facture_vente", "facture_vente__bijouterie")
-                .prefetch_related("produits__produit", "produits__vendor")
-                .select_for_update()
+                .prefetch_related("produits__vendor")
                 .get(pk=vente_id)
             )
         except Vente.DoesNotExist:
-            return Response({"error": "Vente introuvable."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Vente introuvable."}, status=404)
 
         facture = getattr(vente, "facture_vente", None)
         if not facture:
-            return Response({"error": "Aucune facture liée à cette vente."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Aucune facture liée à cette vente."}, status=400)
 
-        # ✅ sécurité bijouterie
+        # ✅ même bijouterie
         if facture.bijouterie_id != user_shop.id:
-            return Response({"error": "Cette vente n’appartient pas à votre bijouterie."},
-                            status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "Cette vente n’appartient pas à votre bijouterie."}, status=403)
 
-        # ✅ restriction vendor : seulement ses ventes
+        # ✅ vendor : doit avoir au moins une ligne à lui
         if role == "vendor":
             my_vendor = getattr(user, "staff_vendor_profile", None)
             if not my_vendor:
-                return Response({"error": "Profil vendeur introuvable."}, status=status.HTTP_403_FORBIDDEN)
-
+                return Response({"error": "Profil vendeur introuvable."}, status=403)
             if not vente.produits.filter(vendor=my_vendor).exists():
-                return Response({"error": "Vous ne pouvez livrer que vos propres ventes."},
-                                status=status.HTTP_403_FORBIDDEN)
+                return Response({"error": "Vous ne pouvez annuler que vos ventes."}, status=403)
 
-        # ✅ déjà livrée ?
-        if vente.delivery_status == Vente.DELIV_DELIVERED:
-            return Response({
-                "message": "Déjà livrée — aucune action.",
-                "mouvements_crees": 0,
-                "vente": VenteDetailSerializer(vente).data,
-                "facture": FactureSerializer(facture).data
-            }, status=status.HTTP_200_OK)
-
-        # ✅ facture payée obligatoire
-        if facture.status != Facture.STAT_PAYE:
-            return Response({"error": "Facture non payée : livraison impossible."},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        # ✅ mouvements + décrément stock (service idempotent)
         try:
-            created_count = create_sale_out_movements_for_vente(vente, request.user)
+            result = cancel_vente_and_restore_stock(vente_id=vente.id, by_user=user)
         except ValidationError as e:
             msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
-            return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": msg}, status=400)
 
+        # refresh
         vente.refresh_from_db()
         facture.refresh_from_db()
 
         return Response(
             {
-                "message": "Livraison confirmée.",
-                "mouvements_crees": created_count,
+                "message": "Vente annulée et stock restauré." if not result.get("already_cancelled") else "Vente déjà annulée (idempotent).",
+                "returned_movements": result.get("returned_movements", 0),
                 "vente": VenteDetailSerializer(vente).data,
                 "facture": FactureSerializer(facture).data,
             },
-            status=status.HTTP_200_OK
+            status=200,
         )
-        
-# --------------------End Confirmer Livraison------------------
+# -----------------End Anullation vente---------------
 
 # ----------------------Liste vente-------------------------
 # ---------- Helpers ----------

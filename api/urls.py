@@ -203,12 +203,12 @@ urlpatterns = [
     
     path('vente/list-produit', sale_views.VenteListAPIView.as_view(), name='vente-produit-list'),
     path('vente/rapport-mensuel/', sale_views.RapportVentesMensuelAPIView.as_view(), name='rapport-ventes-mensuel'),
-    
+    path('vente/<int:vente_id>/annuler/', sale_views.AnnulerVenteView.as_view(), name='annuler-vente'),
     # path('facture/recherche-facture/<str:numero_facture>', sale_views.RechercherFactureView.as_view(), name='Recherche-facture-par-numero'),
     path('facture/List-factures-payees', sale_views.ListFacturePayeesView.as_view(), name='list-factures-payées'),
     path("facture/List-factures-a-payer", sale_views.ListFacturesAPayerView.as_view(),name="list_factures_a_payer",),
     path('facture/paiement-facture/<str:facture_numero>', sale_views.PaiementFactureView.as_view(), name='Paiement-facture-par-numero'),
-    path("ventes/<int:vente_id>/livraison/confirm/", sale_views.ConfirmerLivraisonView.as_view(), name="vente-confirmer-livraison"),
+    # path("ventes/<int:vente_id>/livraison/confirm/", sale_views.ConfirmerLivraisonView.as_view(), name="vente-confirmer-livraison"),
     # END STOCK
     
     # BANK
