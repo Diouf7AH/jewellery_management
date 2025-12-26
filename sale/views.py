@@ -873,14 +873,118 @@ MAX_PAGE_SIZE = 100
 #         )
 
 
+# class ListFactureView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les factures (status + fenêtre 18 mois / 3 ans + pagination)",
+#         manual_parameters=[
+#             openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="non_paye | paye (optionnel)"),
+#             openapi.Parameter("numero_facture", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Numéro partiel (optionnel)"),
+#             openapi.Parameter("page", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Page (optionnel)"),
+#             openapi.Parameter("page_size", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Taille page (optionnel, max 100)"),
+#         ],
+#         responses={200: FactureListSerializer(many=True)},
+#         tags=["Ventes / Factures"],
+#     )
+#     def get(self, request):
+#         user = request.user
+#         role = get_role_name(user)
+
+#         if role not in {"admin", "manager", "vendor", "cashier"}:
+#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
+#         qs = (
+#             Facture.objects
+#             .select_related("bijouterie", "vente", "vente__client")
+#             .prefetch_related(
+#                 "vente__produits__produit",
+#                 "vente__produits__produit__categorie",
+#                 "vente__produits__produit__marque",
+#                 "vente__produits__produit__purete",
+#                 "vente__produits__produit__modele",
+#             )
+#         )
+
+#         # scope bijouterie
+#         if role in {"manager", "vendor", "cashier"}:
+#             bij = _user_bijouterie_facture(user)
+#             if not bij:
+#                 return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=400)
+#             qs = qs.filter(bijouterie=bij)
+
+#         # fenêtre automatique
+#         now = timezone.now()
+#         months = 36 if role == "admin" else 18
+#         min_datetime = now - timedelta(days=months * 30)
+#         qs = qs.filter(date_creation__gte=min_datetime)
+
+#         # filtre status optionnel
+#         status_q = (request.GET.get("status") or "").strip().lower()
+#         if status_q in {"non_paye", "paye"}:
+#             qs = qs.filter(status=status_q)
+
+#         # filtre numero_facture optionnel
+#         numero = (request.GET.get("numero_facture") or "").strip()
+#         if numero:
+#             qs = qs.filter(numero_facture__icontains=numero)
+
+#         qs = qs.order_by("-date_creation")
+
+#         # pagination
+#         try:
+#             page = int(request.GET.get("page", 1))
+#         except ValueError:
+#             page = 1
+
+#         try:
+#             page_size = int(request.GET.get("page_size", DEFAULT_PAGE_SIZE))
+#         except ValueError:
+#             page_size = DEFAULT_PAGE_SIZE
+
+#         page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+
+#         paginator = Paginator(qs, page_size)
+#         try:
+#             page_obj = paginator.page(page)
+#         except EmptyPage:
+#             page_obj = paginator.page(paginator.num_pages)
+
+#         return Response(
+#             {
+#                 "count": paginator.count,
+#                 "page": page_obj.number,
+#                 "page_size": page_size,
+#                 "num_pages": paginator.num_pages,
+#                 "results": FactureListSerializer(page_obj.object_list, many=True).data,
+#             },
+#             status=status.HTTP_200_OK,
+#         )
+
+
 class ListFactureView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Lister les factures (status + fenêtre 18 mois / 3 ans + pagination)",
+        operation_summary="Lister les factures PAYÉES (18 mois / 36 mois + pagination + filtres vendeur/client/paiement)",
+        operation_description=(
+            "Retourne uniquement les **factures PAYÉES**.\n\n"
+            "### Scopes\n"
+            "- manager/vendor/cashier : limité à **leur bijouterie**\n"
+            "- admin : toutes bijouteries\n\n"
+            "### Fenêtre automatique\n"
+            "- admin : 36 mois\n"
+            "- autres : 18 mois\n\n"
+            "### Filtres\n"
+            "- `vendor_id` : ventes contenant au moins une ligne de ce vendeur\n"
+            "- `client_q`  : recherche client (nom/prenom/téléphone)\n"
+            "- `payment_mode` : filtre sur les paiements liés à la facture\n"
+        ),
         manual_parameters=[
-            openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="non_paye | paye (optionnel)"),
-            openapi.Parameter("numero_facture", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Numéro partiel (optionnel)"),
+            openapi.Parameter("numero_facture", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Numéro facture partiel (optionnel)"),
+            openapi.Parameter("vendor_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID vendeur (optionnel)"),
+            openapi.Parameter("client_q", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Nom/prénom/téléphone client (optionnel)"),
+            openapi.Parameter("payment_mode", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Mode de paiement (ex: cash|wave|om|cb) (optionnel)"),
             openapi.Parameter("page", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Page (optionnel)"),
             openapi.Parameter("page_size", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Taille page (optionnel, max 100)"),
         ],
@@ -894,44 +998,85 @@ class ListFactureView(APIView):
         if role not in {"admin", "manager", "vendor", "cashier"}:
             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
+        # ✅ Base queryset : PAYÉES uniquement + prefetch produits & paiements
         qs = (
             Facture.objects
             .select_related("bijouterie", "vente", "vente__client")
             .prefetch_related(
+                "paiements",
+                "vente__produits__vendor",
                 "vente__produits__produit",
                 "vente__produits__produit__categorie",
                 "vente__produits__produit__marque",
                 "vente__produits__produit__purete",
                 "vente__produits__produit__modele",
             )
+            .filter(status=Facture.STAT_PAYE)
         )
 
-        # scope bijouterie
+        # ✅ Scope bijouterie pour manager/vendor/cashier
         if role in {"manager", "vendor", "cashier"}:
             bij = _user_bijouterie_facture(user)
             if not bij:
                 return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=400)
             qs = qs.filter(bijouterie=bij)
 
-        # fenêtre automatique
+        # ✅ Fenêtre automatique
         now = timezone.now()
         months = 36 if role == "admin" else 18
         min_datetime = now - timedelta(days=months * 30)
         qs = qs.filter(date_creation__gte=min_datetime)
 
-        # filtre status optionnel
-        status_q = (request.GET.get("status") or "").strip().lower()
-        if status_q in {"non_paye", "paye"}:
-            qs = qs.filter(status=status_q)
+        # -------------------
+        # ✅ FILTRES
+        # -------------------
 
-        # filtre numero_facture optionnel
+        # 1) numéro facture
         numero = (request.GET.get("numero_facture") or "").strip()
         if numero:
             qs = qs.filter(numero_facture__icontains=numero)
 
-        qs = qs.order_by("-date_creation")
+        # 2) vendeur (vendor_id)
+        vendor_id = request.GET.get("vendor_id")
+        if vendor_id:
+            try:
+                vendor_id = int(vendor_id)
+            except ValueError:
+                return Response({"vendor_id": "Doit être un entier."}, status=400)
 
-        # pagination
+            # Factures dont la vente contient au moins une ligne avec ce vendeur
+            qs = qs.filter(vente__produits__vendor_id=vendor_id)
+
+            # 🔒 si le role = vendor, il ne peut filtrer que lui-même
+            if role == "vendor":
+                my_vendor = getattr(user, "staff_vendor_profile", None)
+                if not my_vendor:
+                    return Response({"error": "Profil vendeur introuvable."}, status=403)
+                if vendor_id != my_vendor.id:
+                    return Response({"error": "Un vendeur ne peut filtrer que ses propres factures."}, status=403)
+
+        # 3) client search (client_q)
+        client_q = (request.GET.get("client_q") or "").strip()
+        if client_q:
+            qs = qs.filter(
+                Q(vente__client__nom__icontains=client_q)
+                | Q(vente__client__prenom__icontains=client_q)
+                | Q(vente__client__telephone__icontains=client_q)
+            )
+
+        # 4) mode de paiement (payment_mode)
+        payment_mode = (request.GET.get("payment_mode") or "").strip().lower()
+        if payment_mode:
+            # ⚠️ adapte le nom du champ Paiement :
+            # ex: paiements__mode, paiements__type, paiements__methode, etc.
+            qs = qs.filter(paiements__mode_paiement__iexact=payment_mode)
+
+        # ✅ éviter doublons à cause des joins (vendor/paiements)
+        qs = qs.distinct().order_by("-date_creation")
+
+        # -------------------
+        # ✅ PAGINATION
+        # -------------------
         try:
             page = int(request.GET.get("page", 1))
         except ValueError:
@@ -958,7 +1103,7 @@ class ListFactureView(APIView):
                 "num_pages": paginator.num_pages,
                 "results": FactureListSerializer(page_obj.object_list, many=True).data,
             },
-            status=status.HTTP_200_OK,
+            status=200,
         )
 
 
