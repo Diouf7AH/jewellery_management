@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.apps import apps
 from django.db import models
 from django.db.models import Sum
 from rest_framework import serializers
@@ -292,6 +293,74 @@ class FactureSerializer(serializers.ModelSerializer):
 #         return None
 
 
+# class FactureListSerializer(serializers.ModelSerializer):
+#     total_paye = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
+#     reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
+#     date_creation = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+
+#     client = serializers.SerializerMethodField()
+#     vente = serializers.SerializerMethodField()
+#     produits = serializers.SerializerMethodField()
+
+#     class Meta:
+#         model = Facture
+#         fields = [
+#             "vente",
+#             "numero_facture",
+#             "montant_total",
+#             "total_paye",
+#             "reste_a_payer",
+#             "status",
+#             "date_creation",
+#             "client",
+#             "produits",
+#         ]
+
+#     def get_vente(self, obj):
+#         v = obj.vente
+#         return {"id": v.id, "numero_vente": v.numero_vente} if v else None
+
+#     def get_client(self, obj):
+#         c = getattr(getattr(obj, "vente", None), "client", None)
+#         if c:
+#             return {"nom": c.nom, "prenom": c.prenom, "telephone": c.telephone}
+#         return None
+
+#     def get_produits(self, obj):
+#         v = getattr(obj, "vente", None)
+#         if not v:
+#             return []
+
+#         lignes = getattr(v, "produits", None)
+#         if not lignes:
+#             return []
+
+#         data = []
+#         for lp in lignes.all():
+#             p = getattr(lp, "produit", None)
+#             if not p:
+#                 continue
+
+#             cat = getattr(p, "categorie", None)
+#             mar = getattr(p, "marque", None)
+#             pur = getattr(p, "purete", None)
+#             mod = getattr(p, "modele", None)
+
+#             data.append({
+#                 "id": p.id,
+#                 "nom": p.nom,
+#                 "sku": getattr(p, "sku", None),
+#                 "quantite": lp.quantite,
+
+#                 "categorie": getattr(cat, "nom", None) if cat else None,
+#                 "marque": getattr(mar, "marque", None) if mar else None,
+#                 "purete": getattr(pur, "purete", None) if pur else None,
+#                 "modele": getattr(mod, "modele", None) if mod else None,
+#             })
+
+#         return data
+
+
 class FactureListSerializer(serializers.ModelSerializer):
     total_paye = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
     reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, coerce_to_string=True)
@@ -320,22 +389,35 @@ class FactureListSerializer(serializers.ModelSerializer):
         return {"id": v.id, "numero_vente": v.numero_vente} if v else None
 
     def get_client(self, obj):
-        c = getattr(getattr(obj, "vente", None), "client", None)
+        v = getattr(obj, "vente", None)
+        c = getattr(v, "client", None) if v else None
         if c:
             return {"nom": c.nom, "prenom": c.prenom, "telephone": c.telephone}
         return None
+
+    def _marque_purete_prix(self, produit):
+        """
+        Prix tarif (MarquePurete) (info), utile si tu veux afficher le fallback.
+        """
+        if not produit or not getattr(produit, "marque_id", None) or not getattr(produit, "purete_id", None):
+            return None
+        MarquePurete = apps.get_model("store", "MarquePurete")
+        return (MarquePurete.objects
+                .filter(marque_id=produit.marque_id, purete_id=produit.purete_id)
+                .values_list("prix", flat=True)
+                .first())
 
     def get_produits(self, obj):
         v = getattr(obj, "vente", None)
         if not v:
             return []
 
-        lignes = getattr(v, "produits", None)
+        lignes = getattr(v, "produits", None)  # related_name="produits" sur VenteProduit
         if not lignes:
             return []
 
         data = []
-        for lp in lignes.all():
+        for lp in lignes.all():  # lp = VenteProduit
             p = getattr(lp, "produit", None)
             if not p:
                 continue
@@ -345,20 +427,42 @@ class FactureListSerializer(serializers.ModelSerializer):
             pur = getattr(p, "purete", None)
             mod = getattr(p, "modele", None)
 
-            data.append({
-                "id": p.id,
-                "nom": p.nom,
-                "sku": getattr(p, "sku", None),
-                "quantite": lp.quantite,
+            # poids (si tu veux l'afficher)
+            poids = getattr(p, "poids", None)
+            if poids in (None, "", 0, "0"):
+                poids = getattr(p, "poids_grammes", None)
 
+            # prix MarquePurete (info)
+            prix_mp = self._marque_purete_prix(p)
+
+            data.append({
+                # --- produit ---
+                "produit_id": p.id,
+                "nom": getattr(p, "nom", None),
+                "sku": getattr(p, "sku", None),
+                "poids": str(poids) if poids not in (None, "") else None,
+
+                # --- catalogue ---
                 "categorie": getattr(cat, "nom", None) if cat else None,
                 "marque": getattr(mar, "marque", None) if mar else None,
                 "purete": getattr(pur, "purete", None) if pur else None,
                 "modele": getattr(mod, "modele", None) if mod else None,
+
+                # --- vente (ligne VenteProduit) ---
+                "quantite": int(getattr(lp, "quantite", 0) or 0),
+                "prix_vente_grammes": str(getattr(lp, "prix_vente_grammes", None)) if getattr(lp, "prix_vente_grammes", None) is not None else None,
+
+                "sous_total_prix_vente_ht": str(getattr(lp, "sous_total_prix_vente_ht", None)) if getattr(lp, "sous_total_prix_vente_ht", None) is not None else None,
+                "remise": str(getattr(lp, "remise", None)) if getattr(lp, "remise", None) is not None else None,
+                "autres": str(getattr(lp, "autres", None)) if getattr(lp, "autres", None) is not None else None,
+                "tax": str(getattr(lp, "tax", None)) if getattr(lp, "tax", None) is not None else None,
+                "prix_ttc": str(getattr(lp, "prix_ttc", None)) if getattr(lp, "prix_ttc", None) is not None else None,
+
+                # --- info tarif fallback ---
+                "tarif_marque_purete": str(prix_mp) if prix_mp is not None else None,
             })
 
         return data
-
 
 class FactureDetailSerializer(FactureSerializer):
     factureList = FactureListSerializer(many=True, read_only=True)
