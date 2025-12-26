@@ -962,7 +962,7 @@ MAX_PAGE_SIZE = 100
 #         )
 
 
-class ListFactureView(APIView):
+class ListFacturePayeesView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
