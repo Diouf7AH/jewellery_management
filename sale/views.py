@@ -27,7 +27,8 @@ from sale.models import Client, Facture, Paiement, Vente, VenteProduit
 from sale.serializers import (FactureSerializer, PaiementCreateSerializer,
                               PaiementSerializer, VenteCreateInSerializer,
                               VenteDetailSerializer, VenteListSerializer)
-from sale.services import create_sa, sale_out_now_for_vente
+from sale.services import (cancel_vente_and_restore_stock,
+                           sale_out_now_for_vente)
 from store.models import Bijouterie, MarquePurete, Produit
 from vendor.models import Vendor
 
