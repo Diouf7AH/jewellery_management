@@ -23,9 +23,10 @@ urlpatterns = [
     # path('dashboard/achat/dashboard', achat_views.AchatDashboardView.as_view(), name='dashboard-achat'),
     # path('vendor/me/', vendor_views.VendorMeView.as_view(), name='vendor-me'),
     
-    # path('vendor/dashboard/profile', vendor_views.VendorProfileView.as_view(), name='vendor-profile'),
-    path('vendor/produits/', vendor_views.VendorProduitListView.as_view(), name='vendor-produits'),
-    path("manager/vendor/produits/", vendor_views.VendorProduitListView.as_view(), name="manager-vendor-produits"),
+    # path('vendor/dashboard/profile', vendor_views.VendorProfileView.as_view(), name='vendor-profile'),VendorStockProduitsView
+    path('vendor/stock/produits/', vendor_views.VendorStockProduitsView.as_view(), name='vendor-stock-produits'),
+    # path('vendor/produits/', vendor_views.VendorProduitListView.as_view(), name='vendor-produits'),
+    # path("manager/vendor/produits/", vendor_views.VendorProduitListView.as_view(), name="manager-vendor-produits"),
     # Pour l’utilisateur connecté
     # Pour un admin qui consulte un vendeur par ID
     # path('vendor/<int:user_id>/', vendor_views.VendorProfileView.as_view(), name='admin-vendor-view'),

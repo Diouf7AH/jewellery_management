@@ -1225,90 +1225,291 @@ def _current_year_bounds_dates():
     return date(y, 1, 1), date(y, 12, 31)
 
 
-class VendorProduitListView(APIView):
+# class VendorProduitListView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Stock vendeur (groupé ou détail FIFO) + ventes sur période",
+#         operation_description=(
+#             "Attention : si tu testes avec detail=1, scope est ignoré (tu renvoies toujours le détail stock).\n\n"
+#             "Retourne le stock **VendorStock** d’un vendeur.\n\n"
+#             "### Accès\n"
+#             "- **vendor** : voit uniquement son propre stock\n"
+#             "- **manager/admin** : contrôle un vendeur via `vendor_id`\n\n"
+#             "### Modes\n"
+#             "- **grouped** (défaut) : 1 ligne par produit\n"
+#             "- **detail=1** : détail FIFO par lot (VendorStock / ProduitLine)\n\n"
+#             "### Scope\n"
+#             "- `scope=stock` : stock actuel uniquement\n"
+#             "- `scope=sales` : ventes sur période uniquement (`vendue_periode`)\n"
+#             "- `scope=both`  : stock + ventes (défaut)\n\n"
+#             "### Fenêtre dates (s’applique à `vendue_periode` seulement)\n"
+#             "- **vendor** : si aucune date → année en cours\n"
+#             "- **manager/admin** : fenêtre max 3 ans\n\n"
+#             "### Champs clés\n"
+#             "- `quantite_disponible = quantite_allouee - quantite_vendue`\n"
+#             "- `vendue_periode` = somme des SALE_OUT sur période\n"
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 name="scope",
+#                 in_=openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="`stock|sales|both` (défaut: both)."
+#             ),
+#             openapi.Parameter(
+#                 name="detail",
+#                 in_=openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="`1|true|yes` : détail FIFO par lot. Par défaut: grouped."
+#             ),
+#             openapi.Parameter(
+#                 name="vendor_id",
+#                 in_=openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 required=False,
+#                 description="(manager/admin) ID du vendeur à contrôler. Ignoré pour vendor."
+#             ),
+#             openapi.Parameter(
+#                 name="date_from",
+#                 in_=openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="Début période (YYYY-MM-DD) pour `vendue_periode`."
+#             ),
+#             openapi.Parameter(
+#                 name="date_to",
+#                 in_=openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="Fin période (YYYY-MM-DD) pour `vendue_periode`."
+#             ),
+#             openapi.Parameter(
+#                 name="only_sold",
+#                 in_=openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="`1|true|yes` : seulement produits avec `vendue_periode > 0` (scope sales/both)."
+#             ),
+#         ],
+#         responses={200: openapi.Response("OK")},
+#         tags=["Vendor / Stock"],
+#     )
+#     def get(self, request, *args, **kwargs):
+#         user = request.user
+#         role = get_role_name(user)
+
+#         scope = (request.GET.get("scope") or "both").strip().lower()
+#         if scope not in {"stock", "sales", "both"}:
+#             scope = "both"
+
+#         detail = (request.GET.get("detail") or "").strip().lower() in {"1", "true", "yes"}
+#         only_sold = (request.GET.get("only_sold") or "").strip().lower() in {"1", "true", "yes"}
+
+#         # ✅ déterminer vendeur ciblé
+#         if role == "vendor":
+#             target_vendor = getattr(user, "staff_vendor_profile", None)
+#             if not target_vendor:
+#                 return Response({"error": "Profil vendeur introuvable."}, status=403)
+
+#         elif role in {"manager", "admin"}:
+#             vendor_id = request.GET.get("vendor_id")
+#             if not vendor_id:
+#                 return Response({"error": "Paramètre `vendor_id` requis pour manager/admin."}, status=400)
+#             try:
+#                 vendor_id = int(vendor_id)
+#             except ValueError:
+#                 return Response({"vendor_id": "Doit être un entier."}, status=400)
+
+#             target_vendor = Vendor.objects.select_related("bijouterie").filter(id=vendor_id).first()
+#             if not target_vendor:
+#                 return Response({"error": "Vendeur introuvable."}, status=404)
+
+#             # ✅ contrôle bijouterie manager
+#             if role == "manager":
+#                 user_shop = _user_bijouterie(user)
+#                 if not user_shop:
+#                     return Response({"error": "Manager non rattaché à une bijouterie."}, status=400)
+#                 if getattr(target_vendor, "bijouterie_id", None) != user_shop.id:
+#                     return Response({"error": "Ce vendeur n’appartient pas à votre bijouterie."}, status=403)
+#         else:
+#             return Response({"error": "⛔ Accès refusé"}, status=403)
+
+#         # ✅ Fenêtre dates (pour vendue_periode)
+#         df = _parse_date(request.GET.get("date_from"))
+#         dt = _parse_date(request.GET.get("date_to"))
+#         today = timezone.localdate()
+
+#         if role == "vendor":
+#             if not df and not dt:
+#                 df, dt = _current_year_bounds_dates()
+#             elif df and not dt:
+#                 dt = min(_add_years(df, 1) - timedelta(days=1), today)
+#             elif dt and not df:
+#                 df = date(dt.year, 1, 1)
+
+#             if df and dt and df > dt:
+#                 return Response({"error": "`date_from` doit être ≤ `date_to`."}, status=400)
+
+#         else:
+#             # manager/admin : max 3 ans si bornes fournies
+#             if df and not dt:
+#                 dt = min(_add_years(df, 3) - timedelta(days=1), today)
+
+#             if df and dt and df > dt:
+#                 return Response({"error": "`date_from` doit être ≤ `date_to`."}, status=400)
+
+#             if df and dt:
+#                 max_dt = _add_years(df, 3) - timedelta(days=1)
+#                 if dt > max_dt:
+#                     return Response({"error": f"Fenêtre max 3 ans. `date_to` ≤ {max_dt}."}, status=400)
+#                 dt = min(dt, today)
+
+#         # ✅ Mode detail FIFO (stock actuel uniquement)
+#         if detail:
+#             vendor_stocks = (
+#                 VendorStock.objects
+#                 .filter(vendor=target_vendor)
+#                 .select_related("produit_line__produit", "produit_line__lot", "vendor")
+#                 .order_by("produit_line__lot__received_at", "produit_line_id")
+#             )
+#             return Response(
+#                 {
+#                     "mode": "detail",
+#                     "scope": "stock",
+#                     "period": {"date_from": str(df) if df else None, "date_to": str(dt) if dt else None},
+#                     "results": VendorProduitLotSerializer(vendor_stocks, many=True).data,
+#                 },
+#                 status=200,
+#             )
+
+#         # ✅ Subquery vendue_periode seulement si scope inclut sales
+#         vendue_subquery = None
+#         if scope in {"sales", "both"}:
+#             # sale_qs = (
+#             #     InventoryMovement.objects
+#             #     .filter(
+#             #         movement_type=MovementType.SALE_OUT,
+#             #         vendor=target_vendor,
+#             #         produit_id=OuterRef("produit_id"),
+#             #     )
+#             # )
+#             sale_qs = (
+#                 InventoryMovement.objects
+#                 .filter(
+#                     movement_type=MovementType.SALE_OUT,
+#                     vente_ligne__vendor=target_vendor,     # ✅ au lieu de vendor=target_vendor
+#                     produit_id=OuterRef("produit_id"),
+#                 )
+#             )
+#             if df:
+#                 sale_qs = sale_qs.filter(occurred_at__date__gte=df)
+#             if dt:
+#                 sale_qs = sale_qs.filter(occurred_at__date__lte=dt)
+
+#             vendue_subquery = (
+#                 sale_qs.values("produit_id")
+#                 .annotate(total=Coalesce(Sum("qty"), Value(0)))
+#                 .values("total")[:1]
+#             )
+
+#         # ✅ base grouped
+#         qs = (
+#             VendorStock.objects
+#             .filter(vendor=target_vendor)
+#             .values(
+#                 produit_id=F("produit_line__produit_id"),
+#                 produit_nom=F("produit_line__produit__nom"),
+#                 produit_sku=F("produit_line__produit__sku"),
+#             )
+#         )
+
+#         # ✅ stock fields seulement si scope inclut stock
+#         if scope in {"stock", "both"}:
+#             qs = qs.annotate(
+#                 quantite_allouee=Coalesce(Sum("quantite_allouee"), Value(0), output_field=IntegerField()),
+#                 quantite_vendue=Coalesce(Sum("quantite_vendue"), Value(0), output_field=IntegerField()),
+#                 quantite_lot=Coalesce(Sum("produit_line__quantite"), Value(0), output_field=IntegerField()),
+#             ).annotate(
+#                 quantite_disponible=ExpressionWrapper(
+#                     F("quantite_allouee") - F("quantite_vendue"),
+#                     output_field=IntegerField(),
+#                 )
+#             )
+
+#         # ✅ sales fields seulement si scope inclut sales
+#         if scope in {"sales", "both"}:
+#             qs = qs.annotate(
+#                 vendue_periode=Coalesce(Subquery(vendue_subquery, output_field=IntegerField()), Value(0)),
+#             )
+
+#         qs = qs.order_by("produit_nom")
+
+#         # ✅ only_sold seulement si vendue_periode existe
+#         if only_sold and scope in {"sales", "both"}:
+#             qs = qs.filter(vendue_periode__gt=0)
+
+#         return Response(
+#             {
+#                 "mode": "grouped",
+#                 "scope": scope,
+#                 "period": {"date_from": str(df) if df else None, "date_to": str(dt) if dt else None},
+#                 "results": VendorProduitGroupedSerializer(qs, many=True).data,
+#             },
+#             status=200,
+#         )
+
+class VendorStockProduitsView(APIView):
+    """
+    📦 Stock ACTUEL du vendeur uniquement (VendorStock)
+
+    - grouped (défaut) : 1 ligne par produit
+    - detail=1         : détail FIFO par lot
+    """
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Stock vendeur (groupé ou détail FIFO) + ventes sur période",
+        operation_summary="Stock actuel du vendeur",
         operation_description=(
-            "Attention : si tu testes avec detail=1, scope est ignoré (tu renvoies toujours le détail stock).\n\n"
-            "Retourne le stock **VendorStock** d’un vendeur.\n\n"
+            "Retourne le **stock actuel** d’un vendeur basé uniquement sur `VendorStock`.\n\n"
             "### Accès\n"
-            "- **vendor** : voit uniquement son propre stock\n"
-            "- **manager/admin** : contrôle un vendeur via `vendor_id`\n\n"
+            "- **vendor** : son propre stock\n"
+            "- **manager/admin** : stock d’un vendeur via `vendor_id`\n\n"
             "### Modes\n"
             "- **grouped** (défaut) : 1 ligne par produit\n"
-            "- **detail=1** : détail FIFO par lot (VendorStock / ProduitLine)\n\n"
-            "### Scope\n"
-            "- `scope=stock` : stock actuel uniquement\n"
-            "- `scope=sales` : ventes sur période uniquement (`vendue_periode`)\n"
-            "- `scope=both`  : stock + ventes (défaut)\n\n"
-            "### Fenêtre dates (s’applique à `vendue_periode` seulement)\n"
-            "- **vendor** : si aucune date → année en cours\n"
-            "- **manager/admin** : fenêtre max 3 ans\n\n"
-            "### Champs clés\n"
-            "- `quantite_disponible = quantite_allouee - quantite_vendue`\n"
-            "- `vendue_periode` = somme des SALE_OUT sur période\n"
+            "- **detail=1** : détail FIFO par lot\n\n"
+            "❌ Pas de ventes\n"
+            "❌ Pas de période\n"
+            "❌ Pas de scope\n"
         ),
         manual_parameters=[
-            openapi.Parameter(
-                name="scope",
-                in_=openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-                description="`stock|sales|both` (défaut: both)."
-            ),
             openapi.Parameter(
                 name="detail",
                 in_=openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
                 required=False,
-                description="`1|true|yes` : détail FIFO par lot. Par défaut: grouped."
+                description="1|true|yes : détail FIFO par lot"
             ),
             openapi.Parameter(
                 name="vendor_id",
                 in_=openapi.IN_QUERY,
                 type=openapi.TYPE_INTEGER,
                 required=False,
-                description="(manager/admin) ID du vendeur à contrôler. Ignoré pour vendor."
-            ),
-            openapi.Parameter(
-                name="date_from",
-                in_=openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-                description="Début période (YYYY-MM-DD) pour `vendue_periode`."
-            ),
-            openapi.Parameter(
-                name="date_to",
-                in_=openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-                description="Fin période (YYYY-MM-DD) pour `vendue_periode`."
-            ),
-            openapi.Parameter(
-                name="only_sold",
-                in_=openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-                description="`1|true|yes` : seulement produits avec `vendue_periode > 0` (scope sales/both)."
+                description="(manager/admin) vendeur ciblé"
             ),
         ],
         responses={200: openapi.Response("OK")},
         tags=["Vendor / Stock"],
     )
-    def get(self, request, *args, **kwargs):
+    def get(self, request):
         user = request.user
         role = get_role_name(user)
 
-        scope = (request.GET.get("scope") or "both").strip().lower()
-        if scope not in {"stock", "sales", "both"}:
-            scope = "both"
+        detail = (request.GET.get("detail") or "").lower() in {"1", "true", "yes"}
 
-        detail = (request.GET.get("detail") or "").strip().lower() in {"1", "true", "yes"}
-        only_sold = (request.GET.get("only_sold") or "").strip().lower() in {"1", "true", "yes"}
-
-        # ✅ déterminer vendeur ciblé
+        # 🔐 Déterminer le vendeur ciblé
         if role == "vendor":
             target_vendor = getattr(user, "staff_vendor_profile", None)
             if not target_vendor:
@@ -1317,7 +1518,8 @@ class VendorProduitListView(APIView):
         elif role in {"manager", "admin"}:
             vendor_id = request.GET.get("vendor_id")
             if not vendor_id:
-                return Response({"error": "Paramètre `vendor_id` requis pour manager/admin."}, status=400)
+                return Response({"error": "`vendor_id` requis."}, status=400)
+
             try:
                 vendor_id = int(vendor_id)
             except ValueError:
@@ -1327,95 +1529,31 @@ class VendorProduitListView(APIView):
             if not target_vendor:
                 return Response({"error": "Vendeur introuvable."}, status=404)
 
-            # ✅ contrôle bijouterie manager
             if role == "manager":
                 user_shop = _user_bijouterie(user)
-                if not user_shop:
-                    return Response({"error": "Manager non rattaché à une bijouterie."}, status=400)
-                if getattr(target_vendor, "bijouterie_id", None) != user_shop.id:
-                    return Response({"error": "Ce vendeur n’appartient pas à votre bijouterie."}, status=403)
+                if not user_shop or target_vendor.bijouterie_id != user_shop.id:
+                    return Response({"error": "Vendeur hors de votre bijouterie."}, status=403)
+
         else:
             return Response({"error": "⛔ Accès refusé"}, status=403)
 
-        # ✅ Fenêtre dates (pour vendue_periode)
-        df = _parse_date(request.GET.get("date_from"))
-        dt = _parse_date(request.GET.get("date_to"))
-        today = timezone.localdate()
-
-        if role == "vendor":
-            if not df and not dt:
-                df, dt = _current_year_bounds_dates()
-            elif df and not dt:
-                dt = min(_add_years(df, 1) - timedelta(days=1), today)
-            elif dt and not df:
-                df = date(dt.year, 1, 1)
-
-            if df and dt and df > dt:
-                return Response({"error": "`date_from` doit être ≤ `date_to`."}, status=400)
-
-        else:
-            # manager/admin : max 3 ans si bornes fournies
-            if df and not dt:
-                dt = min(_add_years(df, 3) - timedelta(days=1), today)
-
-            if df and dt and df > dt:
-                return Response({"error": "`date_from` doit être ≤ `date_to`."}, status=400)
-
-            if df and dt:
-                max_dt = _add_years(df, 3) - timedelta(days=1)
-                if dt > max_dt:
-                    return Response({"error": f"Fenêtre max 3 ans. `date_to` ≤ {max_dt}."}, status=400)
-                dt = min(dt, today)
-
-        # ✅ Mode detail FIFO (stock actuel uniquement)
+        # 🔍 MODE DETAIL FIFO
         if detail:
-            vendor_stocks = (
+            qs = (
                 VendorStock.objects
                 .filter(vendor=target_vendor)
-                .select_related("produit_line__produit", "produit_line__lot", "vendor")
+                .select_related("produit_line__produit", "produit_line__lot")
                 .order_by("produit_line__lot__received_at", "produit_line_id")
             )
             return Response(
                 {
                     "mode": "detail",
-                    "scope": "stock",
-                    "period": {"date_from": str(df) if df else None, "date_to": str(dt) if dt else None},
-                    "results": VendorProduitLotSerializer(vendor_stocks, many=True).data,
+                    "results": VendorProduitLotSerializer(qs, many=True).data,
                 },
                 status=200,
             )
 
-        # ✅ Subquery vendue_periode seulement si scope inclut sales
-        vendue_subquery = None
-        if scope in {"sales", "both"}:
-            # sale_qs = (
-            #     InventoryMovement.objects
-            #     .filter(
-            #         movement_type=MovementType.SALE_OUT,
-            #         vendor=target_vendor,
-            #         produit_id=OuterRef("produit_id"),
-            #     )
-            # )
-            sale_qs = (
-                InventoryMovement.objects
-                .filter(
-                    movement_type=MovementType.SALE_OUT,
-                    vente_ligne__vendor=target_vendor,     # ✅ au lieu de vendor=target_vendor
-                    produit_id=OuterRef("produit_id"),
-                )
-            )
-            if df:
-                sale_qs = sale_qs.filter(occurred_at__date__gte=df)
-            if dt:
-                sale_qs = sale_qs.filter(occurred_at__date__lte=dt)
-
-            vendue_subquery = (
-                sale_qs.values("produit_id")
-                .annotate(total=Coalesce(Sum("qty"), Value(0)))
-                .values("total")[:1]
-            )
-
-        # ✅ base grouped
+        # 📦 MODE GROUPÉ (stock actuel)
         qs = (
             VendorStock.objects
             .filter(vendor=target_vendor)
@@ -1424,43 +1562,27 @@ class VendorProduitListView(APIView):
                 produit_nom=F("produit_line__produit__nom"),
                 produit_sku=F("produit_line__produit__sku"),
             )
-        )
-
-        # ✅ stock fields seulement si scope inclut stock
-        if scope in {"stock", "both"}:
-            qs = qs.annotate(
+            .annotate(
                 quantite_allouee=Coalesce(Sum("quantite_allouee"), Value(0), output_field=IntegerField()),
                 quantite_vendue=Coalesce(Sum("quantite_vendue"), Value(0), output_field=IntegerField()),
                 quantite_lot=Coalesce(Sum("produit_line__quantite"), Value(0), output_field=IntegerField()),
-            ).annotate(
+            )
+            .annotate(
                 quantite_disponible=ExpressionWrapper(
                     F("quantite_allouee") - F("quantite_vendue"),
                     output_field=IntegerField(),
                 )
             )
-
-        # ✅ sales fields seulement si scope inclut sales
-        if scope in {"sales", "both"}:
-            qs = qs.annotate(
-                vendue_periode=Coalesce(Subquery(vendue_subquery, output_field=IntegerField()), Value(0)),
-            )
-
-        qs = qs.order_by("produit_nom")
-
-        # ✅ only_sold seulement si vendue_periode existe
-        if only_sold and scope in {"sales", "both"}:
-            qs = qs.filter(vendue_periode__gt=0)
+            .order_by("produit_nom")
+        )
 
         return Response(
             {
                 "mode": "grouped",
-                "scope": scope,
-                "period": {"date_from": str(df) if df else None, "date_to": str(dt) if dt else None},
                 "results": VendorProduitGroupedSerializer(qs, many=True).data,
             },
             status=200,
         )
-
 
 # class DashboardVendeurStatsAPIView(APIView):
 #     permission_classes = [IsAuthenticated]

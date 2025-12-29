@@ -55,13 +55,13 @@ class Vente(models.Model):
     DELIV_PENDING   = "pending"
     DELIV_DELIVERED = "delivered"
     DELIV_CANCELLED = "cancelled"
-    DELIVERY_STATUS = (
-        (DELIV_PENDING, "En attente"),
-        (DELIV_DELIVERED, "Livrée"),
-        (DELIV_CANCELLED, "Annulée"),
-    )
+    # DELIVERY_STATUS = (
+    #     (DELIV_PENDING, "En attente"),
+    #     (DELIV_DELIVERED, "Livrée"),
+    #     (DELIV_CANCELLED, "Annulée"),
+    # )
 
-    delivery_status = models.CharField(max_length=20, choices=DELIVERY_STATUS, default=DELIV_PENDING)
+    # delivery_status = models.CharField(max_length=20, choices=DELIVERY_STATUS, default=DELIV_PENDING)
     delivered_at    = models.DateTimeField(null=True, blank=True)
     delivered_by    = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -69,11 +69,12 @@ class Vente(models.Model):
     )
 
     def marquer_livree(self, by_user):
-        self.delivery_status = self.DELIV_DELIVERED
+        # self.delivery_status = self.DELIV_DELIVERED
         self.delivered_at = timezone.now()
         if by_user and not self.delivered_by_id:
             self.delivered_by = by_user
-        self.save(update_fields=["delivery_status", "delivered_at", "delivered_by"])
+        # self.save(update_fields=["delivery_status", "delivered_at", "delivered_by"])
+        self.save(update_fields=[ "delivered_at", "delivered_by"])
     # ------End SALE_OUT----------
     
     class Meta:

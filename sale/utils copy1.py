@@ -1,15 +1,47 @@
+# from staff.models import Cashier, Manager
+# from vendor.models import Vendor
+
+
+# def _user_profiles(user):
+#     vp = getattr(user, "vendor_profile", None) or getattr(user, "staff_vendor_profile", None)
+#     mp = getattr(user, "staff_manager_profile", None)
+#     cp = getattr(user, "staff_cashier_profile", None)
+#     return vp, mp, cp
+
+
+# def _ensure_role_and_bijouterie(user):
+#     vp, mp, cp = _user_profiles(user)
+
+#     if vp and vp.verifie and vp.bijouterie_id:
+#         return vp.bijouterie, "vendor"
+
+#     if mp and mp.verifie and mp.bijouterie_id:
+#         return mp.bijouterie, "manager"
+
+#     if cp and cp.verifie and cp.bijouterie_id:
+#         return cp.bijouterie, "cashier"
+
+#     return None, None
+
+# def _user_bijouterie(user):
+#     v = Vendor.objects.select_related("bijouterie").filter(user=user, verifie=True).first()
+#     if v and v.bijouterie_id:
+#         return v.bijouterie
+
+#     m = Manager.objects.select_related("bijouterie").filter(user=user, verifie=True).first()
+#     if m and m.bijouterie_id:
+#         return m.bijouterie
+
+#     c = Cashier.objects.select_related("bijouterie").filter(user=user, verifie=True).first()
+#     if c and c.bijouterie_id:
+#         return c.bijouterie
+
+#     return None
+
+
 from __future__ import annotations
 
-from datetime import date
 from typing import Optional
-
-from dateutil.relativedelta import relativedelta
-
-# ---------- List factures -------------------
-
-def subtract_months(d: date, months: int) -> date:
-    return (d - relativedelta(months=months))
-
 
 ROLE_ADMIN   = "admin"
 ROLE_MANAGER = "manager"
@@ -49,7 +81,7 @@ def _user_role(user) -> Optional[str]:
     if cp and getattr(cp, "verifie", False):
         return ROLE_CASHIER
 
-    vp = getattr(user, "staff_vendor_profile", None)  # ← ton vendor
+    vp = getattr(user, "vendor_profile", None)  # ← ton vendor
     if vp and getattr(vp, "verifie", False):
         return ROLE_VENDOR
 
@@ -67,7 +99,7 @@ def _user_bijouterie_facture(user):
     if not user or not getattr(user, "is_authenticated", False):
         return None
 
-    vp = getattr(user, "staff_vendor_profile", None)
+    vp = getattr(user, "vendor_profile", None)
     if vp and getattr(vp, "verifie", False) and getattr(vp, "bijouterie_id", None):
         return vp.bijouterie
 
@@ -80,29 +112,3 @@ def _user_bijouterie_facture(user):
         return cp.bijouterie
 
     return None
-
-# ---------- End List factures -------------------
-
-
-# -------------Create facture------------------------------
-def _ensure_role_and_bijouterie(user):
-    # Vendor
-    vp = getattr(user, "staff_vendor_profile", None)
-    if vp and getattr(vp, "verifie", False) and vp.bijouterie_id:
-        return vp.bijouterie, "vendor"
-
-    # Manager
-    mp = getattr(user, "staff_manager_profile", None)
-    if mp and getattr(mp, "verifie", False) and mp.bijouterie_id:
-        return mp.bijouterie, "manager"
-
-    # Cashier (si tu veux l'autoriser)
-    cp = getattr(user, "staff_cashier_profile", None)
-    if cp and getattr(cp, "verifie", False) and cp.bijouterie_id:
-        return cp.bijouterie, "cashier"
-
-    return None, None
-# ------------- End Create facture------------------------------
-
-
-
