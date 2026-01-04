@@ -361,12 +361,15 @@ class ArrivageCreateView(APIView):
             )
 
             # Stock initial en Réserve
-            Stock.objects.create(
+            stock_reserve, _ = Stock.objects.get_or_create(
                 produit_line=pl,
-                bijouterie=None,           # None = Réserve
-                quantite_allouee=qte,
-                quantite_disponible=qte,
+                bijouterie=None,
+                defaults={"quantite_allouee": 0, "quantite_disponible": 0},
             )
+            stock_reserve.quantite_allouee = 0
+            stock_reserve.quantite_disponible += qte
+            stock_reserve.full_clean()
+            stock_reserve.save(update_fields=["quantite_allouee", "quantite_disponible", "updated_at"])
 
             # Mouvement d’inventaire : EXTERNAL -> RESERVED
             unit_cost = None

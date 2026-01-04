@@ -126,15 +126,15 @@ class IsAdminOrManager(BasePermission):
         return get_role_name(u) in {ROLE_ADMIN, ROLE_MANAGER}
 
 
-class IsAdminManagerVendor(BasePermission):
-    """Accès réservé aux rôles admin, manager, ou vendor."""
-    message = "Accès réservé aux rôles admin, manager ou vendor."
+# class IsAdminManagerVendor(BasePermission):
+#     """Accès réservé aux rôles admin, manager, ou vendor."""
+#     message = "Accès réservé aux rôles admin, manager ou vendor."
 
-    def has_permission(self, request, view) -> bool:
-        u = getattr(request, "user", None)
-        if not (u and u.is_authenticated):
-            return False
-        return get_role_name(u) in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR}
+#     def has_permission(self, request, view) -> bool:
+#         u = getattr(request, "user", None)
+#         if not (u and u.is_authenticated):
+#             return False
+#         return get_role_name(u) in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR}
 
 
 class IsAdminOrManagerOrSelfVendor(BasePermission):
@@ -170,6 +170,7 @@ class IsAdminManagerVendorCashier(BasePermission):
     def has_permission(self, request, view):
         role = get_role_name(request.user)
         return role in {"admin", "manager", "vendor", "cashier"}
-    
-    
 
+
+# --------------------------------------------------------------------------
+# --------------------------------------------------------------------------

@@ -67,7 +67,7 @@
 #         # if stock.quantite >= line_data['quantite']:
 #         #     stock.quantite -= line_data['quantite']
 #         #     stock.save()
-            
+
 #         if line_data['quantite'] > 0:
 #             stock.quantite += line_data['quantite']
 #             stock.save()
@@ -84,7 +84,7 @@
 
 
 # class CommandeFournisseurView(APIView):
-    
+
 #     def get(self, request, *args, **kwargs):
 #         """
 #         Get a single sfournisseur ocommande with all the details.
@@ -100,7 +100,7 @@
 
 
 # class CommandeFournisseurView(APIView):
-    
+
 #     def get(self, request, *args, **kwargs):
 #         """
 #         Get a single supplier order with all the details.
@@ -139,8 +139,13 @@ from .utils_role import get_manager_bijouterie_id, vendor_stock_filter
 
 STATUS_CHOICES = ("reserved", "allocated", "in_stock", "all")
 allowed_roles = ['admin', 'manager', 'vendeur']
-from backend.permissions import (ROLE_MANAGER, ROLE_VENDOR, IsAdminOrManager,
+# from backend.permissions import (ROLE_MANAGER, ROLE_VENDOR, IsAdminOrManager,
+#                                  IsAdminOrManagerOrSelfVendor, get_role_name)
+
+from backend.permissions import (ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR,
                                  IsAdminOrManagerOrSelfVendor, get_role_name)
+from stock.utils_role import (get_manager_bijouterie_id,
+                              get_vendor_bijouterie_id)
 
 
 class ReserveToBijouterieTransferView(APIView):
@@ -155,7 +160,7 @@ class ReserveToBijouterieTransferView(APIView):
             "note": "Affectation vitrines"
         }
     """
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
+    permission_classes = [IsAuthenticated, IsAdminOrManagerOrSelfVendor]
 
     @swagger_auto_schema(
         operation_id="transferReserveToBijouterie",
@@ -263,7 +268,7 @@ class ReserveToBijouterieTransferView(APIView):
 
 
 class BijouterieToVendorTransferView(APIView):
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
 
     @swagger_auto_schema(
         operation_summary="Transférer du stock d’une bijouterie vers un vendeur (par vendor_email)",
@@ -347,7 +352,7 @@ class BijouterieToVendorTransferView(APIView):
         )
 
         return Response(res, status=status.HTTP_200_OK)
-    
+
 
 
 # class StockListView(generics.ListAPIView):
@@ -453,7 +458,7 @@ class BijouterieToVendorTransferView(APIView):
 #             - `allocated` : alloués à une bijouterie (allouée>0)
 #             - `in_stock` : tout ce qui a disponible>0 (réserve + alloués)
 #             - `all` : sans filtre
-            
+
 #             Exemple de réponse (extrait) :
 #             ```json
 #             [
@@ -578,24 +583,129 @@ class BijouterieToVendorTransferView(APIView):
 #         return paginator.get_paginated_response(data) if page is not None else Response(data)
 
 
+# class StockListView(APIView):
+#     permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les stocks (admin : tout | manager : sa bijouterie | vendor : son stock)",
+#         operation_description=dedent("""
+#             Retourne les lignes de stock **sans pagination**.
+
+#             **Règles d'accès**
+#             - admin : accès à tout
+#             - manager : accès **uniquement** aux stocks de **sa bijouterie**
+#             - vendor : accès **uniquement** à **son stock** (par sa bijouterie)
+
+#             **Filtre `status`**
+#             - `reserved` : en réserve (bijouterie=NULL, disponible>0)
+#             - `allocated` : alloués à une bijouterie (allouée>0)
+#             - `in_stock` : tout ce qui a disponible>0 (réserve + alloués)
+#             - `all` : sans filtre
+#         """),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 name="status",
+#                 in_=openapi.IN_QUERY,
+#                 required=False,
+#                 type=openapi.TYPE_STRING,
+#                 enum=list(STATUS_CHOICES),
+#                 default="in_stock",
+#                 description="Filtre par statut",
+#             ),
+#         ],
+#         responses={
+#             200: openapi.Response(
+#                 "Liste des stocks",
+#                 StockSerializer(many=True),
+#                 examples={
+#                     "application/json": [
+#                         {
+#                             "id": 12,
+#                             "produit_line": 5,
+#                             "bijouterie": None,
+#                             "bijouterie_nom": None,
+#                             "quantite_allouee": 100,
+#                             "quantite_disponible": 60,
+#                             "status": "reserved",
+#                             "created_at": "2025-10-22T10:00:00Z",
+#                             "updated_at": "2025-10-22T10:10:00Z",
+#                         },
+#                         {
+#                             "id": 13,
+#                             "produit_line": 5,
+#                             "bijouterie": 2,
+#                             "bijouterie_nom": "Bijouterie Centre",
+#                             "quantite_allouee": 40,
+#                             "quantite_disponible": 30,
+#                             "status": "allocated",
+#                             "created_at": "2025-10-22T10:01:00Z",
+#                             "updated_at": "2025-10-22T10:02:00Z",
+#                         },
+#                     ]
+#                 },
+#             )
+#         },
+#         tags=["Stock"],
+#     )
+#     def get(self, request, *args, **kwargs):
+#         # 1) Valider le paramètre
+#         status_param = request.query_params.get("status", "in_stock")
+#         if status_param not in STATUS_CHOICES:
+#             raise ValidationError({"status": f"Valeur invalide. Choisir parmi {STATUS_CHOICES}."})
+
+#         # 2) Base queryset
+#         qs = Stock.objects.select_related("produit_line", "bijouterie").order_by("-id")
+
+#         # 3) Périmètre par rôle
+#         role = get_role_name(request.user)
+
+#         # Manager → restreindre à SA bijouterie
+#         if role == ROLE_MANAGER:
+#             bj_id = get_manager_bijouterie_id(request.user)
+#             qs = qs.filter(bijouterie_id=bj_id) if bj_id else qs.none()
+
+#         # Vendor → restreindre à SON stock
+#         if role == ROLE_VENDOR:
+#             qs = qs.filter(vendor_stock_filter(request.user))
+
+#         # 4) Filtre métier
+#         if status_param == "reserved":
+#             qs = qs.filter(bijouterie__isnull=True, quantite_disponible__gt=0)
+#         elif status_param == "allocated":
+#             qs = qs.filter(bijouterie__isnull=False, quantite_allouee__gt=0)
+#         elif status_param == "in_stock":
+#             qs = qs.filter(quantite_disponible__gt=0)
+#         # "all" => pas de filtre supplémentaire
+
+#         # 5) Réponse SANS pagination
+#         serializer = StockSerializer(qs, many=True)
+#         return Response(serializer.data)
+
 class StockListView(APIView):
+    """
+    GET /api/stock/?status=in_stock|reserved|allocated|all
+
+    - admin   : voit tout (réserve + bijouteries)
+    - manager : voit uniquement sa bijouterie
+    - vendor  : voit uniquement sa bijouterie
+    """
     permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
 
     @swagger_auto_schema(
-        operation_summary="Lister les stocks (admin : tout | manager : sa bijouterie | vendor : son stock)",
+        operation_summary="Lister les stocks (admin : tout | manager/vendor : leur bijouterie)",
         operation_description=dedent("""
             Retourne les lignes de stock **sans pagination**.
 
             **Règles d'accès**
-            - admin : accès à tout
-            - manager : accès **uniquement** aux stocks de **sa bijouterie**
-            - vendor : accès **uniquement** à **son stock** (par sa bijouterie)
+            - admin   : accès à tout
+            - manager : accès uniquement aux stocks de sa bijouterie
+            - vendor  : accès uniquement aux stocks de sa bijouterie
 
             **Filtre `status`**
-            - `reserved` : en réserve (bijouterie=NULL, disponible>0)
-            - `allocated` : alloués à une bijouterie (allouée>0)
-            - `in_stock` : tout ce qui a disponible>0 (réserve + alloués)
-            - `all` : sans filtre
+            - `reserved`  : réserve (bijouterie=NULL, disponible>0, allouée=0) (admin only)
+            - `allocated` : lignes affectées à une bijouterie (bijouterie!=NULL)
+            - `in_stock`  : tout ce qui a disponible>0 (réserve + bijouteries)
+            - `all`       : sans filtre
         """),
         manual_parameters=[
             openapi.Parameter(
@@ -608,42 +718,11 @@ class StockListView(APIView):
                 description="Filtre par statut",
             ),
         ],
-        responses={
-            200: openapi.Response(
-                "Liste des stocks",
-                StockSerializer(many=True),
-                examples={
-                    "application/json": [
-                        {
-                            "id": 12,
-                            "produit_line": 5,
-                            "bijouterie": None,
-                            "bijouterie_nom": None,
-                            "quantite_allouee": 100,
-                            "quantite_disponible": 60,
-                            "status": "reserved",
-                            "created_at": "2025-10-22T10:00:00Z",
-                            "updated_at": "2025-10-22T10:10:00Z",
-                        },
-                        {
-                            "id": 13,
-                            "produit_line": 5,
-                            "bijouterie": 2,
-                            "bijouterie_nom": "Bijouterie Centre",
-                            "quantite_allouee": 40,
-                            "quantite_disponible": 30,
-                            "status": "allocated",
-                            "created_at": "2025-10-22T10:01:00Z",
-                            "updated_at": "2025-10-22T10:02:00Z",
-                        },
-                    ]
-                },
-            )
-        },
+        responses={200: openapi.Response("Liste des stocks", StockSerializer(many=True))},
         tags=["Stock"],
     )
     def get(self, request, *args, **kwargs):
-        # 1) Valider le paramètre
+        # 1) Paramètre
         status_param = request.query_params.get("status", "in_stock")
         if status_param not in STATUS_CHOICES:
             raise ValidationError({"status": f"Valeur invalide. Choisir parmi {STATUS_CHOICES}."})
@@ -651,32 +730,37 @@ class StockListView(APIView):
         # 2) Base queryset
         qs = Stock.objects.select_related("produit_line", "bijouterie").order_by("-id")
 
-        # 3) Périmètre par rôle
+        # 3) Scope par rôle
         role = get_role_name(request.user)
 
-        # Manager → restreindre à SA bijouterie
         if role == ROLE_MANAGER:
             bj_id = get_manager_bijouterie_id(request.user)
             qs = qs.filter(bijouterie_id=bj_id) if bj_id else qs.none()
 
-        # Vendor → restreindre à SON stock
-        if role == ROLE_VENDOR:
-            qs = qs.filter(vendor_stock_filter(request.user))
+        elif role == ROLE_VENDOR:
+            bj_id = get_vendor_bijouterie_id(request.user)
+            qs = qs.filter(bijouterie_id=bj_id) if bj_id else qs.none()
 
-        # 4) Filtre métier
+
+        # ROLE_ADMIN => pas de filtre
+
+        # 4) Filtre status
         if status_param == "reserved":
+            # Réserve = globale => admin only (recommandé)
+            if role != ROLE_ADMIN:
+                return Response({"detail": "Accès refusé au stock réserve."}, status=403)
             qs = qs.filter(bijouterie__isnull=True, quantite_disponible__gt=0)
+
         elif status_param == "allocated":
-            qs = qs.filter(bijouterie__isnull=False, quantite_allouee__gt=0)
+            qs = qs.filter(bijouterie__isnull=False)
+
         elif status_param == "in_stock":
             qs = qs.filter(quantite_disponible__gt=0)
-        # "all" => pas de filtre supplémentaire
 
-        # 5) Réponse SANS pagination
-        serializer = StockSerializer(qs, many=True)
-        return Response(serializer.data)
+        # "all" => pas de filtre
+
+        return Response(StockSerializer(qs, many=True).data)
     
-
 
 # class StockSummaryView(APIView):
 #     permission_classes = [permissions.IsAuthenticated]
@@ -725,9 +809,9 @@ class StockListView(APIView):
 #         operation_summary="Résumé des stocks (agrégats)",
 #         operation_description=dedent("""
 #             Renvoie des agrégats par catégorie : `reserved`, `allocated`, `in_stock`.
-            
+
 #             Par défaut (totaux = disponibles) :
-                
+
 #                 GET /api/stocks/summary
 #                 Totaux basés sur allouée :
 #                 GET /api/stocks/summary?total_by=allouee
@@ -794,4 +878,3 @@ class StockListView(APIView):
 #             "in_stock":  agg(qs.filter(quantite_disponible__gt=0)),
 #         }
 #         return Response(StockSummarySerializer(data).data)
-    
