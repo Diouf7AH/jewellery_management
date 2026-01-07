@@ -147,39 +147,99 @@ from backend.permissions import (ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR,
 from stock.utils_role import (get_manager_bijouterie_id,
                               get_vendor_bijouterie_id)
 
+# class ReserveToBijouterieTransferView(APIView):
+#     """
+#         {
+#             "bijouterie_id": 5,
+#             "bijouterie_nom": "Sandaga",
+#             "lignes": [
+#                 {"produit_line_id": 123, "transfere": 3, "reserve_disponible": 12, "bijouterie_disponible": 3},
+#                 {"produit_line_id": 124, "transfere": 2, "reserve_disponible": 8, "bijouterie_disponible": 5}
+#             ],
+#             "note": "Affectation vitrines"
+#         }
+#     """
+#     permission_classes = [IsAuthenticated, IsAdminOrManagerOrSelfVendor]
+
+#     @swagger_auto_schema(
+#         operation_id="transferReserveToBijouterie",
+#         operation_summary="Affecter du stock de la Réserve vers une Bijouterie",
+#         request_body=ReserveToBijouterieInSerializer,
+#         responses={200: "Résumé du transfert", 400: "Erreur de validation"},
+#         tags=["Stock"],
+#     )
+#     def post(self, request):
+#         s = ReserveToBijouterieInSerializer(data=request.data)
+#         s.is_valid(raise_exception=True)
+#         try:
+#             res = transfer_reserve_to_bijouterie(
+#                 bijouterie_id=s.validated_data["bijouterie_id"],
+#                 mouvements=s.validated_data["lignes"],
+#                 note=s.validated_data.get("note", "")
+#             )
+#         except ValueError as e:
+#             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response(res, status=status.HTTP_200_OK)
+
 
 class ReserveToBijouterieTransferView(APIView):
     """
-        {
-            "bijouterie_id": 5,
-            "bijouterie_nom": "Sandaga",
-            "lignes": [
-                {"produit_line_id": 123, "transfere": 3, "reserve_disponible": 12, "bijouterie_disponible": 3},
-                {"produit_line_id": 124, "transfere": 2, "reserve_disponible": 8, "bijouterie_disponible": 5}
-            ],
-            "note": "Affectation vitrines"
-        }
+    POST /api/stocks/transfer/reserve-to-bijouterie/
+
+    Exemple payload:
+    {
+      "bijouterie_id": 1,
+      "lignes": [
+        {"produit_line_id": 123, "transfere": 3},
+        {"produit_line_id": 124, "transfere": 2}
+      ],
+      "note": "Affectation vitrines"
+    }
+
+    Réponse typique:
+    {
+      "bijouterie_id": 1,
+      "bijouterie_nom": "rio-gold",
+      "lignes": [
+        {"produit_line_id": 123, "transfere": 3, "reserve_disponible": 9, "bijouterie_allouee": 3, "bijouterie_disponible": 0},
+        {"produit_line_id": 124, "transfere": 2, "reserve_disponible": 6, "bijouterie_allouee": 2, "bijouterie_disponible": 0}
+      ],
+      "note": "Affectation vitrines"
+    }
     """
     permission_classes = [IsAuthenticated, IsAdminOrManagerOrSelfVendor]
 
     @swagger_auto_schema(
         operation_id="transferReserveToBijouterie",
-        operation_summary="Affecter du stock de la Réserve vers une Bijouterie",
+        operation_summary="Affecter du stock Réserve → Bijouterie (allocation ERP)",
+        operation_description=(
+            "ERP: Réserve.quantite_disponible -= qty ; "
+            "Bijouterie.quantite_allouee += qty (disponible inchangé). "
+            "Crée un InventoryMovement(ALLOCATE) par ligne. "
+            "⚠️ Pas de pagination."
+        ),
         request_body=ReserveToBijouterieInSerializer,
-        responses={200: "Résumé du transfert", 400: "Erreur de validation"},
+        responses={
+            200: openapi.Response("Résumé du transfert"),
+            400: openapi.Response("Erreur de validation"),
+            403: openapi.Response("Accès refusé"),
+        },
         tags=["Stock"],
     )
     def post(self, request):
         s = ReserveToBijouterieInSerializer(data=request.data)
         s.is_valid(raise_exception=True)
+
         try:
             res = transfer_reserve_to_bijouterie(
                 bijouterie_id=s.validated_data["bijouterie_id"],
                 mouvements=s.validated_data["lignes"],
-                note=s.validated_data.get("note", "")
+                note=s.validated_data.get("note", ""),
+                user=request.user,
             )
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
         return Response(res, status=status.HTTP_200_OK)
 
 
@@ -267,19 +327,100 @@ class ReserveToBijouterieTransferView(APIView):
 #         return Response(res, status=200)
 
 
+# class BijouterieToVendorTransferView(APIView):
+#     permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
+
+#     @swagger_auto_schema(
+#         operation_summary="Transférer du stock d’une bijouterie vers un vendeur (par vendor_email)",
+#         request_body=BijouterieToVendorInSerializer,
+#         responses={
+#             200: "Transfert réussi",
+#             400: "Erreur de validation",
+#             403: "Refusé",
+#             404: "Introuvable",
+#             409: "Conflit",
+#         },
+#         tags=["Stock"],
+#     )
+#     def post(self, request):
+#         ser = BijouterieToVendorInSerializer(data=request.data)
+#         ser.is_valid(raise_exception=True)
+#         data = ser.validated_data
+
+#         # 1) Récupérer le vendeur via vendor_email
+#         email = data["vendor_email"].strip().lower()
+
+#         try:
+#             vendor = (
+#                 Vendor.objects
+#                 .select_related("user", "bijouterie")
+#                 .get(user__email__iexact=email)
+#             )
+#         except Vendor.DoesNotExist:
+#             return Response(
+#                 {"error": f"Aucun vendeur associé à l'email {email}."},
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
+
+#         if not getattr(vendor, "verifie", True):
+#             return Response(
+#                 {"error": "Ce vendeur est désactivé (verifie=False)."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # 2) Appel du service métier (avec user pour InventoryMovement.created_by)
+#         try:
+#             res = transfer_bijouterie_to_vendor(
+#                 vendor_id=vendor.id,
+#                 mouvements=data["lignes"],
+#                 note=data.get("note", ""),
+#                 user=request.user,  # 👈 important pour journaliser qui a fait le transfert
+#             )
+#         except Bijouterie.DoesNotExist:
+#             return Response(
+#                 {"error": "Bijouterie introuvable."},
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
+#         except ValidationError as e:
+#             # erreurs levées par le service (ex: vendeur sans bijouterie, quantités invalides…)
+#             payload = getattr(e, "message_dict", None) or {"detail": e.messages}
+#             return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+#         except Exception as e:
+#             return Response(
+#                 {"detail": "Erreur inattendue", "error": str(e)},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         # 3) Compléter la réponse avec les infos du vendeur
+#         if not isinstance(res, dict):
+#             res = {}
+
+#         res.setdefault(
+#             "vendor",
+#             {
+#                 "id": vendor.id,
+#                 "email": vendor.user.email if vendor.user else email,
+#                 "full_name": (
+#                     f"{(vendor.user.first_name or '').strip()} "
+#                     f"{(vendor.user.last_name or '').strip()}"
+#                     if vendor.user
+#                     else ""
+#                 ).strip(),
+#                 "bijouterie_id": getattr(vendor.bijouterie, "id", None),
+#                 "bijouterie_nom": getattr(vendor.bijouterie, "nom", None),
+#             },
+#         )
+
+#         return Response(res, status=status.HTTP_200_OK)
+
+
 class BijouterieToVendorTransferView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrManagerOrSelfVendor]
 
     @swagger_auto_schema(
         operation_summary="Transférer du stock d’une bijouterie vers un vendeur (par vendor_email)",
         request_body=BijouterieToVendorInSerializer,
-        responses={
-            200: "Transfert réussi",
-            400: "Erreur de validation",
-            403: "Refusé",
-            404: "Introuvable",
-            409: "Conflit",
-        },
+        responses={200: "Transfert réussi", 400: "Erreur", 403: "Refusé", 404: "Introuvable", 409: "Conflit"},
         tags=["Stock"],
     )
     def post(self, request):
@@ -287,7 +428,6 @@ class BijouterieToVendorTransferView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        # 1) Récupérer le vendeur via vendor_email
         email = data["vendor_email"].strip().lower()
 
         try:
@@ -297,62 +437,35 @@ class BijouterieToVendorTransferView(APIView):
                 .get(user__email__iexact=email)
             )
         except Vendor.DoesNotExist:
-            return Response(
-                {"error": f"Aucun vendeur associé à l'email {email}."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+            return Response({"error": f"Aucun vendeur associé à l'email {email}."}, status=404)
 
         if not getattr(vendor, "verifie", True):
-            return Response(
-                {"error": "Ce vendeur est désactivé (verifie=False)."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            return Response({"error": "Ce vendeur est désactivé (verifie=False)."}, status=403)
 
-        # 2) Appel du service métier (avec user pour InventoryMovement.created_by)
         try:
             res = transfer_bijouterie_to_vendor(
                 vendor_id=vendor.id,
                 mouvements=data["lignes"],
                 note=data.get("note", ""),
-                user=request.user,  # 👈 important pour journaliser qui a fait le transfert
-            )
-        except Bijouterie.DoesNotExist:
-            return Response(
-                {"error": "Bijouterie introuvable."},
-                status=status.HTTP_404_NOT_FOUND,
+                user=request.user,
             )
         except ValidationError as e:
-            # erreurs levées par le service (ex: vendeur sans bijouterie, quantités invalides…)
             payload = getattr(e, "message_dict", None) or {"detail": e.messages}
-            return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+            return Response(payload, status=400)
         except Exception as e:
-            return Response(
-                {"detail": "Erreur inattendue", "error": str(e)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Erreur inattendue", "error": str(e)}, status=400)
 
-        # 3) Compléter la réponse avec les infos du vendeur
-        if not isinstance(res, dict):
-            res = {}
-
-        res.setdefault(
-            "vendor",
-            {
-                "id": vendor.id,
-                "email": vendor.user.email if vendor.user else email,
-                "full_name": (
-                    f"{(vendor.user.first_name or '').strip()} "
-                    f"{(vendor.user.last_name or '').strip()}"
-                    if vendor.user
-                    else ""
-                ).strip(),
-                "bijouterie_id": getattr(vendor.bijouterie, "id", None),
-                "bijouterie_nom": getattr(vendor.bijouterie, "nom", None),
-            },
-        )
-
-        return Response(res, status=status.HTTP_200_OK)
-
+        res.setdefault("vendor", {
+            "id": vendor.id,
+            "email": vendor.user.email if vendor.user else email,
+            "full_name": (
+                f"{(vendor.user.first_name or '').strip()} {(vendor.user.last_name or '').strip()}"
+                if vendor.user else ""
+            ).strip(),
+            "bijouterie_id": getattr(vendor.bijouterie, "id", None),
+            "bijouterie_nom": getattr(vendor.bijouterie, "nom", None),
+        })
+        return Response(res, status=200)
 
 
 # class StockListView(generics.ListAPIView):
@@ -700,7 +813,11 @@ class StockListView(APIView):
             - admin   : accès à tout
             - manager : accès uniquement aux stocks de sa bijouterie
             - vendor  : accès uniquement aux stocks de sa bijouterie
-
+            
+            * En une phrase :
+            - reserved = stock central non affecté
+            - in_stock = tout ce qui est réellement disponible, où qu’il soit
+            
             **Filtre `status`**
             - `reserved`  : réserve (bijouterie=NULL, disponible>0, allouée=0) (admin only)
             - `allocated` : lignes affectées à une bijouterie (bijouterie!=NULL)

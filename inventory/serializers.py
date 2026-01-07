@@ -51,23 +51,24 @@ class ProduitLineWithInventorySerializer(serializers.ModelSerializer):
     # --- Infos produit ---
     produit_id = serializers.IntegerField(source="produit.id", read_only=True)
     produit_nom = serializers.CharField(source="produit.nom", read_only=True)
+    produit_poids = serializers.CharField(source="produit.poids", read_only=True)
     produit_sku = serializers.CharField(source="produit.sku", read_only=True, default=None)
     categorie_nom = serializers.CharField(source="produit.categorie.nom", read_only=True, default=None)
-    marque_nom = serializers.CharField(source="produit.marque.nom", read_only=True, default=None)
-    purete_nom = serializers.CharField(source="produit.purete.nom", read_only=True, default=None)
-    poids_reference = serializers.DecimalField(
-        source="produit.poids_reference",
-        max_digits=10,
-        decimal_places=3,
-        read_only=True,
-        default=None,
-    )
+    marque_nom = serializers.CharField(source="produit.marque.marque", read_only=True, default=None)
+    purete_nom = serializers.CharField(source="produit.purete.purete", read_only=True, default=None)
+    # poids_reference = serializers.DecimalField(
+    #     source="produit.poids_reference",
+    #     max_digits=10,
+    #     decimal_places=3,
+    #     read_only=True,
+    #     default=None,
+    # )
 
     # --- Infos ligne d’achat ---
     quantite = serializers.IntegerField(read_only=True)
     poids_total = serializers.DecimalField(max_digits=12, decimal_places=3, read_only=True)
-    poids_unitaire = serializers.DecimalField(max_digits=12, decimal_places=3, read_only=True, default=None)
-    prix_gramme_achat = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    # poids_unitaire = serializers.DecimalField(max_digits=12, decimal_places=3, read_only=True, default=None)
+    prix_achat_gramme = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
     # --- Agrégats de stock (annotés dans queryset) ---
     quantite_allouee = serializers.IntegerField(read_only=True)
@@ -85,11 +86,11 @@ class ProduitLineWithInventorySerializer(serializers.ModelSerializer):
             "achat_id", "numero_achat",
             "fournisseur_id", "fournisseur_nom",
             # Produit
-            "produit_id", "produit_nom", "produit_sku",
+            "produit_id", "produit_nom", "produit_poids", "produit_sku",
             "categorie_nom", "marque_nom", "purete_nom",
-            "poids_reference",
+            # "poids_reference",
             # Ligne achat
-            "quantite", "poids_total", "poids_unitaire", "prix_gramme_achat",
+            "quantite", "poids_total", "prix_achat_gramme",
             # Stock
             "quantite_allouee", "quantite_disponible_total",
             # Inventaire

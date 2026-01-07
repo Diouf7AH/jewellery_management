@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from django.db.models import (Case, DecimalField, F, IntegerField, Q, Sum,
-                              Value, When)
+from django.db.models import (Case, DecimalField, ExpressionWrapper, F,
+                              IntegerField, Q, Sum, Value, When)
 from django.db.models.functions import Coalesce, ExtractQuarter
 from django.utils import timezone
 from drf_yasg import openapi
@@ -219,7 +219,7 @@ class InventoryMovementListView(ExportXlsxMixin, APIView):
         # Mouvement types
         types_csv = (getf("movement_types") or "").strip()
         if types_csv:
-            types = [t.strip() for t in types_csv.split(",") if t.strip()]
+            types = [t.strip().lower() for t in types_csv.split(",") if t.strip()]
             qs = qs.filter(movement_type__in=types)
 
         # Date window (inclusif)
@@ -239,18 +239,30 @@ class InventoryMovementListView(ExportXlsxMixin, APIView):
             qs = qs.filter(qty__lte=max_qty)
 
         # ---- Annotations: signed & cost ----
+        
         include_costs = _b(getf("include_costs"), False)
+
         sign = Case(
-            When(movement_type=MovementType.CANCEL_PURCHASE, then=Value(-1)),
+            When(movement_type__in=[MovementType.SALE_OUT, MovementType.CANCEL_PURCHASE], then=Value(-1)),
             default=Value(1),
             output_field=DecimalField(max_digits=4, decimal_places=0),
         )
+
         qs = qs.annotate(
-            signed_qty=F("qty") * sign
+            signed_qty=ExpressionWrapper(
+                F("qty") * sign,
+                output_field=DecimalField(max_digits=18, decimal_places=2)
+            )
         )
+
         if include_costs:
             qs = qs.annotate(
-                total_cost=Coalesce(F("unit_cost"), Value(Decimal("0.00"))) * F("signed_qty"),
+                total_cost=ExpressionWrapper(
+                    Coalesce(F("unit_cost"), Value(Decimal("0.00")))
+                    * Coalesce(F("produit__poids"), Value(Decimal("0.00")))
+                    * F("signed_qty"),
+                    output_field=DecimalField(max_digits=20, decimal_places=2),
+                )
             )
 
         # ---- Tri ----
@@ -263,14 +275,18 @@ class InventoryMovementListView(ExportXlsxMixin, APIView):
         qs = qs.order_by(ordering)
 
         # ---- Hydratation des noms (bijouteries) ----
-        rows = list(qs.values(
+        values_fields = [
             "id", "occurred_at", "movement_type", "qty", "signed_qty",
-            "unit_cost", "total_cost",
+            "unit_cost",
             "produit_id", "produit__nom", "produit__sku",
             "src_bucket", "src_bijouterie_id",
             "dst_bucket", "dst_bijouterie_id",
             "lot_id", "achat_id", "created_by_id", "reason",
-        ))
+        ]
+        if include_costs:
+            values_fields.insert(values_fields.index("unit_cost") + 1, "total_cost")
+
+        rows = list(qs.values(*values_fields))
 
         bij_ids = set()
         for r in rows:

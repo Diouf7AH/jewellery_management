@@ -1692,7 +1692,7 @@ class ListVendorAPIView(APIView):
             openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False,
                               description="Recherche texte (email, prénom, nom)"),
         ],
-        tags=["vendeur"],
+        tags=["vendor"],
         responses={200: VendorListSerializer(many=True)},
     )
     def get(self, request):
@@ -1927,7 +1927,7 @@ class VendorUpdateView(APIView):
             403: "Accès refusé",
             404: "Vendeur introuvable",
         },
-        tags=["vendeur"],
+        tags=["vendor"],
     )
     def put(self, request, vendor_id):
         # 1) Récupération du vendeur
@@ -2832,7 +2832,7 @@ class VendorProduitAssociationAPIView(APIView):
             403: "Accès refusé",
             404: "Ressource introuvable",
         },
-        tags=["vendeur"],
+        tags=["vendor"],
     )
     @transaction.atomic
     def post(self, request):

@@ -260,37 +260,37 @@ class UserRegistrationView(APIView):
         )
 
 
-@method_decorator(require_GET, name="dispatch")
-class EmailVerificationView(APIView):
-    permission_classes = []  # public
+# @method_decorator(require_GET, name="dispatch")
+# class EmailVerificationView(APIView):
+#     permission_classes = []  # public
 
-    def get(self, request):
-        token = request.GET.get('token')
-        if not token:
-            return render(request, "emails/email_invalid.html", status=400)
+#     def get(self, request):
+#         token = request.GET.get('token')
+#         if not token:
+#             return render(request, "emails/email_invalid.html", status=400)
 
-        result = verify_email_token(token) or {}
-        status_token = result.get("status")
-        email = result.get("email")
+#         result = verify_email_token(token) or {}
+#         status_token = result.get("status")
+#         email = result.get("email")
 
-        if status_token == "invalid" or not email:
-            return render(request, "emails/email_invalid.html", status=400)
+#         if status_token == "invalid" or not email:
+#             return render(request, "emails/email_invalid.html", status=400)
 
-        if status_token == "expired":
-            # Lien expiré → template avec explication + éventuellement bouton vers ton front
-            return render(request, "emails/email_expired.html", status=410)
+#         if status_token == "expired":
+#             # Lien expiré → template avec explication + éventuellement bouton vers ton front
+#             return render(request, "emails/email_expired.html", status=410)
 
-        # status == "ok"
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return render(request, "emails/email_invalid.html", status=404)
+#         # status == "ok"
+#         try:
+#             user = User.objects.get(email=email)
+#         except User.DoesNotExist:
+#             return render(request, "emails/email_invalid.html", status=404)
 
-        if not getattr(user, "is_email_verified", False):
-            user.is_email_verified = True
-            user.save(update_fields=["is_email_verified"])
+#         if not getattr(user, "is_email_verified", False):
+#             user.is_email_verified = True
+#             user.save(update_fields=["is_email_verified"])
 
-        return render(request, "emails/email_confirmed.html", status=200)
+#         return render(request, "emails/email_confirmed.html", status=200)
     
     
 
@@ -318,12 +318,50 @@ class EmailVerificationView(APIView):
 #         except User.DoesNotExist:
 #             return render(request, "emails/email_invalid.html", status=404)
 
+# @method_decorator(require_GET, name="dispatch")
+# class EmailVerificationView(APIView):
+#     permission_classes = []  # public
+
+#     def get(self, request):
+#         token = request.GET.get('token')
+#         if not token:
+#             return render(request, "emails/email_invalid.html", status=400)
+
+#         result = verify_email_token(token) or {}
+#         status_token = result.get("status")
+#         email = result.get("email")
+
+#         # 1️⃣ D'abord : token expiré
+#         if status_token == "expired":
+#             return render(request, "emails/email_expired.html", status=410)
+
+#         # 2️⃣ Ensuite : token invalide
+#         if status_token == "invalid":
+#             return render(request, "emails/email_invalid.html", status=400)
+
+#         # 3️⃣ Puis : pas d'email retourné (sécurité)
+#         if not email:
+#             return render(request, "emails/email_invalid.html", status=400)
+
+#         # 4️⃣ Token OK → on vérifie l'utilisateur
+#         try:
+#             user = User.objects.get(email=email)
+#         except User.DoesNotExist:
+#             return render(request, "emails/email_invalid.html", status=404)
+
+#         if not getattr(user, "is_email_verified", False):
+#             user.is_email_verified = True
+#             user.save(update_fields=["is_email_verified"])
+
+#         return render(request, "emails/email_confirmed.html", status=200)
+
+
 @method_decorator(require_GET, name="dispatch")
 class EmailVerificationView(APIView):
     permission_classes = []  # public
 
     def get(self, request):
-        token = request.GET.get('token')
+        token = request.GET.get("token")
         if not token:
             return render(request, "emails/email_invalid.html", status=400)
 
@@ -331,27 +369,33 @@ class EmailVerificationView(APIView):
         status_token = result.get("status")
         email = result.get("email")
 
-        # 1️⃣ D'abord : token expiré
+        # 1) Expiré
         if status_token == "expired":
             return render(request, "emails/email_expired.html", status=410)
 
-        # 2️⃣ Ensuite : token invalide
-        if status_token == "invalid":
+        # 2) Invalide ou email manquant
+        if status_token != "ok" or not email:
             return render(request, "emails/email_invalid.html", status=400)
 
-        # 3️⃣ Puis : pas d'email retourné (sécurité)
-        if not email:
-            return render(request, "emails/email_invalid.html", status=400)
-
-        # 4️⃣ Token OK → on vérifie l'utilisateur
+        # 3) Trouver user (insensible à la casse)
         try:
-            user = User.objects.get(email=email)
+            user = User.objects.get(email__iexact=email)
         except User.DoesNotExist:
             return render(request, "emails/email_invalid.html", status=404)
 
+        # 4) Activer + vérifier (idempotent)
+        changed_fields = []
+
         if not getattr(user, "is_email_verified", False):
             user.is_email_verified = True
-            user.save(update_fields=["is_email_verified"])
+            changed_fields.append("is_email_verified")
+
+        if not user.is_active:
+            user.is_active = True
+            changed_fields.append("is_active")
+
+        if changed_fields:
+            user.save(update_fields=changed_fields)
 
         return render(request, "emails/email_confirmed.html", status=200)
 

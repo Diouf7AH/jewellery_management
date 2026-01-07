@@ -18,11 +18,11 @@ from store.serializers import ProduitSerializer
 #         model = Stock
 #         fields = '__all__'
 
-class StockSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Stock
-        fields = ["id", "bijouterie", "produit_line", "quantite", "quantite_allouee", "quantite_disponible", "created_at"]
-        read_only_fields = ["date_ajout", "created_at"]
+# class StockSerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = Stock
+#         fields = ["id", "bijouterie", "produit_line", "quantite", "quantite_allouee", "quantite_disponible", "created_at"]
+#         read_only_fields = ["date_ajout", "created_at"]
 
 
 # class LigneCommandeStockSerializer(serializers.ModelSerializer):
