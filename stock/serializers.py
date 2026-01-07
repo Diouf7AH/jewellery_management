@@ -34,14 +34,24 @@ from store.serializers import ProduitSerializer
 
 
 class ReserveToBijouterieLineInSerializer(serializers.Serializer):
-    produit_line_id = serializers.IntegerField()
-    quantite = serializers.IntegerField(min_value=1)
+    produit_id = serializers.IntegerField(min_value=1)
+    transfere = serializers.IntegerField(min_value=1)
+    
+
+# class ReserveToBijouterieLineInSerializer(serializers.Serializer):
+#     produit_line_id = serializers.IntegerField()
+#     quantite = serializers.IntegerField(min_value=1)
+
+# class ReserveToBijouterieInSerializer(serializers.Serializer):
+#     bijouterie_id = serializers.IntegerField()
+#     lignes = ReserveToBijouterieLineInSerializer(many=True)
+#     note = serializers.CharField(required=False, allow_blank=True)
+
 
 class ReserveToBijouterieInSerializer(serializers.Serializer):
-    bijouterie_id = serializers.IntegerField()
+    bijouterie_id = serializers.IntegerField(min_value=1)
     lignes = ReserveToBijouterieLineInSerializer(many=True)
-    note = serializers.CharField(required=False, allow_blank=True)
-    
+    note = serializers.CharField(required=False, allow_blank=True, default="")
 
 # ----------------Bijouterie to vendeur--------------------------
 class BijouterieToVendorLineInSerializer(serializers.Serializer):

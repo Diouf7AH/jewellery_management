@@ -2,7 +2,7 @@ from collections import defaultdict
 from typing import Any
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import models, transaction
 from django.db.models import F
 from django.utils import timezone
 
@@ -252,128 +252,243 @@ from vendor.models import Vendor
 #     }
 
 
+# @transaction.atomic
+# def transfer_reserve_to_bijouterie(
+#     *,
+#     bijouterie_id: int,
+#     mouvements: list[dict[str, Any]],
+#     note: str = "",
+#     user=None,
+# ):
+#     """
+#     mouvements:
+#       [{"produit_line_id": int, "quantite": int} | {"produit_line_id": int, "transfere": int}, ...]
+
+#     Règle ERP (Réserve -> Bijouterie, stock vendable en boutique):
+#       - Réserve (bijouterie NULL) : quantite_disponible -= qty
+#       - Bijouterie               : quantite_allouee += qty
+#                                   quantite_disponible += qty
+#       - Log InventoryMovement(ALLOCATE): RESERVED -> BIJOUTERIE
+#     """
+
+#     # 0) Lock bijouterie
+#     bijouterie = Bijouterie.objects.select_for_update().get(id=bijouterie_id)
+
+#     # 1) Regrouper les doublons input
+#     wanted = defaultdict(int)
+#     for mv in mouvements:
+#         pl_id = int(mv["produit_line_id"])
+#         qty = int(mv.get("quantite") or mv.get("transfere") or 0)
+#         if qty <= 0:
+#             raise ValueError(f"Quantité invalide pour produit_line_id={pl_id}: {qty}")
+#         wanted[pl_id] += qty
+
+#     if not wanted:
+#         raise ValueError("Aucune ligne à transférer.")
+
+#     # 2) Lock ProduitLine concernées
+#     lignes = (
+#         ProduitLine.objects.select_for_update()
+#         .filter(id__in=wanted.keys())
+#         .select_related("lot", "produit")
+#     )
+#     found_ids = {pl.id for pl in lignes}
+#     missing = set(wanted.keys()) - found_ids
+#     if missing:
+#         raise ValueError(f"Lignes introuvables: {sorted(list(missing))}")
+
+#     results = []
+
+#     for pl in lignes:
+#         qty = int(wanted[pl.id])
+
+#         # 3) Stock Réserve (bijouterie NULL)
+#         stock_res = (
+#             Stock.objects.select_for_update()
+#             .filter(produit_line=pl, bijouterie__isnull=True)
+#             .order_by("id")
+#             .first()
+#         )
+#         if not stock_res:
+#             raise ValueError(f"Réserve inexistante pour produit_line_id={pl.id}")
+
+#         # ✅ décrémentation atomique + contrôle concurrence
+#         updated = (
+#             Stock.objects.filter(id=stock_res.id, quantite_disponible__gte=qty)
+#             .update(quantite_disponible=F("quantite_disponible") - qty)
+#         )
+#         if updated != 1:
+#             stock_res.refresh_from_db()
+#             raise ValueError(
+#                 f"Quantité insuffisante en Réserve pour la ligne {pl.id} "
+#                 f"(demande {qty}, dispo {stock_res.quantite_disponible})"
+#             )
+#         stock_res.refresh_from_db()
+
+#         # 4) Stock Destination (bijouterie)
+#         stock_dst, _ = Stock.objects.select_for_update().get_or_create(
+#             produit_line=pl,
+#             bijouterie=bijouterie,
+#             defaults={"quantite_allouee": 0, "quantite_disponible": 0},
+#         )
+
+#         # ✅ stock devient vendable en boutique
+#         Stock.objects.filter(id=stock_dst.id).update(
+#             quantite_allouee=F("quantite_allouee") + qty,
+#             quantite_disponible=F("quantite_disponible") + qty,
+#         )
+#         stock_dst.refresh_from_db()
+
+#         # 5) InventoryMovement (ALLOCATE)
+#         InventoryMovement.objects.create(
+#             produit=pl.produit,
+#             movement_type=MovementType.ALLOCATE,
+#             qty=qty,
+#             unit_cost=None,
+#             lot=pl.lot,
+#             achat=getattr(pl.lot, "achat", None),
+#             achat_ligne=pl.lot,  # optionnel selon ton usage
+#             reason=note or "",
+#             src_bucket=Bucket.RESERVED,
+#             src_bijouterie=None,
+#             dst_bucket=Bucket.BIJOUTERIE,
+#             dst_bijouterie=bijouterie,
+#             occurred_at=timezone.now(),
+#             created_by=user if user and getattr(user, "is_authenticated", False) else None,
+#             vendor=None,
+#         )
+
+#         results.append(
+#             {
+#                 "produit_line_id": pl.id,
+#                 "transfere": qty,
+#                 "reserve_disponible": int(stock_res.quantite_disponible or 0),
+#                 "quantite_allouee_bijouterie": int(stock_dst.quantite_allouee or 0),
+#                 "quantite_disponible_bijouterie": int(stock_dst.quantite_disponible or 0),
+#             }
+#         )
+
+#     return {
+#         "bijouterie_id": bijouterie.id,
+#         "bijouterie_nom": bijouterie.nom,
+#         "lignes": results,
+#         "note": note or "",
+#     }
+
+
 @transaction.atomic
-def transfer_reserve_to_bijouterie(
-    *,
-    bijouterie_id: int,
-    mouvements: list[dict[str, Any]],
-    note: str = "",
-    user=None,
-):
-    """
-    mouvements:
-      [{"produit_line_id": int, "quantite": int} | {"produit_line_id": int, "transfere": int}, ...]
+def transfer_reserve_to_bijouterie_by_produit(*, bijouterie_id: int, lignes: list[dict], note: str, user):
+    bij = Bijouterie.objects.filter(id=bijouterie_id).first()
+    if not bij:
+        raise ValueError("Bijouterie introuvable.")
 
-    Règle ERP (Réserve -> Bijouterie, stock vendable en boutique):
-      - Réserve (bijouterie NULL) : quantite_disponible -= qty
-      - Bijouterie               : quantite_allouee += qty
-                                  quantite_disponible += qty
-      - Log InventoryMovement(ALLOCATE): RESERVED -> BIJOUTERIE
-    """
+    out_lignes = []
 
-    # 0) Lock bijouterie
-    bijouterie = Bijouterie.objects.select_for_update().get(id=bijouterie_id)
+    for row in lignes:
+        produit_id = int(row["produit_id"])
+        qty_need = int(row["transfere"])
+        if qty_need <= 0:
+            raise ValueError("transfere doit être > 0.")
 
-    # 1) Regrouper les doublons input
-    wanted = defaultdict(int)
-    for mv in mouvements:
-        pl_id = int(mv["produit_line_id"])
-        qty = int(mv.get("quantite") or mv.get("transfere") or 0)
-        if qty <= 0:
-            raise ValueError(f"Quantité invalide pour produit_line_id={pl_id}: {qty}")
-        wanted[pl_id] += qty
-
-    if not wanted:
-        raise ValueError("Aucune ligne à transférer.")
-
-    # 2) Lock ProduitLine concernées
-    lignes = (
-        ProduitLine.objects.select_for_update()
-        .filter(id__in=wanted.keys())
-        .select_related("lot", "produit")
-    )
-    found_ids = {pl.id for pl in lignes}
-    missing = set(wanted.keys()) - found_ids
-    if missing:
-        raise ValueError(f"Lignes introuvables: {sorted(list(missing))}")
-
-    results = []
-
-    for pl in lignes:
-        qty = int(wanted[pl.id])
-
-        # 3) Stock Réserve (bijouterie NULL)
-        stock_res = (
-            Stock.objects.select_for_update()
-            .filter(produit_line=pl, bijouterie__isnull=True)
-            .order_by("id")
-            .first()
+        # 🔥 FIFO: on prend les ProduitLine du produit qui ont du stock réserve disponible
+        # Ici FIFO par 'lot.received_at' puis id (adapte si tu as un champ FIFO différent)
+        pls = (
+            ProduitLine.objects
+            .filter(produit_id=produit_id)
+            .select_related("lot", "produit")
+            .order_by("lot__received_at", "id")
         )
-        if not stock_res:
-            raise ValueError(f"Réserve inexistante pour produit_line_id={pl.id}")
 
-        # ✅ décrémentation atomique + contrôle concurrence
-        updated = (
-            Stock.objects.filter(id=stock_res.id, quantite_disponible__gte=qty)
-            .update(quantite_disponible=F("quantite_disponible") - qty)
-        )
-        if updated != 1:
-            stock_res.refresh_from_db()
-            raise ValueError(
-                f"Quantité insuffisante en Réserve pour la ligne {pl.id} "
-                f"(demande {qty}, dispo {stock_res.quantite_disponible})"
+        qty_done_total = 0
+
+        for pl in pls:
+            if qty_need <= 0:
+                break
+
+            # stock réserve de cette PL
+            reserve = (
+                Stock.objects
+                .select_for_update()
+                .filter(produit_line=pl, bijouterie__isnull=True)
+                .first()
             )
-        stock_res.refresh_from_db()
+            if not reserve or reserve.quantite_disponible <= 0:
+                continue
 
-        # 4) Stock Destination (bijouterie)
-        stock_dst, _ = Stock.objects.select_for_update().get_or_create(
-            produit_line=pl,
-            bijouterie=bijouterie,
-            defaults={"quantite_allouee": 0, "quantite_disponible": 0},
+            take = min(qty_need, reserve.quantite_disponible)
+
+            # destination stock bijouterie pour cette PL
+            dest, _ = Stock.objects.select_for_update().get_or_create(
+                produit_line=pl,
+                bijouterie_id=bijouterie_id,
+                defaults={"quantite_allouee": 0, "quantite_disponible": 0},
+            )
+
+            # ✅ règle: Réserve: allouée doit rester 0
+            reserve.quantite_disponible = F("quantite_disponible") - take
+            reserve.quantite_allouee = 0  # sécurité
+            reserve.save(update_fields=["quantite_disponible", "quantite_allouee", "updated_at"])
+
+            # ✅ règle: allocation: on augmente allouée, dispo inchangé
+            dest.quantite_allouee = F("quantite_allouee") + take
+            dest.save(update_fields=["quantite_allouee", "updated_at"])
+
+            # Mouvement d’inventaire (ALLOCATE)
+            InventoryMovement.objects.create(
+                produit=pl.produit,
+                movement_type=MovementType.ALLOCATE,
+                qty=take,
+                unit_cost=None,
+                lot=pl.lot,
+                reason=note or "Allocation Réserve → Bijouterie",
+                src_bucket=Bucket.RESERVED,
+                src_bijouterie=None,
+                dst_bucket=Bucket.BIJOUTERIE,
+                dst_bijouterie=bij,
+                occurred_at=timezone.now(),
+                created_by=user,
+            )
+
+            qty_need -= take
+            qty_done_total += take
+            qty_done_total = int(qty_done_total)
+
+        if qty_need > 0:
+            raise ValueError(f"Stock réserve insuffisant pour produit_id={produit_id}. Manque {qty_need}.")
+
+        # Refresh (pour renvoyer les valeurs actuelles)
+        # NB: reserve/dest étaient par PL; ici on renvoie un résumé total par produit
+        reserve_total = (
+            Stock.objects
+            .filter(bijouterie__isnull=True, produit_line__produit_id=produit_id)
+            .aggregate(total=models.Sum("quantite_disponible"))["total"] or 0
+        )
+        bij_allouee_total = (
+            Stock.objects
+            .filter(bijouterie_id=bijouterie_id, produit_line__produit_id=produit_id)
+            .aggregate(total=models.Sum("quantite_allouee"))["total"] or 0
+        )
+        bij_dispo_total = (
+            Stock.objects
+            .filter(bijouterie_id=bijouterie_id, produit_line__produit_id=produit_id)
+            .aggregate(total=models.Sum("quantite_disponible"))["total"] or 0
         )
 
-        # ✅ stock devient vendable en boutique
-        Stock.objects.filter(id=stock_dst.id).update(
-            quantite_allouee=F("quantite_allouee") + qty,
-            quantite_disponible=F("quantite_disponible") + qty,
-        )
-        stock_dst.refresh_from_db()
-
-        # 5) InventoryMovement (ALLOCATE)
-        InventoryMovement.objects.create(
-            produit=pl.produit,
-            movement_type=MovementType.ALLOCATE,
-            qty=qty,
-            unit_cost=None,
-            lot=pl.lot,
-            achat=getattr(pl.lot, "achat", None),
-            achat_ligne=pl.lot,  # optionnel selon ton usage
-            reason=note or "",
-            src_bucket=Bucket.RESERVED,
-            src_bijouterie=None,
-            dst_bucket=Bucket.BIJOUTERIE,
-            dst_bijouterie=bijouterie,
-            occurred_at=timezone.now(),
-            created_by=user if user and getattr(user, "is_authenticated", False) else None,
-            vendor=None,
-        )
-
-        results.append(
-            {
-                "produit_line_id": pl.id,
-                "transfere": qty,
-                "reserve_disponible": int(stock_res.quantite_disponible or 0),
-                "quantite_allouee_bijouterie": int(stock_dst.quantite_allouee or 0),
-                "quantite_disponible_bijouterie": int(stock_dst.quantite_disponible or 0),
-            }
-        )
+        out_lignes.append({
+            "produit_id": produit_id,
+            "transfere": qty_done_total,
+            "reserve_disponible": int(reserve_total),
+            "bijouterie_allouee": int(bij_allouee_total),
+            "bijouterie_disponible": int(bij_dispo_total),
+        })
 
     return {
-        "bijouterie_id": bijouterie.id,
-        "bijouterie_nom": bijouterie.nom,
-        "lignes": results,
+        "bijouterie_id": bij.id,
+        "bijouterie_nom": bij.nom,
+        "lignes": out_lignes,
         "note": note or "",
     }
+    
 
 
 # -----------------------Bijouterie To vendeur------------------------

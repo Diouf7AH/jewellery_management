@@ -134,7 +134,7 @@ from .models import Stock
 from .serializers import (BijouterieToVendorInSerializer,
                           ReserveToBijouterieInSerializer, StockSerializer)
 from .services import (transfer_bijouterie_to_vendor,
-                       transfer_reserve_to_bijouterie)
+                       transfer_reserve_to_bijouterie_by_produit)
 from .utils_role import get_manager_bijouterie_id, vendor_stock_filter
 
 STATUS_CHOICES = ("reserved", "allocated", "in_stock", "all")
@@ -182,27 +182,78 @@ from stock.utils_role import (get_manager_bijouterie_id,
 #         return Response(res, status=status.HTTP_200_OK)
 
 
+# class ReserveToBijouterieTransferView(APIView):
+#     """
+#     POST /api/stocks/transfer/reserve-to-bijouterie/
+
+#     Exemple payload:
+#     {
+#       "bijouterie_id": 1,
+#       "lignes": [
+#         {"produit_line_id": 123, "transfere": 3},
+#         {"produit_line_id": 124, "transfere": 2}
+#       ],
+#       "note": "Affectation vitrines"
+#     }
+
+#     Réponse typique:
+#     {
+#       "bijouterie_id": 1,
+#       "bijouterie_nom": "rio-gold",
+#       "lignes": [
+#         {"produit_line_id": 123, "transfere": 3, "reserve_disponible": 9, "bijouterie_allouee": 3, "bijouterie_disponible": 0},
+#         {"produit_line_id": 124, "transfere": 2, "reserve_disponible": 6, "bijouterie_allouee": 2, "bijouterie_disponible": 0}
+#       ],
+#       "note": "Affectation vitrines"
+#     }
+#     """
+#     permission_classes = [IsAuthenticated, IsAdminOrManagerOrSelfVendor]
+
+#     @swagger_auto_schema(
+#         operation_id="transferReserveToBijouterie",
+#         operation_summary="Affecter du stock Réserve → Bijouterie (allocation ERP)",
+#         operation_description=(
+#             "ERP: Réserve.quantite_disponible -= qty ; "
+#             "Bijouterie.quantite_allouee += qty (disponible inchangé). "
+#             "Crée un InventoryMovement(ALLOCATE) par ligne. "
+#             "⚠️ Pas de pagination."
+#         ),
+#         request_body=ReserveToBijouterieInSerializer,
+#         responses={
+#             200: openapi.Response("Résumé du transfert"),
+#             400: openapi.Response("Erreur de validation"),
+#             403: openapi.Response("Accès refusé"),
+#         },
+#         tags=["Stock"],
+#     )
+#     def post(self, request):
+#         s = ReserveToBijouterieInSerializer(data=request.data)
+#         s.is_valid(raise_exception=True)
+
+#         try:
+#             res = transfer_reserve_to_bijouterie(
+#                 bijouterie_id=s.validated_data["bijouterie_id"],
+#                 mouvements=s.validated_data["lignes"],
+#                 note=s.validated_data.get("note", ""),
+#                 user=request.user,
+#             )
+#         except ValueError as e:
+#             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+#         return Response(res, status=status.HTTP_200_OK)
+
+
+
 class ReserveToBijouterieTransferView(APIView):
     """
     POST /api/stocks/transfer/reserve-to-bijouterie/
 
-    Exemple payload:
+    Payload:
     {
       "bijouterie_id": 1,
       "lignes": [
-        {"produit_line_id": 123, "transfere": 3},
-        {"produit_line_id": 124, "transfere": 2}
-      ],
-      "note": "Affectation vitrines"
-    }
-
-    Réponse typique:
-    {
-      "bijouterie_id": 1,
-      "bijouterie_nom": "rio-gold",
-      "lignes": [
-        {"produit_line_id": 123, "transfere": 3, "reserve_disponible": 9, "bijouterie_allouee": 3, "bijouterie_disponible": 0},
-        {"produit_line_id": 124, "transfere": 2, "reserve_disponible": 6, "bijouterie_allouee": 2, "bijouterie_disponible": 0}
+        {"produit_id": 10, "transfere": 3},
+        {"produit_id": 11, "transfere": 2}
       ],
       "note": "Affectation vitrines"
     }
@@ -211,12 +262,12 @@ class ReserveToBijouterieTransferView(APIView):
 
     @swagger_auto_schema(
         operation_id="transferReserveToBijouterie",
-        operation_summary="Affecter du stock Réserve → Bijouterie (allocation ERP)",
+        operation_summary="Affecter du stock Réserve → Bijouterie (FIFO par produit)",
         operation_description=(
             "ERP: Réserve.quantite_disponible -= qty ; "
             "Bijouterie.quantite_allouee += qty (disponible inchangé). "
-            "Crée un InventoryMovement(ALLOCATE) par ligne. "
-            "⚠️ Pas de pagination."
+            "Consommation FIFO sur les ProduitLine du produit. "
+            "Crée un InventoryMovement(ALLOCATE) par sous-ligne consommée."
         ),
         request_body=ReserveToBijouterieInSerializer,
         responses={
@@ -231,9 +282,9 @@ class ReserveToBijouterieTransferView(APIView):
         s.is_valid(raise_exception=True)
 
         try:
-            res = transfer_reserve_to_bijouterie(
+            res = transfer_reserve_to_bijouterie_by_produit(
                 bijouterie_id=s.validated_data["bijouterie_id"],
-                mouvements=s.validated_data["lignes"],
+                lignes=s.validated_data["lignes"],
                 note=s.validated_data.get("note", ""),
                 user=request.user,
             )
