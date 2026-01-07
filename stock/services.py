@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any
+from typing import Any, Dict, List
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -377,7 +377,13 @@ from vendor.models import Vendor
 
 
 @transaction.atomic
-def transfer_reserve_to_bijouterie_by_produit(*, bijouterie_id: int, lignes: list[dict], note: str, user):
+def transfer_reserve_to_bijouterie_by_produit(
+    *,
+    bijouterie_id: int,
+    lignes: List[dict],  # [{"produit_id": X, "transfere": Y}, ...]
+    note: str,
+    user,
+) -> dict:
     bij = Bijouterie.objects.filter(id=bijouterie_id).first()
     if not bij:
         raise ValueError("Bijouterie introuvable.")
@@ -386,12 +392,11 @@ def transfer_reserve_to_bijouterie_by_produit(*, bijouterie_id: int, lignes: lis
 
     for row in lignes:
         produit_id = int(row["produit_id"])
-        qty_need = int(row["transfere"])
-        if qty_need <= 0:
+        demande = int(row["transfere"])
+        if demande <= 0:
             raise ValueError("transfere doit être > 0.")
 
-        # 🔥 FIFO: on prend les ProduitLine du produit qui ont du stock réserve disponible
-        # Ici FIFO par 'lot.received_at' puis id (adapte si tu as un champ FIFO différent)
+        # FIFO: ProduitLine triées par date de réception du lot
         pls = (
             ProduitLine.objects
             .filter(produit_id=produit_id)
@@ -399,13 +404,18 @@ def transfer_reserve_to_bijouterie_by_produit(*, bijouterie_id: int, lignes: lis
             .order_by("lot__received_at", "id")
         )
 
-        qty_done_total = 0
+        qty_need = demande
+        consommations = []
+        produit_nom = None
 
         for pl in pls:
             if qty_need <= 0:
                 break
 
-            # stock réserve de cette PL
+            if produit_nom is None:
+                produit_nom = getattr(pl.produit, "nom", None)
+
+            # Stock réserve de cette PL
             reserve = (
                 Stock.objects
                 .select_for_update()
@@ -417,21 +427,25 @@ def transfer_reserve_to_bijouterie_by_produit(*, bijouterie_id: int, lignes: lis
 
             take = min(qty_need, reserve.quantite_disponible)
 
-            # destination stock bijouterie pour cette PL
+            # Stock destination (bijouterie) de cette PL
             dest, _ = Stock.objects.select_for_update().get_or_create(
                 produit_line=pl,
                 bijouterie_id=bijouterie_id,
                 defaults={"quantite_allouee": 0, "quantite_disponible": 0},
             )
 
-            # ✅ règle: Réserve: allouée doit rester 0
-            reserve.quantite_disponible = F("quantite_disponible") - take
-            reserve.quantite_allouee = 0  # sécurité
-            reserve.save(update_fields=["quantite_disponible", "quantite_allouee", "updated_at"])
+            # ✅ Réserve: dispo -= take, allouée reste 0
+            Stock.objects.filter(pk=reserve.pk).update(
+                quantite_allouee=0,
+                quantite_disponible=F("quantite_disponible") - take,
+                updated_at=timezone.now(),
+            )
 
-            # ✅ règle: allocation: on augmente allouée, dispo inchangé
-            dest.quantite_allouee = F("quantite_allouee") + take
-            dest.save(update_fields=["quantite_allouee", "updated_at"])
+            # ✅ Bijouterie: allouée += take (dispo inchangé)
+            Stock.objects.filter(pk=dest.pk).update(
+                quantite_allouee=F("quantite_allouee") + take,
+                updated_at=timezone.now(),
+            )
 
             # Mouvement d’inventaire (ALLOCATE)
             InventoryMovement.objects.create(
@@ -449,15 +463,19 @@ def transfer_reserve_to_bijouterie_by_produit(*, bijouterie_id: int, lignes: lis
                 created_by=user,
             )
 
+            consommations.append({
+                "produit_line_id": pl.id,
+                "lot_id": pl.lot_id,
+                "numero_lot": getattr(pl.lot, "numero_lot", None),
+                "qty": int(take),
+            })
+
             qty_need -= take
-            qty_done_total += take
-            qty_done_total = int(qty_done_total)
 
         if qty_need > 0:
             raise ValueError(f"Stock réserve insuffisant pour produit_id={produit_id}. Manque {qty_need}.")
 
-        # Refresh (pour renvoyer les valeurs actuelles)
-        # NB: reserve/dest étaient par PL; ici on renvoie un résumé total par produit
+        # Totaux (après transfert)
         reserve_total = (
             Stock.objects
             .filter(bijouterie__isnull=True, produit_line__produit_id=produit_id)
@@ -476,19 +494,21 @@ def transfer_reserve_to_bijouterie_by_produit(*, bijouterie_id: int, lignes: lis
 
         out_lignes.append({
             "produit_id": produit_id,
-            "transfere": qty_done_total,
-            "reserve_disponible": int(reserve_total),
-            "bijouterie_allouee": int(bij_allouee_total),
-            "bijouterie_disponible": int(bij_dispo_total),
+            "produit_nom": produit_nom,
+            "demande": demande,
+            "transfere": demande,
+            "reserve_disponible_total": int(reserve_total),
+            "bijouterie_allouee_total": int(bij_allouee_total),
+            "bijouterie_disponible_total": int(bij_dispo_total),
+            "consommations": consommations,
         })
 
     return {
         "bijouterie_id": bij.id,
         "bijouterie_nom": bij.nom,
-        "lignes": out_lignes,
         "note": note or "",
+        "lignes": out_lignes,
     }
-    
 
 
 # -----------------------Bijouterie To vendeur------------------------
