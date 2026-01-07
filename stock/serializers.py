@@ -67,7 +67,7 @@ class StockSerializer(serializers.ModelSerializer):
     class Meta:
         model = Stock
         fields = [
-            "id", "produit_id", "produit_line", "bijouterie", "bijouterie_nom",
+            "id", "produit_id", "produit_nom", "produit_line", "bijouterie", "bijouterie_nom",
             "quantite_allouee", "quantite_disponible", "status",
             "created_at", "updated_at",
         ]
