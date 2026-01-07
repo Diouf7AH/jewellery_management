@@ -58,18 +58,65 @@ class BijouterieToVendorInSerializer(serializers.Serializer):
 
 
 # -------------lister les stock par bijouterie--------------------
+# class StockSerializer(serializers.ModelSerializer):
+#     status = serializers.SerializerMethodField()
+#     produit_id = serializers.IntegerField(source="produit_line.produit_id", read_only=True)
+#     produit_nom = serializers.CharField(source="produit_line.produit.nom", read_only=True)
+
+
+#     class Meta:
+#         model = Stock
+#         fields = [
+#             "id", "produit_id", "produit_nom", "produit_line", "bijouterie", "bijouterie_nom",
+#             "quantite_allouee", "quantite_disponible", "status",
+#             "created_at", "updated_at",
+#         ]
+
+#     def get_status(self, obj):
+#         if obj.bijouterie_id is None:
+#             return "reserved"
+#         return "allocated" if (obj.quantite_allouee or 0) > 0 else "allocated_empty"
+
+
 class StockSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
-    produit_id = serializers.IntegerField(source="produit_line.produit_id", read_only=True)
-    produit_nom = serializers.CharField(source="produit_line.produit.nom", read_only=True)
 
+    # --- Produit (via ProduitLine) ---
+    produit_id = serializers.IntegerField(
+        source="produit_line.produit_id",
+        read_only=True
+    )
+    produit_nom = serializers.CharField(
+        source="produit_line.produit.nom",
+        read_only=True
+    )
+
+    # --- Bijouterie ---
+    bijouterie_id = serializers.IntegerField(
+        source="bijouterie.id",
+        read_only=True,
+        allow_null=True
+    )
+    bijouterie_nom = serializers.CharField(
+        source="bijouterie.nom",
+        read_only=True,
+        allow_null=True
+    )
 
     class Meta:
         model = Stock
         fields = [
-            "id", "produit_id", "produit_nom", "produit_line", "bijouterie", "bijouterie_nom",
-            "quantite_allouee", "quantite_disponible", "status",
-            "created_at", "updated_at",
+            "id",
+            "produit_id",
+            "produit_nom",
+            "produit_line",
+            "bijouterie_id",
+            "bijouterie_nom",
+            "quantite_allouee",
+            "quantite_disponible",
+            "status",
+            "created_at",
+            "updated_at",
         ]
 
     def get_status(self, obj):
