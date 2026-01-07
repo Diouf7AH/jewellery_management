@@ -60,12 +60,14 @@ class BijouterieToVendorInSerializer(serializers.Serializer):
 # -------------lister les stock par bijouterie--------------------
 class StockSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
-    bijouterie_nom = serializers.CharField(source="bijouterie.nom", read_only=True)
+    produit_id = serializers.IntegerField(source="produit_line.produit_id", read_only=True)
+    produit_nom = serializers.CharField(source="produit_line.produit.nom", read_only=True)
+
 
     class Meta:
         model = Stock
         fields = [
-            "id", "produit_line", "bijouterie", "bijouterie_nom",
+            "id", "produit_id", "produit_line", "bijouterie", "bijouterie_nom",
             "quantite_allouee", "quantite_disponible", "status",
             "created_at", "updated_at",
         ]

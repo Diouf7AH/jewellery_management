@@ -120,6 +120,13 @@ class Stock(models.Model):
         cible = getattr(self.bijouterie, "nom", None) if self.bijouterie_id else "Réserve"
         return f"Stock(PL={self.produit_line_id} → {cible})"
 
+    @property
+    def produit_id(self):
+        return self.produit_line.produit_id
+
+    @property
+    def produit(self):
+        return self.produit_line.produit
 
 class VendorStock(models.Model):
     """
