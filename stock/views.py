@@ -244,62 +244,11 @@ from stock.utils_role import (get_manager_bijouterie_id,
 
 
 
-# class ReserveToBijouterieTransferView(APIView):
-#     """
-#     POST /api/stocks/transfer/reserve-to-bijouterie/
-
-#     Payload:
-#     {
-#       "bijouterie_id": 1,
-#       "lignes": [
-#         {"produit_id": 10, "transfere": 3},
-#         {"produit_id": 11, "transfere": 2}
-#       ],
-#       "note": "Affectation vitrines"
-#     }
-#     """
-#     permission_classes = [IsAuthenticated, IsAdminOrManagerOrSelfVendor]
-
-#     @swagger_auto_schema(
-#         operation_id="transferReserveToBijouterie",
-#         operation_summary="Affecter du stock Réserve → Bijouterie (FIFO par produit)",
-#         operation_description=(
-#             "ERP: Réserve.quantite_disponible -= qty ; "
-#             "Bijouterie.quantite_allouee += qty (disponible inchangé). "
-#             "Consommation FIFO sur les ProduitLine du produit. "
-#             "Crée un InventoryMovement(ALLOCATE) par sous-ligne consommée."
-#         ),
-#         request_body=ReserveToBijouterieInSerializer,
-#         responses={
-#             200: openapi.Response("Résumé du transfert"),
-#             400: openapi.Response("Erreur de validation"),
-#             403: openapi.Response("Accès refusé"),
-#         },
-#         tags=["Stock"],
-#     )
-#     def post(self, request):
-#         s = ReserveToBijouterieInSerializer(data=request.data)
-#         s.is_valid(raise_exception=True)
-
-#         try:
-#             res = transfer_reserve_to_bijouterie_by_produit(
-#                 bijouterie_id=s.validated_data["bijouterie_id"],
-#                 lignes=s.validated_data["lignes"],
-#                 note=s.validated_data.get("note", ""),
-#                 user=request.user,
-#             )
-#         except ValueError as e:
-#             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-#         return Response(res, status=status.HTTP_200_OK)
-
-
-
 class ReserveToBijouterieTransferView(APIView):
     """
     POST /api/stocks/transfer/reserve-to-bijouterie/
 
-    Payload (par produit_id):
+    Payload:
     {
       "bijouterie_id": 1,
       "lignes": [
@@ -308,74 +257,27 @@ class ReserveToBijouterieTransferView(APIView):
       ],
       "note": "Affectation vitrines"
     }
-
-    Réponse:
-    - Résumé par produit
-    - Détail des lots/ProduitLine consommés (FIFO) => `consommations`
     """
     permission_classes = [IsAuthenticated, IsAdminOrManagerOrSelfVendor]
-    http_method_names = ["post"]
 
     @swagger_auto_schema(
         operation_id="transferReserveToBijouterie",
         operation_summary="Affecter du stock Réserve → Bijouterie (FIFO par produit)",
-        operation_description=dedent("""
-            ERP: on alloue du stock depuis la **Réserve** (bijouterie=NULL) vers une **Bijouterie**.
-
-            **Règle métier**
-            - Réserve: `quantite_disponible -= qty` et `quantite_allouee` reste **0**
-            - Bijouterie: `quantite_allouee += qty` (et `quantite_disponible` reste inchangé)
-
-            **FIFO**
-            - Si un `produit_id` a plusieurs arrivages (plusieurs `ProduitLine`), le service découpe la demande
-              sur plusieurs lots selon l’ordre FIFO (`lot.received_at`, puis `ProduitLine.id`).
-
-            **Mouvements**
-            - Crée un `InventoryMovement` de type `ALLOCATE` pour chaque sous-consommation.
-        """),
+        operation_description=(
+            "ERP: Réserve.quantite_disponible -= qty ; "
+            "Bijouterie.quantite_allouee += qty (disponible inchangé). "
+            "Consommation FIFO sur les ProduitLine du produit. "
+            "Crée un InventoryMovement(ALLOCATE) par sous-ligne consommée."
+        ),
         request_body=ReserveToBijouterieInSerializer,
         responses={
-            200: openapi.Response(
-                "Résumé du transfert (ERP clean)",
-                examples={
-                    "application/json": {
-                        "bijouterie_id": 1,
-                        "bijouterie_nom": "Rio-Gold",
-                        "note": "Affectation vitrines",
-                        "lignes": [
-                            {
-                                "produit_id": 10,
-                                "produit_nom": "Bague Or 18k",
-                                "demande": 5,
-                                "transfere": 5,
-                                "reserve_disponible_total": 21,
-                                "bijouterie_allouee_total": 12,
-                                "bijouterie_disponible_total": 0,
-                                "consommations": [
-                                    {
-                                        "produit_line_id": 501,
-                                        "lot_id": 90,
-                                        "numero_lot": "LOT-20260101-0001",
-                                        "qty": 3
-                                    },
-                                    {
-                                        "produit_line_id": 514,
-                                        "lot_id": 92,
-                                        "numero_lot": "LOT-20260103-0002",
-                                        "qty": 2
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                },
-            ),
+            200: openapi.Response("Résumé du transfert"),
             400: openapi.Response("Erreur de validation"),
             403: openapi.Response("Accès refusé"),
         },
         tags=["Stock"],
     )
-    def post(self, request, *args, **kwargs):
+    def post(self, request):
         s = ReserveToBijouterieInSerializer(data=request.data)
         s.is_valid(raise_exception=True)
 
@@ -388,9 +290,6 @@ class ReserveToBijouterieTransferView(APIView):
             )
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except ValidationError as e:
-            return Response(e.message_dict if hasattr(e, "message_dict") else {"detail": str(e)},
-                            status=status.HTTP_400_BAD_REQUEST)
 
         return Response(res, status=status.HTTP_200_OK)
 
