@@ -34,24 +34,14 @@ from store.serializers import ProduitSerializer
 
 
 class ReserveToBijouterieLineInSerializer(serializers.Serializer):
-    produit_id = serializers.IntegerField(min_value=1)
-    transfere = serializers.IntegerField(min_value=1)
-    
-
-# class ReserveToBijouterieLineInSerializer(serializers.Serializer):
-#     produit_line_id = serializers.IntegerField()
-#     quantite = serializers.IntegerField(min_value=1)
-
-# class ReserveToBijouterieInSerializer(serializers.Serializer):
-#     bijouterie_id = serializers.IntegerField()
-#     lignes = ReserveToBijouterieLineInSerializer(many=True)
-#     note = serializers.CharField(required=False, allow_blank=True)
-
+    produit_line_id = serializers.IntegerField()
+    quantite = serializers.IntegerField(min_value=1)
 
 class ReserveToBijouterieInSerializer(serializers.Serializer):
-    bijouterie_id = serializers.IntegerField(min_value=1)
+    bijouterie_id = serializers.IntegerField()
     lignes = ReserveToBijouterieLineInSerializer(many=True)
-    note = serializers.CharField(required=False, allow_blank=True, default="")
+    note = serializers.CharField(required=False, allow_blank=True)
+    
 
 # ----------------Bijouterie to vendeur--------------------------
 class BijouterieToVendorLineInSerializer(serializers.Serializer):
@@ -133,7 +123,7 @@ class StockSerializer(serializers.ModelSerializer):
         if obj.bijouterie_id is None:
             return "reserved"
         return "allocated" if (obj.quantite_allouee or 0) > 0 else "allocated_empty"
-
+    
 
 class StockSummaryBucketSerializer(serializers.Serializer):
     lignes = serializers.IntegerField(min_value=0)
