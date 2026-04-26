@@ -31,7 +31,6 @@ from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
                           MarquePuretePrixHistory, Modele, Produit, Purete)
 from store.serializers import (BijouterieSerializer, CategorieSerializer,
                                MarqueListSerializer,
-                               MarquePureteListSerializer,
                                MarquePuretePrixEvolutionPointSerializer,
                                MarquePuretePrixHistory,
                                MarquePuretePrixHistorySerializer,
@@ -585,55 +584,6 @@ class MarqueListAPIView(APIView):
 #         serializer = MarquePureteListSerializer(queryset, many=True)
 #         return Response(serializer.data, status=200)
 
-class ListMarquePureteView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Lister toutes les liaisons Marque–Pureté avec prix",
-        operation_description="""
-        Liste simple des prix par marque et pureté.
-
-        Filtres :
-        - ?marque=Dubai
-        - ?purete=18
-        - ?prix_min=40000
-        - ?prix_max=60000
-        """,
-        manual_parameters=[
-            openapi.Parameter("marque", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("purete", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("prix_min", openapi.IN_QUERY, type=openapi.TYPE_NUMBER),
-            openapi.Parameter("prix_max", openapi.IN_QUERY, type=openapi.TYPE_NUMBER),
-        ],
-        responses={200: MarquePureteListSerializer(many=True)},
-        tags=["Marques"],
-    )
-    def get(self, request):
-        queryset = MarquePurete.objects.select_related(
-            "marque",
-            "purete"
-        ).order_by("marque__marque", "purete__purete")
-
-        marque = request.query_params.get("marque")
-        purete = request.query_params.get("purete")
-        prix_min = request.query_params.get("prix_min")
-        prix_max = request.query_params.get("prix_max")
-
-        if marque:
-            queryset = queryset.filter(marque__marque__icontains=marque)
-
-        if purete:
-            queryset = queryset.filter(purete__purete__icontains=purete)
-
-        if prix_min:
-            queryset = queryset.filter(prix__gte=prix_min)
-
-        if prix_max:
-            queryset = queryset.filter(prix__lte=prix_max)
-
-        serializer = MarquePureteListSerializer(queryset, many=True)
-
-        return Response(serializer.data, status=status.HTTP_200_OK)
 
 # class MarqueCreateAPIView(APIView):
 #     renderer_classes = [UserRenderer]
@@ -741,6 +691,59 @@ class ListMarquePureteView(APIView):
 #             "created": created,
 #             "updated": updated
 #         }, status=status_code)
+
+
+class ListMarquePureteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Lister les marques avec leurs puretés et prix",
+        operation_description="""
+        Retourne une liste groupée par marque.
+
+        Filtres :
+        - ?marque=Local
+        - ?purete=18
+        """,
+        manual_parameters=[
+            openapi.Parameter("marque", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("purete", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+        ],
+        tags=["Marques"],
+    )
+    def get(self, request):
+        queryset = MarquePurete.objects.select_related(
+            "marque",
+            "purete"
+        ).order_by("marque__marque", "purete__purete")
+
+        marque = request.query_params.get("marque")
+        purete = request.query_params.get("purete")
+
+        if marque:
+            queryset = queryset.filter(marque__marque__icontains=marque)
+
+        if purete:
+            queryset = queryset.filter(purete__purete__icontains=purete)
+
+        grouped = {}
+
+        for item in queryset:
+            marque_id = item.marque.id
+
+            if marque_id not in grouped:
+                grouped[marque_id] = {
+                    "marque": item.marque.marque,
+                    "puretes": []
+                }
+
+            grouped[marque_id]["puretes"].append({
+                "purete_id": item.purete.id,
+                "purete": item.purete.purete,  # 👈 utile frontend
+                "prix": str(item.prix),
+            })
+
+        return Response(list(grouped.values()), status=200)
 
 class CreateMarquePureteView(APIView):
     permission_classes = [IsAuthenticated]
