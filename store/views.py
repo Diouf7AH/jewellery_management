@@ -701,11 +701,12 @@ class ListMarquePureteView(APIView):
         operation_description="""
         Retourne une liste groupée par marque.
 
-        Le prix est affiché au niveau de la marque.
+        Le prix est au niveau de la marque.
 
-        Exemple de réponse :
+        Exemple :
         [
             {
+                "marque_id": 1,
                 "marque": "Local",
                 "prix": "5000.00",
                 "puretes": [
@@ -737,10 +738,11 @@ class ListMarquePureteView(APIView):
         ],
         responses={
             200: openapi.Response(
-                description="Liste groupée des marques avec puretés",
+                description="Liste groupée des marques",
                 examples={
                     "application/json": [
                         {
+                            "marque_id": 1,
                             "marque": "Local",
                             "prix": "5000.00",
                             "puretes": [
@@ -754,7 +756,7 @@ class ListMarquePureteView(APIView):
                 },
             )
         },
-        tags=["Marques"],
+        tags=["marque"],
     )
     def get(self, request):
         queryset = MarquePurete.objects.select_related(
@@ -778,6 +780,7 @@ class ListMarquePureteView(APIView):
 
             if marque_id not in grouped:
                 grouped[marque_id] = {
+                    "marque_id": item.marque.id,
                     "marque": item.marque.marque,
                     "prix": str(item.prix),
                     "puretes": []
@@ -789,6 +792,7 @@ class ListMarquePureteView(APIView):
             })
 
         return Response(list(grouped.values()), status=200)
+    
 
 class CreateMarquePureteView(APIView):
     permission_classes = [IsAuthenticated]
