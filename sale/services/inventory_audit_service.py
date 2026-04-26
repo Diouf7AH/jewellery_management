@@ -1,65 +1,143 @@
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.utils import timezone
 
 from inventory.models import Bucket, InventoryMovement, MovementType
+from purchase.models import ProduitLine
 from sale.models import Facture, Vente, VenteProduit
 
 
-def create_sale_out(*, facture: Facture, vente: Vente, ligne: VenteProduit, by_user) -> bool:
-    """
-    Audit SALE_OUT par ligne.
-    Idempotence: ta contrainte UniqueConstraint(sale_out_key=vente_ligne_id)
-    va empêcher les doublons.
-    Retour True si créé, False si déjà existait.
-    """
+# ============================================================
+# 🔴 SALE_OUT (VENTE)
+# ============================================================
+def create_sale_out_consumption(
+    *,
+    facture: Facture,
+    vente: Vente,
+    vente_ligne: VenteProduit,
+    produit_line: ProduitLine,
+    qty: int,
+    by_user,
+) -> bool:
+
+    q = int(qty or 0)
+
+    if q <= 0:
+        raise ValidationError("qty doit être > 0.")
+
+    if not vente_ligne or not vente_ligne.produit_id:
+        raise ValidationError("vente_ligne.produit requis.")
+
+    if not produit_line or not produit_line.id:
+        raise ValidationError("produit_line requis.")
+
+    if not getattr(produit_line, "lot_id", None):
+        raise ValidationError("produit_line.lot requis.")
+
+    # ✅ vendor obligatoire (aligné avec constraint DB)
+    vendor = getattr(vente, "vendor", None) or getattr(vente_ligne, "vendor", None)
+
+    if not vendor:
+        raise ValidationError("Vendeur requis pour SALE_OUT.")
+
     try:
         InventoryMovement.objects.create(
-            produit=ligne.produit,
+            produit=vente_ligne.produit,
             movement_type=MovementType.SALE_OUT,
-            qty=ligne.quantite,
+            qty=q,
             unit_cost=None,
-            lot=None,
-            reason=f"Vente {vente.numero_vente} / Facture {facture.numero_facture} / ligne {ligne.id}",
+
+            produit_line=produit_line,
+            lot=produit_line.lot,
+
+            # 🔥 VERSION ERP PRO
+            reason=(
+                f"SALE_OUT | vente={vente.numero_vente} | "
+                f"facture={facture.numero_facture} | "
+                f"ligne={vente_ligne.id} | vendor={vendor.id} | "
+                f"pl={produit_line.id} | lot={produit_line.lot_id}"
+            ),
+
             src_bucket=Bucket.BIJOUTERIE,
             src_bijouterie=facture.bijouterie,
             dst_bucket=Bucket.EXTERNAL,
             dst_bijouterie=None,
+
             facture=facture,
             vente=vente,
-            vente_ligne=ligne,
+            vente_ligne=vente_ligne,
+            vendor=vendor,
+
             occurred_at=timezone.now(),
             created_by=by_user,
-            vendor=ligne.vendor,
         )
         return True
-    except Exception as e:
-        msg = str(e).lower()
-        if "sale_out" in msg or "sale out key" in msg or "uniq_sale_out" in msg:
-            return False
-        raise
+
+    except IntegrityError:
+        # idempotence FIFO (déjà créé)
+        return False
 
 
-def create_return_in(*, facture: Facture, vente: Vente, ligne: VenteProduit, by_user) -> None:
-    """
-    Audit RETURN_IN (annulation): EXTERNAL -> BIJOUTERIE
-    """
+# ============================================================
+# 🟢 RETURN_IN (ANNULATION)
+# ============================================================
+def create_return_in_consumption(
+    *,
+    facture: Facture,
+    vente: Vente,
+    vente_ligne: VenteProduit,
+    produit_line: ProduitLine,
+    qty: int,
+    by_user,
+) -> bool:
+
+    q = int(qty or 0)
+
+    if q <= 0:
+        raise ValidationError("qty doit être > 0.")
+
+    if not vente_ligne or not vente_ligne.produit_id:
+        raise ValidationError("vente_ligne.produit requis.")
+
+    if not produit_line or not produit_line.id:
+        raise ValidationError("produit_line requis.")
+
+    if not getattr(produit_line, "lot_id", None):
+        raise ValidationError("produit_line.lot requis.")
+
+    vendor = getattr(vente, "vendor", None) or getattr(vente_ligne, "vendor", None)
+
     InventoryMovement.objects.create(
-        produit=ligne.produit,
-        movement_type=MovementType.RETURN_IN,
-        qty=ligne.quantite,
+        produit=vente_ligne.produit,
+        movement_type=MovementType.RETURN_IN,  # ✅ CORRECT
+        qty=q,
         unit_cost=None,
-        lot=None,
-        reason=f"Annulation vente {vente.numero_vente} / Facture {facture.numero_facture} / ligne {ligne.id}",
+
+        produit_line=produit_line,
+        lot=produit_line.lot,
+
+        # 🔥 VERSION PRO
+        reason=(
+            f"RETURN_IN | vente={vente.numero_vente} | "
+            f"facture={facture.numero_facture} | "
+            f"ligne={vente_ligne.id} | vendor={vendor.id if vendor else 'N/A'} | "
+            f"pl={produit_line.id} | lot={produit_line.lot_id}"
+        ),
+
         src_bucket=Bucket.EXTERNAL,
         src_bijouterie=None,
         dst_bucket=Bucket.BIJOUTERIE,
         dst_bijouterie=facture.bijouterie,
+
         facture=facture,
         vente=vente,
-        vente_ligne=ligne,
+        vente_ligne=vente_ligne,
+        vendor=vendor,
+
         occurred_at=timezone.now(),
         created_by=by_user,
-        vendor=ligne.vendor,
     )
 
+    return True

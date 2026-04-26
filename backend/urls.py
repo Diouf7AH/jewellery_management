@@ -25,7 +25,8 @@ from drf_yasg.views import get_schema_view
 # drf-yasg imports
 from rest_framework import permissions
 
-from userauths.views import resend_confirmation_form, resend_confirmation_submit
+from userauths.views import (resend_confirmation_form,
+                             resend_confirmation_submit)
 
 # Define the schema view
 schema_view = get_schema_view(
@@ -75,3 +76,11 @@ urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
 # CREATE DATABASE jewellery_management CHARACTER set utf8 COLLATE utf8_general_ci;
+
+# R<F~f^oDP*6LF!tL
+
+# L'idéal serait que votre site web et vos services de messagerie soient hébergés chez Hostinger, ou que vous n'ayez encore aucun service connecté à ce domaine.
+
+# La gestion de votre zone DNS sera transférée chez Hostinger pour une gestion simplifiée de votre domaine.
+
+# Si vous avez des services actifs chez d'autres fournisseurs connectés à ce domaine, ils risquent de ne plus fonctionner. Vous devrez modifier vos enregistrements DNS après le transfert pour résoudre ce problème.

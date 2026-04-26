@@ -2,7 +2,9 @@
 from django.db import models, transaction
 from django.db.models import F
 from django.utils import timezone
+
 from store.models import Bijouterie
+
 
 # pour les numero de facture
 class InvoiceCounter(models.Model):
@@ -29,3 +31,6 @@ class InvoiceCounter(models.Model):
             row.save(update_fields=["last_value"])
             row.refresh_from_db(fields=["last_value"])
             return row.last_value
+        
+                
+        

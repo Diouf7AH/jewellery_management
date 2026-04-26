@@ -1,15 +1,17 @@
 # from weasyprint import HTML
 # import weasyprint
-from datetime import date, datetime
-from datetime import time as dtime
-from datetime import timedelta
-from decimal import Decimal
-from io import BytesIO
+from __future__ import annotations
 
+from datetime import timedelta
+from decimal import Decimal, InvalidOperation
+
+from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.paginator import EmptyPage, Paginator
 from django.db import transaction
-from django.db.models import F, Q, Sum
+from django.db.models import Count, Exists, F, OuterRef, Q, Sum
+from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_yasg import openapi
@@ -17,1239 +19,278 @@ from drf_yasg.utils import swagger_auto_schema
 from openpyxl import Workbook
 from openpyxl.styles import Font, numbers
 from rest_framework import permissions, status
+from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.permissions import get_role_name
+from backend.mixins import (GROUP_BY_CHOICES, ExportXlsxMixin,
+                            aware_range_month, parse_month_or_default,
+                            resolve_tz)
+from backend.permissions import CanCreateSale, IsCashierOnly
+from backend.query_scopes import scope_bijouterie_q
 from backend.renderers import UserRenderer
-from sale.models import Client, Facture, Paiement, Vente, VenteProduit
-from sale.serializers import (FactureSerializer, PaiementCreateSerializer,
-                              PaiementSerializer, VenteCreateInSerializer,
-                              VenteDetailSerializer, VenteListSerializer)
+from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
+                           get_role_name)
+from compte_depot.models import (ClientDepot, CompteDepot,
+                                 CompteDepotTransaction)
+from inventory.models import InventoryMovement
+from inventory.services import log_move
+from sale.models import VenteProduit  # adapte le chemin si besoin
+from sale.models import Client, Facture, Paiement, PaiementLigne, Vente
+from sale.pdf.escpos_ticket_80mm import build_escpos_recu_paiement_80mm
+from sale.pdf.facture_A5_paysage import build_facture_a5_paysage_pdf
+from sale.pdf.ticket_paiement_80mm import build_ticket_paiement_80mm_pdf
+from sale.pdf.ticket_proforma_58mm import build_ticket_proforma_58mm_pdf
+from sale.serializers import (CancelProformaVenteSerializer,
+                              FactureListSerializer, FactureSerializer,
+                              PaiementFactureMultiModeResponseSerializer,
+                              PaiementMultiModeSerializer,
+                              RetourVenteProduitSerializer,
+                              UpdateVenteProduitSerializer,
+                              VenteCreateInSerializer, VenteDetailSerializer,
+                              VenteListSerializer)
+from sale.services.comptable_export_service import export_comptable_factures
+from sale.services.confirm_service import confirm_sale_out_from_vendor
+from sale.services.facture_hash_service import generate_facture_hash
+from sale.services.facture_pdf_service import generate_facture_pdf
+from sale.services.facture_qr_service import generate_facture_qr
+# from sale.services.receipt_service import generate_recu_paiement_pdf_bytes
 from sale.services.sale_service import (cancel_sale_restore_direct,
-                                        create_sale_direct_stock)
+                                        create_sale_one_vendor,
+                                        upsert_client_for_payment,
+                                        validate_facture_payable)
+from staff.models import Cashier
+from stock.models import VendorStock
 from store.models import Bijouterie, MarquePurete, Produit
 from vendor.models import Vendor
 
-from .serializers import FactureListSerializer
 from .utils import ensure_role_and_bijouterie, user_bijouterie
+
+DEFAULT_PAGE_SIZE = getattr(settings, "DEFAULT_PAGE_SIZE", 50)
+MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
+
 
 
 class VenteProduitCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [CanCreateSale]
+    http_method_names = ["post"]
+
+    def _resolve_produit_id(self, item):
+        produit_id = item.get("produit_id")
+        sku = item.get("sku")
+        qr = item.get("qr") or item.get("qr_code")
+
+        if produit_id:
+            return produit_id
+
+        if qr:
+            qr = str(qr).strip()
+
+            if qr.startswith("P:"):
+                raw_id = qr.replace("P:", "").strip()
+
+                if not raw_id.isdigit():
+                    raise ValidationError({"qr": "QR invalide. Format attendu: P:15"})
+
+                return int(raw_id)
+
+            raise ValidationError({"qr": "QR invalide. Format attendu: P:15"})
+
+        if sku:
+            produit = Produit.objects.filter(sku__iexact=str(sku).strip()).first()
+
+            if not produit:
+                raise ValidationError({"sku": f"Produit introuvable pour SKU: {sku}"})
+
+            return produit.id
+
+        raise ValidationError({
+            "produit": "Vous devez fournir produit_id, sku ou qr."
+        })
+
+    def _normalize_produits(self, produits):
+        normalized = []
+
+        for item in produits:
+            item = dict(item)
+            item["produit_id"] = self._resolve_produit_id(item)
+
+            item.pop("sku", None)
+            item.pop("qr", None)
+            item.pop("qr_code", None)
+
+            normalized.append(item)
+
+        return normalized
 
     @swagger_auto_schema(
-        operation_summary="Créer une vente + facture proforma (décrément stock vendeur direct)",
+        operation_summary="Créer une vente (1 vendeur) + facture PROFORMA (stock non consommé)",
         request_body=VenteCreateInSerializer,
-        responses={201: openapi.Response("Créé")},
+        responses={
+            201: openapi.Response("Créé"),
+            400: "Erreur validation",
+            403: "Accès refusé",
+        },
         tags=["Ventes"],
     )
     @transaction.atomic
     def post(self, request):
-        user = request.user
-        bijouterie, role = ensure_role_and_bijouterie(user)
+        serializer = VenteCreateInSerializer(
+            data=request.data,
+            context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
 
-        if role not in {"vendor", "manager"} or not bijouterie:
-            return Response({"error": "⛔ Accès refusé ou bijouterie manquante."}, status=403)
-
-        in_ser = VenteCreateInSerializer(data=request.data)
-        in_ser.is_valid(raise_exception=True)
+        role = (get_role_name(request.user) or "").lower().strip()
 
         try:
-            vente, facture, created_moves = create_sale_direct_stock(
-                user=user,
-                bijouterie=bijouterie,
+            produits_normalized = self._normalize_produits(validated["produits"])
+        except ValidationError as e:
+            detail = getattr(e, "message_dict", None) or getattr(e, "messages", None) or str(e)
+            return Response(
+                {"detail": detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        payload = {
+            "client": validated.get("client") or {},
+            "produits": produits_normalized,
+        }
+
+        if role in {ROLE_ADMIN, ROLE_MANAGER}:
+            vendor_email = (validated.get("vendor_email") or "").strip()
+
+            if not vendor_email:
+                return Response(
+                    {"detail": "vendor_email est requis pour admin/manager."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            vendor = (
+                Vendor.objects
+                .select_related("bijouterie", "user")
+                .filter(user__email__iexact=vendor_email)
+                .first()
+            )
+            if not vendor:
+                return Response(
+                    {"detail": "Vendeur introuvable pour ce vendor_email."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if role == ROLE_MANAGER:
+                manager_profile = getattr(request.user, "staff_manager_profile", None)
+
+                if not manager_profile or (
+                    hasattr(manager_profile, "verifie") and not manager_profile.verifie
+                ):
+                    return Response(
+                        {"detail": "Profil manager invalide."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
+                if not manager_profile.bijouteries.filter(id=vendor.bijouterie_id).exists():
+                    return Response(
+                        {"detail": "⛔ Vous ne pouvez pas créer une vente pour un vendeur hors de vos bijouteries."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+            
+            payload["vendor_email"] = vendor_email
+
+        try:
+            vente, facture, audit_created = create_sale_one_vendor(
+                user=request.user,
                 role=role,
-                payload=in_ser.validated_data,
+                payload=payload,
             )
         except ValidationError as e:
-            msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
-            return Response({"error": msg}, status=400)
+            detail = getattr(e, "message_dict", None) or getattr(e, "messages", None) or str(e)
+            return Response(
+                {"detail": detail},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        lignes = [
+            {
+                "ligne_id": ligne.id,
+                "produit_id": ligne.produit_id,
+                "produit_nom": getattr(ligne.produit, "nom", None),
+                "quantite": ligne.quantite,
+                "prix_vente_grammes": str(ligne.prix_vente_grammes),
+                "montant_ht": str(ligne.montant_ht),
+                "remise": str(ligne.remise or 0),
+                "autres": str(ligne.autres or 0),
+                "montant_total": str(ligne.montant_total or 0),
+            }
+            for ligne in vente.lignes.select_related("produit").all()
+        ]
+
+        client = getattr(vente, "client", None)
 
         return Response(
             {
-                "message": "Vente créée. Stock vendeur décrémenté.",
-                "sale_out_created": created_moves,
-                "facture": FactureSerializer(facture).data,
-                "vente": VenteDetailSerializer(vente).data,
+                "message": "Vente créée avec succès.",
+                "vente_id": vente.id,
+                "numero_vente": vente.numero_vente,
+
+                "facture": {
+                    "facture_id": facture.id,
+                    "numero_facture": facture.numero_facture,
+                    "type_facture": facture.type_facture,
+                    "status_facture": facture.status,
+                    "montant_ht": str(facture.montant_ht),
+                    "taux_tva": str(facture.taux_tva),
+                    "montant_tva": str(facture.montant_tva),
+                    "montant_total": str(facture.montant_total),
+                },
+
+                "audit_created": bool(audit_created),
+
+                "bijouterie": {
+                    "id": facture.bijouterie_id,
+                    "nom": getattr(facture.bijouterie, "nom", None),
+                },
+
+                "client": {
+                    "id": client.id if client else None,
+                    "nom": getattr(client, "nom", None) if client else None,
+                    "prenom": getattr(client, "prenom", None) if client else None,
+                    "telephone": getattr(client, "telephone", None) if client else None,
+                },
+
+                "lignes": lignes,
             },
-            status=201,
+            status=status.HTTP_201_CREATED,
         )
 
 
-class AnnulerVenteView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Annuler une vente (cashier/manager) + restauration stock direct (sans delivery_status)",
-        operation_description=(
-            "Annule une vente entière :\n"
-            "- restaure VendorStock.quantite_vendue\n"
-            "- crée RETURN_IN (audit)\n"
-            "- idempotent\n\n"
-            "✅ Rôles autorisés : cashier, manager.\n"
-            "Sécurité : même bijouterie.\n"
-            "Recommandé : interdire si facture PAYÉE."
-        ),
-        tags=["Ventes"],
-        responses={200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found"},
+def error_response(code, message, status_code=status.HTTP_400_BAD_REQUEST):
+    return Response(
+        {
+            "status": "error",
+            "code": code,
+            "message": message,
+        },
+        status=status_code,
     )
-    @transaction.atomic
-    def post(self, request, vente_id: int):
-        user = request.user
-        role = get_role_name(user)
 
-        if role not in {"cashier", "manager"}:
-            return Response({"error": "⛔ Accès refusé (cashier/manager requis)."}, status=403)
 
-        user_shop = user_bijouterie(user)
-        if not user_shop:
-            return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=403)
-
-        vente = (
-            Vente.objects
-            .select_for_update()
-            .prefetch_related("produits__produit", "produits__vendor")
-            .filter(pk=vente_id)
-            .first()
-        )
-        if not vente:
-            return Response({"error": "Vente introuvable."}, status=404)
-
-        # récup facture
-        facture = getattr(vente, "facture_vente", None)
-        if not facture:
-            facture = Facture.objects.select_related("bijouterie").filter(vente=vente).first()
-        if not facture:
-            return Response({"error": "Aucune facture liée à cette vente."}, status=400)
-
-        if facture.bijouterie_id != user_shop.id:
-            return Response({"error": "Cette vente n’appartient pas à votre bijouterie."}, status=403)
-
-        if facture.status == Facture.STAT_PAYE:
-            return Response({"error": "Impossible d’annuler : facture déjà payée."}, status=400)
-
-        try:
-            result = cancel_sale_restore_direct(user=user, vente=vente, facture=facture)
-        except ValidationError as e:
-            msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
-            return Response({"error": msg}, status=400)
-
-        vente.refresh_from_db()
-        facture.refresh_from_db()
-
-        return Response(
-            {
-                "message": "Vente déjà annulée (idempotent)." if result["already_cancelled"] else "Vente annulée. Stock restauré.",
-                "returned_movements": result["returned_movements"],
-                "vente": VenteDetailSerializer(vente).data,
-                "facture": FactureSerializer(facture).data,
-            },
-            status=200,
-        )
-
-
-
-# ----------- Helpers existants (repris de ton message) -----------
-
-# def _dec(v):
-#     from decimal import InvalidOperation
-#     try:
-#         if v in (None, "", 0, "0"):
-#             return None
-#         return Decimal(str(v))
-#     except (InvalidOperation, TypeError, ValueError):
-#         return None
-
-# def _user_profiles(user):
-#     vp = getattr(user, "staff_vendor_profile", None)
-#     mp = getattr(user, "staff_manager_profile", None)
-#     return vp, mp
-
-# def _ensure_role_and_bijouterie(user):
-#     vp, mp = _user_profiles(user)
-#     if vp and getattr(vp, "verifie", False) and vp.bijouterie_id:
-#         return vp.bijouterie, "vendor"
-#     if mp and getattr(mp, "verifie", False) and mp.bijouterie_id:
-#         return mp.bijouterie, "manager"
-#     return None, None
-
-def _resolve_vendor_for_line(*, role, user, bijouterie, vendor_email: str | None):
-    if role == "vendor":
-        v = get_object_or_404(Vendor.objects.select_related("user", "bijouterie"), user=user)
-        if not v.verifie:
-            raise PermissionError("Votre compte vendor est désactivé.")
-        if v.bijouterie_id != bijouterie.id:
-            raise PermissionError("Le vendor n'appartient pas à votre bijouterie.")
-        return v
-
-    # role == manager
-    email = (vendor_email or "").strip()
-    if not email:
-        raise ValueError("Pour un manager, 'vendor_email' est requis pour affecter la vente.")
-    v = Vendor.objects.select_related("user", "bijouterie").filter(user__email__iexact=email).first()
-    if not v:
-        raise Vendor.DoesNotExist(f"Vendor '{email}' introuvable.")
-    if not v.verifie:
-        raise PermissionError(f"Le vendor '{email}' est désactivé.")
-    if v.bijouterie_id != bijouterie.id:
-        raise PermissionError(f"Le vendor '{email}' n'appartient pas à votre bijouterie.")
-    return v
-
-# ----------- Vue -----------
-
-
-# class VenteProduitCreateView(APIView):
-#     """
-#     Crée une vente (lignes + client), 
-#     puis génère une facture PROFORMA NON PAYÉE (numérotation par bijouterie).
-#     Le stock vendeur sera consommé plus tard, au moment de la livraison/paiement confirmé.
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer une vente (stock FIFO + facture proforma)",
-#         request_body=VenteCreateInSerializer,
-#         responses={201: openapi.Response("Créé", schema=None)},
-#         tags=["Ventes"],
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         role = _user_role(request.user)
-
-#         if role not in {"admin","manager","vendor","cashier"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=403)
-
-#         qs = Facture.objects.select_related("vente","vente__client","bijouterie")
-
-#         if role in {"manager","vendor","cashier"}:
-#             bij = _user_bijouterie_facture(request.user)
-#             if not bij:
-#                 return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=400)
-#             qs = qs.filter(bijouterie=bij)
-
-#         # 2) Valider payload
-#         in_ser = VenteCreateInSerializer(data=request.data)
-#         in_ser.is_valid(raise_exception=True)
-#         payload = in_ser.validated_data
-#         client_in = payload["client"]
-#         items = payload["produits"]
-
-#         # 3) Client (upsert: par téléphone si fourni, sinon nom+prénom)
-#         tel = (client_in.get("telephone") or "").strip()
-#         if tel:
-#             lookup = {"telephone": tel}
-#         else:
-#             lookup = {"nom": client_in["nom"], "prenom": client_in["prenom"]}
-
-#         client, _ = Client.objects.get_or_create(
-#             defaults={"nom": client_in["nom"], "prenom": client_in["prenom"]},
-#             **lookup,
-#         )
-
-#         # 4) Précharge produits par slug
-#         slugs = [it["slug"] for it in items]
-#         produits = {
-#             p.slug: p
-#             for p in Produit.objects.select_related("marque", "purete").filter(slug__in=slugs)
-#         }
-#         missing = [s for s in set(slugs) if s not in produits]
-#         if missing:
-#             return Response(
-#                 {"error": f"Produits introuvables: {', '.join(missing)}"},
-#                 status=status.HTTP_404_NOT_FOUND,
-#             )
-
-#         # 5) Tarifs (marque, pureté)
-#         pairs = {
-#             (p.marque_id, p.purete_id)
-#             for p in produits.values()
-#             if p.marque_id and p.purete_id
-#         }
-#         tarifs = {
-#             (mp.marque_id, mp.purete_id): Decimal(str(mp.prix))
-#             for mp in MarquePurete.objects.filter(
-#                 marque_id__in=[m for (m, _) in pairs],
-#                 purete_id__in=[r for (_, r) in pairs],
-#             )
-#         }
-
-#         # 6) Entête de vente
-#         vente = Vente.objects.create(
-#             client=client,
-#             created_by=user,
-#             bijouterie=bijouterie,  # 💡 important
-#         )
-
-#         # 7) Lignes
-#         for it in items:
-#             produit = produits[it["slug"]]
-#             qte = int(it["quantite"])
-
-#             # 7.a Vendor pour la ligne
-#             try:
-#                 vendor = _resolve_vendor_for_line(
-#                     role=role,
-#                     user=user,
-#                     bijouterie=bijouterie,
-#                     vendor_email=it.get("vendor_email"),
-#                 )
-#             except Vendor.DoesNotExist as e:
-#                 return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
-#             except PermissionError as e:
-#                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
-#             except ValueError as e:
-#                 return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-#             # 7.b Prix par gramme (input prioritaire > 0 ; sinon tarif MP)
-#             pvg = _dec(it.get("prix_vente_grammes"))
-#             if not pvg or pvg <= 0:
-#                 key = (produit.marque_id, produit.purete_id)
-#                 pvg = tarifs.get(key)
-#                 if not pvg or pvg <= 0:
-#                     return Response(
-#                         {
-#                             "error": f"Tarif manquant pour {produit.nom}.",
-#                             "solution": "Fournir 'prix_vente_grammes' > 0 ou renseigner Marque/Pureté.",
-#                         },
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#             remise = _dec(it.get("remise")) or Decimal("0.00")
-#             autres = _dec(it.get("autres")) or Decimal("0.00")
-#             tax = _dec(it.get("tax")) or Decimal("0.00")
-
-
-#             # 7.d Créer la ligne de vente
-#             VenteProduit.objects.create(
-#                 vente=vente,
-#                 produit=produit,
-#                 vendor=vendor,
-#                 quantite=qte,
-#                 prix_vente_grammes=pvg,
-#                 remise=remise,
-#                 autres=autres,
-#                 tax=tax,
-#             )
-#             # TODO: le SALE_OUT et le journal d’inventaire seront gérés dans ConfirmerLivraisonView.
-
-#         # 8) Totaux & facture proforma
-#         try:
-#             vente.mettre_a_jour_montant_total(base="ttc")
-#         except Exception:
-#             # on évite de casser la vente pour un problème de calculeur
-#             pass
-
-#         facture = Facture.objects.create(
-#             vente=vente,
-#             bijouterie=bijouterie,
-#             montant_total=vente.montant_total,
-#             status=Facture.STAT_NON_PAYE,
-#             type_facture=Facture.TYPE_PROFORMA,
-#             numero_facture=Facture.generer_numero_unique(bijouterie),
-#         )
-
-#         return Response(
-#             {
-#                 "facture": FactureSerializer(facture).data,
-#                 "vente": VenteDetailSerializer(vente).data,
-#             },
-#             status=status.HTTP_201_CREATED,
-#         )
-
-# class VenteProduitCreateView(APIView):
-#     """
-#     Crée une vente (lignes + client),
-#     puis génère une facture PROFORMA NON PAYÉE (numérotation par bijouterie).
-#     Le stock vendeur sera consommé plus tard (livraison/paiement confirmé).
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer une vente + facture proforma",
-#         request_body=VenteCreateInSerializer,
-#         responses={201: openapi.Response("Créé")},
-#         tags=["Ventes"],
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-
-#         # 1) Rôle + bijouterie
-#         bijouterie, role = _ensure_role_and_bijouterie(user)
-#         if role not in {"vendor", "manager"} or not bijouterie:
-#             return Response(
-#                 {"error": "⛔ Accès refusé ou bijouterie manquante."},
-#                 status=status.HTTP_403_FORBIDDEN,
-#             )
-
-#         # 2) Valider payload
-#         in_ser = VenteCreateInSerializer(data=request.data)
-#         in_ser.is_valid(raise_exception=True)
-#         payload = in_ser.validated_data
-#         client_in = payload["client"]
-#         items = payload["produits"]
-
-#         # 3) Client (upsert: téléphone si fourni sinon nom+prénom)
-#         tel = (client_in.get("telephone") or "").strip()
-#         lookup = {"telephone": tel} if tel else {"nom": client_in["nom"], "prenom": client_in["prenom"]}
-
-#         client, _ = Client.objects.get_or_create(
-#             defaults={"nom": client_in["nom"], "prenom": client_in["prenom"], "telephone": tel or None},
-#             **lookup,
-#         )
-
-#         # 4) Précharger produits (par slug)
-#         slugs = [it["slug"] for it in items]
-#         produits_qs = Produit.objects.select_related("marque", "purete").filter(slug__in=slugs)
-#         produits = {p.slug: p for p in produits_qs}
-
-#         missing = [s for s in set(slugs) if s not in produits]
-#         if missing:
-#             return Response(
-#                 {"error": f"Produits introuvables: {', '.join(missing)}"},
-#                 status=status.HTTP_404_NOT_FOUND,
-#             )
-
-#         # 5) Charger tarifs MarquePurete (fallback prix_vente_grammes)
-#         pairs = {(p.marque_id, p.purete_id) for p in produits.values() if p.marque_id and p.purete_id}
-#         tarifs = {
-#             (mp.marque_id, mp.purete_id): Decimal(str(mp.prix))
-#             for mp in MarquePurete.objects.filter(
-#                 marque_id__in=[m for (m, _) in pairs],
-#                 purete_id__in=[r for (_, r) in pairs],
-#             )
-#         }
-
-#         # 6) Créer vente
-#         vente = Vente.objects.create(
-#             client=client,
-#             created_by=user,
-#             bijouterie=bijouterie,
-#         )
-
-#         # 7) Créer lignes
-#         for it in items:
-#             produit = produits[it["slug"]]
-#             qte = int(it["quantite"])
-
-#             # vendor de la ligne
-#             try:
-#                 vendor = _resolve_vendor_for_line(
-#                     role=role,
-#                     user=user,
-#                     bijouterie=bijouterie,
-#                     vendor_email=it.get("vendor_email"),
-#                 )
-#             except Vendor.DoesNotExist as e:
-#                 return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
-#             except PermissionError as e:
-#                 return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
-#             except ValueError as e:
-#                 return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-#             # prix/gramme
-#             pvg = _dec(it.get("prix_vente_grammes"))
-#             if not pvg or pvg <= 0:
-#                 key = (produit.marque_id, produit.purete_id)
-#                 pvg = tarifs.get(key)
-#                 if not pvg or pvg <= 0:
-#                     return Response(
-#                         {"error": f"Tarif manquant pour {produit.nom}."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#             VenteProduit.objects.create(
-#                 vente=vente,
-#                 produit=produit,
-#                 vendor=vendor,
-#                 quantite=qte,
-#                 prix_vente_grammes=pvg,
-#                 remise=_dec(it.get("remise")) or Decimal("0.00"),
-#                 autres=_dec(it.get("autres")) or Decimal("0.00"),
-#                 tax=_dec(it.get("tax")) or Decimal("0.00"),
-#             )
-
-#         # 8) Totaux + facture proforma
-#         try:
-#             vente.mettre_a_jour_montant_total(base="ttc")
-#         except Exception:
-#             pass
-
-#         facture = Facture.objects.create(
-#             vente=vente,
-#             bijouterie=bijouterie,
-#             montant_total=vente.montant_total,
-#             status=Facture.STAT_NON_PAYE,
-#             type_facture=Facture.TYPE_PROFORMA,
-#             numero_facture=Facture.generer_numero_unique(bijouterie),
-#         )
-
-#         return Response(
-#             {
-#                 "facture": FactureSerializer(facture).data,
-#                 "vente": VenteDetailSerializer(vente).data,
-#             },
-#             status=status.HTTP_201_CREATED,
-#         )
-
-# class VenteProduitCreateView(APIView):
-#     """
-#     Crée une vente + facture proforma, ET décrémente le stock vendeur immédiatement.
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer une vente + facture proforma + sortie stock immédiate",
-#         request_body=VenteCreateInSerializer,
-#         responses={201: openapi.Response("Créé")},
-#         tags=["Ventes"],
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         user = request.user
-
-#         # 1) Rôle + bijouterie
-#         bijouterie, role = _ensure_role_and_bijouterie(user)
-#         if role not in {"vendor", "manager"} or not bijouterie:
-#             return Response(
-#                 {"error": "⛔ Accès refusé ou bijouterie manquante."},
-#                 status=status.HTTP_403_FORBIDDEN,
-#             )
-
-#         # 2) Valider payload
-#         in_ser = VenteCreateInSerializer(data=request.data)
-#         in_ser.is_valid(raise_exception=True)
-#         payload = in_ser.validated_data
-#         client_in = payload["client"]
-#         items = payload["produits"]
-
-#         # 3) Client (upsert)
-#         tel = (client_in.get("telephone") or "").strip()
-#         lookup = {"telephone": tel} if tel else {"nom": client_in["nom"], "prenom": client_in["prenom"]}
-
-#         client, _ = Client.objects.get_or_create(
-#             defaults={"nom": client_in["nom"], "prenom": client_in["prenom"], "telephone": tel or None},
-#             **lookup,
-#         )
-
-#         # 4) Produits (par slug)
-#         slugs = [it["slug"] for it in items]
-#         produits_qs = Produit.objects.select_related("marque", "purete").filter(slug__in=slugs)
-#         produits = {p.slug: p for p in produits_qs}
-
-#         missing = [s for s in set(slugs) if s not in produits]
-#         if missing:
-#             return Response({"error": f"Produits introuvables: {', '.join(missing)}"}, status=404)
-
-#         # 5) Tarifs MarquePurete (fallback)
-#         pairs = {(p.marque_id, p.purete_id) for p in produits.values() if p.marque_id and p.purete_id}
-#         tarifs = {
-#             (mp.marque_id, mp.purete_id): Decimal(str(mp.prix))
-#             for mp in MarquePurete.objects.filter(
-#                 marque_id__in=[m for (m, _) in pairs],
-#                 purete_id__in=[r for (_, r) in pairs],
-#             )
-#         }
-
-#         # 6) Vente
-#         vente = Vente.objects.create(client=client, created_by=user, bijouterie=bijouterie)
-
-#         # 7) Lignes
-#         for it in items:
-#             produit = produits[it["slug"]]
-#             qte = int(it["quantite"])
-
-#             try:
-#                 vendor = _resolve_vendor_for_line(
-#                     role=role,
-#                     user=user,
-#                     bijouterie=bijouterie,
-#                     vendor_email=it.get("vendor_email"),
-#                 )
-#             except Vendor.DoesNotExist as e:
-#                 return Response({"error": str(e)}, status=404)
-#             except PermissionError as e:
-#                 return Response({"error": str(e)}, status=403)
-#             except ValueError as e:
-#                 return Response({"error": str(e)}, status=400)
-
-#             pvg = _dec(it.get("prix_vente_grammes"))
-#             if not pvg or pvg <= 0:
-#                 key = (produit.marque_id, produit.purete_id)
-#                 pvg = tarifs.get(key)
-#                 if not pvg or pvg <= 0:
-#                     return Response({"error": f"Tarif manquant pour {produit.nom}."}, status=400)
-
-#             VenteProduit.objects.create(
-#                 vente=vente,
-#                 produit=produit,
-#                 vendor=vendor,
-#                 quantite=qte,
-#                 prix_vente_grammes=pvg,
-#                 remise=_dec(it.get("remise")) or Decimal("0.00"),
-#                 autres=_dec(it.get("autres")) or Decimal("0.00"),
-#                 tax=_dec(it.get("tax")) or Decimal("0.00"),
-#             )
-
-#         # 8) Totaux + facture proforma
-#         try:
-#             vente.mettre_a_jour_montant_total(base="ttc")
-#         except Exception:
-#             pass
-
-#         facture = Facture.objects.create(
-#             vente=vente,
-#             bijouterie=bijouterie,
-#             montant_total=vente.montant_total,
-#             status=Facture.STAT_NON_PAYE,
-#             type_facture=Facture.TYPE_PROFORMA,
-#             numero_facture=Facture.generer_numero_unique(bijouterie),
-#         )
-
-#         # ✅ 9) SORTIE STOCK IMMÉDIATE (mouvements + VendorStock.quantite_vendue)
-#         try:
-#             mouvements_crees = sale_out_now_for_vente(vente, request.user)
-#         except ValidationError as e:
-#             # rollback auto (transaction.atomic)
-#             msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
-#             return Response({"error": msg}, status=400)
-
-#         vente.refresh_from_db()
-#         facture.refresh_from_db()
-
-#         return Response(
-#             {
-#                 "message": "Vente créée + stock décrémenté.",
-#                 "mouvements_crees": mouvements_crees,
-#                 "facture": FactureSerializer(facture).data,
-#                 "vente": VenteDetailSerializer(vente).data,
-#             },
-#             status=201,
-#         )
-
-# -------------------------ListFactureView---------------------------
-
-# # helpers locaux
-# def _parse_date(s: str | None) -> date | None:
-#     if not s:
-#         return None
-#     try:
-#         return datetime.strptime(s, "%Y-%m-%d").date()
-#     except ValueError:
-#         return None
-
-# def _add_years(d: date, years: int) -> date:
-#     try:
-#         return d.replace(year=d.year + years)
-#     except ValueError:
-#         # gère 29/02 -> 28/02
-#         return d.replace(month=2, day=28, year=d.year + years)
-
-# def _current_year_bounds_dates():
-#     today = timezone.localdate()
-#     y = today.year
-#     return date(y, 1, 1), date(y, 12, 31)
-
-
-# class ListFactureView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les factures (règles de fenêtre par rôle, recherche, tri)",
-#         operation_description=(
-#             "- **Vendor / Cashier** : factures de leur bijouterie, fenêtre maximale **3 ans**. "
-#             "Si aucune date fournie → **année en cours**.\n"
-#             "- **Admin / Manager** : filtrage libre (pas de limite de durée), dates optionnelles.\n\n"
-#             "Paramètres optionnels :\n"
-#             "• `q` (search: n° facture, n° vente, client)\n"
-#             "• `status` (non_paye|paye)\n"
-#             "• `type_facture` (proforma|facture|acompte|finale)\n"
-#             "• `date_from` / `date_to` (YYYY-MM-DD, inclusifs, appliqués sur `date_creation`)\n"
-#             "• `bijouterie_id` (ADMIN uniquement)\n"
-#             "• `ordering` (-date_creation|date_creation|-montant_total|montant_total|numero_facture|-numero_facture)\n"
-#             "\n⚠️ Pas de pagination : toutes les factures correspondant aux filtres sont renvoyées."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "q",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Recherche: numéro facture, numéro vente, client (nom/prénom/téléphone)",
-#             ),
-#             openapi.Parameter(
-#                 "status",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Statut: non_paye | paye",
-#             ),
-#             openapi.Parameter(
-#                 "type_facture",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Type: proforma | facture | acompte | finale",
-#             ),
-#             openapi.Parameter(
-#                 "date_from",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Date min (YYYY-MM-DD) sur date_creation",
-#             ),
-#             openapi.Parameter(
-#                 "date_to",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Date max (YYYY-MM-DD) sur date_creation",
-#             ),
-#             openapi.Parameter(
-#                 "bijouterie_id",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="Filtrer par bijouterie (ADMIN uniquement)",
-#             ),
-#             openapi.Parameter(
-#                 "ordering",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description=(
-#                     "Tri: -date_creation (défaut), date_creation, "
-#                     "-montant_total, montant_total, numero_facture, -numero_facture"
-#                 ),
-#             ),
-#         ],
-#         responses={200: FactureSerializer(many=True)},
-#         tags=["Ventes / Factures"],
-#     )
-#     def get(self, request):
-#         role = get_role_name(request.user)
-#         if role not in {"admin", "manager", "vendor", "cashier"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=403)
-        
-#         qs = (
-#             Facture.objects
-#             .select_related("vente", "vente__client", "bijouterie")
-#             .prefetch_related("paiements")
-#         )
-
-#         getf = request.GET.get
-
-#         # --- Portée bijouterie par rôle ---
-#         if role in {"manager", "vendor", "cashier"}:
-#             bij = _user_bijouterie(request.user)
-#             if not bij:
-#                 return Response(
-#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-#             qs = qs.filter(bijouterie=bij)
-
-#         elif role == "admin":
-#             bij_id = getf("bijouterie_id")
-#             if bij_id:
-#                 try:
-#                     bij_id = int(bij_id)
-#                 except ValueError:
-#                     return Response(
-#                         {"bijouterie_id": "Doit être un entier."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-#                 qs = qs.filter(bijouterie_id=bij_id)
-
-#         # --- Recherche plein texte ---
-#         q = (getf("q") or "").strip()
-#         if q:
-#             qs = qs.filter(
-#                 Q(numero_facture__icontains=q)
-#                 | Q(vente__numero_vente__icontains=q)
-#                 | Q(vente__client__nom__icontains=q)
-#                 | Q(vente__client__prenom__icontains=q)
-#                 | Q(vente__client__telephone__icontains=q)
-#             )
-
-#         # --- Filtres simples (status, type_facture) ---
-#         status_v = (getf("status") or "").strip()
-#         if status_v in {"non_paye", "paye"}:
-#             qs = qs.filter(status=status_v)
-
-#         tf = (getf("type_facture") or "").strip()
-#         if tf in {"proforma", "facture", "acompte", "finale"}:
-#             qs = qs.filter(type_facture=tf)
-
-#         # --- Fenêtre temporelle ---
-#         df = _parse_date(getf("date_from"))
-#         dt = _parse_date(getf("date_to"))
-#         today = timezone.localdate()
-
-#         if role in {"vendor", "cashier"}:
-#             # Si aucune date → année en cours
-#             if not df and not dt:
-#                 df, dt = _current_year_bounds_dates()
-#             elif df and not dt:
-#                 # dt = min(df + 3 ans - 1 jour, aujourd'hui)
-#                 dt_cap = min(_add_years(df, 3) - timedelta(days=1), today)
-#                 dt = dt_cap
-#             elif dt and not df:
-#                 # si seulement date_to → max 3 ans en arrière ou début d’année
-#                 df = max(_add_years(dt, -3), date(dt.year, 1, 1))
-
-#             if df and dt and df > dt:
-#                 return Response(
-#                     {"error": "`date_from` doit être ≤ `date_to`."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-
-#             if df and dt:
-#                 max_dt = _add_years(df, 3) - timedelta(days=1)
-#                 if dt > max_dt:
-#                     return Response(
-#                         {
-#                             "error": (
-#                                 "Fenêtre maximale de 3 ans pour ce rôle. "
-#                                 f"`date_to` autorisé ≤ {max_dt}."
-#                             )
-#                         },
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-#                 dt = min(dt, today)
-
-#             if df:
-#                 qs = qs.filter(date_creation__date__gte=df)
-#             if dt:
-#                 qs = qs.filter(date_creation__date__lte=dt)
-
-#         else:  # admin / manager
-#             if df:
-#                 qs = qs.filter(date_creation__date__gte=df)
-#             if dt:
-#                 qs = qs.filter(date_creation__date__lte=dt)
-#             # pas de restriction auto si df/dt absents
-
-#         # --- Tri ---
-#         ordering = getf("ordering") or "-date_creation"
-#         allowed = {
-#             "date_creation",
-#             "-date_creation",
-#             "montant_total",
-#             "-montant_total",
-#             "numero_facture",
-#             "-numero_facture",
-#         }
-#         if ordering not in allowed:
-#             ordering = "-date_creation"
-#         qs = qs.order_by(ordering)
-
-#         ser = FactureSerializer(qs, many=True)
-#         return Response(ser.data, status=status.HTTP_200_OK)
-
-# class ListFactureView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les factures (règles de fenêtre par rôle, recherche, tri)",
-#         operation_description=(
-#             "- **Vendor / Cashier** : factures de leur bijouterie, fenêtre maximale **3 ans**. "
-#             "Si aucune date fournie → **année en cours**.\n"
-#             "- **Admin / Manager** : filtrage libre (pas de limite de durée), dates optionnelles.\n\n"
-#             "Paramètres optionnels :\n"
-#             "• `q` (search: n° facture, n° vente, client)\n"
-#             "• `status` (non_paye|paye)\n"
-#             "• `type_facture` (proforma|facture|acompte|finale)\n"
-#             "• `date_from` / `date_to` (YYYY-MM-DD, inclusifs, appliqués sur `date_creation`)\n"
-#             "• `bijouterie_id` (ADMIN uniquement)\n"
-#             "• `ordering` (-date_creation|date_creation|-montant_total|montant_total|numero_facture|-numero_facture)\n"
-#             "\n⚠️ Pas de pagination : toutes les factures correspondant aux filtres sont renvoyées."
-#         ),
-#         manual_parameters=[
-#         openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                           description="Recherche: numéro facture, numéro vente, client"),
-#         openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                           description="Statut: non_paye | paye"),
-#         openapi.Parameter("type_facture", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                           description="Type: proforma | facture | acompte | finale"),
-#         openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                           description="Date min (YYYY-MM-DD) sur date_creation"),
-#         openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                           description="Date max (YYYY-MM-DD) sur date_creation"),
-#         openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-#                           description="Filtrer par bijouterie (ADMIN uniquement)"),
-#         openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                           description="Tri: -date_creation, date_creation, -montant_total, montant_total, ..."),
-#     ],
-#     responses={200: FactureSerializer(many=True)},
-#     tags=["Ventes / Factures"],
-#     )
-#     def get(self, request):
-#         role = get_role_name(request.user)
-#         if role not in {"admin", "manager", "vendor", "cashier"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=403)
-
-#         qs = Facture.objects.select_related("vente", "vente__client", "bijouterie")
-#         getf = request.GET.get  # ✅ IMPORTANT
-#         # ---degub---
-#         print("DEBUG GET params:", dict(request.GET))
-#         print("DEBUG role:", role)
-#         # ---debug---
-
-#         # --- Portée bijouterie ---
-#         if role in {"manager", "vendor", "cashier"}:
-#             # ---degub---
-#             import inspect
-
-#             from staff.models import Cashier
-
-#             print("DEBUG user:", request.user.id, request.user.email)
-#             print("DEBUG role:", get_role_name(request.user))
-#             print("DEBUG cashier exists:",
-#                 list(Cashier.objects.filter(user=request.user, verifie=True).values("id","bijouterie_id")))
-#             print("DEBUG _user_bijouterie file:", inspect.getsourcefile(_user_bijouterie))
-#             # ---debug---
-#             bij = _user_bijouterie(request.user)
-#             if not bij:
-#                 return Response(
-#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
-#                     status=400,
-#                 )
-#             qs = qs.filter(bijouterie=bij)
-
-#         elif role == "admin":
-#             bij_id = getf("bijouterie_id")
-#             if bij_id:
-#                 try:
-#                     bij_id = int(bij_id)
-#                 except ValueError:
-#                     return Response({"bijouterie_id": "Doit être un entier."}, status=400)
-#                 qs = qs.filter(bijouterie_id=bij_id)
-
-#         # --- Recherche ---
-#         q = (getf("q") or "").strip()
-#         if q:
-#             qs = qs.filter(
-#                 Q(numero_facture__icontains=q)
-#                 | Q(vente__numero_vente__icontains=q)
-#                 | Q(vente__client__nom__icontains=q)
-#                 | Q(vente__client__prenom__icontains=q)
-#                 | Q(vente__client__telephone__icontains=q)
-#             )
-
-#         # --- Filtres ---
-#         status_v = (getf("status") or "").strip()
-#         if status_v in {"non_paye", "paye"}:
-#             qs = qs.filter(status=status_v)
-
-#         tf = (getf("type_facture") or "").strip()
-#         if tf in {"proforma", "facture", "acompte", "finale"}:
-#             qs = qs.filter(type_facture=tf)
-
-#         # --- Dates ---
-#         df = _parse_date(getf("date_from"))
-#         dt = _parse_date(getf("date_to"))
-#         today = timezone.localdate()
-
-#         if role in {"vendor", "cashier"}:
-#             if not df and not dt:
-#                 df, dt = _current_year_bounds_dates()
-#             elif df and not dt:
-#                 dt = min(_add_years(df, 3) - timedelta(days=1), today)
-#             elif dt and not df:
-#                 df = max(_add_years(dt, -3), date(dt.year, 1, 1))
-
-#             if df and dt and df > dt:
-#                 return Response({"error": "`date_from` doit être ≤ `date_to`."}, status=400)
-
-#             if df and dt:
-#                 max_dt = _add_years(df, 3) - timedelta(days=1)
-#                 if dt > max_dt:
-#                     return Response(
-#                         {"error": f"Fenêtre maximale de 3 ans. `date_to` autorisé ≤ {max_dt}."},
-#                         status=400,
-#                     )
-#                 dt = min(dt, today)
-
-#             if df:
-#                 qs = qs.filter(date_creation__date__gte=df)
-#             if dt:
-#                 qs = qs.filter(date_creation__date__lte=dt)
-
-#         else:  # admin / manager
-#             if df:
-#                 qs = qs.filter(date_creation__date__gte=df)
-#             if dt:
-#                 qs = qs.filter(date_creation__date__lte=dt)
-
-#         # --- Tri ---
-#         ordering = getf("ordering") or "-date_creation"
-#         allowed = {
-#             "date_creation", "-date_creation",
-#             "montant_total", "-montant_total",
-#             "numero_facture", "-numero_facture",
-#         }
-#         if ordering not in allowed:
-#             ordering = "-date_creation"
-
-#         qs = qs.order_by(ordering)
-
-#         return Response(FactureSerializer(qs, many=True).data, status=200)
-
-# class ListFactureView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les factures (filtre numero_facture)",
-#         operation_description=(
-#             "- **Admin** : toutes les factures (toutes bijouteries)\n"
-#             "- **Manager / Vendor / Cashier** : uniquement les factures de leur bijouterie\n"
-#             "- Filtre unique : `numero_facture` (partiel accepté)"
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "numero_facture",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Numéro exact ou partiel de la facture",
-#             ),
-#         ],
-#         responses={200: FactureSerializer(many=True)},
-#         tags=["Ventes / Factures"],
-#     )
-#     def get(self, request):
-#         role = get_role_name(request.user)
-
-#         if role not in {"admin", "manager", "vendor", "cashier"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         qs = Facture.objects.select_related("bijouterie", "vente", "vente__client")
-
-#         # ✅ Scope bijouterie pour manager/vendor/cashier
-#         if role in {"manager", "vendor", "cashier"}:
-#             bij = _user_bijouterie_facture(request.user)
-#             if not bij:
-#                 return Response(
-#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-#             qs = qs.filter(bijouterie=bij)
-
-#         # ✅ Filtre unique
-#         numero = (request.GET.get("numero_facture") or "").strip()
-#         if numero:
-#             qs = qs.filter(numero_facture__icontains=numero)
-
-#         qs = qs.order_by("-date_creation")
-#         return Response(FactureSerializer(qs, many=True).data, status=status.HTTP_200_OK)
-
-
-DEFAULT_PAGE_SIZE = 25
+DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
-
-# class ListFactureView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les factures (status + fenêtre 18 mois / 3 ans + pagination)",
-#         manual_parameters=[
-#             openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="non_paye | paye (optionnel)"),
-#             openapi.Parameter("numero_facture", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Numéro partiel (optionnel)"),
-#             openapi.Parameter("page", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Page (optionnel)"),
-#             openapi.Parameter("page_size", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Taille page (optionnel, max 100)"),
-#         ],
-#         responses={200: FactureListSerializer(many=True)},
-#         tags=["Ventes / Factures"],
-#     )
-#     def get(self, request):
-#         user = request.user
-#         role = get_role_name(user)
-
-#         if role not in {"admin", "manager", "vendor", "cashier"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         qs = Facture.objects.select_related("bijouterie", "vente", "vente__client")
-
-#         # scope bijouterie
-#         if role in {"manager", "vendor", "cashier"}:
-#             bij = _user_bijouterie_facture(user)
-#             if not bij:
-#                 return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=400)
-#             qs = qs.filter(bijouterie=bij)
-
-#         # fenêtre automatique
-#         # today = timezone.localdate()
-#         # months = 36 if role == "admin" else 18
-#         # min_date = subtract_months(today, months)
-#         # qs = qs.filter(date_creation__date__gte=min_date)
-        
-#         now = timezone.now()
-#         months = 36 if role == "admin" else 18
-#         min_datetime = now - timedelta(days=months * 30)
-#         qs = qs.filter(date_creation__gte=min_datetime)
-
-#         # filtre status optionnel
-#         status_q = (request.GET.get("status") or "").strip().lower()
-#         if status_q in {"non_paye", "paye"}:
-#             qs = qs.filter(status=status_q)
-
-#         # filtre numero_facture optionnel
-#         numero = (request.GET.get("numero_facture") or "").strip()
-#         if numero:
-#             qs = qs.filter(numero_facture__icontains=numero)
-
-#         qs = qs.order_by("-date_creation")
-
-#         # pagination
-#         try:
-#             page = int(request.GET.get("page", 1))
-#         except ValueError:
-#             page = 1
-#         try:
-#             page_size = int(request.GET.get("page_size", DEFAULT_PAGE_SIZE))
-#         except ValueError:
-#             page_size = DEFAULT_PAGE_SIZE
-#         page_size = max(1, min(page_size, MAX_PAGE_SIZE))
-
-#         paginator = Paginator(qs, page_size)
-#         try:
-#             page_obj = paginator.page(page)
-#         except EmptyPage:
-#             page_obj = paginator.page(paginator.num_pages)
-
-#         return Response(
-#             {
-#                 "count": paginator.count,
-#                 "page": page_obj.number,
-#                 "page_size": page_size,
-#                 "num_pages": paginator.num_pages,
-#                 "results": FactureListSerializer(page_obj.object_list, many=True).data,
-#             },
-#             status=status.HTTP_200_OK,
-#         )
-
-
-# class ListFactureView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les factures (status + fenêtre 18 mois / 3 ans + pagination)",
-#         manual_parameters=[
-#             openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="non_paye | paye (optionnel)"),
-#             openapi.Parameter("numero_facture", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Numéro partiel (optionnel)"),
-#             openapi.Parameter("page", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Page (optionnel)"),
-#             openapi.Parameter("page_size", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Taille page (optionnel, max 100)"),
-#         ],
-#         responses={200: FactureListSerializer(many=True)},
-#         tags=["Ventes / Factures"],
-#     )
-#     def get(self, request):
-#         user = request.user
-#         role = get_role_name(user)
-
-#         if role not in {"admin", "manager", "vendor", "cashier"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         qs = (
-#             Facture.objects
-#             .select_related("bijouterie", "vente", "vente__client")
-#             .prefetch_related(
-#                 "vente__produits__produit",
-#                 "vente__produits__produit__categorie",
-#                 "vente__produits__produit__marque",
-#                 "vente__produits__produit__purete",
-#                 "vente__produits__produit__modele",
-#             )
-#         )
-
-#         # scope bijouterie
-#         if role in {"manager", "vendor", "cashier"}:
-#             bij = _user_bijouterie_facture(user)
-#             if not bij:
-#                 return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=400)
-#             qs = qs.filter(bijouterie=bij)
-
-#         # fenêtre automatique
-#         now = timezone.now()
-#         months = 36 if role == "admin" else 18
-#         min_datetime = now - timedelta(days=months * 30)
-#         qs = qs.filter(date_creation__gte=min_datetime)
-
-#         # filtre status optionnel
-#         status_q = (request.GET.get("status") or "").strip().lower()
-#         if status_q in {"non_paye", "paye"}:
-#             qs = qs.filter(status=status_q)
-
-#         # filtre numero_facture optionnel
-#         numero = (request.GET.get("numero_facture") or "").strip()
-#         if numero:
-#             qs = qs.filter(numero_facture__icontains=numero)
-
-#         qs = qs.order_by("-date_creation")
-
-#         # pagination
-#         try:
-#             page = int(request.GET.get("page", 1))
-#         except ValueError:
-#             page = 1
-
-#         try:
-#             page_size = int(request.GET.get("page_size", DEFAULT_PAGE_SIZE))
-#         except ValueError:
-#             page_size = DEFAULT_PAGE_SIZE
-
-#         page_size = max(1, min(page_size, MAX_PAGE_SIZE))
-
-#         paginator = Paginator(qs, page_size)
-#         try:
-#             page_obj = paginator.page(page)
-#         except EmptyPage:
-#             page_obj = paginator.page(paginator.num_pages)
-
-#         return Response(
-#             {
-#                 "count": paginator.count,
-#                 "page": page_obj.number,
-#                 "page_size": page_size,
-#                 "num_pages": paginator.num_pages,
-#                 "results": FactureListSerializer(page_obj.object_list, many=True).data,
-#             },
-#             status=status.HTTP_200_OK,
-#         )
-
 
 class ListFacturePayeesView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
-        operation_summary="Lister les factures PAYÉES (18 mois / 36 mois + pagination + filtres vendeur/client/paiement)",
-        operation_description=(
-            "Retourne uniquement les **factures PAYÉES**.\n\n"
-            "### Scopes\n"
-            "- manager/vendor/cashier : limité à **leur bijouterie**\n"
-            "- admin : toutes bijouteries\n\n"
-            "### Fenêtre automatique\n"
-            "- admin : 36 mois\n"
-            "- autres : 18 mois\n\n"
-            "### Filtres\n"
-            "- `vendor_id` : ventes contenant au moins une ligne de ce vendeur\n"
-            "- `client_q`  : recherche client (nom/prenom/téléphone)\n"
-            "- `payment_mode` : filtre sur les paiements liés à la facture\n"
-        ),
-        manual_parameters=[
-            openapi.Parameter("numero_facture", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Numéro facture partiel (optionnel)"),
-            openapi.Parameter("vendor_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="ID vendeur (optionnel)"),
-            openapi.Parameter("client_q", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Nom/prénom/téléphone client (optionnel)"),
-            openapi.Parameter("payment_mode", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Mode de paiement (ex: cash|wave|om|cb) (optionnel)"),
-            openapi.Parameter("page", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Page (optionnel)"),
-            openapi.Parameter("page_size", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Taille page (optionnel, max 100)"),
-        ],
-        responses={200: FactureListSerializer(many=True)},
-        tags=["Ventes / Factures"],
-    )
     def get(self, request):
         user = request.user
-        role = get_role_name(user)
+        role = get_role_name(user)  # admin/manager/vendor/cashier
 
-        if role not in {"admin", "manager", "vendor", "cashier"}:
-            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+        if role not in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
+            return Response({"detail": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
-        # ✅ Base queryset : PAYÉES uniquement + prefetch produits & paiements
         qs = (
             Facture.objects
             .select_related("bijouterie", "vente", "vente__client")
@@ -1265,82 +306,83 @@ class ListFacturePayeesView(APIView):
             .filter(status=Facture.STAT_PAYE)
         )
 
-        # ✅ Scope bijouterie pour manager/vendor/cashier
-        if role in {"manager", "vendor", "cashier"}:
-            bij = user_bijouterie(user)
-            if not bij:
-                return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=400)
-            qs = qs.filter(bijouterie=bij)
+        # ✅ scope bijouterie (admin=all, manager=M2M, vendor/cashier=1)
+        qs = qs.filter(scope_bijouterie_q(user, field="bijouterie_id"))
 
-        # ✅ Fenêtre automatique
-        now = timezone.now()
-        months = 36 if role == "admin" else 18
-        min_datetime = now - timedelta(days=months * 30)
+        # ✅ fenêtre auto
+        months = 36 if role == ROLE_ADMIN else 18
+        min_datetime = timezone.now() - timedelta(days=months * 30)
         qs = qs.filter(date_creation__gte=min_datetime)
 
-        # -------------------
-        # ✅ FILTRES
-        # -------------------
-
-        # 1) numéro facture
-        numero = (request.GET.get("numero_facture") or "").strip()
+        # ✅ filtres
+        numero = (request.query_params.get("numero_facture") or "").strip()
         if numero:
             qs = qs.filter(numero_facture__icontains=numero)
 
-        # 2) vendeur (vendor_id)
-        vendor_id = request.GET.get("vendor_id")
+        vendor_id = request.query_params.get("vendor_id")
         if vendor_id:
             try:
-                vendor_id = int(vendor_id)
+                vendor_id_int = int(vendor_id)
             except ValueError:
-                return Response({"vendor_id": "Doit être un entier."}, status=400)
+                return Response({"vendor_id": "Doit être un entier."}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Factures dont la vente contient au moins une ligne avec ce vendeur
-            qs = qs.filter(vente__produits__vendor_id=vendor_id)
-
-            # 🔒 si le role = vendor, il ne peut filtrer que lui-même
-            if role == "vendor":
+            # vendor ne filtre que lui-même
+            if role == ROLE_VENDOR:
                 my_vendor = getattr(user, "staff_vendor_profile", None)
-                if not my_vendor:
-                    return Response({"error": "Profil vendeur introuvable."}, status=403)
-                if vendor_id != my_vendor.id:
-                    return Response({"error": "Un vendeur ne peut filtrer que ses propres factures."}, status=403)
+                if not my_vendor or (hasattr(my_vendor, "verifie") and not my_vendor.verifie):
+                    return Response({"detail": "Profil vendeur introuvable ou non vérifié."}, status=403)
+                if vendor_id_int != my_vendor.id:
+                    return Response({"detail": "Un vendeur ne peut filtrer que ses propres factures."}, status=403)
 
-        # 3) client search (client_q)
-        client_q = (request.GET.get("client_q") or "").strip()
+            # manager ne filtre que vendors de ses bijouteries
+            if role == ROLE_MANAGER:
+                mp = getattr(user, "staff_manager_profile", None)
+                if not mp or (hasattr(mp, "verifie") and not mp.verifie):
+                    return Response({"detail": "Profil manager invalide."}, status=403)
+                if not mp.bijouteries.filter(vendors__id=vendor_id_int).exists():
+                    return Response({"detail": "Vendeur hors de vos bijouteries."}, status=403)
+
+            venteproduit_exists = VenteProduit.objects.filter(
+                vente_id=OuterRef("vente_id"),
+                vendor_id=vendor_id_int,
+            )
+            qs = qs.annotate(_has_vendor=Exists(venteproduit_exists)).filter(_has_vendor=True)
+
+        client_q = (request.query_params.get("client_q") or "").strip()
         if client_q:
             qs = qs.filter(
-                Q(vente__client__nom__icontains=client_q)
-                | Q(vente__client__prenom__icontains=client_q)
-                | Q(vente__client__telephone__icontains=client_q)
+                Q(vente__client__nom__icontains=client_q) |
+                Q(vente__client__prenom__icontains=client_q) |
+                Q(vente__client__telephone__icontains=client_q)
             )
 
-        # 4) mode de paiement (payment_mode)
-        payment_mode = (request.GET.get("payment_mode") or "").strip().lower()
+        payment_mode = (request.query_params.get("payment_mode") or "").strip()
         if payment_mode:
-            # ⚠️ adapte le nom du champ Paiement :
-            # ex: paiements__mode, paiements__type, paiements__methode, etc.
-            qs = qs.filter(paiements__mode_paiement__iexact=payment_mode)
+            qs = qs.filter(paiements__mode_paiement__iexact=payment_mode).distinct()
 
-        # ✅ éviter doublons à cause des joins (vendor/paiements)
-        qs = qs.distinct().order_by("-date_creation")
+        qs = qs.order_by("-date_creation")
 
-        # -------------------
-        # ✅ PAGINATION
-        # -------------------
-        try:
-            page = int(request.GET.get("page", 1))
-        except ValueError:
-            page = 1
+        # ✅ pagination safe
+        def _int(name: str, default: int) -> int:
+            val = request.query_params.get(name)
+            if val in (None, ""):
+                return default
+            try:
+                return int(val)
+            except ValueError:
+                return default
 
-        try:
-            page_size = int(request.GET.get("page_size", DEFAULT_PAGE_SIZE))
-        except ValueError:
-            page_size = DEFAULT_PAGE_SIZE
-
-        page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+        page = max(1, _int("page", 1))
+        page_size = max(1, min(_int("page_size", DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
 
         paginator = Paginator(qs, page_size)
+
+        if paginator.count == 0:
+            return Response(
+                {"count": 0, "page": 1, "page_size": page_size, "num_pages": 0, "results": []},
+                status=200,
+            )
+
         try:
             page_obj = paginator.page(page)
         except EmptyPage:
@@ -1358,1202 +400,1061 @@ class ListFacturePayeesView(APIView):
         )
 
 
-# -------------------------END ListFactureView---------------------------
 
-# --------------------------ListFacturesAPayerView---------------------------
-# class ListFacturesAPayerView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les factures à payer (NON PAYÉES)",
-#         operation_description=(
-#             "- **Vendor / Cashier** : factures NON PAYÉES de leur bijouterie, fenêtre maximale **3 ans**. "
-#             "Si aucune date fournie → **année en cours**.\n"
-#             "- **Admin / Manager** : factures NON PAYÉES, filtrage libre (dates optionnelles).\n\n"
-#             "Paramètres optionnels :\n"
-#             "• `q` (search: n° facture, n° vente, client)\n"
-#             "• `type_facture` (proforma|facture|acompte|finale)\n"
-#             "• `date_from` / `date_to` (YYYY-MM-DD, inclusifs, appliqués sur `date_creation`)\n"
-#             "• `bijouterie_id` (ADMIN uniquement)\n"
-#             "• `ordering` (-date_creation|date_creation|-montant_total|montant_total|numero_facture|-numero_facture)\n"
-#         ),
-#         tags=["Ventes / Factures"],
-#         responses={200: FactureSerializer(many=True)},
-#     )
-#     def get(self, request):
-#         user = request.user
-#         role = _user_role(user)
-
-#         # 🔐 rôles autorisés (cashier inclus)
-#         if role not in {"admin", "manager", "vendor", "cashier"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         qs = (
-#             Facture.objects
-#             .select_related("vente", "vente__client", "bijouterie")
-#             .prefetch_related("paiements")
-#             .filter(status=Facture.STAT_NON_PAYE)  # 💡 seulement NON PAYÉES
-#         )
-
-#         getf = request.GET.get
-
-#         # --- Portée bijouterie par rôle ---
-#         if role in {"manager", "vendor", "cashier"}:
-            
-#             bij = _user_bijouterie_facture(user)
-#             if not bij:
-#                 return Response(
-#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-#             qs = qs.filter(bijouterie=bij)
-
-#         elif role == "admin":
-#             bij_id = getf("bijouterie_id")
-#             if bij_id:
-#                 try:
-#                     bij_id = int(bij_id)
-#                 except ValueError:
-#                     return Response(
-#                         {"bijouterie_id": "Doit être un entier."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-#                 qs = qs.filter(bijouterie_id=bij_id)
-
-#         # --- Recherche plein texte ---
-#         q = (getf("q") or "").strip()
-#         if q:
-#             qs = qs.filter(
-#                 Q(numero_facture__icontains=q)
-#                 | Q(vente__numero_vente__icontains=q)
-#                 | Q(vente__client__nom__icontains=q)
-#                 | Q(vente__client__prenom__icontains=q)
-#                 | Q(vente__client__telephone__icontains=q)
-#             )
-
-#         # --- Type facture (optionnel) ---
-#         tf = (getf("type_facture") or "").strip()
-#         if tf in {"proforma", "facture", "acompte", "finale"}:
-#             qs = qs.filter(type_facture=tf)
-
-#         # --- Fenêtre temporelle (même logique que ListFactureView) ---
-#         df = _parse_date(getf("date_from"))
-#         dt = _parse_date(getf("date_to"))
-#         today = timezone.localdate()
-
-#         if role in {"vendor", "cashier"}:
-#             # Si aucune date → année en cours
-#             if not df and not dt:
-#                 df, dt = _current_year_bounds_dates()
-#             elif df and not dt:
-#                 dt_cap = min(_add_years(df, 3) - timedelta(days=1), today)
-#                 dt = dt_cap
-#             elif dt and not df:
-#                 df = max(_add_years(dt, -3), date(dt.year, 1, 1))
-
-#             if df and dt and df > dt:
-#                 return Response(
-#                     {"error": "`date_from` doit être ≤ `date_to`."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-
-#             if df and dt:
-#                 max_dt = _add_years(df, 3) - timedelta(days=1)
-#                 if dt > max_dt:
-#                     return Response(
-#                         {
-#                             "error": (
-#                                 "Fenêtre maximale de 3 ans pour ce rôle. "
-#                                 f"`date_to` autorisé ≤ {max_dt}."
-#                             )
-#                         },
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-#                 dt = min(dt, today)
-
-#             if df:
-#                 qs = qs.filter(date_creation__date__gte=df)
-#             if dt:
-#                 qs = qs.filter(date_creation__date__lte=dt)
-
-#         else:  # admin / manager
-#             if df:
-#                 qs = qs.filter(date_creation__date__gte=df)
-#             if dt:
-#                 qs = qs.filter(date_creation__date__lte=dt)
-
-#         # --- Tri ---
-#         ordering = getf("ordering") or "-date_creation"
-#         allowed = {
-#             "date_creation",
-#             "-date_creation",
-#             "montant_total",
-#             "-montant_total",
-#             "numero_facture",
-#             "-numero_facture",
-#         }
-#         if ordering not in allowed:
-#             ordering = "-date_creation"
-#         qs = qs.order_by(ordering)
-
-#         ser = FactureSerializer(qs, many=True)
-#         return Response(ser.data, status=status.HTTP_200_OK)
-
-# class ListFacturesAPayerView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les factures NON PAYÉES",
-#         operation_description=(
-#             "- **Vendor / Cashier / Manager** : factures NON PAYÉES de leur bijouterie "
-#             "sur une fenêtre de **18 mois**.\n"
-#             "- **Admin** : factures NON PAYÉES toutes bijouteries "
-#             "sur une fenêtre de **36 mois**.\n\n"
-#             "Filtres optionnels :\n"
-#             "• `numero_facture`\n"
-#             "• `page`\n"
-#             "• `page_size` (max 100)\n"
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "numero_facture",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Numéro de facture (partiel)"
-#             ),
-#             openapi.Parameter(
-#                 "page",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="Numéro de page"
-#             ),
-#             openapi.Parameter(
-#                 "page_size",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="Taille de page (max 100)"
-#             ),
-#         ],
-#         responses={200: FactureListSerializer(many=True)},
-#         tags=["Ventes / Factures"],
-#     )
-#     def get(self, request):
-#         user = request.user
-#         role = get_role_name(user)
-
-#         if role not in {"admin", "manager", "vendor", "cashier"}:
-#             return Response(
-#                 {"message": "⛔ Accès refusé"},
-#                 status=status.HTTP_403_FORBIDDEN,
-#             )
-
-#         # 🔹 Base queryset : UNIQUEMENT NON PAYÉES
-#         qs = (
-#             Facture.objects
-#             .select_related("bijouterie", "vente", "vente__client")
-#             .filter(status=Facture.STAT_NON_PAYE)
-#         )
-
-#         # 🔹 Portée bijouterie
-#         if role in {"manager", "vendor", "cashier"}:
-#             bij = _user_bijouterie_facture(user)
-#             if not bij:
-#                 return Response(
-#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-#             qs = qs.filter(bijouterie=bij)
-
-#         # 🔹 Fenêtre temporelle automatique
-#         now = timezone.now()
-#         months = 36 if role == "admin" else 18
-#         min_datetime = now - timedelta(days=months * 30)
-#         qs = qs.filter(date_creation__gte=min_datetime)
-
-#         # 🔹 Filtre numero_facture (optionnel)
-#         numero = (request.GET.get("numero_facture") or "").strip()
-#         if numero:
-#             qs = qs.filter(numero_facture__icontains=numero)
-
-#         # 🔹 Tri
-#         qs = qs.order_by("-date_creation")
-
-#         # 🔹 Pagination
-#         try:
-#             page = int(request.GET.get("page", 1))
-#         except ValueError:
-#             page = 1
-
-#         try:
-#             page_size = int(request.GET.get("page_size", DEFAULT_PAGE_SIZE))
-#         except ValueError:
-#             page_size = DEFAULT_PAGE_SIZE
-
-#         page_size = max(1, min(page_size, MAX_PAGE_SIZE))
-
-#         paginator = Paginator(qs, page_size)
-#         try:
-#             page_obj = paginator.page(page)
-#         except EmptyPage:
-#             page_obj = paginator.page(paginator.num_pages)
-
-#         return Response(
-#             {
-#                 "count": paginator.count,
-#                 "page": page_obj.number,
-#                 "page_size": page_size,
-#                 "num_pages": paginator.num_pages,
-#                 "results": FactureListSerializer(
-#                     page_obj.object_list,
-#                     many=True
-#                 ).data,
-#             },
-#             status=status.HTTP_200_OK,
-#         )
-
-# class ListFacturesAPayerView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les factures NON PAYÉES (sans pagination)",
-#         operation_description=(
-#             "- **Vendor / Cashier / Manager** : factures NON PAYÉES de leur bijouterie "
-#             "sur une fenêtre de **18 mois**.\n"
-#             "- **Admin** : factures NON PAYÉES toutes bijouteries "
-#             "sur une fenêtre de **36 mois**.\n\n"
-#             "Filtres optionnels :\n"
-#             "• `numero_facture`\n"
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "numero_facture",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Numéro de facture (partiel)"
-#             ),
-#         ],
-#         responses={200: FactureListSerializer(many=True)},
-#         tags=["Ventes / Factures"],
-#     )
-#     def get(self, request):
-#         user = request.user
-#         role = get_role_name(user)
-
-#         if role not in {"admin", "manager", "vendor", "cashier"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         qs = (
-#             Facture.objects
-#             .select_related("bijouterie", "vente", "vente__client")
-#             .prefetch_related("vente__produits__produit")  # utile pour ton FactureListSerializer.get_produit
-#             .filter(status=Facture.STAT_NON_PAYE)
-#         )
-
-#         # Portée bijouterie
-#         if role in {"manager", "vendor", "cashier"}:
-#             bij = _user_bijouterie_facture(user)
-#             if not bij:
-#                 return Response(
-#                     {"error": "Profil non rattaché à une bijouterie vérifiée."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-#             qs = qs.filter(bijouterie=bij)
-
-#         # Fenêtre temporelle automatique
-#         now = timezone.now()
-#         months = 36 if role == "admin" else 18
-#         min_datetime = now - timedelta(days=months * 30)
-#         qs = qs.filter(date_creation__gte=min_datetime)
-
-#         # Filtre numero_facture
-#         numero = (request.GET.get("numero_facture") or "").strip()
-#         if numero:
-#             qs = qs.filter(numero_facture__icontains=numero)
-
-#         qs = qs.order_by("-date_creation")
-
-#         return Response(FactureListSerializer(qs, many=True).data, status=status.HTTP_200_OK)
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
 
 class ListFacturesAPayerView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
-        operation_summary="Lister les factures NON PAYÉES (sans pagination)",
-        operation_description=(
-            "- **Vendor / Cashier / Manager** : factures NON PAYÉES de leur bijouterie "
-            "sur une fenêtre de **18 mois**.\n"
-            "- **Admin** : factures NON PAYÉES toutes bijouteries "
-            "sur une fenêtre de **36 mois**.\n\n"
-            "Filtres optionnels :\n"
-            "• `numero_facture`\n"
-        ),
-        manual_parameters=[
-            openapi.Parameter(
-                "numero_facture",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                description="Numéro de facture (partiel)"
-            ),
-        ],
-        responses={200: FactureListSerializer(many=True)},
-        tags=["Ventes / Factures"],
-    )
     def get(self, request):
         user = request.user
         role = get_role_name(user)
 
-        if role not in {"admin", "manager", "vendor", "cashier"}:
-            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+        if role not in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
+            return Response({"detail": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
 
         qs = (
             Facture.objects
             .select_related("bijouterie", "vente", "vente__client")
             .prefetch_related(
+                "paiements",
+                "vente__produits__vendor",
                 "vente__produits__produit",
                 "vente__produits__produit__categorie",
                 "vente__produits__produit__marque",
                 "vente__produits__produit__purete",
+                "vente__produits__produit__modele",
             )
             .filter(status=Facture.STAT_NON_PAYE)
         )
 
-        # Portée bijouterie
-        if role in {"manager", "vendor", "cashier"}:
-            bij = user_bijouterie(user)
-            if not bij:
-                return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=400)
-            qs = qs.filter(bijouterie=bij)
+        # ✅ Scope bijouterie
+        qs = qs.filter(scope_bijouterie_q(user, field="bijouterie_id"))
 
-        # Fenêtre temporelle automatique
-        now = timezone.now()
-        months = 36 if role == "admin" else 18
-        min_datetime = now - timedelta(days=months * 30)
+        # ✅ Fenêtre auto
+        months = 36 if role == ROLE_ADMIN else 18
+        min_datetime = timezone.now() - timedelta(days=months * 30)
         qs = qs.filter(date_creation__gte=min_datetime)
 
-        # Filtre numero_facture
-        numero = (request.GET.get("numero_facture") or "").strip()
+        # ✅ Filtres
+        numero = (request.query_params.get("numero_facture") or "").strip()
         if numero:
             qs = qs.filter(numero_facture__icontains=numero)
 
+        client_q = (request.query_params.get("client_q") or "").strip()
+        if client_q:
+            qs = qs.filter(
+                Q(vente__client__nom__icontains=client_q) |
+                Q(vente__client__prenom__icontains=client_q) |
+                Q(vente__client__telephone__icontains=client_q)
+            )
+
+        # (optionnel) payment_mode -> DISTINCT nécessaire uniquement ici
+        payment_mode = (request.query_params.get("payment_mode") or "").strip()
+        if payment_mode:
+            qs = qs.filter(paiements__mode_paiement__iexact=payment_mode).distinct()
+
         qs = qs.order_by("-date_creation")
 
-        return Response(FactureListSerializer(qs, many=True).data, status=200)
-    
-# --------------------------------END ListFacturesAPayerView---------------------------
+        # ✅ Pagination safe
+        def _int(name: str, default: int) -> int:
+            val = request.query_params.get(name)
+            if val in (None, ""):
+                return default
+            try:
+                return int(val)
+            except ValueError:
+                return default
 
-# --------------------------------------------------------------------------
-# --- Helpers locaux (adapte si tu les as déjà ailleurs) ---
-# def _user_role(user) -> str | None:
-#     return getattr(getattr(user, "user_role", None), "role", None)
+        page = max(1, _int("page", 1))
+        page_size = max(1, min(_int("page_size", DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
 
-# def _user_bijouterie(user):
-#     vp = getattr(user, "staff_vendor_profile", None)
-#     if vp and getattr(vp, "verifie", False) and vp.bijouterie_id:
-#         return vp.bijouterie
-#     mp = getattr(user, "staff_manager_profile", None)
-#     if mp and getattr(mp, "verifie", False) and mp.bijouterie_id:
-#         return mp.bijouterie
-#     cp = getattr(user, "staff_cashier_profile", None)
-#     if cp and getattr(cp, "verifie", False) and cp.bijouterie_id:
-#         return cp.bijouterie
-#     return None
+        paginator = Paginator(qs, page_size)
 
-
-class PaiementFactureView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-    ROLES_AUTORISES = {"manager", "cashier"}
-
-    @swagger_auto_schema(
-        operation_summary="Enregistrer un paiement sur une facture",
-        operation_description=(
-            "Enregistre un paiement partiel ou total sur une facture :\n"
-            "- Seuls **manager** et **cashier** sont autorisés.\n"
-            "- Conversion **PROFORMA → facture** au premier paiement.\n"
-            "- **status = payé** uniquement si total payé ≥ montant_total."
-        ),
-        request_body=PaiementCreateSerializer,
-        responses={
-            201: "Paiement créé",
-            400: "Requête invalide",
-            403: "Accès refusé",
-            404: "Facture introuvable",
-        },
-        tags=["Paiements / Factures"],
-    )
-    @transaction.atomic
-    def post(self, request, facture_numero: str):
-        # 1) Rôle
-        # role = _user_role(request.user)
-        # if role not in self.ROLES_AUTORISES:
-        #     return Response({"detail": "Accès refusé."}, status=status.HTTP_403_FORBIDDEN)
-
-        user = request.user
-        role = get_role_name(user)
-
-        if role not in {"admin", "manager", "cashier"}:
-            return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-    
-        # 2) Facture (verrou pessimiste)
-        numero = (facture_numero or "").strip()
-        try:
-            facture = (
-                Facture.objects
-                .select_for_update()
-                .select_related("bijouterie")
-                .get(numero_facture__iexact=numero)
+        if paginator.count == 0:
+            return Response(
+                {"count": 0, "page": 1, "page_size": page_size, "num_pages": 0, "results": []},
+                status=status.HTTP_200_OK,
             )
-        except Facture.DoesNotExist:
-            return Response({"detail": "Facture introuvable."}, status=status.HTTP_404_NOT_FOUND)
 
-        # 3) Contrôle bijouterie : ne payer que dans SA bijouterie
-        user_shop = user_bijouterie(request.user)
-        if user_shop and facture.bijouterie_id != user_shop.id:
-            return Response({"detail": "Cette facture n'appartient pas à votre bijouterie."},
-                            status=status.HTTP_403_FORBIDDEN)
+        try:
+            page_obj = paginator.page(page)
+        except EmptyPage:
+            page_obj = paginator.page(paginator.num_pages)
 
-        # 4) Validation payload
-        s = PaiementCreateSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
-        montant: Decimal = s.validated_data["montant_paye"]
-        mode = s.validated_data.get("mode_paiement") or getattr(Paiement, "MODE_CASH", "cash")
-
-        if montant <= Decimal("0"):
-            return Response({"detail": "Le montant doit être > 0."}, status=status.HTTP_400_BAD_REQUEST)
-
-        total = facture.montant_total or Decimal("0.00")
-        deja = facture.paiements.aggregate(t=Sum("montant_paye"))["t"] or Decimal("0.00")
-
-        if deja >= total:
-            return Response({"detail": "La facture est déjà soldée."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if deja + montant > total:
-            reste = (total - deja).quantize(Decimal("0.01"))
-            return Response({"detail": f"Surpaiement interdit. Reste à payer: {reste}."},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        # 5) Créer paiement (le modèle peut lier cashier via created_by → staff.Cashier)
-        paiement = Paiement.objects.create(
-            facture=facture,
-            montant_paye=montant,
-            mode_paiement=mode,
-            created_by=request.user,
+        return Response(
+            {
+                "count": paginator.count,
+                "page": page_obj.number,
+                "page_size": page_size,
+                "num_pages": paginator.num_pages,
+                "results": FactureListSerializer(page_obj.object_list, many=True).data,
+            },
+            status=status.HTTP_200_OK,
         )
 
-        # 6) Mettre à jour la facture :
-        #    - Au premier paiement, PROFORMA → FACTURE
-        #    - Status 'paye' uniquement si total_paye >= montant_total
-        maj_fields = []
-        if getattr(facture, "type_facture", None) == getattr(Facture, "TYPE_PROFORMA", "proforma"):
-            facture.type_facture = getattr(Facture, "TYPE_FACTURE", "facture")
-            maj_fields.append("type_facture")
 
-        total_paye = (deja + montant)
-        if total_paye >= total and getattr(facture, "status", None) != getattr(Facture, "STAT_PAYE", "paye"):
-            facture.status = getattr(Facture, "STAT_PAYE", "paye")
-            maj_fields.append("status")
 
-        if maj_fields:
-            facture.save(update_fields=maj_fields)
+class PaiementFactureMultiModeView(APIView):
+    permission_classes = [IsAuthenticated]
 
-        # 7) Réponse
+    @swagger_auto_schema(
+        operation_summary="Paiement facture multi-mode",
+        operation_description="""
+    Paiement d'une facture avec plusieurs modes :
+
+    - cash
+    - wave
+    - orange money
+    - dépôt
+
+    Règles :
+    - PROFORMA → FACTURE au premier paiement
+    - si facture PAYÉE → consommation stock
+    - génération automatique PDF facture
+    - aucun stockage du reçu de paiement
+            """,
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["numero_facture", "client", "lignes"],
+            properties={
+                "numero_facture": openapi.Schema(type=openapi.TYPE_STRING),
+                "client": openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    required=["nom", "prenom"],
+                    properties={
+                        "nom": openapi.Schema(type=openapi.TYPE_STRING),
+                        "prenom": openapi.Schema(type=openapi.TYPE_STRING),
+                        "telephone": openapi.Schema(type=openapi.TYPE_STRING),
+                    },
+                ),
+                "lignes": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        required=["mode", "montant"],
+                        properties={
+                            "mode": openapi.Schema(type=openapi.TYPE_STRING),
+                            "montant": openapi.Schema(type=openapi.TYPE_NUMBER),
+                            "reference": openapi.Schema(type=openapi.TYPE_STRING),
+                        },
+                    ),
+                ),
+            },
+        ),
+        responses={201: "Paiement effectué"},
+        tags=["Paiements"],
+    )
+    @transaction.atomic
+    def post(self, request):
+
+        numero_facture = request.data.get("numero_facture")
+        client_data = request.data.get("client", {})
+        lignes_data = request.data.get("lignes", [])
+
+        if not numero_facture:
+            return Response({"detail": "numero_facture requis"}, status=400)
+
+        if not lignes_data:
+            return Response({"detail": "lignes requises"}, status=400)
+
+        # 🔒 Lock facture
+        facture = (
+            Facture.objects
+            .select_for_update()
+            .select_related("vente", "vente__client", "bijouterie")
+            .prefetch_related("paiements__lignes")
+            .get(numero_facture=numero_facture)
+        )
+
+        validate_facture_payable(facture)
+
+        # 👤 client
+        client = upsert_client_for_payment(
+            facture=facture,
+            client_data=client_data
+        )
+
+        # 💰 paiement principal
+        paiement = Paiement.objects.create(
+            facture=facture,
+            created_by=request.user,
+            cashier=Cashier.objects.filter(user=request.user).first()
+        )
+
+        total = Decimal("0.00")
+
+        lignes_creees = []
+
+        for item in lignes_data:
+            mode = item.get("mode")
+            montant = Decimal(str(item.get("montant") or "0"))
+
+            if montant <= 0:
+                raise DjangoValidationError("Montant invalide")
+
+            ligne = PaiementLigne.objects.create(
+                paiement=paiement,
+                montant_paye=montant,
+                reference=item.get("reference"),
+            )
+
+            total += montant
+            lignes_creees.append(ligne)
+
+        if total > facture.reste_a_payer:
+            raise DjangoValidationError("Montant dépasse le reste")
+
+        # 🔄 statut facture
+        Facture.recompute_facture_status(facture)
+        facture.refresh_from_db()
+
+        # 🔁 PROFORMA → FACTURE
+        if facture.type_facture == Facture.TYPE_PROFORMA:
+            facture.type_facture = Facture.TYPE_FACTURE
+            facture.save(update_fields=["type_facture"])
+
+        # 📦 consommation stock
+        audit = {"created": 0, "already": 0, "lines_done": 0}
+
+        if facture.status == Facture.STAT_PAYE and not facture.stock_consumed:
+            audit = confirm_sale_out_from_vendor(
+                facture=facture,
+                by_user=request.user
+            )
+
+        # 📄 génération PDF facture
+        facture_pdf_url = None
+            
+            
+        if facture.status == Facture.STAT_PAYE:
+
+            if not facture.facture_pdf:
+
+                # 🔒 1. recalcul propre AVANT signature
+                facture.refresh_from_db()
+
+                # 🔐 2. générer hash (signature logique)
+                if not facture.integrity_hash:
+                    generate_facture_hash(facture)
+
+                # 📱 3. générer QR code
+                if not facture.qr_code_image:
+                    generate_facture_qr(facture)
+
+                # 📄 4. générer PDF FINAL
+                facture_pdf_url = generate_facture_pdf(facture)
+
+                # 🔒 5. LOCK après tout
+                facture.is_locked = True
+                facture.locked_at = timezone.now()
+                facture.save(update_fields=["is_locked", "locked_at"])
+
+            else:
+                try:
+                    facture_pdf_url = facture.facture_pdf.url
+                except:
+                    facture_pdf_url = None
+
+        # 🎯 RESPONSE
         return Response({
-            "message": "Paiement enregistré",
-            "paiement": PaiementSerializer(paiement).data,
-            "facture": {
-                "numero_facture": facture.numero_facture,
-                "type_facture": facture.type_facture,
-                "status": facture.status,
-                "montant_total": str(facture.montant_total),
-                "total_paye": str(total_paye.quantize(Decimal("0.01"))),
-                "reste_a_payer": str(max(total - total_paye, Decimal("0.00")).quantize(Decimal("0.01"))),
-            }
+            "message": "Paiement effectué avec succès",
+            "facture": facture.numero_facture,
+            "status": facture.status,
+            "total_paye": str(facture.total_paye),
+            "reste": str(facture.reste_a_payer),
+            "facture_pdf_url": facture_pdf_url,
+            "stock": audit,
         }, status=status.HTTP_201_CREATED)
 # -------------------END PaiementFactureView-------------------
 
-# -------------------Confirmer Livraison---------------------
-# le vendeur confirme la livraison via ConfirmerLivraisonView, 
-# ce qui déclenche la sortie de stock réelle (SALE_OUT)
+
+# PDF
+def _can_access_facture(user, facture: Facture) -> bool:
+    role = (get_role_name(user) or "").lower().strip()
+
+    if role == ROLE_ADMIN:
+        return True
+
+    if role == ROLE_MANAGER:
+        manager_profile = getattr(user, "staff_manager_profile", None)
+        if not manager_profile or (hasattr(manager_profile, "verifie") and not manager_profile.verifie):
+            return False
+        return manager_profile.bijouteries.filter(id=facture.bijouterie_id).exists()
+
+    if role == ROLE_CASHIER:
+        cashier_profile = getattr(user, "staff_cashier_profile", None)
+        if not cashier_profile or (hasattr(cashier_profile, "verifie") and not cashier_profile.verifie):
+            return False
+        return getattr(cashier_profile, "bijouterie_id", None) == facture.bijouterie_id
+
+    if role == ROLE_VENDOR:
+        vente = getattr(facture, "vente", None)
+        if not vente:
+            return False
+        vendor_profile = getattr(user, "staff_vendor_profile", None)
+        if not vendor_profile or (hasattr(vendor_profile, "verifie") and not vendor_profile.verifie):
+            return False
+        return vente.vendor_id == getattr(vendor_profile, "id", None)
+
+    return False
 
 
-# def _user_role(user):
-#     """Retourne 'vendor' / 'manager' ou None."""
-#     # adapte si tu as un autre système ; ici on détecte via présence des profils
-#     if getattr(user, "staff_vendor_profile", None):
-#         return "vendor"
-#     if getattr(user, "staff_manager_profile", None):
-#         return "manager"
-#     return None
-
-# def _user_bijouterie(user):
-#     """Bijouterie de l’utilisateur (vendor/manager vérifié), sinon None."""
-#     vp = getattr(user, "staff_vendor_profile", None)
-#     if vp and getattr(vp, "verifie", False) and vp.bijouterie_id:
-#         return vp.bijouterie
-#     mp = getattr(user, "staff_manager_profile", None)
-#     if mp and getattr(mp, "verifie", False) and mp.bijouterie_id:
-#         return mp.bijouterie
-#     return None
-
-# ROLES_LIVRAISON = {"vendor", "manager"}
-
-# class ConfirmerLivraisonView(APIView):
-#     permission_classes = [permissions.IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Confirmer la livraison (sortie réelle du stock)",
-#         operation_description=(
-#             "Marque la vente comme livrée et crée les mouvements d’inventaire **SALE_OUT** "
-#             "avec décrément du stock vendor. Requiert **facture payée**. "
-#             "Rôles autorisés : **vendor** / **manager**. "
-#             "La vente doit appartenir à la même bijouterie que l’utilisateur.\n\n"
-#             "- Vendor: peut livrer uniquement ses propres ventes (au moins une ligne avec son vendor).\n"
-#             "- Manager: peut livrer toute vente de sa bijouterie."
-#         ),
-#         responses={200: "OK", 400: "Erreur métier", 403: "Accès refusé", 404: "Introuvable"},
-#         tags=["Ventes"]
-#     )
-#     @transaction.atomic
-#     def post(self, request, vente_id: int):
-#         user = request.user
-#         role = get_role_name(user)
-
-#         if role not in {"manager", "vendor"}:
-#             return Response({"message": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-#         # ✅ bijouterie utilisateur (obligatoire)
-#         user_shop = _user_bijouterie_facture(user)
-#         if not user_shop:
-#             return Response(
-#                 {"error": "Profil non rattaché à une bijouterie vérifiée."},
-#                 status=status.HTTP_403_FORBIDDEN
-#             )
-
-#         # ✅ charger la vente d'abord
-#         try:
-#             vente = (
-#                 Vente.objects
-#                 .select_related("facture_vente", "facture_vente__bijouterie")
-#                 .prefetch_related("produits__produit", "produits__vendor")
-#                 .select_for_update()
-#                 .get(pk=vente_id)
-#             )
-#         except Vente.DoesNotExist:
-#             return Response({"error": "Vente introuvable."}, status=status.HTTP_404_NOT_FOUND)
-
-#         facture = getattr(vente, "facture_vente", None)
-#         if not facture:
-#             return Response({"error": "Aucune facture liée à cette vente."}, status=status.HTTP_400_BAD_REQUEST)
-
-#         # ✅ sécurité bijouterie
-#         if facture.bijouterie_id != user_shop.id:
-#             return Response({"error": "Cette vente n’appartient pas à votre bijouterie."},
-#                             status=status.HTTP_403_FORBIDDEN)
-
-#         # ✅ restriction vendor : seulement ses ventes
-#         if role == "vendor":
-#             my_vendor = getattr(user, "staff_vendor_profile", None)
-#             if not my_vendor:
-#                 return Response({"error": "Profil vendeur introuvable."}, status=status.HTTP_403_FORBIDDEN)
-
-#             if not vente.produits.filter(vendor=my_vendor).exists():
-#                 return Response({"error": "Vous ne pouvez livrer que vos propres ventes."},
-#                                 status=status.HTTP_403_FORBIDDEN)
-
-#         # ✅ déjà livrée ?
-#         if vente.delivery_status == Vente.DELIV_DELIVERED:
-#             return Response({
-#                 "message": "Déjà livrée — aucune action.",
-#                 "mouvements_crees": 0,
-#                 "vente": VenteDetailSerializer(vente).data,
-#                 "facture": FactureSerializer(facture).data
-#             }, status=status.HTTP_200_OK)
-
-#         # ✅ facture payée obligatoire
-#         if facture.status != Facture.STAT_PAYE:
-#             return Response({"error": "Facture non payée : livraison impossible."},
-#                             status=status.HTTP_400_BAD_REQUEST)
-
-#         # ✅ mouvements + décrément stock (service idempotent)
-#         try:
-#             created_count = create_sale_out_movements_for_vente(vente, request.user)
-#         except ValidationError as e:
-#             msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
-#             return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
-#         except Exception as e:
-#             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-#         vente.refresh_from_db()
-#         facture.refresh_from_db()
-
-#         return Response(
-#             {
-#                 "message": "Livraison confirmée.",
-#                 "mouvements_crees": created_count,
-#                 "vente": VenteDetailSerializer(vente).data,
-#                 "facture": FactureSerializer(facture).data,
-#             },
-#             status=status.HTTP_200_OK
-#         )
-        
-# --------------------End Confirmer Livraison------------------
-
-
-# ------------------Annulation vente-----------------------
-# class AnnulerVenteView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Annuler une vente (RETURN_IN + restauration stock vendeur)",
-#         operation_description=(
-#             "Annule une vente entière :\n"
-#             "- crée des mouvements d'inventaire RETURN_IN (EXTERNAL → BIJOUTERIE)\n"
-#             "- restaure VendorStock.quantite_vendue\n"
-#             "- idempotent (si déjà annulée, ne refait pas)\n\n"
-#             "Rôles autorisés : admin / manager / vendor\n"
-#             "Sécurité : la vente doit appartenir à la bijouterie du user.\n"
-#             "Vendor : ne peut annuler que si la vente contient au moins une ligne à lui."
-#         ),
-#         responses={200: "OK", 400: "Erreur métier", 403: "Accès refusé", 404: "Introuvable"},
-#         tags=["Ventes"],
-#     )
-#     @transaction.atomic
-#     def post(self, request, vente_id: int):
-#         user = request.user
-#         role = get_role_name(user)
-
-#         if role not in {"admin", "manager", "vendor"}:
-#             return Response({"error": "⛔ Accès refusé."}, status=403)
-
-#         user_shop = _user_bijouterie_facture(user)
-#         if not user_shop:
-#             return Response({"error": "Profil non rattaché à une bijouterie vérifiée."}, status=403)
-
-#         # charger vente pour contrôles de sécurité
-#         try:
-#             vente = (
-#                 Vente.objects
-#                 .select_related("facture_vente", "facture_vente__bijouterie")
-#                 .prefetch_related("produits__vendor")
-#                 .get(pk=vente_id)
-#             )
-#         except Vente.DoesNotExist:
-#             return Response({"error": "Vente introuvable."}, status=404)
-
-#         facture = getattr(vente, "facture_vente", None)
-#         if not facture:
-#             return Response({"error": "Aucune facture liée à cette vente."}, status=400)
-
-#         # ✅ même bijouterie
-#         if facture.bijouterie_id != user_shop.id:
-#             return Response({"error": "Cette vente n’appartient pas à votre bijouterie."}, status=403)
-
-#         # ✅ vendor : doit avoir au moins une ligne à lui
-#         if role == "vendor":
-#             my_vendor = getattr(user, "staff_vendor_profile", None)
-#             if not my_vendor:
-#                 return Response({"error": "Profil vendeur introuvable."}, status=403)
-#             if not vente.produits.filter(vendor=my_vendor).exists():
-#                 return Response({"error": "Vous ne pouvez annuler que vos ventes."}, status=403)
-
-#         try:
-#             result = cancel_vente_and_restore_stock(vente_id=vente.id, by_user=user)
-#         except ValidationError as e:
-#             msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
-#             return Response({"error": msg}, status=400)
-
-#         # refresh
-#         vente.refresh_from_db()
-#         facture.refresh_from_db()
-
-#         return Response(
-#             {
-#                 "message": "Vente annulée et stock restauré." if not result.get("already_cancelled") else "Vente déjà annulée (idempotent).",
-#                 "returned_movements": result.get("returned_movements", 0),
-#                 "vente": VenteDetailSerializer(vente).data,
-#                 "facture": FactureSerializer(facture).data,
-#             },
-#             status=200,
-#         )
-
-# class AnnulerVenteView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Annuler une vente (cashier only)",
-#         operation_description=(
-#             "Annule une vente entière :\n"
-#             "- crée des mouvements RETURN_IN (EXTERNAL → BIJOUTERIE)\n"
-#             "- restaure VendorStock.quantite_vendue\n"
-#             "- idempotent (si déjà annulée, ne refait pas)\n\n"
-#             "✅ Rôle autorisé : **cashier** uniquement.\n"
-#             "Sécurité : la vente doit appartenir à la bijouterie du cashier.\n"
-#         ),
-#         responses={200: "OK", 400: "Erreur métier", 403: "Accès refusé", 404: "Introuvable"},
-#         tags=["Ventes"],
-#     )
-#     @transaction.atomic
-#     def post(self, request, vente_id: int):
-#         user = request.user
-#         role = get_role_name(user)
-
-#         # ✅ cashier, admin, manager
-#         if role not in {"cashier", "admin", "manager"}:
-#             return Response({"error": "⛔ Accès refusé (cashier requis)."}, status=status.HTTP_403_FORBIDDEN)
-
-#         user_shop = _user_bijouterie_facture(user)
-#         if not user_shop:
-#             return Response({"error": "Profil non rattaché à une bijouterie vérifiée."},
-#                             status=status.HTTP_403_FORBIDDEN)
-
-#         # ✅ verrou + dépendances
-#         try:
-#             vente = (
-#                 Vente.objects
-#                 .select_for_update()
-#                 .select_related("facture_vente", "facture_vente__bijouterie")
-#                 .prefetch_related("produits__vendor", "produits__produit")
-#                 .get(pk=vente_id)
-#             )
-#         except Vente.DoesNotExist:
-#             return Response({"error": "Vente introuvable."}, status=status.HTTP_404_NOT_FOUND)
-
-#         facture = getattr(vente, "facture_vente", None)
-#         if not facture:
-#             return Response({"error": "Aucune facture liée à cette vente."}, status=status.HTTP_400_BAD_REQUEST)
-
-#         # ✅ même bijouterie
-#         if facture.bijouterie_id != user_shop.id:
-#             return Response({"error": "Cette vente n’appartient pas à votre bijouterie."},
-#                             status=status.HTTP_403_FORBIDDEN)
-
-#         # ✅ contrôle supplémentaire (recommandé)
-#         # 1) Interdire si facture PAYÉE (ou si tu veux autoriser, supprime ce bloc)
-#         if facture.status == Facture.STAT_PAYE:
-#             return Response({"error": "Impossible d’annuler : facture déjà payée."},
-#                             status=status.HTTP_400_BAD_REQUEST)
-
-#         # 2) Interdire si déjà livrée (si tu utilises delivery_status)
-#         if getattr(vente, "delivery_status", None) == getattr(Vente, "DELIV_DELIVERED", "delivered"):
-#             return Response({"error": "Impossible d’annuler : vente déjà livrée."},
-#                             status=status.HTTP_400_BAD_REQUEST)
-
-#         # ✅ service (idempotent)
-#         try:
-#             result = cancel_vente_and_restore_stock(vente_id=vente.id, by_user=user)
-#         except ValidationError as e:
-#             msg = getattr(e, "message", None) or (e.messages[0] if getattr(e, "messages", None) else str(e))
-#             return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
-
-#         vente.refresh_from_db()
-#         facture.refresh_from_db()
-
-#         return Response(
-#             {
-#                 "message": (
-#                     "Vente déjà annulée (idempotent)."
-#                     if result.get("already_cancelled")
-#                     else "Vente annulée et stock restauré."
-#                 ),
-#                 "returned_movements": result.get("returned_movements", 0),
-#                 "vente": VenteDetailSerializer(vente).data,
-#                 "facture": FactureSerializer(facture).data,
-#             },
-#             status=status.HTTP_200_OK,
-#         )
-        
-# -----------------End Anullation vente---------------
-
-# ----------------------Liste vente-------------------------
-# ---------- Helpers ----------
-def _parse_date_or_none(s: str | None) -> date | None:
-    if not s:
-        return None
-    return datetime.strptime(s, "%Y-%m-%d").date()
-
-def _aware_range(d_from: date, d_to: date, tz):
-    """Retourne [start, end) à partir de deux dates inclusives."""
-    start_dt = timezone.make_aware(datetime.combine(d_from, dtime.min), tz)
-    end_dt   = timezone.make_aware(datetime.combine(d_to + timedelta(days=1), dtime.min), tz)
-    return start_dt, end_dt
-
-def _add_years(d: date, years: int) -> date:
-    try:
-        return d.replace(year=d.year + years)
-    except ValueError:
-        # 29/02 -> 28/02 si besoin
-        return d.replace(month=2, day=28, year=d.year + years)
-
-def _current_year_bounds(tz):
-    today = timezone.localdate()
-    y = today.year
-    return _aware_range(date(y, 1, 1), date(y, 12, 31), tz)
-
-
-# ---------- View ----------
-# --- helpers rôle ---
-def _role(user):
-    if getattr(user, "is_superuser", False) or user.groups.filter(name__in=["admin","manager"]).exists():
-        return "admin" if user.is_superuser else "manager"
-    if getattr(user, "staff_vendor_profile", None):
-        return "vendor"
-    if getattr(user, "staff_cashier_profile", None):
-        return "cashier"
-    return None
-
-# --- helpers date ---
-def _aware_range(d_from: date, d_to: date, tz):
-    start_dt = timezone.make_aware(datetime.combine(d_from, dtime.min), tz)
-    end_dt   = timezone.make_aware(datetime.combine(d_to + timedelta(days=1), dtime.min), tz)
-    return start_dt, end_dt
-
-def _parse_date_or_none(s):
-    if not s:
-        return None
-    return datetime.strptime(s, "%Y-%m-%d").date()
-
-def _bounds_current_year(tz):
-    today = timezone.localdate()
-    return _aware_range(date(today.year, 1, 1), date(today.year, 12, 31), tz)
-
-
-class VenteListAPIView(APIView):
+class TicketProforma58mmView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
-        operation_summary="Liste des ventes",
-        operation_description=(
-            "- **Vendor** : uniquement ses ventes (VenteProduit.vendor = lui), **année en cours seulement** (from/to ignorés).\n"
-            "- **Cashier** : uniquement les ventes où il a encaissé ≥1 paiement, **année en cours seulement** (from/to ignorés).\n"
-            "- **Admin/Manager** : tout le périmètre, **par défaut année en cours**, mais `?from=YYYY-MM-DD&to=YYYY-MM-DD` peuvent couvrir n’importe quelle plage (bornes inclusives)."
-        ),
-        manual_parameters=[
-            openapi.Parameter("from", openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date", required=False),
-            openapi.Parameter("to",   openapi.IN_QUERY, type=openapi.TYPE_STRING, format="date", required=False),
-        ],
-        responses={200: openapi.Response('Liste des ventes', VenteListSerializer(many=True))}
-    )
-    def get(self, request):
-        role = _role(request.user)
-        if role is None:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+    def get(self, request, numero_facture: str):
+        facture = get_object_or_404(
+            Facture.objects.select_related("vente", "bijouterie", "vente__client"),
+            numero_facture__iexact=numero_facture,
+        )
 
-        tz = timezone.get_current_timezone()
-
-        # Base queryset selon rôle
-        if role == "vendor":
-            v = getattr(request.user, "staff_vendor_profile", None)
-            if not v:
-                return Response({"error": "Aucun profil vendor associé."}, status=400)
-            qs = Vente.objects.filter(produits__vendor=v)
-            # borne: année en cours (from/to ignorés)
-            start_dt, end_dt = _bounds_current_year(tz)
-
-        elif role == "cashier":
-            qs = Vente.objects.filter(facture_vente__paiements__created_by=request.user)
-            # borne: année en cours (from/to ignorés)
-            start_dt, end_dt = _bounds_current_year(tz)
-
-        else:  # admin / manager
-            qs = Vente.objects.all()
-            from_s = request.query_params.get("from")
-            to_s   = request.query_params.get("to")
-
-            if not from_s and not to_s:
-                # par défaut: année en cours
-                start_dt, end_dt = _bounds_current_year(tz)
-            else:
-                d_from = _parse_date_or_none(from_s)
-                d_to   = _parse_date_or_none(to_s)
-                if d_from and not d_to:
-                    d_to = d_from  # si une seule date, on retourne ce jour
-                if d_to and not d_from:
-                    d_from = d_to  # idem
-                if not d_from or not d_to:
-                    return Response({"error": "Format de date invalide. Utiliser YYYY-MM-DD."}, status=400)
-                if d_from > d_to:
-                    return Response({"error": "`from` doit être ≤ `to`."}, status=400)
-                start_dt, end_dt = _aware_range(d_from, d_to, tz)
-
-        qs = (qs.filter(created_at__gte=start_dt, created_at__lt=end_dt)
-                .distinct()
-                .order_by("-created_at"))
-
-        return Response(VenteListSerializer(qs, many=True).data, status=200)
-# -----------------------End List vente----------------------
-
-# ---------- -Rapport Ventes Mensuel-------------------------
-def _aware_range_month(year: int, month: int, tz):
-    first = date(year, month, 1)
-    # dernier jour du mois
-    if month == 12:
-        last = date(year, 12, 31)
-    else:
-        last = date(year, month + 1, 1) - timedelta(days=1)
-    start_dt = timezone.make_aware(datetime.combine(first, datetime.min.time()), tz)
-    end_dt   = timezone.make_aware(datetime.combine(last + timedelta(days=1), datetime.min.time()), tz)
-    return start_dt, end_dt
-
-
-class RapportVentesMensuelAPIView(APIView):
-    
-    """
-        JSON (par défaut)
-            GET /api/rapports/ventes-mensuel?mois=2025-10
-        Excel export
-            GET /api/rapports/ventes-mensuel?mois=2025-10&export=excel
-            (optionnel) &vendor_id=42 ou &vendor_email=vendeur@ex.sn
-    """
-    permission_classes = [IsAuthenticated]
-    allowed_roles = {"admin", "manager"}
-
-    def _role(self, user):
-        if getattr(user, "is_superuser", False) or user.groups.filter(name__in=["admin", "manager"]).exists():
-            return "admin" if user.is_superuser else "manager"
-        return None
-
-    @swagger_auto_schema(
-        operation_summary="Rapport mensuel des ventes (admin/manager)",
-        operation_description=(
-            "Filtre par `mois=YYYY-MM`. Optionnel : `vendor_id` **ou** `vendor_email`.\n"
-            "Retourne JSON par défaut. Ajoute `?export=excel` pour télécharger un fichier .xlsx."
-        ),
-        manual_parameters=[
-            openapi.Parameter("mois", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Mois au format YYYY-MM (ex: 2025-06)"),
-            openapi.Parameter("vendor_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
-            openapi.Parameter("vendor_email", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
-            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              enum=["excel"], required=False, description="Exporter en Excel"),
-        ],
-        responses={200: openapi.Response(description="Rapport JSON ou Excel")}
-    )
-    def get(self, request):
-        if self._role(request.user) not in self.allowed_roles:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-        # ---- 1) Mois
-        today = timezone.localdate()
-        mois_str = request.GET.get("mois") or today.strftime("%Y-%m")
-        try:
-            annee, mois_num = map(int, mois_str.split("-"))
-        except Exception:
-            return Response({"detail": "Format invalide. Utiliser YYYY-MM."}, status=400)
-
-        tz = timezone.get_current_timezone()
-        start_dt, end_dt = _aware_range_month(annee, mois_num, tz)
-
-        # ---- 2) Base queryset
-        lines = (VenteProduit.objects
-                 .select_related("vente", "produit", "vendor__user", "vendor__bijouterie")
-                 .filter(vente__created_at__gte=start_dt,
-                         vente__created_at__lt=end_dt))
-
-        # ---- 3) Filtre vendeur
-        vendor_id = request.GET.get("vendor_id")
-        vendor_email = request.GET.get("vendor_email")
-        vendeur_nom = "Tous les vendeurs"
-
-        if vendor_id and vendor_email:
-            return Response({"detail": "Fournir soit vendor_id soit vendor_email, pas les deux."}, status=400)
-
-        if vendor_id:
-            v = get_object_or_404(Vendor.objects.select_related("user"), pk=vendor_id)
-            lines = lines.filter(vendor=v)
-            vendeur_nom = f"{getattr(v.user, 'username', '')} ({getattr(v.user, 'email', '')})".strip()
-        elif vendor_email:
-            v = get_object_or_404(Vendor.objects.select_related("user"), user__email__iexact=vendor_email.strip())
-            lines = lines.filter(vendor=v)
-            vendeur_nom = f"{getattr(v.user, 'username', '')} ({getattr(v.user, 'email', '')})".strip()
-
-        # ---- 4) Agrégats
-        total_ht  = lines.aggregate(t=Sum("sous_total_prix_vente_ht"))["t"] or Decimal("0.00")
-        total_ttc = lines.aggregate(t=Sum("prix_ttc"))["t"] or Decimal("0.00")
-        ventes_distinctes = lines.values("vente_id").distinct().count()
-
-        # ---- 5) Export Excel ?
-        if (request.GET.get("export") or "").lower() == "excel":
-            filename = f"rapport_ventes_{mois_str.replace('-', '')}"
-            if vendeur_nom != "Tous les vendeurs":
-                # nettoie pour filename
-                safe_vendor = vendeur_nom.replace(" ", "_").replace("@", "_at_").replace("(", "").replace(")", "")
-                filename += f"_{safe_vendor}"
-            filename += ".xlsx"
-            return self._export_excel(
-                mois_str, vendeur_nom, total_ht, total_ttc, ventes_distinctes, lines, filename
+        if not _can_access_facture(request.user, facture):
+            return Response(
+                {"detail": "⛔ Accès refusé à cette facture."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        # ---- 6) JSON normal
-        ventes_list = [{
-            "date": l.vente.created_at.date().isoformat(),
-            "produit": getattr(l.produit, "nom", "Produit supprimé"),
-            "slug": getattr(l.produit, "slug", None),
-            "quantite": l.quantite,
-            "montant_ht": float(l.sous_total_prix_vente_ht or 0),
-            "montant_ttc": float(l.prix_ttc or 0),
-            "vendor": {
-                "id": getattr(l.vendor, "id", None),
-                "username": getattr(getattr(l.vendor, "user", None), "username", None),
-                "email": getattr(getattr(l.vendor, "user", None), "email", None),
-                "bijouterie": getattr(getattr(l.vendor, "bijouterie", None), "nom", None),
-            } if l.vendor_id else None
-        } for l in lines.order_by("vente__created_at", "id")]
+        if not facture.vente_id:
+            return Response(
+                {"detail": "Aucune vente associée à cette facture."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        return Response({
-            "mois": mois_str,
-            "vendeur": vendeur_nom,
-            "ventes_distinctes": ventes_distinctes,
-            "total_ht": float(total_ht),
-            "total_ttc": float(total_ttc),
-            "lignes": ventes_list
-        }, status=200)
+        pdf_buffer = build_ticket_proforma_58mm_pdf(
+            vente=facture.vente,
+            facture=facture,
+        )
 
-    # ---------- Excel builder ----------
-    def _export_excel(self, mois_str, vendeur_nom, total_ht, total_ttc, ventes_distinctes, lines_qs, filename):
-        wb = Workbook()
+        filename = f"ticket_proforma_{facture.numero_facture}.pdf"
+        return FileResponse(pdf_buffer, as_attachment=False, filename=filename)
 
-        # ---- Sheet 1: Résumé
-        ws = wb.active
-        ws.title = "Résumé"
-        bold = Font(bold=True)
+class TicketPaiement80mmESCPosView(APIView):
+    permission_classes = [IsAuthenticated]
 
-        rows = [
-            ("Mois", mois_str),
-            ("Vendeur", vendeur_nom),
-            ("Ventes distinctes", ventes_distinctes),
-            ("Total HT", float(total_ht)),
-            ("Total TTC", float(total_ttc)),
-        ]
-        ws.append(["Clé", "Valeur"])
-        ws["A1"].font = ws["B1"].font = bold
+    def get(self, request, numero_facture: str):
+        facture = get_object_or_404(
+            Facture.objects.select_related("vente", "bijouterie", "vente__client"),
+            numero_facture__iexact=numero_facture,
+        )
 
-        for r in rows:
-            ws.append(r)
+        if not _can_access_facture(request.user, facture):
+            return Response(
+                {"detail": "⛔ Accès refusé"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-        # Formats
-        ws["B4"].number_format = numbers.FORMAT_NUMBER_COMMA_SEPARATED1
-        ws["B5"].number_format = numbers.FORMAT_NUMBER_COMMA_SEPARATED1
+        paiement = (
+            Paiement.objects
+            .filter(facture=facture)
+            .select_related("facture", "cashier", "created_by")
+            .order_by("-date_paiement", "-id")
+            .first()
+        )
 
-        # Ajuste largeur colonnes
-        ws.column_dimensions["A"].width = 22
-        ws.column_dimensions["B"].width = 40
+        if not paiement:
+            return Response(
+                {"detail": "Aucun paiement trouvé"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # ---- Sheet 2: Lignes
-        ws2 = wb.create_sheet("Lignes")
-        header = [
-            "Date", "Vente #", "Produit", "Slug",
-            "Quantité", "Montant HT", "Montant TTC",
-            "Vendor", "Vendor Email", "Bijouterie",
-        ]
-        ws2.append(header)
-        for c in range(1, len(header)+1):
-            ws2.cell(row=1, column=c).font = bold
+        bijouterie = facture.bijouterie
+        client = getattr(facture.vente, "client", None)
 
-        for l in lines_qs.order_by("vente__created_at", "id"):
-            ws2.append([
-                l.vente.created_at.strftime("%Y-%m-%d"),
-                getattr(l.vente, "numero_vente", ""),
-                getattr(l.produit, "nom", "Produit supprimé"),
-                getattr(l.produit, "slug", None),
-                int(l.quantite or 0),
-                float(l.sous_total_prix_vente_ht or 0),
-                float(l.prix_ttc or 0),
-                getattr(getattr(l.vendor, "user", None), "username", None),
-                getattr(getattr(l.vendor, "user", None), "email", None),
-                getattr(getattr(l.vendor, "bijouterie", None), "nom", None),
-            ])
+        shop_name = getattr(bijouterie, "nom", "RIO-GOLD")
+        shop_phone = getattr(bijouterie, "telephone", None)
 
-        # Formats + UI
-        ws2.auto_filter.ref = ws2.dimensions
-        ws2.freeze_panes = "A2"
-        # colonnes: E=Quantité, F=HT, G=TTC
-        ws2.column_dimensions["A"].width = 12
-        ws2.column_dimensions["B"].width = 22
-        ws2.column_dimensions["C"].width = 32
-        ws2.column_dimensions["D"].width = 24
-        ws2.column_dimensions["E"].width = 10
-        ws2.column_dimensions["F"].width = 14
-        ws2.column_dimensions["G"].width = 14
-        ws2.column_dimensions["H"].width = 18
-        ws2.column_dimensions["I"].width = 24
-        ws2.column_dimensions["J"].width = 18
+        client_nom = None
+        if client:
+            client_nom = f"{client.prenom} {client.nom}".strip()
 
-        for row in ws2.iter_rows(min_row=2, min_col=6, max_col=7):
-            for cell in row:
-                cell.number_format = numbers.FORMAT_NUMBER_COMMA_SEPARATED1
+        cashier_nom = None
+        if paiement.cashier:
+            cashier_nom = str(paiement.cashier)
 
-        # ---- Sheet 3: Par produit
-        ws3 = wb.create_sheet("Par produit")
-        ws3.append(["Produit", "Slug", "Quantité", "Total HT", "Total TTC"])
-        for c in range(1, 6):
-            ws3.cell(row=1, column=c).font = bold
+        escpos_bytes = build_escpos_recu_paiement_80mm(
+            shop_name=shop_name,
+            shop_phone=shop_phone,
+            numero_facture=facture.numero_facture,
+            date_paiement=paiement.date_paiement,
+            montant_paye=paiement.montant_total_paye,
+            reste_a_payer=facture.reste_a_payer,
+        )
 
-        agg_prod = (lines_qs
-                    .values("produit__nom", "produit__slug")
-                    .annotate(q=Sum("quantite"),
-                              ht=Sum("sous_total_prix_vente_ht"),
-                              ttc=Sum("prix_ttc"))
-                    .order_by("produit__nom"))
-        for r in agg_prod:
-            ws3.append([
-                r["produit__nom"] or "Produit supprimé",
-                r["produit__slug"],
-                int(r["q"] or 0),
-                float(r["ht"] or 0),
-                float(r["ttc"] or 0),
-            ])
-        ws3.auto_filter.ref = ws3.dimensions
-        ws3.freeze_panes = "A2"
-        ws3.column_dimensions["A"].width = 32
-        ws3.column_dimensions["B"].width = 24
-        ws3.column_dimensions["C"].width = 10
-        ws3.column_dimensions["D"].width = 16
-        ws3.column_dimensions["E"].width = 16
-        for row in ws3.iter_rows(min_row=2, min_col=4, max_col=5):
-            for cell in row:
-                cell.number_format = numbers.FORMAT_NUMBER_COMMA_SEPARATED1
+        return HttpResponse(
+            escpos_bytes,
+            content_type="application/octet-stream"
+        )
 
-        # ---- Sheet 4: Par vendeur
-        ws4 = wb.create_sheet("Par vendeur")
-        ws4.append(["Vendor", "Email", "Bijouterie", "Quantité", "Total HT", "Total TTC"])
-        for c in range(1, 7):
-            ws4.cell(row=1, column=c).font = bold
 
-        agg_vendor = (lines_qs
-                      .values("vendor__user__username", "vendor__user__email", "vendor__bijouterie__nom")
-                      .annotate(q=Sum("quantite"),
-                                ht=Sum("sous_total_prix_vente_ht"),
-                                ttc=Sum("prix_ttc"))
-                      .order_by("vendor__user__username"))
-        for r in agg_vendor:
-            ws4.append([
-                r["vendor__user__username"],
-                r["vendor__user__email"],
-                r["vendor__bijouterie__nom"],
-                int(r["q"] or 0),
-                float(r["ht"] or 0),
-                float(r["ttc"] or 0),
-            ])
-        ws4.auto_filter.ref = ws4.dimensions
-        ws4.freeze_panes = "A2"
-        ws4.column_dimensions["A"].width = 18
-        ws4.column_dimensions["B"].width = 28
-        ws4.column_dimensions["C"].width = 18
-        ws4.column_dimensions["D"].width = 10
-        ws4.column_dimensions["E"].width = 16
-        ws4.column_dimensions["F"].width = 16
-        for row in ws4.iter_rows(min_row=2, min_col=5, max_col=6):
-            for cell in row:
-                cell.number_format = numbers.FORMAT_NUMBER_COMMA_SEPARATED1
+class FactureA5PaysageView(APIView):
+    permission_classes = [IsAuthenticated]
 
-        # ---- Retour HTTP
-        bio = BytesIO()
-        wb.save(bio)
-        bio.seek(0)
+    def get(self, request, numero_facture: str):
+        facture = get_object_or_404(
+            Facture.objects.select_related("vente", "bijouterie", "vente__client"),
+            numero_facture__iexact=numero_facture,
+        )
 
-        resp = Response(bio.getvalue(),
-                        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        resp["Content-Disposition"] = f'attachment; filename="{filename}"'
-        return resp
-# -------------- End Rapport Ventes Mensuel ---------------------
+        if not _can_access_facture(request.user, facture):
+            return Response(
+                {"detail": "⛔ Accès refusé à cette facture."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        pdf_buffer = build_facture_a5_paysage_pdf(facture=facture)
+
+        filename = f"facture_{facture.numero_facture}.pdf"
+        return FileResponse(pdf_buffer, as_attachment=False, filename=filename)
+    
+
+
+from sale.services.export.export_facture_excel import export_factures_excel
+
+
+class ExportFacturesExcelView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        factures = Facture.objects.all().select_related(
+            "vente",
+            "vente__client",
+            "vente__vendor__user",
+            "bijouterie",
+        )
+        return export_factures_excel(factures)
+    
+
+
+class ExportComptableView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        factures = Facture.objects.filter(status=Facture.STAT_PAYE).prefetch_related("paiements")
+        wb = export_comptable_factures(factures)
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        response["Content-Disposition"] = 'attachment; filename="comptabilite.xlsx"'
+
+        wb.save(response)
+        return response
+    
+    
+
+
+# class RecuPaiementPDFView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, paiement_id):
+#         paiement = get_object_or_404(
+#             Paiement.objects.select_related("facture", "facture__vente", "facture__bijouterie"),
+#             pk=paiement_id
+#         )
+
+#         pdf_bytes = generate_recu_paiement_pdf_bytes(paiement=paiement)
+#         response = HttpResponse(pdf_bytes, content_type="application/pdf")
+#         response["Content-Disposition"] = f'inline; filename="recu_paiement_{paiement.id}.pdf"'
+#         return response#         return response
+
+
+# ==========================================================
+# HELPERS corrigés pour serializers
+# ==========================================================
+def _get_facture_locked(vente):
+    facture = getattr(vente, "facture_vente", None)
+    if not facture:
+        return None
+    return Facture.objects.select_for_update().get(id=facture.id)
+
+def _validate_before_payment(facture):
+    if not facture:
+        return None
+
+    if facture.status != Facture.STAT_NON_PAYE:
+        return error_response(
+            "FACTURE_NOT_EDITABLE",
+            "Action impossible : la facture n'est plus non payée.",
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    if facture.total_paye > Decimal("0.00"):
+        return error_response(
+            "FACTURE_HAS_PAYMENT",
+            "Action impossible : un paiement existe déjà.",
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    if facture.stock_consumed:
+        return error_response(
+            "STOCK_ALREADY_CONSUMED",
+            "Action impossible : le stock est déjà consommé.",
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    if facture.is_locked:
+        return error_response(
+            "FACTURE_LOCKED",
+            "Action impossible : la facture est verrouillée.",
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    return None
+
+
+def _resolve_vendor_for_update(data, request, vente, role):
+    user = request.user
+
+    if role == ROLE_VENDOR:
+        vendor = Vendor.objects.select_related("user", "bijouterie").filter(user=user).first()
+
+        if not vendor:
+            return None, error_response(
+                "VENDOR_PROFILE_NOT_FOUND",
+                "Vous n'êtes pas associé à un compte vendeur.",
+                status.HTTP_404_NOT_FOUND,
+            )
+
+        if vente.vendor_id != vendor.id:
+            return None, error_response(
+                "NOT_YOUR_SALE",
+                "Vous ne pouvez modifier que vos propres ventes.",
+                status.HTTP_403_FORBIDDEN,
+            )
+
+        return vendor, None
+
+    vendor_email = data.get("vendor_email") or request.query_params.get("vendor_email")
+
+    if vendor_email:
+        vendor = Vendor.objects.select_related("user", "bijouterie").filter(
+            user__email=vendor_email
+        ).first()
+
+        if not vendor:
+            return None, error_response(
+                "VENDOR_NOT_FOUND",
+                "Vendeur introuvable.",
+                status.HTTP_404_NOT_FOUND,
+            )
+    else:
+        vendor = vente.vendor
+
+    if role == ROLE_MANAGER:
+        manager_profile = getattr(user, "staff_manager_profile", None)
+
+        if manager_profile and hasattr(manager_profile, "bijouteries"):
+            allowed = manager_profile.bijouteries.filter(id=vendor.bijouterie_id).exists()
+
+            if not allowed:
+                return None, error_response(
+                    "VENDOR_OUT_OF_SCOPE",
+                    "Ce vendeur n'appartient pas à vos bijouteries.",
+                    status.HTTP_403_FORBIDDEN,
+                )
+
+    return vendor, None
+
+
+
+def _update_client_if_provided(data, vente):
+    client_data = data.get("client")
+
+    if not client_data:
+        return None
+
+    nom = client_data.get("nom")
+    prenom = client_data.get("prenom")
+    telephone = client_data.get("telephone") or None
+
+    if telephone:
+        client, _ = Client.objects.get_or_create(
+            telephone=telephone,
+            defaults={"nom": nom, "prenom": prenom},
+        )
+        client.nom = nom
+        client.prenom = prenom
+        client.save(update_fields=["nom", "prenom"])
+    else:
+        client = Client.objects.create(
+            nom=nom,
+            prenom=prenom,
+            telephone=None,
+        )
+
+    vente.client = client
+    vente.save(update_fields=["client"])
+    return None
+
+def _resolve_product_for_sale_item(item):
+    produit_id = item.get("produit_id")
+    slug = item.get("slug")
+    sku = item.get("sku")
+    qr = item.get("qr") or item.get("qr_code")
+
+    produit_qs = Produit.objects.select_related("marque", "purete")
+
+    if produit_id:
+        return produit_qs.filter(id=produit_id).first()
+
+    if qr:
+        qr = str(qr).strip()
+
+        if not qr.startswith("P:"):
+            return None
+
+        raw_id = qr.replace("P:", "").strip()
+
+        if not raw_id.isdigit():
+            return None
+
+        return produit_qs.filter(id=int(raw_id)).first()
+
+    if sku:
+        return produit_qs.filter(sku__iexact=str(sku).strip()).first()
+
+    if slug:
+        return produit_qs.filter(slug=slug).first()
+
+    return None
+
+# def _parse_decimal(value, default="0"):
+#     try:
+#         return Decimal(str(value if value not in [None, ""] else default))
+#     except (InvalidOperation, TypeError):
+#         raise ValueError("Decimal invalide")
+    
+
+def _recalculate_facture_from_vente(facture, vente, vendor):
+    if facture:
+        facture.montant_ht = vente.montant_total
+        facture.bijouterie = vendor.bijouterie
+        facture.save(
+            update_fields=[
+                "montant_ht",
+                "bijouterie",
+                "taux_tva",
+                "montant_tva",
+                "montant_total",
+            ]
+        )
+        return facture
+
+    return Facture.objects.create(
+        vente=vente,
+        bijouterie=vendor.bijouterie,
+        montant_ht=vente.montant_total,
+    )
+
+
+# ==========================================================
+# 1. UPDATE VENTE AVANT PAIEMENT
+# ==========================================================
+
+class UpdateVenteProduitView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Modifier une vente avant paiement",
+        operation_description="""
+        Modifie une vente avant paiement.
+
+        Important :
+        - Ne touche pas au VendorStock.
+        - Ne crée pas InventoryMovement.
+        - Le stock sera consommé seulement au paiement complet.
+        """,
+        request_body=UpdateVenteProduitSerializer,
+        responses={200: VenteDetailSerializer},
+        tags=["Ventes"],
+    )
+    @transaction.atomic
+    def put(self, request, vente_id):
+        user = request.user
+        role = get_role_name(user)
+
+        if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
+            return error_response("ACCESS_DENIED", "Accès refusé.", status.HTTP_403_FORBIDDEN)
+
+        input_serializer = UpdateVenteProduitSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+
+        vente = get_object_or_404(
+            Vente.objects.select_for_update().select_related("vendor", "bijouterie", "client"),
+            id=vente_id,
+        )
+
+        if vente.is_cancelled:
+            return error_response(
+                "VENTE_CANCELLED",
+                "Modification impossible : cette vente est annulée.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        facture = _get_facture_locked(vente)
+        facture_error = _validate_before_payment(facture)
+        if facture_error:
+            return facture_error
+
+        vendor, vendor_error = _resolve_vendor_for_update(data, request, vente, role)
+        if vendor_error:
+            return vendor_error
+
+        client_error = _update_client_if_provided(data, vente)
+        if client_error:
+            return client_error
+
+        produits_data = data["produits"]
+
+        # On remplace les lignes sans toucher au stock
+        VenteProduit.objects.select_for_update().filter(vente=vente).delete()
+
+        for item in produits_data:
+            quantite = item["quantite"]
+            produit = _resolve_product_for_sale_item(item)
+
+            if not produit:
+                return error_response(
+                    "PRODUCT_NOT_FOUND",
+                    "Produit introuvable. Vérifiez produit_id, slug, sku ou qr.",
+                    status.HTTP_404_NOT_FOUND,
+                )
+
+            prix_vente_grammes = item.get("prix_vente_grammes")
+
+            if prix_vente_grammes in [None, "", 0, "0"]:
+                try:
+                    prix_vente_grammes = Decimal(str(produit.marque.prix))
+                except Exception:
+                    return error_response(
+                        "PRICE_NOT_FOUND",
+                        f"Aucun prix disponible pour {produit.nom}.",
+                        status.HTTP_400_BAD_REQUEST,
+                    )
+
+            VenteProduit.objects.create(
+                vente=vente,
+                produit=produit,
+                vendor=vendor,
+                quantite=quantite,
+                prix_vente_grammes=prix_vente_grammes,
+                remise=item.get("remise", Decimal("0.00")),
+                autres=item.get("autres", Decimal("0.00")),
+            )
+
+        vente.vendor = vendor
+        vente.bijouterie = vendor.bijouterie
+        vente.save(update_fields=["vendor", "bijouterie"])
+
+        vente.mettre_a_jour_montant_total()
+        vente.refresh_from_db()
+
+        _recalculate_facture_from_vente(facture, vente, vendor)
+
+        return Response(VenteDetailSerializer(vente).data, status=status.HTTP_200_OK)
+
+    @transaction.atomic
+    def patch(self, request, vente_id):
+        return self.put(request, vente_id)
+
+
+# ==========================================================
+# 2. CANCEL PROFORMA
+# ==========================================================
+
+class CancelProformaVenteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Annuler une vente non payée / proforma",
+        operation_description="""
+        Annule une vente non payée.
+
+        Important :
+        - Ne touche pas au VendorStock.
+        - Ne crée pas InventoryMovement.
+        - Marque seulement la vente comme annulée.
+        """,
+        request_body=CancelProformaVenteSerializer,
+        tags=["Ventes"],
+    )
+    @transaction.atomic
+    def post(self, request, vente_id):
+        user = request.user
+        role = get_role_name(user)
+
+        if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
+            return error_response("ACCESS_DENIED", "Accès refusé.", status.HTTP_403_FORBIDDEN)
+
+        input_serializer = CancelProformaVenteSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+
+        vente = get_object_or_404(
+            Vente.objects.select_for_update().select_related("vendor", "bijouterie", "client"),
+            id=vente_id,
+        )
+
+        if vente.is_cancelled:
+            return error_response(
+                "VENTE_ALREADY_CANCELLED",
+                "Cette vente est déjà annulée.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        facture = _get_facture_locked(vente)
+        facture_error = _validate_before_payment(facture)
+        if facture_error:
+            return facture_error
+
+        _, vendor_error = _resolve_vendor_for_update(data, request, vente, role)
+        if vendor_error:
+            return vendor_error
+
+        vente.is_cancelled = True
+        vente.cancelled_at = timezone.now()
+        vente.cancelled_by = user
+        vente.save(update_fields=["is_cancelled", "cancelled_at", "cancelled_by"])
+
+        if facture:
+            Facture.objects.filter(id=facture.id).update(
+                is_locked=True,
+                locked_at=timezone.now(),
+            )
+
+        return Response(
+            {
+                "status": "success",
+                "code": "VENTE_PROFORMA_CANCELLED",
+                "message": "Vente non payée annulée avec succès.",
+                "reason": data.get("reason"),
+                "vente": VenteDetailSerializer(vente).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+# ==========================================================
+# 3. RETOUR CLIENT SOUS 72H APRÈS PAIEMENT
+# ==========================================================
+
+class RetourVenteProduitView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Retour client sous 72h après paiement",
+        operation_description="""
+        Retour client après paiement.
+
+        Conditions :
+        - facture payée
+        - stock déjà consommé
+        - délai maximum 72h
+        - restaure VendorStock
+        - crée InventoryMovement RETURN_IN
+        """,
+        request_body=RetourVenteProduitSerializer,
+        tags=["Ventes"],
+    )
+    @transaction.atomic
+    def post(self, request, vente_id):
+        user = request.user
+        role = get_role_name(user)
+
+        if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
+            return error_response("ACCESS_DENIED", "Accès refusé.", status.HTTP_403_FORBIDDEN)
+
+        input_serializer = RetourVenteProduitSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+
+        vente = get_object_or_404(
+            Vente.objects.select_for_update().select_related("vendor", "bijouterie", "client"),
+            id=vente_id,
+        )
+
+        if vente.is_cancelled:
+            return error_response(
+                "VENTE_CANCELLED",
+                "Retour impossible : cette vente est annulée.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        facture = _get_facture_locked(vente)
+
+        if not facture:
+            return error_response(
+                "FACTURE_NOT_FOUND",
+                "Retour impossible : aucune facture liée à cette vente.",
+                status.HTTP_404_NOT_FOUND,
+            )
+
+        if facture.status != Facture.STAT_PAYE:
+            return error_response(
+                "FACTURE_NOT_PAID",
+                "Retour impossible : la facture doit être payée.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not facture.stock_consumed:
+            return error_response(
+                "STOCK_NOT_CONSUMED",
+                "Retour impossible : le stock n'a pas encore été consommé.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        reference_date = vente.delivered_at or facture.date_creation
+        if timezone.now() > reference_date + timedelta(hours=72):
+            return error_response(
+                "RETURN_DELAY_EXPIRED",
+                "Retour impossible : le délai de 72 heures est dépassé.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        _, vendor_error = _resolve_vendor_for_update(data, request, vente, role)
+        if vendor_error:
+            return vendor_error
+
+        reason = data.get("reason") or "Retour client sous 72h"
+        produits_retour = data.get("produits") or []
+
+        requested_by_line = {}
+
+        for item in produits_retour:
+            ligne_id = item["vente_ligne_id"]
+            qty = item["quantite"]
+            requested_by_line[int(ligne_id)] = requested_by_line.get(int(ligne_id), 0) + qty
+
+        sale_outs = InventoryMovement.objects.select_for_update().filter(
+            vente=vente,
+            facture=facture,
+            movement_type=InventoryMovement.MovementType.SALE_OUT,
+        ).select_related(
+            "produit",
+            "produit_line",
+            "lot",
+            "vendor",
+            "vente_ligne",
+        ).order_by("vente_ligne_id", "produit_line_id", "id")
+
+        if requested_by_line:
+            sale_outs = sale_outs.filter(vente_ligne_id__in=requested_by_line.keys())
+
+        total_returned_now = 0
+        details = []
+
+        for move in sale_outs:
+            ligne = move.vente_ligne
+            if not ligne:
+                continue
+
+            already_returned = InventoryMovement.objects.filter(
+                vente=vente,
+                facture=facture,
+                movement_type=InventoryMovement.MovementType.RETURN_IN,
+                vente_ligne=ligne,
+                produit_line=move.produit_line,
+            ).aggregate(total=Sum("qty"))["total"] or 0
+
+            remaining_returnable = int(move.qty) - int(already_returned)
+
+            if remaining_returnable <= 0:
+                continue
+
+            if requested_by_line:
+                wanted_for_line = requested_by_line.get(ligne.id, 0)
+
+                if wanted_for_line <= 0:
+                    continue
+
+                qty_to_return = min(remaining_returnable, wanted_for_line)
+                requested_by_line[ligne.id] -= qty_to_return
+            else:
+                qty_to_return = remaining_returnable
+
+            stock = VendorStock.objects.select_for_update().filter(
+                vendor=move.vendor,
+                produit_line=move.produit_line,
+            ).first()
+
+            if not stock:
+                return error_response(
+                    "VENDOR_STOCK_NOT_FOUND",
+                    f"Stock vendeur introuvable pour la ligne {ligne.id}.",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+            if stock.quantite_vendue < qty_to_return:
+                return error_response(
+                    "INVALID_VENDOR_STOCK_STATE",
+                    f"Retour impossible : quantite_vendue insuffisante pour {move.produit.nom}.",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+            stock.quantite_vendue -= qty_to_return
+            stock.save(update_fields=["quantite_vendue", "updated_at"])
+
+            log_move(
+                produit=move.produit,
+                qty=qty_to_return,
+                movement_type=InventoryMovement.MovementType.RETURN_IN,
+                src_bucket=InventoryMovement.Bucket.EXTERNAL,
+                dst_bucket=InventoryMovement.Bucket.BIJOUTERIE,
+                dst_bijouterie_id=move.vendor.bijouterie_id,
+                unit_cost=move.unit_cost,
+                produit_line=move.produit_line,
+                lot=move.lot,
+                vendor=move.vendor,
+                vente=vente,
+                facture=facture,
+                vente_ligne=ligne,
+                user=user,
+                reason=reason,
+            )
+
+            total_returned_now += qty_to_return
+            details.append(
+                {
+                    "vente_ligne_id": ligne.id,
+                    "produit_id": move.produit_id,
+                    "produit": move.produit.nom,
+                    "produit_line_id": move.produit_line_id,
+                    "quantite_retournee": qty_to_return,
+                }
+            )
+
+        if requested_by_line:
+            not_returned = {k: v for k, v in requested_by_line.items() if v > 0}
+
+            if not_returned:
+                transaction.set_rollback(True)
+                return error_response(
+                    "RETURN_QTY_TOO_HIGH",
+                    f"Quantité demandée supérieure à la quantité retournable : {not_returned}",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+        if total_returned_now <= 0:
+            return error_response(
+                "NOTHING_TO_RETURN",
+                "Aucune quantité retournable trouvée pour cette vente.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "status": "success",
+                "code": "RETURN_IN_CREATED",
+                "message": "Retour client enregistré avec succès.",
+                "vente_id": vente.id,
+                "facture": facture.numero_facture,
+                "quantite_totale_retournee": total_returned_now,
+                "details": details,
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+
 

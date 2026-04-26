@@ -1,185 +1,324 @@
-from django.db import models
-import uuid
-from django.utils import timezone
-from django.conf import settings
-from store.models import Produit
-from django.core.exceptions import ValidationError
+from __future__ import annotations
+
 from decimal import Decimal
-from store.models import get_default_purete
 
-MATIERE = (
-    ("or", "Or"),
-    ("argent", "Argent"),
-    ("mixte", "Mixte")
-)
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.db.models import Sum
+from django.utils import timezone
 
-GENRE = (
-    ("H", "Homme"),
-    ("F", "Femme"),
-    ("E", "Enfant")
-)
-# prise de commande en boutique
-
-# Create your models here.
-class CommandeClient(models.Model):
-    STATUT_EN_ATTENTE_ACOMPTE = 'en_attente_acompte'
-    STATUT_EN_ATTENTE = 'en_attente'
-    STATUT_PAYEE = 'payee'
-
-    STATUT_CHOICES = [
-        (STATUT_EN_ATTENTE_ACOMPTE, "En attente d'acompte"),
-        (STATUT_EN_ATTENTE, "En attente"),
-        (STATUT_PAYEE, "Payée"),
-    ]
-    numero_commande = models.CharField(max_length=30, unique=True, editable=False)
-    client = models.ForeignKey('sale.Client', on_delete=models.SET_NULL, null=True, related_name="commandes_client")
-    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
-    statut = models.CharField(max_length=30, choices=STATUT_CHOICES, default=STATUT_EN_ATTENTE_ACOMPTE)
-    date_commande = models.DateTimeField(auto_now_add=True)
-    commentaire = models.TextField(blank=True, null=True)
-    image = models.ImageField(upload_to='orders/client', default="order-client.jpg", null=True, blank=True)
+ZERO = Decimal("0.00")
+HALF = Decimal("0.50")
 
 
-    def save(self, *args, **kwargs):
-        if not self.numero_commande:
-            self.numero_commande = self.generer_numero_commande()
-        super().save(*args, **kwargs)
+def dec(v) -> Decimal:
+    if v in (None, "", "null"):
+        return ZERO
+    try:
+        return Decimal(str(v))
+    except Exception:
+        raise ValidationError(f"Valeur décimale invalide : {v}")
 
-    def generer_numero_commande(self):
-        date_str = timezone.now().strftime('%Y%m%d')
-        prefix = f"COM-{date_str}-"
 
-        while True:
-            suffix = uuid.uuid4().hex[:4].upper()  # Ex: 'A1B2'
-            numero = f"{prefix}{suffix}"
-            if not CommandeClient.objects.filter(numero_commande=numero).exists():
-                return numero
-
-    @property
-    def montant_total(self):
-        total = self.commandes_produits_client.aggregate(
-            total=models.Sum('sous_total')
-        )['total'] or Decimal('0.00')
-        return total
+class Ouvrier(models.Model):
+    nom = models.CharField(max_length=100)
+    prenom = models.CharField(max_length=100, blank=True, default="")
+    telephone = models.CharField(max_length=30, blank=True, default="")
+    specialite = models.CharField(max_length=120, blank=True, default="")
+    actif = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        ordering = ["nom", "prenom"]
+
+    def __str__(self):
+        return f"{self.prenom} {self.nom}".strip()
+
+
+class CommandeClient(models.Model):
+    STATUT_BROUILLON = "BROUILLON"
+    STATUT_EN_ATTENTE = "EN_ATTENTE"
+    STATUT_EN_PRODUCTION = "EN_PRODUCTION"
+    STATUT_TERMINEE = "TERMINEE"
+    STATUT_LIVREE = "LIVREE"
+    STATUT_ANNULEE = "ANNULEE"
+
+    STATUT_CHOICES = [
+        (STATUT_BROUILLON, "Brouillon"),
+        (STATUT_EN_ATTENTE, "En attente"),
+        (STATUT_EN_PRODUCTION, "En production"),
+        (STATUT_TERMINEE, "Terminée"),
+        (STATUT_LIVREE, "Livrée"),
+        (STATUT_ANNULEE, "Annulée"),
+    ]
+
+    numero_commande = models.CharField(max_length=50, unique=True, editable=False)
+
+    client = models.ForeignKey(
+        "sale.Client",
+        on_delete=models.PROTECT,
+        related_name="commandes_clients",
+    )
+    bijouterie = models.ForeignKey(
+        "store.Bijouterie",
+        on_delete=models.PROTECT,
+        related_name="commandes_clients",
+    )
+    vendor = models.ForeignKey(
+        "vendor.Vendor",
+        on_delete=models.PROTECT,
+        related_name="commandes_clients",
+    )
+    ouvrier = models.ForeignKey(
+        Ouvrier,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="commandes_clients",
+    )
+
+    statut = models.CharField(
+        max_length=20,
+        choices=STATUT_CHOICES,
+        default=STATUT_BROUILLON,
+        db_index=True,
+    )
+
+    date_commande = models.DateTimeField(default=timezone.now)
+    date_debut = models.DateField(null=True, blank=True)
+    date_fin_prevue = models.DateField(null=True, blank=True)
+    date_fin_reelle = models.DateField(null=True, blank=True)
+    date_livraison = models.DateTimeField(null=True, blank=True)
+
+    date_affectation_ouvrier = models.DateTimeField(null=True, blank=True)
+    date_depot_boutique = models.DateTimeField(null=True, blank=True)
+
+    montant_total = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO)
+
+    notes_client = models.TextField(blank=True, default="")
+    notes_internes = models.TextField(blank=True, default="")
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="commandes_client_creees",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="commandes_client_modifiees",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-id"]
         indexes = [
-            models.Index(fields=['date_commande']),
-            models.Index(fields=['statut']),
+            models.Index(fields=["numero_commande"]),
+            models.Index(fields=["statut"]),
+            models.Index(fields=["date_commande"]),
+            models.Index(fields=["bijouterie", "statut"]),
+            models.Index(fields=["vendor", "statut"]),
         ]
 
     def __str__(self):
-        client_nom = f"{self.client.prenom} {self.client.nom}" if self.client else "Client inconnu"
-        return f"{self.numero_commande} - {client_nom}"
-# Avantages de cette méthode
-# Tu peux gérer les produits officiels et les personnalisés
-# Pas de casse si le Produit est supprimé (car SET_NULL)
-# Tu peux migrer un produit_libre vers un vrai Produit plus tard
-# class CommandeProduitClient(models.Model):
-#     commande_client = models.ForeignKey(CommandeClient, on_delete=models.CASCADE, related_name='produits')
-#     produit = models.ForeignKey(Produit, on_delete=models.SET_NULL, null=True, blank=True)
-#     produit_libre = models.CharField(max_length=255, blank=True, null=True)
+        return self.numero_commande
 
-#     quantite = models.PositiveIntegerField()
-#     prix_prevue = models.DecimalField(max_digits=10, decimal_places=2)
-#     sous_total = models.DecimalField(max_digits=12, decimal_places=2, editable=False)
-
-#     # Si tu veux réactiver les "autres frais", décommente ici :
-#     # autres = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-
-#     def clean(self):
-#         if not self.produit and not self.produit_libre:
-#             raise ValidationError("Vous devez soit sélectionner un produit existant, soit entrer un produit libre.")
-#         if self.produit_libre and not self.prix_prevue:
-#             raise ValidationError("Veuillez spécifier un prix pour le produit libre.")
-
-#     def calculer_sous_total(self):
-#         if self.produit:
-#             # prix_prevue = self.produit.poids * self.produit.marque.prix
-#             prix_prevue = (self.produit.poids or 0) * (self.produit.marque.prix or 0)
-#             total =  prix_prevue * self.nquantite
-#         else:
-#             total = self.quantite * self.prix_prevue
-
-
-#         # Si tu veux réactiver "autres", ajoute :
-#         # total += self.autres
-
-#         return total
-
-# Avantages de cette méthode
-# Tu peux gérer les produits officiels et les personnalisés
-# Pas de casse si le Produit est supprimé (car SET_NULL)
-# Tu peux migrer un produit_libre vers un vrai Produit plus tard
-class CommandeProduitClient(models.Model):
-    commande_client = models.ForeignKey(CommandeClient, on_delete=models.CASCADE, related_name='commandes_produits_client')
-    produit = models.CharField(max_length=255, blank=True, null=True)
-    categorie = models.ForeignKey('store.Categorie', on_delete=models.SET_NULL, null=True, blank=True)
-    marque = models.ForeignKey('store.Marque', on_delete=models.SET_NULL, null=True, blank=True)
-    modele = models.ForeignKey('store.Modele', on_delete=models.SET_NULL, null=True, blank=True)
-    genre = models.CharField(choices=GENRE, default="F", max_length=2, blank=True, null=True)
-    taille = models.CharField(max_length=7, blank=True, null=True)
-    matiere = models.CharField(choices=MATIERE, max_length=50, default="or", null=True, blank=True)
-    poids = models.DecimalField(max_digits=6, decimal_places=2)
-    purete = models.ForeignKey('store.Purete', on_delete=models.SET_NULL, null=True, blank=True, related_name="commande_produits_purete", default=get_default_purete)
-    prix_gramme = models.DecimalField(max_digits=12,decimal_places=2, default=0.00, null=False, blank=False)
-    personnalise = models.BooleanField(default=False, help_text="Cochez si ce produit est personnalisé (et non un produit officiel)")
-    creation_date = models.DateTimeField(auto_now_add=True)
-    modification_date = models.DateTimeField(auto_now=True)
-
-    # Quantité et prix
-    quantite = models.PositiveIntegerField()
-    prix_prevue = models.DecimalField(max_digits=10, decimal_places=2)
-    sous_total = models.DecimalField(max_digits=12, decimal_places=2, editable=False)
-
-    def calculer_prix_prevue(self):
-        return self.poids * self.prix_gramme
-    
-    def calculer_sous_total(self):
-        return self.quantite * self.prix_prevue
-    
     def clean(self):
-        super().clean()
+        if self.vendor and self.vendor.bijouterie_id and self.bijouterie_id:
+            if self.vendor.bijouterie_id != self.bijouterie_id:
+                raise ValidationError("Le vendeur ne dépend pas de cette bijouterie.")
 
-        if self.poids is None:
-            raise ValidationError("Le poids ne peut pas être vide.")
-        
-        if self.prix_gramme is None:
-            raise ValidationError("Le prix par gramme ne peut pas être vide.")
-        
-        if self.prix_gramme < 0:
-            raise ValidationError("Le prix par gramme ne peut pas être négatif.")
-        
-        if self.prix_prevue is None:
-            raise ValidationError("Le prix prévu ne peut pas être vide.")
+        if self.date_debut and self.date_fin_prevue and self.date_fin_prevue < self.date_debut:
+            raise ValidationError("La date de fin prévue ne peut pas être antérieure à la date de début.")
+
+        if self.statut == self.STATUT_EN_PRODUCTION and not self.ouvrier:
+            raise ValidationError("Un ouvrier est obligatoire quand la commande est en production.")
+
+        if self.statut == self.STATUT_TERMINEE and not self.date_depot_boutique:
+            raise ValidationError("La date de dépôt boutique est obligatoire quand la commande est terminée.")
+
+        if self.statut == self.STATUT_LIVREE and not self.date_livraison:
+            raise ValidationError("La date de livraison est obligatoire quand la commande est livrée.")
 
     def save(self, *args, **kwargs):
+        if not self.numero_commande:
+            self.numero_commande = self.generate_numero_commande()
         self.full_clean()
-        self.sous_total = self.calculer_sous_total()
         super().save(*args, **kwargs)
+
+    @classmethod
+    def generate_numero_commande(cls) -> str:
+        today = timezone.localdate()
+        prefix = f"CMD-{today.strftime('%Y%m%d')}-"
+        last_obj = (
+            cls.objects
+            .filter(numero_commande__startswith=prefix)
+            .order_by("-id")
+            .first()
+        )
+
+        last_seq = 0
+        if last_obj and last_obj.numero_commande:
+            try:
+                last_seq = int(last_obj.numero_commande.split("-")[-1])
+            except Exception:
+                last_seq = 0
+
+        return f"{prefix}{last_seq + 1:04d}"
+
+    def recalculate_total(self, save=True):
+        total = self.lignes.aggregate(total=Sum("sous_total"))["total"] or ZERO
+        self.montant_total = dec(total)
+        if save:
+            self.save(update_fields=["montant_total", "updated_at"])
 
     @property
-    def nom_marque(self):
-        return self.marque.marque if self.marque else "Marque inconnue"
-    
-    def __str__(self):
-        return f"{self.quantite} x {self.produit} (Commande #{self.commande_client_id})"
+    def acompte_minimum_requis(self) -> Decimal:
+        return (dec(self.montant_total) * HALF).quantize(Decimal("0.01"))
 
-class BonCommande(models.Model):
-    commande = models.OneToOneField("CommandeClient", on_delete=models.CASCADE, related_name="bon_commande")
-    numero_bon = models.CharField(max_length=100, unique=True)  # Même que numero_commande
-    montant_total = models.DecimalField(max_digits=12, decimal_places=2)
-    acompte = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    reste_a_payer = models.DecimalField(max_digits=12, decimal_places=2)
-    date_acompte = models.DateTimeField("Date de l'acompte", auto_now_add=True)
-    modification_date_acompte = models.DateTimeField("Dernière modification", auto_now=True)
-    
+    @property
+    def total_acompte_paye(self) -> Decimal:
+        return sum(
+            (facture.total_paye for facture in self.factures.filter(type_facture="acompte")),
+            ZERO
+        )
+
+    @property
+    def total_paye_global(self):
+        from django.apps import apps
+        PaiementLigne = apps.get_model("sale", "PaiementLigne")
+
+        total = PaiementLigne.objects.filter(
+            paiement__facture__commande_client=self
+        ).aggregate(total=Sum("montant_paye"))["total"]
+
+        return total or ZERO
+
+    @property
+    def reste_global(self) -> Decimal:
+        return max(dec(self.montant_total) - dec(self.total_paye_global), ZERO)
+
+    @property
+    def acompte_regle(self) -> bool:
+        return self.total_acompte_paye >= self.acompte_minimum_requis
+
+    @property
+    def peut_passer_en_production(self) -> bool:
+        return self.acompte_regle and self.statut in [self.STATUT_BROUILLON, self.STATUT_EN_ATTENTE]
+
+    @property
+    def peut_etre_livree(self) -> bool:
+        return self.statut == self.STATUT_TERMINEE and self.reste_global == ZERO
+
+    # on ne stock pas le pdf du bon de commande, on le génère à la volée quand nécessaire
+    def generate_bon_commande(self):
+        from .services.commande_pdf_service import generate_bon_commande_pdf
+        return generate_bon_commande_pdf(commande=self)
+
+
+class CommandeProduitClient(models.Model):
+    commande = models.ForeignKey(
+        CommandeClient,
+        on_delete=models.CASCADE,
+        related_name="lignes",
+    )
+
+    produit = models.ForeignKey(
+        "store.Produit",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="commande_client_lignes",
+    )
+
+    nom_modele = models.CharField(max_length=150)
+    categorie = models.ForeignKey(
+        "store.Categorie",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="commande_client_lignes",
+    )
+    marque = models.ForeignKey(
+        "store.Marque",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="commande_client_lignes",
+    )
+    modele = models.ForeignKey(
+        "store.Modele",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="commande_client_lignes",
+    )
+    purete = models.ForeignKey(
+        "store.Purete",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="commande_client_lignes",
+    )
+
+    quantite = models.PositiveIntegerField(default=1)
+    poids = models.DecimalField(max_digits=10, decimal_places=2, default=ZERO)
+    taille = models.CharField(max_length=50, blank=True, default="")
+    prix_gramme = models.DecimalField(max_digits=12, decimal_places=2, default=ZERO)
+    sous_total = models.DecimalField(max_digits=14, decimal_places=2, default=ZERO)
+
+    photo = models.ImageField(upload_to="commandes/produits/", null=True, blank=True)
+    description = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.commande.numero_commande} - {self.nom_modele}"
+
+    def clean(self):
+        if self.quantite < 1:
+            raise ValidationError("La quantité doit être >= 1.")
+        if dec(self.poids) <= ZERO:
+            raise ValidationError("Le poids doit être > 0.")
+        if dec(self.prix_gramme) < ZERO:
+            raise ValidationError("Le prix/gramme ne peut pas être négatif.")
+
     def save(self, *args, **kwargs):
-        self.reste_a_payer = max(self.montant_total - self.acompte, 0)
+        self.sous_total = (dec(self.poids) * dec(self.prix_gramme) * Decimal(self.quantite)).quantize(Decimal("0.01"))
+        self.full_clean()
         super().save(*args, **kwargs)
 
-    def __str__(self):
-        return f"BonCommande #{self.numero_bon}"
-    
 
-# End prise de commande en boutique
+class CommandeClientHistorique(models.Model):
+    commande = models.ForeignKey(
+        CommandeClient,
+        on_delete=models.CASCADE,
+        related_name="historiques",
+    )
+    ancien_statut = models.CharField(max_length=20, blank=True, default="")
+    nouveau_statut = models.CharField(max_length=20)
+    commentaire = models.TextField(blank=True, default="")
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+
+    def __str__(self):
+        return f"{self.commande.numero_commande}: {self.ancien_statut} -> {self.nouveau_statut}"
+    
+    

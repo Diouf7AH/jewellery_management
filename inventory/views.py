@@ -1,245 +1,266 @@
+# inventory/views.py
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
-from typing import Optional
+from decimal import Decimal
+from typing import Optional, Set
 
-from django.db.models import (Case, DecimalField, ExpressionWrapper, F,
-                              IntegerField, Q, Sum, Value, When)
-from django.db.models.functions import Coalesce, ExtractQuarter
+from django.core.exceptions import ValidationError
+from django.db.models import (Case, Count, DecimalField, ExpressionWrapper, F,
+                              Prefetch, Q, Sum, Value, When)
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from openpyxl import Workbook
+from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from backend.mixins import (GROUP_BY_CHOICES, ExportXlsxMixin,
+                            aware_range_month, parse_month_or_default,
+                            resolve_tz)
 from backend.permissions import IsAdminOrManager
+from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
 from inventory.models import InventoryMovement, MovementType
-from inventory.utils import ExportXlsxMixin
 from purchase.models import ProduitLine
-from store.models import Bijouterie, Produit
+from stock.models import VendorStock
+from store.models import Bijouterie
 from vendor.models import Vendor
 
-from .serializers import (InventoryMovementMiniSerializer,
+from .serializers import (InventoryBijouterieSerializer,
+                          InventoryVendorSerializer,
                           ProduitLineWithInventorySerializer)
+from .utils import _b
+from .utils import parse_date as _date
+from .utils import parse_int as _int
 
-# ==========================================================
-#                 HELPERS GÉNÉRAUX
-# ==========================================================
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
 
-def _b(v: Optional[str], default: bool = False) -> bool:
-    """
-    Convertit une valeur de query (?include_costs=1, true, yes, on) en booléen.
-    """
-    if v is None:
-        return default
-    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
-
-
-def _dec(v: Optional[str]) -> Optional[Decimal]:
-    """
-    Convertit une string en Decimal, ou retourne None si vide / invalide.
-    Exemple: _dec("12.34") -> Decimal("12.34")
-    """
-    if v in (None, "", "null"):
-        return None
-    try:
-        return Decimal(str(v))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-
-
-def _dt(v: Optional[str]):
-    """
-    Parse une date au format 'YYYY-MM-DD' et renvoie un datetime à 00:00.
-    Exemple: _dt("2025-01-15") -> datetime(2025, 1, 15, 0, 0)
-    Retourne None si le format est invalide ou vide.
-    """
-    if not v:
-        return None
-    try:
-        return datetime.strptime(v, "%Y-%m-%d")
-    except Exception:
-        return None
-
-
-def _user_bijouterie_id(user) -> Optional[int]:
-    """
-    Retourne l'ID de la bijouterie liée à l'utilisateur si c'est
-    un manager, un vendor ou un cashier.
-    """
-    # Manager
-    mgr = getattr(user, "staff_manager_profile", None)
-    if mgr and getattr(mgr, "bijouterie_id", None):
-        return mgr.bijouterie_id
-
-    # Vendor
-    vend = getattr(user, "staff_vendor_profile", None)
-    if vend and getattr(vend, "bijouterie_id", None):
-        return vend.bijouterie_id
-
-    # Cashier
-    cash = getattr(user, "staff_cashier_profile", None)
-    if cash and getattr(cash, "bijouterie_id", None):
-        return cash.bijouterie_id
-
-    return None
-
-
-# ==========================================================
-#      1) JOURNAL DÉTAILLÉ : InventoryMovementListView
-# ==========================================================
-
+# ---------------------------------------------------------------------
+# InventoryMovementListView
+# ---------------------------------------------------------------------
 class InventoryMovementListView(ExportXlsxMixin, APIView):
     """
-    Les deux sont complémentaires, mais pour un manager / admin,
-    point d’entrée = ProduitLineWithInventoryListView   
-    outil d’analyse / contrôle = InventoryMovementListView
+    Journal détaillé des mouvements d’inventaire (Admin/Manager).
 
-    Journal détaillé des mouvements d’inventaire (InventoryMovement).
-
-    - admin   : accès global, peut filtrer par ?bijouterie_id=...
-    - manager : accès limité à SA bijouterie (src ou dst)
-
-    Chaque ligne correspond à un mouvement individuel (achat, vente, transfert, annulation, etc.).
-
-    Champs retournés (par ligne) :
-        - id, occurred_at, movement_type
-        - produit : produit_id, produit_nom, produit_sku
-        - quantités : qty, signed_qty (CANCEL_PURCHASE en négatif)
-        - coûts : unit_cost, total_cost (si include_costs=1)
-        - source : src_bucket, src_bijouterie_id/nom
-        - destination : dst_bucket, dst_bijouterie_id/nom
-        - lot : lot_id
-        - achat : achat_id
-        - auteur / raison : created_by_id, reason
+    - Admin   : voit tout + peut filtrer sur n'importe quelle bijouterie via ?bijouterie_id=
+    - Manager : limité aux bijouteries de son profil manager (ManyToMany)
+    - Export Excel : ?export=xlsx
+    - Pagination simple : ?limit=200&offset=0
     """
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get"]
 
     @swagger_auto_schema(
-        operation_summary="Lister les mouvements d’inventaire (détail) + export Excel",
+        operation_id="inventoryMovementList",
+        operation_summary="Lister les mouvements d’inventaire (Admin/Manager) + export Excel",
         operation_description=(
-            "Journal détaillé des InventoryMovement avec filtres avancés.\n\n"
-            "Filtrage par période, produit, lot, achat, bijouterie, type de mouvement, etc.\n"
-            "Possibilité d’export Excel complet.\n"
-            "⚠️ Pas de pagination : tous les résultats sont renvoyés dans un seul tableau JSON."
+            "Journal détaillé des mouvements d’inventaire.\n\n"
+            "### Scopes\n"
+            "- **admin** : voit tout (et peut filtrer une bijouterie via `bijouterie_id`)\n"
+            "- **manager** : voit uniquement les mouvements où `src_bijouterie` ou `dst_bijouterie` "
+            "appartient à **ses bijouteries (ManyToMany)**\n\n"
+            "### Filtres\n"
+            "- `q` : recherche (produit.nom, produit.sku, reason, lot.numero_lot)\n"
+            "- `date_from`, `date_to` : YYYY-MM-DD (inclusifs)\n"
+            "- `movement_types` : CSV ex `PURCHASE_IN,ALLOCATE,SALE_OUT`\n"
+            "- `produit_id`, `lot_id`, `lot_code`, `achat_id`\n"
+            "- `vendor_id`, `vente_id`, `facture_id`\n"
+            "- `src_bucket`, `dst_bucket`\n"
+            "- `bijouterie_id` : **admin seulement** (scope)\n"
+            "- `src_bijouterie_id`, `dst_bijouterie_id`\n"
+            "- `min_qty`, `max_qty`\n\n"
+            "### Options\n"
+            "- `include_costs=1` : calcule `total_cost = signed_qty * unit_cost`\n"
+            "- `ordering` : `-occurred_at` (def), `occurred_at`, `qty`, `-qty`, "
+            "`produit_nom`, `-produit_nom`, `movement_type`, `-movement_type`\n"
+            "- `export=xlsx` : export Excel\n"
+            "- `limit`, `offset` : pagination simple\n"
         ),
         manual_parameters=[
-            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Recherche produit.nom/sku, lot_code, reason"),
-            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="YYYY-MM-DD (début inclus)"),
-            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="YYYY-MM-DD (fin inclus)"),
-            openapi.Parameter("movement_types", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="CSV: PURCHASE_IN,CANCEL_PURCHASE,ALLOCATE,TRANSFER,RETURN_IN,SALE_OUT,…"),
-            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Filtrer produit"),
-            openapi.Parameter("lot_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Filtrer lot_id"),
-            openapi.Parameter("lot_code", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Filtrer lot_code"),
-            openapi.Parameter("achat_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Filtrer achat"),
-            openapi.Parameter("src_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Filtrer source bucket"),
-            openapi.Parameter("dst_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Filtrer destination bucket"),
-            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="(admin) Filtrer mouvements d’une bijouterie (src OU dst)"),
-            openapi.Parameter("src_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Filtrer source bijouterie"),
-            openapi.Parameter("dst_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Filtrer destination bijouterie"),
-            openapi.Parameter("min_qty", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Quantité minimale"),
-            openapi.Parameter("max_qty", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="Quantité maximale"),
-            openapi.Parameter("include_costs", openapi.IN_QUERY, type=openapi.TYPE_BOOLEAN,
-                              description="Inclure total_cost (= signed_qty * unit_cost)"),
-            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Tri: -occurred_at (def), occurred_at, -qty, qty, produit_nom, -produit_nom"),
-            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="xlsx pour export Excel (désactive le JSON)"),
+            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
+            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
+            openapi.Parameter("movement_types", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="CSV"),
+            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("lot_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("lot_code", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("achat_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("vendor_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("vente_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("facture_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("src_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("dst_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Admin seulement"),
+            openapi.Parameter("src_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("dst_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("min_qty", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("max_qty", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("include_costs", openapi.IN_QUERY, type=openapi.TYPE_BOOLEAN),
+            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, enum=["xlsx"]),
+            openapi.Parameter("limit", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="def 200, max 2000"),
+            openapi.Parameter("offset", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="def 0"),
         ],
         tags=["Inventaire"],
-        responses={200: "OK", 403: "Accès refusé"},
+        responses={
+            200: openapi.Response(description="OK"),
+            400: openapi.Response(description="Bad Request"),
+            403: openapi.Response(description="Forbidden"),
+        },
     )
     def get(self, request):
         getf = request.GET.get
+        role = get_role_name(request.user)
 
-        # -------- Rôle & accès --------
-        role = getattr(getattr(request.user, "user_role", None), "role", "") or ""
-        role = role.lower()
-        if role not in {"admin", "manager"}:
+        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
             return Response({"detail": "Accès réservé aux admins et managers."}, status=403)
 
-        qs = InventoryMovement.objects.select_related("produit", "lot").all()
-
-        # -------- Scope bijouterie --------
-        if role == "admin":
-            bijouterie_id = getf("bijouterie_id")
-        else:
-            bijouterie_id = _user_bijouterie_id(request.user)
-            if not bijouterie_id:
-                return Response(
-                    {"detail": "Ce manager n'est rattaché à aucune bijouterie."},
-                    status=400,
-                )
-
-        if bijouterie_id:
-            qs = qs.filter(
-                Q(src_bijouterie_id=bijouterie_id) |
-                Q(dst_bijouterie_id=bijouterie_id)
+        qs = (
+            InventoryMovement.objects
+            .select_related(
+                "produit",
+                "lot",
+                "src_bijouterie",
+                "dst_bijouterie",
+                "created_by",
+                "vendor",
+                "vendor__user",
+                "vente",
+                "facture",
             )
+            .all()
+        )
 
-        # ---- Recherche plein texte ----
+        # ---------------------------
+        # Scope bijouterie
+        # ---------------------------
+        if role == ROLE_ADMIN:
+            bj_id = _int(getf("bijouterie_id"))
+            if bj_id:
+                qs = qs.filter(Q(src_bijouterie_id=bj_id) | Q(dst_bijouterie_id=bj_id))
+        else:
+            mp = getattr(request.user, "staff_manager_profile", None)
+            if not mp or (hasattr(mp, "verifie") and not mp.verifie):
+                return Response({"detail": "Profil manager invalide."}, status=403)
+
+            ids = list(mp.bijouteries.values_list("id", flat=True))
+            if not ids:
+                return Response({"detail": "Ce manager n'a aucune bijouterie assignée."}, status=400)
+
+            qs = qs.filter(Q(src_bijouterie_id__in=ids) | Q(dst_bijouterie_id__in=ids))
+
+        # ---------------------------
+        # Recherche
+        # ---------------------------
         q = (getf("q") or "").strip()
         if q:
             qs = qs.filter(
                 Q(produit__nom__icontains=q) |
                 Q(produit__sku__icontains=q) |
-                Q(lot__lot_code__icontains=q) |
-                Q(reason__icontains=q)
+                Q(reason__icontains=q) |
+                Q(lot__numero_lot__icontains=q)
             )
 
-        # ---- Filtres simples ----
-        if getf("produit_id"):
-            qs = qs.filter(produit_id=getf("produit_id"))
-        if getf("lot_id"):
-            qs = qs.filter(lot_id=getf("lot_id"))
-        if getf("lot_code"):
-            qs = qs.filter(lot__lot_code__iexact=getf("lot_code"))
-        if getf("achat_id"):
-            qs = qs.filter(achat_id=getf("achat_id"))
-        if getf("src_bucket"):
-            qs = qs.filter(src_bucket=getf("src_bucket"))
-        if getf("dst_bucket"):
-            qs = qs.filter(dst_bucket=getf("dst_bucket"))
-        if getf("src_bijouterie_id"):
-            qs = qs.filter(src_bijouterie_id=getf("src_bijouterie_id"))
-        if getf("dst_bijouterie_id"):
-            qs = qs.filter(dst_bijouterie_id=getf("dst_bijouterie_id"))
+        # ---------------------------
+        # Filtres simples
+        # ---------------------------
+        produit_id = _int(getf("produit_id"))
+        if produit_id:
+            qs = qs.filter(produit_id=produit_id)
 
-        # Mouvement types
+        lot_id = _int(getf("lot_id"))
+        if lot_id:
+            qs = qs.filter(lot_id=lot_id)
+
+        lot_code = (getf("lot_code") or "").strip()
+        if lot_code:
+            qs = qs.filter(lot__numero_lot__iexact=lot_code)
+
+        achat_id = _int(getf("achat_id"))
+        if achat_id:
+            qs = qs.filter(achat_id=achat_id)
+
+        vendor_id = _int(getf("vendor_id"))
+        if vendor_id:
+            qs = qs.filter(vendor_id=vendor_id)
+
+        vente_id = _int(getf("vente_id"))
+        if vente_id:
+            qs = qs.filter(vente_id=vente_id)
+
+        facture_id = _int(getf("facture_id"))
+        if facture_id:
+            qs = qs.filter(facture_id=facture_id)
+
+        src_bucket = (getf("src_bucket") or "").strip()
+        if src_bucket:
+            qs = qs.filter(src_bucket=src_bucket)
+
+        dst_bucket = (getf("dst_bucket") or "").strip()
+        if dst_bucket:
+            qs = qs.filter(dst_bucket=dst_bucket)
+
+        src_bij = _int(getf("src_bijouterie_id"))
+        if src_bij:
+            qs = qs.filter(src_bijouterie_id=src_bij)
+
+        dst_bij = _int(getf("dst_bijouterie_id"))
+        if dst_bij:
+            qs = qs.filter(dst_bijouterie_id=dst_bij)
+
+        # ---------------------------
+        # Movement types
+        # ---------------------------
         types_csv = (getf("movement_types") or "").strip()
         if types_csv:
-            types = [t.strip().lower() for t in types_csv.split(",") if t.strip()]
+            types = [t.strip().upper() for t in types_csv.split(",") if t.strip()]
+            allowed_types = {c[0] for c in MovementType.choices}
+            bad = [t for t in types if t not in allowed_types]
+            if bad:
+                return Response(
+                    {"detail": f"movement_types invalide(s): {bad}. Allowed: {sorted(allowed_types)}"},
+                    status=400,
+                )
             qs = qs.filter(movement_type__in=types)
 
-        # Date window (inclusif)
-        df = _dt(getf("date_from"))
-        dt = _dt(getf("date_to"))
-        if df:
-            qs = qs.filter(occurred_at__gte=df)
-        if dt:
-            qs = qs.filter(occurred_at__lt=dt + timedelta(days=1))
+        # ---------------------------
+        # Dates
+        # ---------------------------
+        df_raw = getf("date_from")
+        dt_raw = getf("date_to")
+        df = _date(df_raw)
+        dt = _date(dt_raw)
 
+        if df_raw and not df:
+            return Response({"date_from": "Format invalide. Utiliser YYYY-MM-DD."}, status=400)
+        if dt_raw and not dt:
+            return Response({"date_to": "Format invalide. Utiliser YYYY-MM-DD."}, status=400)
+        if df and dt and df > dt:
+            return Response({"detail": "date_from doit être ≤ date_to."}, status=400)
+
+        if df:
+            qs = qs.filter(occurred_at__date__gte=df)
+        if dt:
+            qs = qs.filter(occurred_at__date__lte=dt)
+
+        # ---------------------------
         # Qty range
-        min_qty = _dec(getf("min_qty"))
-        max_qty = _dec(getf("max_qty"))
+        # ---------------------------
+        min_qty = _int(getf("min_qty"))
+        max_qty = _int(getf("max_qty"))
         if min_qty is not None:
             qs = qs.filter(qty__gte=min_qty)
         if max_qty is not None:
             qs = qs.filter(qty__lte=max_qty)
 
-        # ---- Annotations: signed & cost ----
-        
+        # ---------------------------
+        # Annotations
+        # ---------------------------
         include_costs = _b(getf("include_costs"), False)
 
         sign = Case(
@@ -251,44 +272,161 @@ class InventoryMovementListView(ExportXlsxMixin, APIView):
         qs = qs.annotate(
             signed_qty=ExpressionWrapper(
                 F("qty") * sign,
-                output_field=DecimalField(max_digits=18, decimal_places=2)
+                output_field=DecimalField(max_digits=18, decimal_places=2),
             )
         )
 
         if include_costs:
             qs = qs.annotate(
                 total_cost=ExpressionWrapper(
-                    Coalesce(F("unit_cost"), Value(Decimal("0.00")))
-                    * Coalesce(F("produit__poids"), Value(Decimal("0.00")))
-                    * F("signed_qty"),
+                    F("signed_qty") * Coalesce(F("unit_cost"), Value(Decimal("0.00"))),
                     output_field=DecimalField(max_digits=20, decimal_places=2),
                 )
             )
 
-        # ---- Tri ----
+        # ---------------------------
+        # Ordering
+        # ---------------------------
         ordering = (getf("ordering") or "-occurred_at").strip()
-        allowed = {"occurred_at", "-occurred_at", "qty", "-qty", "produit_nom", "-produit_nom"}
-        if ordering not in allowed:
+        allowed_ordering = {
+            "occurred_at", "-occurred_at",
+            "qty", "-qty",
+            "movement_type", "-movement_type",
+            "produit_nom", "-produit_nom",
+        }
+        if ordering not in allowed_ordering:
             ordering = "-occurred_at"
         if "produit_nom" in ordering:
             ordering = ordering.replace("produit_nom", "produit__nom")
         qs = qs.order_by(ordering)
 
-        # ---- Hydratation des noms (bijouteries) ----
+        # ---------------------------
+        # Export Excel
+        # ---------------------------
+        if (getf("export") or "").lower() == "xlsx":
+            values_fields = [
+                "id", "occurred_at", "movement_type",
+                "produit_id", "produit__nom", "produit__sku",
+                "lot_id", "lot__numero_lot",
+                "qty", "signed_qty",
+                "unit_cost",
+                "achat_id",
+                "vendor_id", "vendor__user__email",
+                "vente_id", "vente__numero_vente",
+                "facture_id", "facture__numero_facture",
+                "src_bucket", "src_bijouterie_id",
+                "dst_bucket", "dst_bijouterie_id",
+                "created_by_id",
+                "reason",
+            ]
+            if include_costs:
+                values_fields.insert(values_fields.index("unit_cost") + 1, "total_cost")
+
+            rows = list(qs.values(*values_fields))
+
+            bij_ids: Set[int] = set()
+            for r in rows:
+                if r.get("src_bijouterie_id"):
+                    bij_ids.add(r["src_bijouterie_id"])
+                if r.get("dst_bijouterie_id"):
+                    bij_ids.add(r["dst_bijouterie_id"])
+            bij_map = {b.id: b.nom for b in Bijouterie.objects.filter(id__in=bij_ids)} if bij_ids else {}
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Mouvements"
+
+            headers = [
+                "id", "occurred_at", "movement_type",
+                "produit_id", "produit_nom", "produit_sku",
+                "lot_id", "lot_code",
+                "qty", "signed_qty",
+                "unit_cost",
+                "total_cost" if include_costs else None,
+                "achat_id",
+                "vendor_id", "vendor_email",
+                "vente_id", "numero_vente",
+                "facture_id", "numero_facture",
+                "src_bucket", "src_bijouterie_id", "src_bijouterie_nom",
+                "dst_bucket", "dst_bijouterie_id", "dst_bijouterie_nom",
+                "created_by_id",
+                "reason",
+            ]
+            headers = [h for h in headers if h is not None]
+            ws.append(headers)
+
+            for r in rows:
+                line = {
+                    "id": r.get("id"),
+                    "occurred_at": r.get("occurred_at"),
+                    "movement_type": r.get("movement_type"),
+                    "produit_id": r.get("produit_id"),
+                    "produit_nom": r.get("produit__nom"),
+                    "produit_sku": r.get("produit__sku"),
+                    "lot_id": r.get("lot_id"),
+                    "lot_code": r.get("lot__numero_lot"),
+                    "qty": r.get("qty"),
+                    "signed_qty": r.get("signed_qty"),
+                    "unit_cost": r.get("unit_cost"),
+                    "total_cost": r.get("total_cost") if include_costs else None,
+                    "achat_id": r.get("achat_id"),
+                    "vendor_id": r.get("vendor_id"),
+                    "vendor_email": r.get("vendor__user__email"),
+                    "vente_id": r.get("vente_id"),
+                    "numero_vente": r.get("vente__numero_vente"),
+                    "facture_id": r.get("facture_id"),
+                    "numero_facture": r.get("facture__numero_facture"),
+                    "src_bucket": r.get("src_bucket"),
+                    "src_bijouterie_id": r.get("src_bijouterie_id"),
+                    "src_bijouterie_nom": bij_map.get(r.get("src_bijouterie_id")),
+                    "dst_bucket": r.get("dst_bucket"),
+                    "dst_bijouterie_id": r.get("dst_bijouterie_id"),
+                    "dst_bijouterie_nom": bij_map.get(r.get("dst_bijouterie_id")),
+                    "created_by_id": r.get("created_by_id"),
+                    "reason": r.get("reason"),
+                }
+                ws.append([line.get(h) for h in headers])
+
+            self._autosize(ws)
+            return self._xlsx_response(wb, "inventory_movements.xlsx")
+
+        # ---------------------------
+        # Pagination simple
+        # ---------------------------
+        limit = _int(getf("limit")) or 200
+        offset = _int(getf("offset")) or 0
+
+        if limit < 1:
+            limit = 200
+        if limit > 2000:
+            limit = 2000
+        if offset < 0:
+            offset = 0
+
+        total = qs.count()
+        page_qs = qs[offset: offset + limit]
+
         values_fields = [
-            "id", "occurred_at", "movement_type", "qty", "signed_qty",
+            "id", "occurred_at", "movement_type",
+            "qty", "signed_qty",
             "unit_cost",
             "produit_id", "produit__nom", "produit__sku",
+            "lot_id", "lot__numero_lot",
+            "achat_id",
+            "vendor_id", "vendor__user__email",
+            "vente_id", "vente__numero_vente",
+            "facture_id", "facture__numero_facture",
             "src_bucket", "src_bijouterie_id",
             "dst_bucket", "dst_bijouterie_id",
-            "lot_id", "achat_id", "created_by_id", "reason",
+            "created_by_id",
+            "reason",
         ]
         if include_costs:
             values_fields.insert(values_fields.index("unit_cost") + 1, "total_cost")
 
-        rows = list(qs.values(*values_fields))
+        rows = list(page_qs.values(*values_fields))
 
-        bij_ids = set()
+        bij_ids: Set[int] = set()
         for r in rows:
             if r.get("src_bijouterie_id"):
                 bij_ids.add(r["src_bijouterie_id"])
@@ -296,686 +434,146 @@ class InventoryMovementListView(ExportXlsxMixin, APIView):
                 bij_ids.add(r["dst_bijouterie_id"])
         bij_map = {b.id: b.nom for b in Bijouterie.objects.filter(id__in=bij_ids)} if bij_ids else {}
 
+        out = []
         for r in rows:
-            r["produit_nom"] = r.pop("produit__nom", None)
-            r["produit_sku"] = r.pop("produit__sku", None)
-            r["src_bijouterie_nom"] = bij_map.get(r.get("src_bijouterie_id"))
-            r["dst_bijouterie_nom"] = bij_map.get(r.get("dst_bijouterie_id"))
+            out.append({
+                "id": r.get("id"),
+                "occurred_at": r.get("occurred_at"),
+                "movement_type": r.get("movement_type"),
+                "produit_id": r.get("produit_id"),
+                "produit_nom": r.get("produit__nom"),
+                "produit_sku": r.get("produit__sku"),
+                "lot_id": r.get("lot_id"),
+                "lot_code": r.get("lot__numero_lot"),
+                "achat_id": r.get("achat_id"),
+                "qty": r.get("qty"),
+                "signed_qty": r.get("signed_qty"),
+                "unit_cost": r.get("unit_cost"),
+                "total_cost": r.get("total_cost") if include_costs else None,
+                "vendor_id": r.get("vendor_id"),
+                "vendor_email": r.get("vendor__user__email"),
+                "vente_id": r.get("vente_id"),
+                "numero_vente": r.get("vente__numero_vente"),
+                "facture_id": r.get("facture_id"),
+                "numero_facture": r.get("facture__numero_facture"),
+                "src_bucket": r.get("src_bucket"),
+                "src_bijouterie_id": r.get("src_bijouterie_id"),
+                "src_bijouterie_nom": bij_map.get(r.get("src_bijouterie_id")),
+                "dst_bucket": r.get("dst_bucket"),
+                "dst_bijouterie_id": r.get("dst_bijouterie_id"),
+                "dst_bijouterie_nom": bij_map.get(r.get("dst_bijouterie_id")),
+                "created_by_id": r.get("created_by_id"),
+                "reason": r.get("reason"),
+            })
 
-        # ---- Export Excel ? ----
-        if (getf("export") or "").lower() == "xlsx":
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Mouvements"
-            headers = [
-                "id", "occurred_at", "movement_type",
-                "produit_id", "produit_nom", "produit_sku",
-                "qty", "signed_qty",
-                "unit_cost",
-                "total_cost" if include_costs else None,
-                "src_bucket", "src_bijouterie_id", "src_bijouterie_nom",
-                "dst_bucket", "dst_bijouterie_id", "dst_bijouterie_nom",
-                "lot_id", "achat_id", "created_by_id",
-                "reason",
-            ]
-            ws.append([h for h in headers if h is not None])
-
-            for r in rows:
-                line = [
-                    r.get("id"),
-                    r.get("occurred_at"),
-                    r.get("movement_type"),
-                    r.get("produit_id"),
-                    r.get("produit_nom"),
-                    r.get("produit_sku"),
-                    r.get("qty"),
-                    r.get("signed_qty"),
-                    r.get("unit_cost"),
-                ]
-                if include_costs:
-                    line.append(r.get("total_cost"))
-                line += [
-                    r.get("src_bucket"), r.get("src_bijouterie_id"), r.get("src_bijouterie_nom"),
-                    r.get("dst_bucket"), r.get("dst_bijouterie_id"), r.get("dst_bijouterie_nom"),
-                    r.get("lot_id"), r.get("achat_id"), r.get("created_by_id"),
-                    r.get("reason"),
-                ]
-                ws.append(line)
-
-            self._autosize(ws)
-            return self._xlsx_response(wb, "inventory_movements.xlsx")
-
-        # ---- JSON (sans pagination) ----
+        next_offset = offset + limit
         return Response({
-            "count": len(rows),
-            "results": rows,
-        })
-
-
-# ==========================================================
-#  2) TABLEAU INVENTAIRE PAR BIJOUTERIE + PRODUIT
-# ==========================================================
-# class InventoryMovementTablePerBijouterieView(APIView):
-#     """
-#     VERSION SIMPLE :
-#     Tableau des quantités par (bijouterie, produit) pour UN type de mouvement donné,
-#     sur une période donnée.
-
-#     - admin   : accès global, peut filtrer par ?bijouterie_id=...
-#     - manager : limité à SA bijouterie, période max de 3 ans en arrière
-
-#     Params :
-#       - date_from : YYYY-MM-DD (début inclus)
-#       - date_to   : YYYY-MM-DD (fin inclus, optionnel → aujourd'hui)
-#       - movement_type : type de mouvement (ex: purchase_in, sale_out, cancel_purchase)
-#       - bijouterie_id : (admin uniquement, optionnel) limiter à une bijouterie
-
-#     Résultat : pour chaque couple (bijouterie, produit)
-#       - bijouterie_id, bijouterie_nom
-#       - produit_id, produit_nom, produit_sku
-#       - total_qty : somme des qty pour ce type de mouvement
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Tableau simple par bijouterie + produit pour un type de mouvement",
-#         operation_description=(
-#             "Retourne, pour un type de mouvement donné (movement_type) et une période, "
-#             "la somme des quantités par (bijouterie, produit).\n\n"
-#             "Exemple : movement_type=purchase_in → total des quantités achetées "
-#             "par bijouterie et par produit."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                 description="YYYY-MM-DD (début de période, inclusif, obligatoire)"
-#             ),
-#             openapi.Parameter(
-#                 "date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                 description="YYYY-MM-DD (fin de période, inclusif, optionnel → aujourd'hui)"
-#             ),
-#             openapi.Parameter(
-#                 "movement_type", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                 description="Type de mouvement (ex: purchase_in, sale_out, cancel_purchase) *obligatoire*"
-#             ),
-#             openapi.Parameter(
-#                 "bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-#                 description="(admin) Restreindre à une bijouterie spécifique"
-#             ),
-#         ],
-#         tags=["Inventaire"],
-#         responses={200: "OK", 400: "Bad Request", 403: "Accès refusé"},
-#     )
-#     def get(self, request):
-#         getf = request.GET.get
-#         now = timezone.now()
-
-#         # -------- Rôle --------
-#         role = getattr(getattr(request.user, "user_role", None), "role", "") or ""
-#         role = role.lower()
-#         if role not in {"admin", "manager"}:
-#             return Response({"detail": "Accès réservé aux admins et managers."}, status=403)
-
-#         # -------- movement_type obligatoire --------
-#         movement_type = (getf("movement_type") or "").strip()
-#         if not movement_type:
-#             return Response(
-#                 {"detail": "Paramètre 'movement_type' obligatoire (ex: purchase_in, sale_out)."},
-#                 status=400,
-#             )
-
-#         # On peut normaliser un peu pour accepter PURCHASE_IN → purchase_in
-#         movement_type = movement_type.lower()
-
-#         # -------- Fenêtre de dates --------
-#         date_from = _dt(getf("date_from"))
-#         if not date_from:
-#             return Response({"detail": "Paramètre 'date_from' (YYYY-MM-DD) est obligatoire."}, status=400)
-
-#         date_to = _dt(getf("date_to")) or now
-#         date_to_plus = date_to + timedelta(days=1)
-
-#         if role == "manager":
-#             three_years_ago = now - timedelta(days=3 * 365)
-#             if date_from < three_years_ago:
-#                 date_from = three_years_ago
-
-#         # -------- Scope bijouterie --------
-#         if role == "admin":
-#             bijouterie_filter_id = getf("bijouterie_id")
-#         else:
-#             bijouterie_filter_id = _user_bijouterie_id(request.user)
-#             if not bijouterie_filter_id:
-#                 return Response(
-#                     {"detail": "Ce manager n'est rattaché à aucune bijouterie."},
-#                     status=400,
-#                 )
-
-#         # -------- Query de base --------
-#         qs = (
-#             InventoryMovement.objects
-#             .select_related("produit")
-#             .filter(
-#                 occurred_at__gte=date_from,
-#                 occurred_at__lt=date_to_plus,
-#                 movement_type=movement_type,
-#             )
-#         )
-
-#         if bijouterie_filter_id:
-#             qs = qs.filter(
-#                 Q(src_bijouterie_id=bijouterie_filter_id) |
-#                 Q(dst_bijouterie_id=bijouterie_filter_id)
-#             )
-
-#         # -------- bijouterie_effective (dst sinon src) --------
-#         qs = qs.annotate(
-#             bijouterie_effective=Case(
-#                 When(dst_bijouterie_id__isnull=False, then=F("dst_bijouterie_id")),
-#                 When(src_bijouterie_id__isnull=False, then=F("src_bijouterie_id")),
-#                 default=Value(None),
-#                 output_field=IntegerField(),
-#             )
-#         ).filter(bijouterie_effective__isnull=False)
-
-#         # -------- Agrégation par (bijouterie, produit) --------
-#         agg = qs.values("bijouterie_effective", "produit_id").annotate(
-#             total_qty=Sum("qty"),
-#         )
-
-#         bij_ids = {r["bijouterie_effective"] for r in agg}
-#         produit_ids = {r["produit_id"] for r in agg}
-
-#         bij_map = {b.id: b.nom for b in Bijouterie.objects.filter(id__in=bij_ids)}
-#         prod_map = {p.id: p for p in Produit.objects.filter(id__in=produit_ids)}
-
-#         rows = []
-#         for r in agg:
-#             bid = r["bijouterie_effective"]
-#             pid = r["produit_id"]
-#             prod = prod_map.get(pid)
-
-#             rows.append({
-#                 "bijouterie_id": bid,
-#                 "bijouterie_nom": bij_map.get(bid),
-#                 "produit_id": pid,
-#                 "produit_nom": getattr(prod, "nom", None),
-#                 "produit_sku": getattr(prod, "sku", None),
-#                 "total_qty": r["total_qty"] or 0,
-#             })
-
-#         return Response({
-#             "scope": role,
-#             "bijouterie_filter_id": bijouterie_filter_id,
-#             "movement_type": movement_type,
-#             "date_from": date_from.date().isoformat(),
-#             "date_to": date_to.date().isoformat(),
-#             "count": len(rows),
-#             "results": rows,
-#         })
-
-# ==========================================================
-#  3) INVENTAIRE COMBINÉ BIJOUTERIE + VENDOR
-# ==========================================================
-
-# class InventoryBijouterieVendorTableView(ExportXlsxMixin, APIView):
-#     """
-#     V3 combinée : inventaire par BIJOUTERIE+PRODUIT et par VENDOR+PRODUIT
-#     dans une seule réponse.
-
-#     - admin   : accès global, peut filtrer par ?bijouterie_id=...
-#     - manager : limité à SA bijouterie, période max = 3 ans en arrière
-
-#     Pour chaque (bijouterie, produit) :
-#       - opening_qty, purchase_in, sale_out, cancel_purchase, net_period, closing_qty
-
-#     Pour chaque (vendor, produit) :
-#       - opening_qty, assigned_in (VENDOR_ASSIGN), sale_out, net_period, closing_qty
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Inventaire combiné bijouterie + vendor (par produit)",
-#         operation_description=(
-#             "Retourne dans une même réponse :\n"
-#             "- inventory_bijouterie : inventaire par (bijouterie, produit)\n"
-#             "- inventory_vendors   : inventaire par (vendor, produit)\n\n"
-#             "admin : accès global, peut filtrer par bijouterie_id.\n"
-#             "manager : limité à sa bijouterie, période max 3 ans."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                               description="YYYY-MM-DD (début de période, inclusif)"),
-#             openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                               description="YYYY-MM-DD (fin de période, inclusif)"),
-#             openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-#                               description="(admin) Restreindre à une bijouterie spécifique"),
-#             openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-#                               description="Filtrer un produit précis"),
-#             openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-#                               description="xlsx pour export Excel (2 onglets : Bijouteries & Vendors)"),
-#         ],
-#         tags=["Inventaire"],
-#         responses={200: "OK", 403: "Accès refusé"},
-#     )
-#     def get(self, request):
-#         getf = request.GET.get
-#         now = timezone.now()
-
-#         # -------- Rôle --------
-#         role = getattr(getattr(request.user, "user_role", None), "role", "") or ""
-#         role = role.lower()
-#         if role not in {"admin", "manager"}:
-#             return Response({"detail": "Accès réservé aux admins et managers."}, status=403)
-
-#         # -------- Fenêtre de dates --------
-#         date_from = _dt(getf("date_from"))
-#         date_to = _dt(getf("date_to")) or now
-
-#         if role == "manager":
-#             three_years_ago = now - timedelta(days=3 * 365)
-#             if not date_from or date_from < three_years_ago:
-#                 date_from = three_years_ago
-#         else:
-#             if not date_from:
-#                 date_from = now.replace(
-#                     month=1, day=1, hour=0, minute=0, second=0, microsecond=0
-#                 )
-#         date_to_plus = date_to + timedelta(days=1)
-
-#         # -------- Scope bijouterie --------
-#         if role == "admin":
-#             bij_scope_id = getf("bijouterie_id")
-#         else:
-#             bij_scope_id = _user_bijouterie_id(request.user)
-#             if not bij_scope_id:
-#                 return Response(
-#                     {"detail": "Ce manager n'est rattaché à aucune bijouterie."},
-#                     status=400,
-#                 )
-
-#         # -------- Query de base --------
-#         qs = InventoryMovement.objects.select_related("produit").all()
-
-#         if bij_scope_id:
-#             qs = qs.filter(
-#                 Q(src_bijouterie_id=bij_scope_id) |
-#                 Q(dst_bijouterie_id=bij_scope_id)
-#             )
-
-#         if getf("produit_id"):
-#             qs = qs.filter(produit_id=getf("produit_id"))
-
-#         # =====================================================================
-#         # 1) INVENTAIRE PAR BIJOUTERIE + PRODUIT
-#         # =====================================================================
-#         qs_bij = qs.annotate(
-#             bijouterie_effective=Case(
-#                 When(dst_bijouterie_id__isnull=False, then=F("dst_bijouterie_id")),
-#                 When(src_bijouterie_id__isnull=False, then=F("src_bijouterie_id")),
-#                 default=Value(None),
-#                 output_field=IntegerField(),
-#             )
-#         ).filter(bijouterie_effective__isnull=False)
-
-#         opening_bij_qs = qs_bij.filter(occurred_at__lt=date_from)
-#         opening_bij_agg = opening_bij_qs.values("bijouterie_effective", "produit_id").annotate(
-#             opening_purchase_in=Sum("qty", filter=Q(movement_type=MovementType.PURCHASE_IN)),
-#             opening_sale_out=Sum("qty", filter=Q(movement_type=MovementType.SALE_OUT)),
-#             opening_cancel_purchase=Sum("qty", filter=Q(movement_type=MovementType.CANCEL_PURCHASE)),
-#         )
-
-#         opening_bij_map = {}
-#         for r in opening_bij_agg:
-#             bid = r["bijouterie_effective"]
-#             pid = r["produit_id"]
-#             o_in = r["opening_purchase_in"] or 0
-#             o_out = (r["opening_sale_out"] or 0) + (r["opening_cancel_purchase"] or 0)
-#             opening_bij_map[(bid, pid)] = o_in - o_out
-
-#         period_bij_qs = qs_bij.filter(occurred_at__gte=date_from, occurred_at__lt=date_to_plus)
-#         period_bij_agg = period_bij_qs.values("bijouterie_effective", "produit_id").annotate(
-#             purchase_in=Sum("qty", filter=Q(movement_type=MovementType.PURCHASE_IN)),
-#             sale_out=Sum("qty", filter=Q(movement_type=MovementType.SALE_OUT)),
-#             cancel_purchase=Sum("qty", filter=Q(movement_type=MovementType.CANCEL_PURCHASE)),
-#         )
-
-#         bij_ids = set()
-#         produit_ids = set()
-#         for r in period_bij_agg:
-#             bij_ids.add(r["bijouterie_effective"])
-#             produit_ids.add(r["produit_id"])
-#         for (bid, pid) in opening_bij_map.keys():
-#             bij_ids.add(bid)
-#             produit_ids.add(pid)
-
-#         bijs = Bijouterie.objects.filter(id__in=bij_ids)
-#         bij_map = {b.id: b.nom for b in bijs}
-
-#         produits = Produit.objects.filter(id__in=produit_ids)
-#         prod_map = {p.id: p for p in produits}
-
-#         inventory_bijouterie = []
-#         for r in period_bij_agg:
-#             bid = r["bijouterie_effective"]
-#             pid = r["produit_id"]
-#             prod = prod_map.get(pid)
-
-#             opening_qty = opening_bij_map.get((bid, pid), 0) or 0
-#             purchase_in = r["purchase_in"] or 0
-#             sale_out = r["sale_out"] or 0
-#             cancel_purchase = r["cancel_purchase"] or 0
-#             net_period = purchase_in - sale_out - cancel_purchase
-#             closing_qty = opening_qty + net_period
-
-#             inventory_bijouterie.append({
-#                 "bijouterie_id": bid,
-#                 "bijouterie_nom": bij_map.get(bid),
-#                 "produit_id": pid,
-#                 "produit_nom": getattr(prod, "nom", None),
-#                 "produit_sku": getattr(prod, "sku", None),
-#                 "opening_qty": opening_qty,
-#                 "purchase_in": purchase_in,
-#                 "sale_out": sale_out,
-#                 "cancel_purchase": cancel_purchase,
-#                 "net_period": net_period,
-#                 "closing_qty": closing_qty,
-#             })
-
-#         # =====================================================================
-#         # 2) INVENTAIRE PAR VENDOR + PRODUIT
-#         # =====================================================================
-#         qs_vendor = qs.filter(vendor_id__isnull=False)
-
-#         opening_vendor_qs = qs_vendor.filter(occurred_at__lt=date_from)
-#         opening_vendor_agg = opening_vendor_qs.values("vendor_id", "produit_id").annotate(
-#             opening_in=Sum("qty", filter=Q(movement_type=MovementType.VENDOR_ASSIGN)),
-#             opening_out=Sum("qty", filter=Q(movement_type=MovementType.SALE_OUT)),
-#         )
-
-#         opening_vendor_map = {}
-#         for r in opening_vendor_agg:
-#             vid = r["vendor_id"]
-#             pid = r["produit_id"]
-#             o_in = r["opening_in"] or 0
-#             o_out = r["opening_out"] or 0
-#             opening_vendor_map[(vid, pid)] = o_in - o_out
-
-#         period_vendor_qs = qs_vendor.filter(occurred_at__gte=date_from, occurred_at__lt=date_to_plus)
-#         period_vendor_agg = period_vendor_qs.values("vendor_id", "produit_id").annotate(
-#             assigned_in=Sum("qty", filter=Q(movement_type=MovementType.VENDOR_ASSIGN)),
-#             sale_out=Sum("qty", filter=Q(movement_type=MovementType.SALE_OUT)),
-#         )
-
-#         vendor_ids = set()
-#         produit_ids_vendor = set()
-#         for r in period_vendor_agg:
-#             vendor_ids.add(r["vendor_id"])
-#             produit_ids_vendor.add(r["produit_id"])
-#         for (vid, pid) in opening_vendor_map.keys():
-#             vendor_ids.add(vid)
-#             produit_ids_vendor.add(pid)
-
-#         vendors = Vendor.objects.select_related("user").filter(id__in=vendor_ids)
-#         vend_map = {
-#             v.id: {
-#                 "username": getattr(v.user, "username", None),
-#                 "email": getattr(v.user, "email", None),
-#             }
-#             for v in vendors
-#         }
-
-#         produits_vendor = Produit.objects.filter(id__in=produit_ids_vendor)
-#         prod_vendor_map = {p.id: p for p in produits_vendor}
-
-#         inventory_vendors = []
-#         for r in period_vendor_agg:
-#             vid = r["vendor_id"]
-#             pid = r["produit_id"]
-
-#             opening_qty = opening_vendor_map.get((vid, pid), 0) or 0
-#             assigned_in = r["assigned_in"] or 0
-#             sale_out = r["sale_out"] or 0
-#             net_period = assigned_in - sale_out
-#             closing_qty = opening_qty + net_period
-
-#             vend_info = vend_map.get(vid, {})
-#             prod = prod_vendor_map.get(pid)
-
-#             inventory_vendors.append({
-#                 "vendor_id": vid,
-#                 "vendor_username": vend_info.get("username"),
-#                 "vendor_email": vend_info.get("email"),
-#                 "produit_id": pid,
-#                 "produit_nom": getattr(prod, "nom", None),
-#                 "produit_sku": getattr(prod, "sku", None),
-#                 "opening_qty": opening_qty,
-#                 "assigned_in": assigned_in,
-#                 "sale_out": sale_out,
-#                 "net_period": net_period,
-#                 "closing_qty": closing_qty,
-#             })
-
-#         # =====================================================================
-#         # 3) Export Excel ?
-#         # =====================================================================
-#         if (getf("export") or "").lower() == "xlsx":
-#             wb = Workbook()
-
-#             # Onglet 1 : Bijouteries
-#             ws1 = wb.active
-#             ws1.title = "Bijouteries"
-#             headers_bij = [
-#                 "bijouterie_id", "bijouterie_nom",
-#                 "produit_id", "produit_nom", "produit_sku",
-#                 "opening_qty",
-#                 "purchase_in", "sale_out", "cancel_purchase",
-#                 "net_period", "closing_qty",
-#             ]
-#             ws1.append(headers_bij)
-#             for r in inventory_bijouterie:
-#                 ws1.append([
-#                     r["bijouterie_id"],
-#                     r["bijouterie_nom"],
-#                     r["produit_id"],
-#                     r["produit_nom"],
-#                     r["produit_sku"],
-#                     r["opening_qty"],
-#                     r["purchase_in"],
-#                     r["sale_out"],
-#                     r["cancel_purchase"],
-#                     r["net_period"],
-#                     r["closing_qty"],
-#                 ])
-#             self._autosize(ws1)
-
-#             # Onglet 2 : Vendors
-#             ws2 = wb.create_sheet(title="Vendors")
-#             headers_vendor = [
-#                 "vendor_id", "vendor_username", "vendor_email",
-#                 "produit_id", "produit_nom", "produit_sku",
-#                 "opening_qty",
-#                 "assigned_in", "sale_out",
-#                 "net_period", "closing_qty",
-#             ]
-#             ws2.append(headers_vendor)
-#             for r in inventory_vendors:
-#                 ws2.append([
-#                     r["vendor_id"],
-#                     r["vendor_username"],
-#                     r["vendor_email"],
-#                     r["produit_id"],
-#                     r["produit_nom"],
-#                     r["produit_sku"],
-#                     r["opening_qty"],
-#                     r["assigned_in"],
-#                     r["sale_out"],
-#                     r["net_period"],
-#                     r["closing_qty"],
-#                 ])
-#             self._autosize(ws2)
-
-#             filename = f"inventory_bijouterie_vendor_{date_from.date()}_{date_to.date()}.xlsx"
-#             return self._xlsx_response(wb, filename)
-
-#         # =====================================================================
-#         # 4) JSON
-#         # =====================================================================
-#         return Response({
-#             "scope": role,
-#             "bijouterie_scope_id": bij_scope_id,
-#             "date_from": date_from.date().isoformat(),
-#             "date_to": date_to.date().isoformat(),
-#             "inventory_bijouterie": inventory_bijouterie,
-#             "inventory_vendors": inventory_vendors,
-#         })
-
-
-# ==========================================================
-#  4) STATS ALLOCATIONS VENDOR / ANNÉE
-# ==========================================================
-
-# class VendorAllocationStatsView(APIView):
-#     """
-#     Statistiques d’allocations de stock pour un vendeur sur une année donnée.
-
-#     Basé sur InventoryMovement avec movement_type = VENDOR_ASSIGN :
-
-#       - totaux par trimestre (T1..T4)
-#       - totaux par semestre (S1, S2)
-#       - total annuel
-
-#     Utile pour un dashboard vendeur ou pour l’admin/manager.
-#     """
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Statistiques d’allocations de stock pour un vendeur (annuel)",
-#         operation_description=(
-#             "Retourne les quantités assignées à un vendor (movement_type=VENDOR_ASSIGN) pour une année donnée, "
-#             "agrégées par trimestre (T1..T4), par semestre (S1,S2) et en total annuel."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "year",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="Année cible (par défaut: année courante)",
-#             ),
-#         ],
-#         tags=["Vendors", "Inventaire"],
-#         responses={200: "OK", 400: "Paramètre invalide", 404: "Vendor introuvable"},
-#     )
-#     def get(self, request, vendor_id: int):
-#         getf = request.GET.get
-
-#         try:
-#             year = int(getf("year") or timezone.now().year)
-#         except ValueError:
-#             return Response({"detail": "Paramètre 'year' invalide."}, status=400)
-
-#         # Vérifier que le vendor existe (optionnel mais propre)
-#         try:
-#             Vendor.objects.get(pk=vendor_id)
-#         except Vendor.DoesNotExist:
-#             return Response({"detail": "Vendor introuvable."}, status=404)
-
-#         qs = (
-#             InventoryMovement.objects
-#             .filter(
-#                 movement_type=MovementType.VENDOR_ASSIGN,
-#                 vendor_id=vendor_id,
-#                 occurred_at__year=year,
-#             )
-#             .annotate(qtr=ExtractQuarter("occurred_at"))
-#         )
-
-#         agg = qs.aggregate(
-#             trimestre_1=Sum("qty", filter=Q(qtr=1)),
-#             trimestre_2=Sum("qty", filter=Q(qtr=2)),
-#             trimestre_3=Sum("qty", filter=Q(qtr=3)),
-#             trimestre_4=Sum("qty", filter=Q(qtr=4)),
-#             annuel=Sum("qty"),
-#         )
-
-#         data = {
-#             "vendor_id": vendor_id,
-#             "year": year,
-#             "trimestriels": {
-#                 "T1": agg["trimestre_1"] or 0,
-#                 "T2": agg["trimestre_2"] or 0,
-#                 "T3": agg["trimestre_3"] or 0,
-#                 "T4": agg["trimestre_4"] or 0,
-#             },
-#             "annuel": agg["annuel"] or 0,
-#         }
-#         return Response(data)
-
-# ----------------------------------------------------------------------------
+            "count": total,
+            "limit": limit,
+            "offset": offset,
+            "next_offset": next_offset if next_offset < total else None,
+            "results": out,
+        }, status=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------
+# ProduitLineWithInventoryListView
+# ---------------------------------------------------------------------
 class ProduitLineWithInventoryListView(ListAPIView):
     """
-    Liste détaillée des lignes de produit (ProduitLine) avec :
-    - infos du lot + achat + fournisseur
-    - infos produit (poids, pureté, catégorie, marque…)
-    - quantités, poids, prix_gramme_achat
-    - quantités de stock (allouée, disponible totale)
-    - mouvements d’inventaire liés (par lot + produit)
+    GET /api/inventory/produit-lines/
+
+    Liste des ProduitLine (par lot + produit) avec :
+    - infos lot/achat/produit
+    - agrégats stock (quantite_allouee, quantite_disponible_total)
+    - mouvements d'inventaire liés à chaque ProduitLine
     """
     permission_classes = [IsAuthenticated, IsAdminOrManager]
     serializer_class = ProduitLineWithInventorySerializer
-    pagination_class = None  # ou mets ta pagination si tu veux
+    pagination_class = None
 
     @swagger_auto_schema(
         operation_id="listProduitLinesWithInventory",
-        operation_summary="Lister les lignes ProduitLine avec stock + mouvements d’inventaire",
+        operation_summary="Lister les ProduitLine avec stock + mouvements (par ligne)",
         operation_description=(
-            "Retourne une liste de lignes d’achat (ProduitLine) avec :\n"
-            "- informations de lot (numero_lot, received_at, achat, fournisseur)\n"
-            "- informations produit (nom, sku, pureté, poids de référence…)\n"
-            "- quantités / poids / prix d’achat\n"
-            "- agrégats de stock (quantite_allouee, quantite_disponible_total)\n"
-            "- mouvements d’inventaire liés (ALLOCATE, PURCHASE_IN, SALE_OUT, etc.).\n\n"
-            "Filtres possibles (à adapter) :\n"
-            "- ?lot_id=\n"
-            "- ?produit_id=\n"
-            "- ?numero_lot= (icontains)\n"
-            "- ?year= (année sur received_at du lot)\n"
+            "Retourne les **ProduitLine** (par lot) avec :\n"
+            "- **agrégats stock** : `quantite_allouee`, `quantite_disponible_total`\n"
+            "- **mouvements** : préchargés via `prefetched_movements`\n\n"
+            "### Accès\n"
+            "- **admin / manager** uniquement\n\n"
+            "### Filtres\n"
+            "- `year` : année des lots (`received_at__year`), défaut = année courante\n"
+            "- `lot_id`, `produit_id`, `numero_lot`\n"
         ),
+        tags=["Inventaire"],
         manual_parameters=[
             openapi.Parameter(
-                "lot_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                description="Filtrer par lot_id",
+                "year",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="Année (ex: 2026). Défaut: année courante.",
             ),
             openapi.Parameter(
-                "produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                description="Filtrer par produit_id",
+                "lot_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="Filtrer par ID du lot.",
             ),
             openapi.Parameter(
-                "numero_lot", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                description="Filtrer par numero_lot (icontains)",
+                "produit_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="Filtrer par ID du produit.",
             ),
             openapi.Parameter(
-                "year", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                description="Année sur received_at du lot (défaut = année courante)",
+                "numero_lot",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="Recherche partielle sur le numéro de lot.",
             ),
         ],
-        tags=["Inventaire"],
+        responses={
+            200: openapi.Response(
+                description="Liste des ProduitLine avec inventaire",
+                schema=ProduitLineWithInventorySerializer(many=True),
+            ),
+            400: openapi.Response(description="Paramètres invalides"),
+            403: openapi.Response(description="Accès refusé"),
+        },
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
 
-    def get_queryset(self):
-        params = self.request.query_params
-        getf = params.get
+    def _int_or_none(self, v, field_name: str):
+        if v in (None, "", "null"):
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            raise ValidationError({field_name: "Doit être un entier."})
 
-        year = getf("year")
-        if year:
-            try:
-                year = int(year)
-            except ValueError:
-                year = None
-        if not year:
+    def get_queryset(self):
+        getf = self.request.query_params.get
+
+        year_raw = getf("year")
+        if year_raw in (None, "", "null"):
             year = timezone.localdate().year
+        else:
+            year = self._int_or_none(year_raw, "year")
+            if not year:
+                year = timezone.localdate().year
+            if year < 2000 or year > 2100:
+                raise ValidationError({"year": "Année invalide (2000-2100)."})
+
+        pl_moves_qs = (
+            InventoryMovement.objects
+            .select_related("src_bijouterie", "dst_bijouterie", "vendor", "facture", "vente")
+            .order_by("-occurred_at", "-id")
+        )
 
         qs = (
             ProduitLine.objects
@@ -989,12 +587,12 @@ class ProduitLineWithInventoryListView(ListAPIView):
                 "produit__purete",
             )
             .prefetch_related(
-                # mouvements d’inventaire liés au lot
-                "lot__movements",
-                "lot__movements__src_bijouterie",
-                "lot__movements__dst_bijouterie",
+                Prefetch(
+                    "inventory_movements",
+                    queryset=pl_moves_qs,
+                    to_attr="prefetched_movements",
+                )
             )
-            # Agrégats sur le Stock : adapte le related_name (ici 'stocks')
             .annotate(
                 quantite_allouee=Coalesce(Sum("stocks__quantite_allouee"), 0),
                 quantite_disponible_total=Coalesce(Sum("stocks__quantite_disponible"), 0),
@@ -1002,23 +600,675 @@ class ProduitLineWithInventoryListView(ListAPIView):
             .filter(lot__received_at__year=year)
         )
 
-        lot_id = getf("lot_id")
+        lot_id = self._int_or_none(getf("lot_id"), "lot_id")
         if lot_id:
-            try:
-                qs = qs.filter(lot_id=int(lot_id))
-            except ValueError:
-                pass
+            qs = qs.filter(lot_id=lot_id)
 
-        produit_id = getf("produit_id")
+        produit_id = self._int_or_none(getf("produit_id"), "produit_id")
         if produit_id:
-            try:
-                qs = qs.filter(produit_id=int(produit_id))
-            except ValueError:
-                pass
+            qs = qs.filter(produit_id=produit_id)
 
-        numero_lot = getf("numero_lot")
+        numero_lot = (getf("numero_lot") or "").strip()
         if numero_lot:
             qs = qs.filter(lot__numero_lot__icontains=numero_lot)
 
         return qs.order_by("-lot__received_at", "lot__numero_lot", "id")
+
+
+
+
+
+
+
+
+class InventoryBijouterieView(ExportXlsxMixin, APIView):
+    """
+    Résumé des entrées / sorties de stock par bijouterie.
+    """
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get"]
+
+    @swagger_auto_schema(
+        operation_id="inventoryBijouterie",
+        operation_summary="Résumé des entrées et sorties de stock par bijouterie",
+        operation_description=(
+            "Retourne un **résumé global des mouvements de stock par bijouterie**.\n\n"
+            "Cette vue permet de connaître, pour chaque bijouterie :\n"
+            "- les **entrées d'achat** (`purchase_in`)\n"
+            "- les **annulations d'achat** (`cancel_purchase_out`)\n"
+            "- les **affectations reçues depuis la réserve** (`allocate_in`)\n"
+            "- les **transferts entrants** (`transfer_in`)\n"
+            "- les **transferts sortants** (`transfer_out`)\n"
+            "- les **sorties de vente** (`sale_out`)\n"
+            "- les **retours clients** (`return_in`)\n"
+            "- les **ajustements positifs** (`adjustment_in`)\n"
+            "- les **ajustements négatifs** (`adjustment_out`)\n"
+            "- le **solde net des mouvements** (`stock_net`)\n\n"
+            "### Règles d'accès\n"
+            "- **Admin** : peut voir toutes les bijouteries\n"
+            "- **Manager** : ne voit que les bijouteries qui lui sont assignées\n\n"
+            "### Filtres disponibles\n"
+            "- `bijouterie_id` : limiter le résumé à une seule bijouterie\n"
+            "- `produit_id` : limiter le résumé à un produit précis\n"
+            "- `date_from` : date de début incluse (`YYYY-MM-DD`)\n"
+            "- `date_to` : date de fin incluse (`YYYY-MM-DD`)\n"
+            "- `export=xlsx` : exporter le résumé au format Excel\n\n"
+            "### Notes métier\n"
+            "- `stock_net` est un **solde de mouvements**, pas une photo instantanée du stock physique.\n"
+            "- Pour voir l'état actuel du stock par lot/produit, utilise la vue d'**inventaire photo**.\n"
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="ID d'une bijouterie pour limiter le résumé à cette bijouterie uniquement.",
+            ),
+            openapi.Parameter(
+                "produit_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="ID d'un produit pour limiter le résumé à ce produit.",
+            ),
+            openapi.Parameter(
+                "date_from",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+                required=False,
+                description="Date de début incluse au format YYYY-MM-DD.",
+            ),
+            openapi.Parameter(
+                "date_to",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+                required=False,
+                description="Date de fin incluse au format YYYY-MM-DD.",
+            ),
+            openapi.Parameter(
+                "export",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                enum=["xlsx"],
+                description="Mettre `xlsx` pour exporter le résumé en fichier Excel.",
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Résumé des mouvements de stock par bijouterie.",
+                schema=InventoryBijouterieSerializer(many=True),
+                examples={
+                    "application/json": [
+                        {
+                            "bijouterie_id": 1,
+                            "bijouterie_nom": "Rio Gold Dakar",
+                            "purchase_in": "120.00",
+                            "cancel_purchase_out": "5.00",
+                            "allocate_in": "20.00",
+                            "transfer_in": "8.00",
+                            "transfer_out": "3.00",
+                            "sale_out": "42.00",
+                            "return_in": "2.00",
+                            "adjustment_in": "1.00",
+                            "adjustment_out": "0.00",
+                            "stock_net": "101.00",
+                        }
+                    ]
+                },
+            ),
+            400: openapi.Response(
+                description="Paramètres invalides.",
+                examples={
+                    "application/json": {
+                        "date_from": "Format invalide. Utiliser YYYY-MM-DD."
+                    }
+                },
+            ),
+            403: openapi.Response(
+                description="Accès refusé.",
+                examples={
+                    "application/json": {
+                        "detail": "Accès refusé."
+                    }
+                },
+            ),
+        },
+        tags=["Inventaire / Résumés"],
+    )
+    def get(self, request):
+        role = get_role_name(request.user)
+        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
+            return Response({"detail": "Accès refusé."}, status=status.HTTP_403_FORBIDDEN)
+
+        getf = request.GET.get
+        bijouterie_id = _int(getf("bijouterie_id"))
+        produit_id = _int(getf("produit_id"))
+        date_from = _date(getf("date_from"))
+        date_to = _date(getf("date_to"))
+
+        if getf("date_from") and not date_from:
+            return Response(
+                {"date_from": "Format invalide. Utiliser YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if getf("date_to") and not date_to:
+            return Response(
+                {"date_to": "Format invalide. Utiliser YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if date_from and date_to and date_from > date_to:
+            return Response(
+                {"detail": "date_from doit être <= date_to."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = InventoryMovement.objects.select_related(
+            "src_bijouterie",
+            "dst_bijouterie",
+            "produit",
+        )
+
+        allowed_ids = None
+        if role == ROLE_MANAGER:
+            mp = getattr(request.user, "staff_manager_profile", None)
+            if not mp or (hasattr(mp, "verifie") and not mp.verifie):
+                return Response(
+                    {"detail": "Profil manager invalide."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            allowed_ids = list(mp.bijouteries.values_list("id", flat=True))
+            if not allowed_ids:
+                return Response(
+                    {"detail": "Ce manager n'a aucune bijouterie assignée."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            qs = qs.filter(
+                Q(src_bijouterie_id__in=allowed_ids) |
+                Q(dst_bijouterie_id__in=allowed_ids)
+            )
+
+        if bijouterie_id:
+            qs = qs.filter(
+                Q(src_bijouterie_id=bijouterie_id) |
+                Q(dst_bijouterie_id=bijouterie_id)
+            )
+
+        if produit_id:
+            qs = qs.filter(produit_id=produit_id)
+
+        if date_from:
+            qs = qs.filter(occurred_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(occurred_at__date__lte=date_to)
+
+        bijouteries = Bijouterie.objects.all()
+        if role == ROLE_MANAGER and allowed_ids is not None:
+            bijouteries = bijouteries.filter(id__in=allowed_ids)
+        if bijouterie_id:
+            bijouteries = bijouteries.filter(id=bijouterie_id)
+
+        rows = []
+        for bj in bijouteries.order_by("nom"):
+            in_qs = qs.filter(dst_bijouterie_id=bj.id)
+            out_qs = qs.filter(src_bijouterie_id=bj.id)
+
+            purchase_in = in_qs.filter(
+                movement_type=MovementType.PURCHASE_IN
+            ).aggregate(
+                v=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["v"]
+
+            cancel_purchase_out = out_qs.filter(
+                movement_type=MovementType.CANCEL_PURCHASE
+            ).aggregate(
+                v=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["v"]
+
+            allocate_in = in_qs.filter(
+                movement_type=MovementType.ALLOCATE
+            ).aggregate(
+                v=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["v"]
+
+            transfer_in = in_qs.filter(
+                movement_type=MovementType.TRANSFER
+            ).aggregate(
+                v=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["v"]
+
+            transfer_out = out_qs.filter(
+                movement_type=MovementType.TRANSFER
+            ).aggregate(
+                v=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["v"]
+
+            sale_out = out_qs.filter(
+                movement_type=MovementType.SALE_OUT
+            ).aggregate(
+                v=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["v"]
+
+            return_in = in_qs.filter(
+                movement_type=MovementType.RETURN_IN
+            ).aggregate(
+                v=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["v"]
+
+            adjustment_in = in_qs.filter(
+                movement_type=MovementType.ADJUSTMENT
+            ).aggregate(
+                v=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["v"]
+
+            adjustment_out = out_qs.filter(
+                movement_type=MovementType.ADJUSTMENT
+            ).aggregate(
+                v=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["v"]
+
+            stock_net = (
+                purchase_in
+                + allocate_in
+                + transfer_in
+                + return_in
+                + adjustment_in
+                - cancel_purchase_out
+                - transfer_out
+                - sale_out
+                - adjustment_out
+            )
+
+            rows.append({
+                "bijouterie_id": bj.id,
+                "bijouterie_nom": bj.nom,
+                "purchase_in": purchase_in,
+                "cancel_purchase_out": cancel_purchase_out,
+                "allocate_in": allocate_in,
+                "transfer_in": transfer_in,
+                "transfer_out": transfer_out,
+                "sale_out": sale_out,
+                "return_in": return_in,
+                "adjustment_in": adjustment_in,
+                "adjustment_out": adjustment_out,
+                "stock_net": stock_net,
+            })
+
+        if (getf("export") or "").lower() == "xlsx":
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Résumé bijouteries"
+
+            headers = [
+                "bijouterie_id",
+                "bijouterie_nom",
+                "purchase_in",
+                "cancel_purchase_out",
+                "allocate_in",
+                "transfer_in",
+                "transfer_out",
+                "sale_out",
+                "return_in",
+                "adjustment_in",
+                "adjustment_out",
+                "stock_net",
+            ]
+            ws.append(headers)
+
+            for row in rows:
+                ws.append([row.get(h) for h in headers])
+
+            self._autosize(ws)
+            return self._xlsx_response(wb, "inventory_bijouterie.xlsx")
+
+        serializer = InventoryBijouterieSerializer(rows, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class InventoryVendorView(ExportXlsxMixin, APIView):
+    """
+    Résumé du stock et des mouvements par vendeur.
+    """
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get"]
+
+    @swagger_auto_schema(
+        operation_id="inventoryVendor",
+        operation_summary="Résumé du stock par vendeur",
+        operation_description=(
+            "Retourne un **résumé du stock et des mouvements par vendeur**.\n\n"
+            "Cette vue permet de connaître, pour chaque vendeur :\n"
+            "- le **stock affecté reçu** (`vendor_assign_in`)\n"
+            "- les **sorties de vente du vendeur** (`sale_out_vendor`)\n"
+            "- les **retours/restaurations éventuels** (`return_in_vendor`)\n"
+            "- le **stock restant vendeur** (`stock_restant`)\n\n"
+            "### Règles d'accès\n"
+            "- **Admin** : peut voir tous les vendeurs\n"
+            "- **Manager** : ne voit que les vendeurs de ses bijouteries\n\n"
+            "### Filtres disponibles\n"
+            "- `vendor_id` : limiter à un vendeur précis\n"
+            "- `bijouterie_id` : limiter aux vendeurs d'une bijouterie\n"
+            "- `produit_id` : limiter à un produit précis\n"
+            "- `date_from` : date de début incluse (`YYYY-MM-DD`)\n"
+            "- `date_to` : date de fin incluse (`YYYY-MM-DD`)\n"
+            "- `export=xlsx` : exporter le résumé en Excel\n\n"
+            "### Notes métier\n"
+            "- `vendor_assign_in` correspond aux mouvements `VENDOR_ASSIGN` liés au vendeur.\n"
+            "- `sale_out_vendor` correspond aux mouvements `SALE_OUT` liés au vendeur.\n"
+            "- `stock_restant` est calculé depuis `VendorStock` : `quantite_allouee - quantite_vendue`.\n"
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "vendor_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="ID d'un vendeur pour limiter le résumé à ce vendeur uniquement.",
+            ),
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="ID d'une bijouterie pour limiter aux vendeurs de cette bijouterie.",
+            ),
+            openapi.Parameter(
+                "produit_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="ID d'un produit pour limiter le résumé à ce produit.",
+            ),
+            openapi.Parameter(
+                "date_from",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+                required=False,
+                description="Date de début incluse au format YYYY-MM-DD.",
+            ),
+            openapi.Parameter(
+                "date_to",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+                required=False,
+                description="Date de fin incluse au format YYYY-MM-DD.",
+            ),
+            openapi.Parameter(
+                "export",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                enum=["xlsx"],
+                description="Mettre `xlsx` pour exporter le résumé vendeur en fichier Excel.",
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Résumé du stock par vendeur.",
+                schema=InventoryVendorSerializer(many=True),
+                examples={
+                    "application/json": [
+                        {
+                            "vendor_id": 3,
+                            "vendor_nom": "Amadou Diop",
+                            "vendor_email": "amadou@riogold.sn",
+                            "bijouterie_id": 1,
+                            "bijouterie_nom": "Rio Gold Dakar",
+                            "vendor_assign_in": "80.00",
+                            "sale_out_vendor": "25.00",
+                            "return_in_vendor": "2.00",
+                            "stock_restant": "57.00",
+                        }
+                    ]
+                },
+            ),
+            400: openapi.Response(
+                description="Paramètres invalides.",
+                examples={
+                    "application/json": {
+                        "vendor_id": "Doit être un entier."
+                    }
+                },
+            ),
+            403: openapi.Response(
+                description="Accès refusé.",
+                examples={
+                    "application/json": {
+                        "detail": "Accès refusé."
+                    }
+                },
+            ),
+        },
+        tags=["Inventaire / Résumés"],
+    )
+    def get(self, request):
+        role = get_role_name(request.user)
+        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
+            return Response({"detail": "Accès refusé."}, status=status.HTTP_403_FORBIDDEN)
+
+        getf = request.GET.get
+        vendor_id = _int(getf("vendor_id"))
+        bijouterie_id = _int(getf("bijouterie_id"))
+        produit_id = _int(getf("produit_id"))
+        date_from = _date(getf("date_from"))
+        date_to = _date(getf("date_to"))
+
+        if getf("date_from") and not date_from:
+            return Response(
+                {"date_from": "Format invalide. Utiliser YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if getf("date_to") and not date_to:
+            return Response(
+                {"date_to": "Format invalide. Utiliser YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if date_from and date_to and date_from > date_to:
+            return Response(
+                {"detail": "date_from doit être <= date_to."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vendors = Vendor.objects.select_related("user", "bijouterie").all()
+
+        allowed_ids = None
+        if role == ROLE_MANAGER:
+            mp = getattr(request.user, "staff_manager_profile", None)
+            if not mp or (hasattr(mp, "verifie") and not mp.verifie):
+                return Response(
+                    {"detail": "Profil manager invalide."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            allowed_ids = list(mp.bijouteries.values_list("id", flat=True))
+            if not allowed_ids:
+                return Response(
+                    {"detail": "Ce manager n'a aucune bijouterie assignée."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            vendors = vendors.filter(bijouterie_id__in=allowed_ids)
+
+        if vendor_id:
+            vendors = vendors.filter(id=vendor_id)
+
+        if bijouterie_id:
+            vendors = vendors.filter(bijouterie_id=bijouterie_id)
+
+        move_qs = InventoryMovement.objects.select_related(
+            "vendor",
+            "vendor__user",
+            "vendor__bijouterie",
+            "produit",
+        )
+        stock_qs = VendorStock.objects.select_related(
+            "vendor",
+            "vendor__user",
+            "vendor__bijouterie",
+            "produit_line",
+            "produit_line__produit",
+        )
+
+        if role == ROLE_MANAGER and allowed_ids is not None:
+            move_qs = move_qs.filter(vendor__bijouterie_id__in=allowed_ids)
+            stock_qs = stock_qs.filter(vendor__bijouterie_id__in=allowed_ids)
+
+        if vendor_id:
+            move_qs = move_qs.filter(vendor_id=vendor_id)
+            stock_qs = stock_qs.filter(vendor_id=vendor_id)
+
+        if bijouterie_id:
+            move_qs = move_qs.filter(vendor__bijouterie_id=bijouterie_id)
+            stock_qs = stock_qs.filter(vendor__bijouterie_id=bijouterie_id)
+
+        if produit_id:
+            move_qs = move_qs.filter(produit_id=produit_id)
+            stock_qs = stock_qs.filter(produit_line__produit_id=produit_id)
+
+        if date_from:
+            move_qs = move_qs.filter(occurred_at__date__gte=date_from)
+        if date_to:
+            move_qs = move_qs.filter(occurred_at__date__lte=date_to)
+
+        rows = []
+        for v in vendors.order_by("id"):
+            vendor_assign_in = move_qs.filter(
+                vendor_id=v.id,
+                movement_type=MovementType.VENDOR_ASSIGN,
+            ).aggregate(
+                s=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["s"]
+
+            sale_out_vendor = move_qs.filter(
+                vendor_id=v.id,
+                movement_type=MovementType.SALE_OUT,
+            ).aggregate(
+                s=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["s"]
+
+            return_in_vendor = move_qs.filter(
+                vendor_id=v.id,
+                movement_type=MovementType.RETURN_IN,
+            ).aggregate(
+                s=Coalesce(
+                    Sum("qty"),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["s"]
+
+            stock_restant = stock_qs.filter(
+                vendor_id=v.id
+            ).aggregate(
+                s=Coalesce(
+                    Sum(
+                        ExpressionWrapper(
+                            F("quantite_allouee") - F("quantite_vendue"),
+                            output_field=DecimalField(max_digits=18, decimal_places=2),
+                        )
+                    ),
+                    Value(0),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )["s"]
+
+            full_name = ""
+            if getattr(v, "user", None):
+                full_name = f"{(v.user.first_name or '').strip()} {(v.user.last_name or '').strip()}".strip()
+
+            rows.append({
+                "vendor_id": v.id,
+                "vendor_nom": full_name or getattr(v, "nom", "") or "",
+                "vendor_email": getattr(getattr(v, "user", None), "email", None),
+                "bijouterie_id": getattr(v, "bijouterie_id", None),
+                "bijouterie_nom": getattr(getattr(v, "bijouterie", None), "nom", None),
+                "vendor_assign_in": vendor_assign_in,
+                "sale_out_vendor": sale_out_vendor,
+                "return_in_vendor": return_in_vendor,
+                "stock_restant": stock_restant,
+            })
+
+        if (getf("export") or "").lower() == "xlsx":
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Résumé vendeurs"
+
+            headers = [
+                "vendor_id",
+                "vendor_nom",
+                "vendor_email",
+                "bijouterie_id",
+                "bijouterie_nom",
+                "vendor_assign_in",
+                "sale_out_vendor",
+                "return_in_vendor",
+                "stock_restant",
+            ]
+            ws.append(headers)
+
+            for row in rows:
+                ws.append([row.get(h) for h in headers])
+
+            self._autosize(ws)
+            return self._xlsx_response(wb, "inventory_vendor.xlsx")
+
+        serializer = InventoryVendorSerializer(rows, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
     
+    
+
+
+
+
+

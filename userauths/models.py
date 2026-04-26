@@ -1,9 +1,12 @@
 import logging
+import os
 import random
 import re
 import string
+import uuid
 from random import SystemRandom
 
+from django.apps import apps
 from django.conf import settings
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
@@ -22,454 +25,269 @@ from store.models import Bijouterie
 
 logger = logging.getLogger(__name__)
 
-GENDER = (
-    ("H", "Homme"),
-    ("F", "Femme"),
-)
-
 # creation des roles
 @receiver(post_migrate)
 def create_default_instances(sender, **kwargs):
-    Role.objects.get_or_create(id=1, defaults={'role': 'admin'})
-    Role.objects.get_or_create(id=2, defaults={'role': 'manager'})
-    Role.objects.get_or_create(id=3, defaults={'role': 'vendor'})
-    Role.objects.get_or_create(id=4, defaults={'role': 'cashier'})
-    # Role.objects.get_or_create(id=5, defaults={'role': 'simple-user'})
-    
-# def get_default_role():
-#     return Role.objects.get_or_create(id=5, defaults={'role': 'simple-user'})[0].id
+    Role = apps.get_model("userauths", "Role")
 
+    Role.objects.get_or_create(role='admin')
+    Role.objects.get_or_create(role='manager')
+    Role.objects.get_or_create(role='vendor')
+    Role.objects.get_or_create(role='cashier')
 
-class Role(models.Model):
-    role = models.CharField(max_length=50, unique=True)
-    
-    def __str__(self):  
-        return f"{self.role}"
-# END Creation
 
 class UserManager(BaseUserManager):
+    use_in_migrations = True
+
     def create_user(self, email, password=None, **extra_fields):
         if not email:
-            raise ValueError('Email is a required field')
+            raise ValueError("L'email est obligatoire.")
+        email = self.normalize_email(email).lower().strip()
 
-        email = self.normalize_email(email)
-        extra_fields.setdefault('is_active', True)
+        base_username = email.split("@")[0]
+        username = base_username
+        counter = 1
+
+        while self.model.objects.filter(username=username).exists():
+            username = f"{base_username}{counter}"
+            counter += 1
+
+        extra_fields.setdefault("username", username)
+        extra_fields.setdefault("is_email_verified", False)
+
         user = self.model(email=email, **extra_fields)
-        user.set_password(password)
+        if password:
+            user.set_password(password)
+        else:
+            user.set_unusable_password()
+
+        user.full_clean(exclude=["password"])
         user.save(using=self._db)
         return user
 
     def create_superuser(self, email, password=None, **extra_fields):
-        # extra_fields.setdefault('is_staff', True)
-        extra_fields.setdefault('is_superuser', True)
-        extra_fields.setdefault('is_active', True)
+        extra_fields.setdefault("is_staff", True)
+        extra_fields.setdefault("is_superuser", True)
+        extra_fields.setdefault("is_active", True)
+        extra_fields.setdefault("is_email_verified", True)
 
-        # if extra_fields.get('is_staff') is not True:
-        #     raise ValueError('Superuser must have is_staff=True.')
+        if extra_fields.get("is_staff") is not True:
+            raise ValueError("Le superuser doit avoir is_staff=True.")
 
-        if extra_fields.get('is_superuser') is not True:
-            raise ValueError('Superuser must have is_superuser=True.')
+        if extra_fields.get("is_superuser") is not True:
+            raise ValueError("Le superuser doit avoir is_superuser=True.")
 
-        user = self.create_user(email, password, **extra_fields)
+        from .models import Role
+        admin_role, _ = Role.objects.get_or_create(role="admin")
+        extra_fields.setdefault("user_role", admin_role)
 
-        try:
-            role = Role.objects.get(role='admin')
-        except Role.DoesNotExist:
-            raise ValueError("Le rôle 'admin' n'existe pas dans la table Role.")
+        return self.create_user(email=email, password=password, **extra_fields)
 
-        user.user_role = role
-        user.is_email_verified = True
-        user.save(using=self._db)
-        return user
-    
-# class UserManager(BaseUserManager): 
-#     def create_user(self, email, password=None, **extra_fields ): 
-#         if not email: 
-#             raise ValueError('Email is a required field')
-        
-#         email = self.normalize_email(email)
-#         user = self.model(email=email, **extra_fields)
-#         user.set_password(password)
-#         user.save(using=self._db)
-#         return user
 
-#     def create_superuser(self,email, password=None, **extra_fields): 
-#         extra_fields.setdefault('is_staff', True)
-#         extra_fields.setdefault('is_superuser', True)
-#         # return self.create_user(email, password, **extra_fields)
-#         user = self.create_user(email, password, **extra_fields)
-#         role = Role.objects.get(role='admin')
-#         user.user_role = role
-#         user.is_email_verified=True
-#         user.save()
-#         return user
+class Role(models.Model):
+    role = models.CharField(max_length=50, unique=True, db_index=True)
 
-# class User(AbstractUser):
-#     email = models.EmailField(max_length=50, unique=True)
-#     dateNaiss = models.DateField(null=True, blank=True)
-#     username = models.CharField(max_length=30, unique=True, null=True, blank=True)
-#     first_name =  models.CharField(max_length=100, blank=True, null=True)
-#     last_name =  models.CharField(max_length=100, blank=True, null=True)
-#     # phone =  models.CharField(max_length=20,unique=True,null=True,blank=True)
-#     telephone = models.CharField(max_length=15, unique=True, null=True, blank=True)
-#     is_active = models.BooleanField(default=True)
-#     # is_validate = models.BooleanField(default=False)
-#     # is_admin = models.BooleanField(default=False)
-#     created_at = models.DateTimeField(auto_now_add=True)
-#     updated_at = models.DateTimeField(auto_now=True)
-#     # bijouterie = models.ForeignKey(Bijouterie, on_delete=models.SET_NULL, null=True, related_name="user_bijouterie")
-#     # user_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, default=get_default_role)
-#     user_role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
-#     is_email_verified = models.BooleanField(default=False)
-#     last_confirmation_email_sent = models.DateTimeField(null=True, blank=True)
-    
-#     objects = UserManager()
+    class Meta:
+        ordering = ["role"]
+        verbose_name = "Rôle"
+        verbose_name_plural = "Rôles"
 
-#     USERNAME_FIELD = 'email'
-#     REQUIRED_FIELDS = []
-
-#     def save(self, *args, **kwargs):
-#         if self.user_role and self.user_role.role == 'admin':
-#             self.is_active = True
-#         super(User, self).save(*args, **kwargs)
-
-#     def __str__(self):
-#         return f"{self.email} ({self.user_role.role if self.user_role else 'Aucun rôle'})"
-
-#     def has_perm(self, perm, obj=None):
-#         return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
-
-#     def has_module_perms(self, app_label):
-#         return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
-    
-#     # @property
-#     # def is_staff(self):
-#     #     "Is the user a member of staff?"
-#     #     # Simplest possible answer: All admins are staff
-#     #     return self.user_role.role == 'admin'
-#     @property
-#     def is_staff(self):
-#         return self.user_role and self.user_role.role == 'admin'
-
-# class User(AbstractUser):
-#     email = models.EmailField(max_length=254, unique=True)
-#     dateNaiss = models.DateField(null=True, blank=True)
-#     username = models.CharField(max_length=30, unique=True, null=True, blank=True)
-#     first_name = models.CharField(max_length=100, blank=True, null=True)
-#     last_name = models.CharField(max_length=100, blank=True, null=True)
-#     telephone = models.CharField(max_length=15, unique=True, null=True, blank=True)
-#     is_active = models.BooleanField(default=True)
-#     created_at = models.DateTimeField(auto_now_add=True)
-#     updated_at = models.DateTimeField(auto_now=True)
-#     user_role = models.ForeignKey("Role", on_delete=models.SET_NULL, null=True)
-#     is_email_verified = models.BooleanField(default=False)
-#     last_confirmation_email_sent = models.DateTimeField(null=True, blank=True)
-
-#     # ➕ Nouveau champ
-#     # slug = models.SlugField(unique=True, max_length=20, null=False, blank=True) # EN PROD
-#     # slug = models.SlugField(max_length=20, unique=True)  # sans null=True / blank=True
-#     slug = models.SlugField(max_length=20, unique=True, null=True, blank=True)  # TEMPORAIRE
-
-#     objects = UserManager()
-
-#     USERNAME_FIELD = 'email'
-#     REQUIRED_FIELDS = []
-
-#     def __str__(self):
-#         return f"{self.email} ({self.user_role.role if self.user_role else 'Aucun rôle'})"
-
-#     # --------------------
-#     # 🔑 Génération du slug
-#     # --------------------
-#     def generate_slug(self):
-#         """Construit un slug unique basé sur prénom/nom/email"""
-#         if self.first_name or self.last_name:
-#             base_txt = "-".join(filter(None, [self.first_name, self.last_name]))
-#         elif self.username:
-#             base_txt = self.username
-#         elif self.email:
-#             base_txt = self.email.split("@")[0]
-#         else:
-#             base_txt = "user"
-
-#         base = slugify(base_txt).lower()[:14].rstrip("-") or "user"
-#         suffix = ''.join(SystemRandom().choices(string.digits, k=4))
-#         return f"{base}-{suffix}"[:20]
-
-#     def clean(self):
-#         super().clean()
-#         if self.telephone:
-#             t = self.telephone.strip().replace(" ", "")
-#             if t.startswith("+"):
-#                 t = t[1:]
-#             if not re.fullmatch(r"\d{9,15}", t):
-#                 raise ValidationError({"telephone": "Le numéro doit contenir 9 à 15 chiffres."})
-#             self.telephone = t
-        
-#     def save(self, *args, **kwargs):
-#         # Règles staff/admin
-#         if self.is_superuser:
-#             self.is_staff = True
-#         elif self.user_role and self.user_role.role == 'admin':
-#             self.is_staff = True
-#             self.is_active = True
-#         else:
-#             self.is_staff = False
-
-#         # Normalisation email/téléphone
-#         if self.email:
-#             self.email = self.email.strip().lower()
-#         if self.telephone:
-#             self.telephone = self.telephone.strip()
-
-#         # 🔥 Génération slug si absent
-#         if not self.slug:
-#             for attempt in range(10):
-#                 candidate = self.generate_slug()
-#                 self.slug = candidate
-#                 try:
-#                     with transaction.atomic():
-#                         super().save(*args, **kwargs)
-#                     break
-#                 except IntegrityError:
-#                     self.slug = None
-#             else:
-#                 # Dernier recours : slug totalement random
-#                 self.slug = ''.join(SystemRandom().choices(string.ascii_lowercase + string.digits, k=20))
-#                 super().save(*args, **kwargs)
-#         else:
-#             super().save(*args, **kwargs)
-
-#     def has_perm(self, perm, obj=None):
-#         return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
-
-#     def has_module_perms(self, app_label):
-#         return self.is_superuser or (self.user_role and self.user_role.role == 'admin')
-
+    def __str__(self):
+        return self.role
 
 class User(AbstractUser):
     email = models.EmailField(max_length=254, unique=True)
-    dateNaiss = models.DateField(null=True, blank=True)
     username = models.CharField(max_length=30, unique=True, null=True, blank=True)
-    first_name = models.CharField(max_length=100, blank=True, null=True)
-    last_name  = models.CharField(max_length=100, blank=True, null=True)
-    telephone  = models.CharField(max_length=15, unique=True, null=True, blank=True)
-    is_active  = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    user_role  = models.ForeignKey("Role", on_delete=models.SET_NULL, null=True, db_index=True)
+    telephone = models.CharField(max_length=20, unique=True, null=True, blank=True)
+
+    user_role = models.ForeignKey(
+        Role,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_index=True,
+        related_name="users",
+    )
+
     is_email_verified = models.BooleanField(default=False)
     last_confirmation_email_sent = models.DateTimeField(null=True, blank=True)
-
     slug = models.SlugField(max_length=20, unique=True, null=True, blank=True)
 
     objects = UserManager()
-    USERNAME_FIELD = 'email'
+
+    USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []
 
     class Meta:
+        ordering = ["-date_joined"]
         indexes = [
-            models.Index(fields=["created_at"]),
+            models.Index(fields=["date_joined"]),
             models.Index(fields=["user_role"]),
         ]
+        verbose_name = "Utilisateur"
+        verbose_name_plural = "Utilisateurs"
 
     def __str__(self):
         role = getattr(self.user_role, "role", "Aucun rôle")
         return f"{self.email} ({role})"
 
-    # ---------- Slug helpers ----------
+    @property
+    def nom(self):
+        return self.last_name
+
+    @property
+    def prenom(self):
+        return self.first_name
+
+    @property
+    def full_name(self):
+        return " ".join(filter(None, [self.first_name, self.last_name])).strip()
+
+    @property
+    def display_name(self):
+        return self.full_name or self.email
+
+    @property
+    def role_name(self):
+        return (getattr(self.user_role, "role", "") or "").strip().lower()
+
+    @property
+    def is_admin(self):
+        return self.role_name == "admin" or self.is_superuser
+
+    @property
+    def is_manager(self):
+        return self.role_name == "manager"
+
+    @property
+    def is_vendor(self):
+        return self.role_name == "vendor"
+
+    @property
+    def is_cashier(self):
+        return self.role_name == "cashier"
 
     @staticmethod
     def random_slug(length=20):
-        """
-        Génère un slug alphanumérique aléatoire (a-z0-9) de longueur donnée.
-        """
         chars = string.ascii_lowercase + string.digits
-        return ''.join(random.choices(chars, k=length))
+        return "".join(random.choices(chars, k=length))
 
     @classmethod
     def generate_unique_slug(cls, length=20, field_name="slug"):
-        """
-        Génère un slug aléatoire unique pour le modèle User.
-        """
-        for _ in range(20):  # on essaie 20 fois max
-            slug = cls.random_slug(length=length)
-            if not cls.objects.filter(**{field_name: slug}).exists():
-                return slug
-        # fallback ultra improbable
-        return cls.random_slug(length=length)
+        for _ in range(20):
+            value = cls.random_slug(length=length)
+            if not cls.objects.filter(**{field_name: value}).exists():
+                return value
 
-    # ---------- Validation ----------
+        logger.warning("Slug unique difficile à générer")
+        return cls.random_slug(length=length)
 
     def clean(self):
         super().clean()
+
+        if self.email:
+            self.email = self.email.strip().lower()
+
         if self.telephone:
             t = self.telephone.strip().replace(" ", "")
             if t.startswith("+"):
                 t = t[1:]
             if not re.fullmatch(r"\d{9,15}", t):
-                raise ValidationError({"telephone": "Le numéro doit contenir 9 à 15 chiffres."})
+                raise ValidationError({
+                    "telephone": "Le numéro doit contenir 9 à 15 chiffres."
+                })
             self.telephone = t
+        else:
+            self.telephone = None
+
+        if self.username:
+            self.username = self.username.strip() or None
+        else:
+            self.username = None
 
     def save(self, *args, **kwargs):
-        # Admins = staff
-        if self.is_superuser or (self.user_role and self.user_role.role == 'admin'):
-            self.is_staff = True
-            self.is_active = True
-        else:
-            self.is_staff = False
-
         if self.email:
             self.email = self.email.strip().lower()
+
+        if self.username:
+            self.username = self.username.strip() or None
+        else:
+            self.username = None
+
         if self.telephone:
-            self.telephone = self.telephone.strip()
+            t = self.telephone.strip().replace(" ", "")
+            if t.startswith("+"):
+                t = t[1:]
+            self.telephone = t
+        else:
+            self.telephone = None
 
-        # Génération du slug aléatoire si absent
+        if self.is_superuser and self.user_role_id is None:
+            admin_role, _ = Role.objects.get_or_create(role="admin")
+            self.user_role = admin_role
+
+        if self.is_admin:
+            self.is_staff = True
+            self.is_active = True
+
         if not self.slug:
-            # on génère un slug unique avant de sauver
-            self.slug = User.generate_unique_slug()
+            self.slug = self.generate_unique_slug()
 
-        # Sauvegarde normale
         super().save(*args, **kwargs)
 
-    # (facultatif)
     def get_full_name(self):
-        return " ".join(filter(None, [self.first_name, self.last_name])).strip() or self.email
+        return self.full_name or self.email
 
     def get_short_name(self):
         return self.first_name or (self.email.split("@")[0] if self.email else self.slug)
-
-
-# def send_password_reset_email(reset_password_token):
-#     sitelink = getattr(settings, "FRONTEND_URL", "http://localhost:5173/")
-#     full_link = f"https://rio-gold.com/password-reset/{reset_password_token.key}"
-#     full_link = f"{sitelink.rstrip('/')}/password-reset/{reset_password_token.key}"
-
-#     context = {
-#         'full_link': full_link,
-#         'email_address': reset_password_token.user.email
-#     }
-
-#     html_message = render_to_string("backend/email.html", context=context)
-#     plain_message = strip_tags(html_message)
-
-#     try:
-#         msg = EmailMultiAlternatives(
-#             subject="Réinitialisation de votre mot de passe",
-#             body=plain_message,
-#             from_email=settings.DEFAULT_FROM_EMAIL,
-#             to=[reset_password_token.user.email]
-#         )
-#         msg.attach_alternative(html_message, "text/html")
-#         msg.send(fail_silently=False)
-#         logger.info("Email envoyé avec succès.")
-#     except Exception as e:
-#         logger.error(f"Erreur d'envoi de l'email : {e}")
-        
-
-# def send_password_reset_email(reset_password_token):
-#     sitelink = getattr(settings, "FRONTEND_URL", "http://localhost:5173/")
-#     full_link = f"{sitelink.rstrip('/')}/password-reset/{reset_password_token.key}"
-
-#     context = {
-#         'full_link': full_link,
-#         'email_address': reset_password_token.user.email
-#     }
-
-#     html_message = render_to_string("backend/email.html", context=context)
-#     plain_message = strip_tags(html_message)
-
-#     try:
-#         msg = EmailMultiAlternatives(
-#             subject="Réinitialisation de votre mot de passe",
-#             body=plain_message,
-#             from_email=settings.DEFAULT_FROM_EMAIL,
-#             to=[reset_password_token.user.email]
-#         )
-#         msg.attach_alternative(html_message, "text/html")
-#         msg.send()
-#         logger.info("Email envoyé avec succès.")
-#     except Exception as e:
-#         logger.error(f"Erreur d'envoi de l'email : {e}")
-        
-
-# password
-# @receiver(reset_password_token_created)
-# def password_reset_token_created(reset_password_token, *args, **kwargs):
-#     sitelink = "http://localhost:5173/"
-#     token = "{}".format(reset_password_token.key)
-#     full_link = str(sitelink)+str("password-reset/")+str(token)
-
-#     print(token)
-#     print(full_link)
-
-#     context = {
-#         'full_link': full_link,
-#         'email_address': reset_password_token.user.email
-#     }
-
-#     html_message = render_to_string("backend/email.html", context=context)
-#     plain_message = strip_tags(html_message)
-
-#     msg = EmailMultiAlternatives(
-#         subject = "Request for resetting password for {title}".format(title=reset_password_token.user.email), 
-#         body=plain_message,
-#         from_email = "sender@example.com", 
-#         to=[reset_password_token.user.email]
-#     )
-
-#     msg.attach_alternative(html_message, "text/html")
-#     msg.send()
-
-
-# # Profile
-# class Profile(models.Model):
-#     user = models.OneToOneField(User, on_delete=models.CASCADE)
-#     image = models.ImageField(upload_to='users', default='default/default-user.jpg', null=True, blank=True)
-#     # full_name = models.CharField(max_length=1000, null=True, blank=True)
-#     bio = models.TextField(blank=True)
     
-#     gender = models.CharField(max_length=1, choices=GENDER, null=True, blank=True)
-#     country = models.CharField(max_length=255, null=True, blank=True)
-#     city = models.CharField(max_length=255, null=True, blank=True)
-#     state = models.CharField(max_length=255, null=True, blank=True)
-#     address = models.CharField(max_length=255, null=True, blank=True)
-#     # newsletter = models.BooleanField(default=False)
-#     # type = models.CharField(max_length=500, choices=GENDER, null=True, blank=True)
-#     date = models.DateTimeField(auto_now_add=True, null=True, blank=True)
-#     # pid = ShortUUIDField(unique=True, length=10, max_length=20, alphabet="abcdefghijklmnopqrstuvxyz")
+    # @property
+    # def is_customer(self):
+    #     return self.user_role is None and not self.is_superuser
 
-
-#     class Meta:
-#         ordering = ["-date"]
-
-#     def __str__(self):
-#         return f"{self.user.first_name} {self.user.last_name}"
-
-class Sex(models.TextChoices):
-    M = "M", "Homme"
-    F = "F", "Femme"
+# Profile
 
 def validate_image_size(img):
-    # 2 Mo max (exemple)
+    if not img:
+        return
+
     max_bytes = 2 * 1024 * 1024
-    if img and hasattr(img, 'size') and img.size > max_bytes:
+    if img.size > max_bytes:
         raise ValidationError("L'image ne doit pas dépasser 2 Mo.")
 
+
+def validate_image_extension(img):
+    if not img:
+        return
+
+    ext = os.path.splitext(img.name)[1].lower()
+    allowed_extensions = [".jpg", ".jpeg", ".png", ".webp"]
+
+    if ext not in allowed_extensions:
+        raise ValidationError("Formats autorisés : jpg, jpeg, png, webp.")
+
+def user_profile_image_upload_to(instance, filename):
+    ext = os.path.splitext(filename)[1].lower()
+    return f"users/{instance.user.id}/{uuid.uuid4().hex}{ext}"
+    
 class Profile(models.Model):
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="profile",
+    )
     image = models.ImageField(
-        upload_to="users",
+        upload_to=user_profile_image_upload_to,
         default="default/default-user.jpg",
-        null=True, blank=True,
+        null=True,
+        blank=True,
         validators=[validate_image_size],
     )
     bio = models.TextField(blank=True)
 
-    sex  = models.CharField(max_length=1, choices=Sex.choices, null=True, blank=True)
     country = models.CharField(max_length=255, null=True, blank=True)
-    state   = models.CharField(max_length=255, null=True, blank=True)
-    city    = models.CharField(max_length=255, null=True, blank=True)
+    state = models.CharField(max_length=255, null=True, blank=True)
+    city = models.CharField(max_length=255, null=True, blank=True)
     address = models.CharField(max_length=255, null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -477,7 +295,7 @@ class Profile(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
-        indexes  = [
+        indexes = [
             models.Index(fields=["user"]),
             models.Index(fields=["created_at"]),
         ]
@@ -485,10 +303,7 @@ class Profile(models.Model):
         verbose_name_plural = "Profils"
 
     def __str__(self):
-        fn = (self.user.first_name or "").strip()
-        ln = (self.user.last_name or "").strip()
-        name = f"{fn} {ln}".strip() or self.user.email
-        return f"Profil de {name}"
+        return f"Profil de {self.user.get_full_name() or self.user.email}"
 
     @property
     def first_name(self):
@@ -500,49 +315,95 @@ class Profile(models.Model):
 
     @property
     def full_name(self):
-        return f"{self.user.first_name} {self.user.last_name}".strip()
-
-    
-    # def __str__(self):
-    #     if self.full_name:
-    #         return str(self.full_name)
-    #     else:
-    #         return f"{self.user.first_name} {self.user.last_name}"
-    
-    # def save(self, *args, **kwargs):
-    #     if self.full_name == "" or self.full_name == None:
-    #         self.full_name = self.user.full_name
-        
-    #     super(Profile, self).save(*args, **kwargs)
-
+        return self.user.get_full_name()
 
     def thumbnail(self):
-        return mark_safe('<img src="/media/%s" width="50" height="50" object-fit:"cover" style="border-radius: 30px; object-fit: cover;" />' % (self.image))
-    
-    
+        if self.image and hasattr(self.image, "url"):
+            return mark_safe(
+                f'<img src="{self.image.url}" width="50" height="50" '
+                'style="border-radius:30px; object-fit:cover;" />'
+            )
+        return "—"
+
+    thumbnail.short_description = "Photo"
+
+
+@receiver(post_save, sender=User)
 def create_user_profile(sender, instance, created, **kwargs):
-	if created:
-		Profile.objects.create(user=instance)
+    if created:
+        Profile.objects.get_or_create(user=instance)
 
-def save_user_profile(sender, instance, **kwargs):
-	instance.profile.save()
 
-post_save.connect(create_user_profile, sender=User)
-post_save.connect(save_user_profile, sender=User)
 
 # End Profile
 
 
 # Mini file d’attente + retry
+# class OutboxEmail(models.Model):
+#     to = models.EmailField()
+#     template = models.CharField(max_length=100)      # ex: "confirm_email"
+#     context = models.JSONField(default=dict)         # {user_id, confirm_url, home_url}
+#     reason = models.TextField(blank=True)
+#     attempts = models.IntegerField(default=0)
+#     next_try_at = models.DateTimeField(default=timezone.now)
+#     last_error = models.TextField(blank=True)
+#     created_at = models.DateTimeField(auto_now_add=True)
+#     status = models.CharField(max_length=20,choices=[
+#                                                     ("pending", "Pending"),
+#                                                     ("sent", "Sent"),
+#                                                     ("failed", "Failed"),],default="pending",db_index=True)
+
+#     class Meta:
+#         indexes = [models.Index(fields=["next_try_at", "to"])]
+
+
 class OutboxEmail(models.Model):
-    to = models.EmailField()
-    template = models.CharField(max_length=100)      # ex: "confirm_email"
-    context = models.JSONField(default=dict)         # {user_id, confirm_url, home_url}
-    reason = models.TextField(blank=True)
-    attempts = models.IntegerField(default=0)
-    next_try_at = models.DateTimeField(default=timezone.now)
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+
+    to = models.EmailField(db_index=True)
+
+    template = models.CharField(
+        max_length=100,
+        help_text="Nom du template email (ex: confirm_email)"
+    )
+
+    context = models.JSONField(
+        default=dict,
+        help_text="Données injectées dans le template"
+    )
+
+    reason = models.TextField(
+        blank=True,
+        help_text="Pourquoi cet email a été créé"
+    )
+
+    attempts = models.PositiveIntegerField(default=0)
+
+    next_try_at = models.DateTimeField(default=timezone.now, db_index=True)
+
     last_error = models.TextField(blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True
+    )
+
     class Meta:
-        indexes = [models.Index(fields=["next_try_at", "to"])]
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "next_try_at"]),
+            models.Index(fields=["to"]),
+        ]
+        verbose_name = "Email en attente"
+        verbose_name_plural = "Emails en attente"
+
+    def __str__(self):
+        return f"{self.to} ({self.status})"

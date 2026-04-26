@@ -6,5 +6,7 @@ class UserauthsConfig(AppConfig):
     name = 'userauths'    
     
     def ready(self):
-        # import userauths.signals  # ← Charge le signal au démarrage
-        from . import signals
+        try:
+            import userauths.signals
+        except ImportError:
+            pass

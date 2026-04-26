@@ -1,39 +1,44 @@
-from io import BytesIO
-
-import qrcode
-from django.db import transaction
-from django.http import HttpResponse
-from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
 # from knox.auth import TokenAuthentication
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
+
+#Export to excel
+import qrcode
+from django.db import transaction
+from django.db.models import Q
+from django.http import Http404, HttpResponse
+from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_datetime
+from django_filters.rest_framework import DjangoFilterBackend
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image as XLImage
+from PIL import Image
 from rest_framework import status
-from rest_framework.parsers import (FileUploadParser, FormParser,
+from rest_framework.generics import ListAPIView
+from rest_framework.parsers import (FileUploadParser, FormParser, JSONParser,
                                     MultiPartParser)
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.generics import ListAPIView
 
-from django.shortcuts import get_object_or_404
-from django.db.models import Q
-from django.http import Http404 
-
-from rest_framework.parsers import JSONParser
-
+from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
 from backend.renderers import UserRenderer
-from stock.serializers import StockSerializer
-from store.models import Bijouterie, Categorie, Marque, MarquePurete, Modele, Produit, Gallery, Purete, MarquePuretePrixHistory
+from backend.roles import ROLE_MANAGER, ROLE_VENDOR, get_role_name
+from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
+                          MarquePuretePrixHistory, Modele, Produit, Purete)
 from store.serializers import (BijouterieSerializer, CategorieSerializer,
-                            MarqueSerializer, ModeleSerializer, MarquePureteSerializer,MarquePureteListSerializer,
-                            ProduitSerializer, PureteSerializer, GallerySerializer, ProduitWithGallerySerializer)
+                               MarquePureteListSerializer,
+                               MarquePuretePrixEvolutionPointSerializer,
+                               MarquePuretePrixHistory,
+                               MarquePuretePrixHistorySerializer,
+                               MarquePureteSerializer, MarqueSerializer,
+                               ModeleSerializer, ProduitSerializer,
+                               ProduitWithGallerySerializer, PureteSerializer)
+from store.services.price_history_service import update_marque_purete_price
 
-#Export to excel
-import qrcode
-from io import BytesIO
-from openpyxl import Workbook
-from openpyxl.drawing.image import Image as XLImage
-from PIL import Image
+from .serializers import MarquePuretePrixHistorySerializer
 
 allowed_roles_admin_manager_vendeur = ['admin', 'manager', 'vendeur']
 allowed_roles_admin_manager = ['admin', 'manager']
@@ -720,6 +725,7 @@ class CreateMarquePureteView(APIView):
             "history_records": history  # traces des modifs faites pendant cet appel
         }, status=201 if created else 200)
         
+
 
 
 class MarquePureteHistoryListView(APIView):
@@ -1777,3 +1783,982 @@ class ProduitRecentListAPIView(APIView):
         produits = Produit.objects.filter(status='publié').order_by('-date_ajout')[:20]
         serializer = ProduitWithGallerySerializer(produits, many=True, context={'request': request})
         return Response(serializer.data)
+
+
+
+class MarquePuretePriceCompareDatesView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOrManagerOrVendor]
+
+    def get_price_at(self, *, marque, purete, bijouterie_id, dt):
+        qs = MarquePuretePrixHistory.objects.filter(
+            marque__marque__iexact=marque.strip(),
+            purete__purete__iexact=str(purete).strip(),
+            changed_at__lte=dt,
+        )
+
+        if bijouterie_id:
+            qs = qs.filter(bijouterie_id=bijouterie_id)
+
+        obj = qs.order_by("-changed_at", "-id").first()
+        return obj.nouveau_prix if obj else None
+
+    @swagger_auto_schema(
+        operation_id="compareMarquePuretePriceByDates",
+        operation_summary="Comparer le prix entre deux dates",
+        operation_description="""
+Compare le prix d'une combinaison marque / pureté entre deux dates.
+
+Utilisation typique :
+- savoir combien valait le prix à une date donnée
+- comparer l'évolution entre deux moments
+        """,
+        manual_parameters=[
+            openapi.Parameter("marque", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=True, description="Nom de la marque, ex: local"),
+            openapi.Parameter("purete", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=True, description="Pureté, ex: 18"),
+            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False, description="ID de la bijouterie"),
+            openapi.Parameter("date_1", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=True, description="Date ISO datetime, ex: 2026-03-20T10:00:00Z"),
+            openapi.Parameter("date_2", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=True, description="Date ISO datetime, ex: 2026-03-22T10:00:00Z"),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Comparaison effectuée avec succès.",
+                examples={
+                    "application/json": {
+                        "marque": "local",
+                        "purete": "18",
+                        "bijouterie_id": 1,
+                        "date_1": "2026-03-20T10:00:00Z",
+                        "prix_date_1": "4800.00",
+                        "date_2": "2026-03-22T10:00:00Z",
+                        "prix_date_2": "5200.00",
+                        "difference": "400.00"
+                    }
+                }
+            ),
+            400: openapi.Response(
+                description="Paramètres invalides."
+            ),
+        },
+        tags=["Prix / Historique"],
+    )
+    def get(self, request, *args, **kwargs):
+        marque = request.query_params.get("marque")
+        purete = request.query_params.get("purete")
+        bijouterie_id = request.query_params.get("bijouterie_id")
+        date_1 = request.query_params.get("date_1")
+        date_2 = request.query_params.get("date_2")
+
+        if not marque or not purete or not date_1 or not date_2:
+            return Response(
+                {"detail": "Les paramètres marque, purete, date_1 et date_2 sont obligatoires."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dt1 = parse_datetime(date_1)
+        dt2 = parse_datetime(date_2)
+
+        if not dt1 or not dt2:
+            return Response(
+                {"detail": "date_1 et date_2 doivent être au format ISO datetime."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        prix_1 = self.get_price_at(
+            marque=marque,
+            purete=purete,
+            bijouterie_id=bijouterie_id,
+            dt=dt1,
+        )
+        prix_2 = self.get_price_at(
+            marque=marque,
+            purete=purete,
+            bijouterie_id=bijouterie_id,
+            dt=dt2,
+        )
+
+        difference = None
+        if prix_1 is not None and prix_2 is not None:
+            difference = Decimal(str(prix_2)) - Decimal(str(prix_1))
+
+        return Response(
+            {
+                "marque": marque,
+                "purete": purete,
+                "bijouterie_id": bijouterie_id,
+                "date_1": date_1,
+                "prix_date_1": str(prix_1) if prix_1 is not None else None,
+                "date_2": date_2,
+                "prix_date_2": str(prix_2) if prix_2 is not None else None,
+                "difference": str(difference) if difference is not None else None,
+            },
+            status=status.HTTP_200_OK,
+        )
+    
+    
+
+
+# class CommercialSettingsUpdateView(APIView):
+#     permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+#     @swagger_auto_schema(
+#         operation_id="updateCommercialSettings",
+#         operation_summary="Mettre à jour la TVA et les prix par marque/pureté",
+#         operation_description="""
+# Permet à l’admin ou au manager de :
+
+# - activer ou désactiver la TVA d’une bijouterie
+# - modifier le taux de TVA
+# - mettre à jour le prix journalier d’un ou plusieurs couples marque/pureté
+# - créer automatiquement un historique des changements de prix
+#         """,
+#         request_body=CommercialSettingsSerializer,
+#         responses={
+#             200: openapi.Response(
+#                 description="Paramétrage commercial mis à jour avec succès."
+#             ),
+#             400: openapi.Response(
+#                 description="Erreur de validation ou couple marque/pureté introuvable."
+#             ),
+#             403: openapi.Response(description="Accès refusé."),
+#             404: openapi.Response(description="Bijouterie introuvable."),
+#         },
+#         tags=["Paramétrage commercial"],
+#     )
+#     @transaction.atomic
+#     def patch(self, request, *args, **kwargs):
+#         serializer = CommercialSettingsSerializer(data=request.data)
+#         serializer.is_valid(raise_exception=True)
+#         data = serializer.validated_data
+
+#         try:
+#             bijouterie = Bijouterie.objects.select_for_update().get(pk=data["bijouterie_id"])
+#         except Bijouterie.DoesNotExist:
+#             return Response(
+#                 {"detail": "Bijouterie introuvable."},
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
+
+#         # manager -> seulement ses bijouteries
+#         role = get_role_name(request.user)
+#         if role == "manager":
+#             manager = getattr(request.user, "staff_manager_profile", None)
+#             if not manager or not manager.bijouteries.filter(pk=bijouterie.pk).exists():
+#                 return Response(
+#                     {"detail": "Vous ne pouvez pas modifier cette bijouterie."},
+#                     status=status.HTTP_403_FORBIDDEN,
+#                 )
+
+#         updated_prices = []
+
+#         # -------------------------
+#         # TVA
+#         # -------------------------
+#         if "appliquer_tva" in data:
+#             bijouterie.appliquer_tva = data["appliquer_tva"]
+
+#         if "taux_tva" in data and data["taux_tva"] is not None:
+#             bijouterie.taux_tva = data["taux_tva"]
+
+#         if "appliquer_tva" in data or "taux_tva" in data:
+#             update_fields = []
+#             if "appliquer_tva" in data:
+#                 update_fields.append("appliquer_tva")
+#             if "taux_tva" in data and data["taux_tva"] is not None:
+#                 update_fields.append("taux_tva")
+#             if hasattr(bijouterie, "updated_at"):
+#                 update_fields.append("updated_at")
+
+#             bijouterie.save(update_fields=update_fields)
+
+#         # -------------------------
+#         # PRIX MARQUE / PURETE
+#         # -------------------------
+#         for item in data.get("prix_marque_purete", []):
+#             obj = (
+#                 MarquePurete.objects
+#                 .select_for_update()
+#                 .select_related("marque", "purete")
+#                 .filter(
+#                     marque__marque__iexact=item["marque"].strip(),
+#                     purete__purete__iexact=str(item["purete"]).strip(),
+#                 )
+#                 .first()
+#             )
+
+#             if not obj:
+#                 return Response(
+#                     {
+#                         "detail": (
+#                             f"Aucune correspondance trouvée pour "
+#                             f"marque='{item['marque']}' et purete='{item['purete']}'."
+#                         )
+#                     },
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+
+#             old_price = Decimal(str(obj.prix or "0.00"))
+
+#             try:
+#                 obj, history = update_marque_purete_price(
+#                     obj=obj,
+#                     new_price=item["prix"],
+#                     user=request.user,
+#                     bijouterie=bijouterie,
+#                     source="api",
+#                     note="Mise à jour via paramétrage commercial",
+#                 )
+#             except ValueError as e:
+#                 return Response(
+#                     {"detail": str(e)},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+
+#             updated_prices.append({
+#                 "id": obj.id,
+#                 "marque": getattr(obj.marque, "marque", None),
+#                 "purete": getattr(obj.purete, "purete", None),
+#                 "ancien_prix": str(old_price),
+#                 "nouveau_prix": str(obj.prix),
+#                 "history_id": history.id if history else None,
+#                 "changed": history is not None,
+#             })
+
+#         return Response(
+#             {
+#                 "message": "Paramétrage commercial mis à jour avec succès.",
+#                 "bijouterie": {
+#                     "id": bijouterie.id,
+#                     "nom": bijouterie.nom,
+#                     "appliquer_tva": bijouterie.appliquer_tva,
+#                     "taux_tva": str(bijouterie.taux_tva),
+#                 },
+#                 "prix_updates_count": len(updated_prices),
+#                 "prix_updates": updated_prices,
+#             },
+#             status=status.HTTP_200_OK,
+#         )
+        
+
+
+class MarquePuretePriceEvolutionView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOrManagerOrVendor]
+
+    @swagger_auto_schema(
+        operation_id="getMarquePuretePriceEvolution",
+        operation_summary="Graphique évolution prix",
+        operation_description="""
+Retourne l'évolution chronologique du prix pour une combinaison marque / pureté.
+
+Rôles autorisés :
+- admin : accès global
+- manager : accès limité à ses bijouteries
+- vendor : accès limité à sa bijouterie
+
+Utilisation typique :
+- tracer une courbe dans le front
+- voir l'évolution du prix dans le temps
+
+Paramètres :
+- marque (obligatoire)
+- purete (obligatoire)
+- bijouterie_id (optionnel)
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                "marque",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=True,
+                description="Nom de la marque, ex: local",
+            ),
+            openapi.Parameter(
+                "purete",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=True,
+                description="Pureté, ex: 18",
+            ),
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="ID de la bijouterie",
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Évolution des prix.",
+                examples={
+                    "application/json": {
+                        "count": 3,
+                        "results": [
+                            {"date": "2026-03-20T10:00:00Z", "prix": "4800.00"},
+                            {"date": "2026-03-21T10:00:00Z", "prix": "5000.00"},
+                            {"date": "2026-03-22T10:00:00Z", "prix": "5200.00"},
+                        ],
+                    }
+                },
+            ),
+            400: openapi.Response(
+                description="Paramètres invalides",
+                examples={
+                    "application/json": {
+                        "detail": "Les paramètres 'marque' et 'purete' sont obligatoires."
+                    }
+                },
+            ),
+        },
+        tags=["Prix / Historique"],
+    )
+    def get(self, request, *args, **kwargs):
+        marque = (request.query_params.get("marque") or "").strip()
+        purete = (request.query_params.get("purete") or "").strip()
+        bijouterie_id = request.query_params.get("bijouterie_id")
+
+        if not marque or not purete:
+            return Response(
+                {"detail": "Les paramètres 'marque' et 'purete' sont obligatoires."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = (
+            MarquePuretePrixHistory.objects
+            .select_related("marque", "purete", "bijouterie")
+            .filter(
+                marque__marque__iexact=marque,
+                purete__purete__iexact=purete,
+            )
+        )
+
+        role = get_role_name(request.user)
+
+        if role == ROLE_MANAGER:
+            manager = getattr(request.user, "staff_manager_profile", None)
+            if manager:
+                qs = qs.filter(bijouterie__in=manager.bijouteries.all())
+            else:
+                qs = qs.none()
+
+        elif role == ROLE_VENDOR:
+            vendor = getattr(request.user, "staff_vendor_profile", None)
+            if vendor and vendor.bijouterie_id:
+                qs = qs.filter(bijouterie_id=vendor.bijouterie_id)
+            else:
+                qs = qs.none()
+
+        if bijouterie_id:
+            try:
+                bijouterie_id = int(bijouterie_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "Le paramètre 'bijouterie_id' doit être un entier."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(bijouterie_id=bijouterie_id)
+
+        qs = qs.order_by("changed_at", "id")
+
+        points = [
+            {
+                "date": obj.changed_at.isoformat() if obj.changed_at else None,
+                "prix": str(obj.nouveau_prix),
+            }
+            for obj in qs
+        ]
+
+        return Response({
+            "count": len(points),
+            "results": points,
+        })
+
+
+class MarquePuretePrixHistoryListView(ListAPIView):
+    """
+    Audit des changements de prix marque/pureté.
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+    serializer_class = MarquePuretePrixHistorySerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["bijouterie", "marque", "purete", "source", "changed_by"]
+
+    @swagger_auto_schema(
+        operation_id="listMarquePuretePrixHistory",
+        operation_summary="Lister l'audit historique des changements de prix",
+        operation_description="""
+Retourne l’historique complet des changements de prix par marque / pureté.
+
+Permet de savoir :
+- qui a changé le prix
+- quand
+- de combien à combien
+- depuis quelle source (api, admin, import_excel, rollback)
+- pour quelle bijouterie, marque et pureté
+
+### Filtres disponibles
+- `bijouterie`
+- `marque`
+- `purete`
+- `source`
+- `changed_by`
+- `date_from`
+- `date_to`
+
+### Exemples
+- `/api/prix/history/`
+- `/api/prix/history/?marque=1&purete=2`
+- `/api/prix/history/?source=api`
+- `/api/prix/history/?date_from=2026-03-01&date_to=2026-03-31`
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                "bijouterie",
+                openapi.IN_QUERY,
+                description="ID de la bijouterie",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "marque",
+                openapi.IN_QUERY,
+                description="ID de la marque",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "purete",
+                openapi.IN_QUERY,
+                description="ID de la pureté",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "source",
+                openapi.IN_QUERY,
+                description="Source du changement : api, admin, import_excel, rollback",
+                type=openapi.TYPE_STRING,
+                required=False,
+            ),
+            openapi.Parameter(
+                "changed_by",
+                openapi.IN_QUERY,
+                description="ID de l'utilisateur ayant fait la modification",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "date_from",
+                openapi.IN_QUERY,
+                description="Date début au format YYYY-MM-DD",
+                type=openapi.TYPE_STRING,
+                format="date",
+                required=False,
+            ),
+            openapi.Parameter(
+                "date_to",
+                openapi.IN_QUERY,
+                description="Date fin au format YYYY-MM-DD",
+                type=openapi.TYPE_STRING,
+                format="date",
+                required=False,
+            ),
+        ],
+        responses={200: MarquePuretePrixHistorySerializer(many=True)},
+        tags=["Prix / Historique"],
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    def get_queryset(self):
+        qs = (
+            MarquePuretePrixHistory.objects
+            .select_related("marque_purete", "marque", "purete", "bijouterie", "changed_by")
+            .all()
+        )
+
+        date_from = self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("date_to")
+
+        if date_from:
+            qs = qs.filter(changed_at__date__gte=date_from)
+
+        if date_to:
+            qs = qs.filter(changed_at__date__lte=date_to)
+
+        # sécurité manager -> seulement ses bijouteries
+        user = self.request.user
+        manager = getattr(user, "staff_manager_profile", None)
+        if manager and not getattr(user, "is_superuser", False):
+            if manager.bijouteries.exists():
+                qs = qs.filter(bijouterie__in=manager.bijouteries.all())
+
+        return qs
+
+
+class MarquePuretePrixEvolutionView(APIView):
+    """
+    Retourne les points chronologiques d'évolution du prix.
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManagerOrVendor]
+
+    @swagger_auto_schema(
+        operation_id="getMarquePuretePrixEvolution",
+        operation_summary="Graphique évolution des prix",
+        operation_description="""
+Retourne l’évolution chronologique du prix pour une combinaison marque / pureté.
+
+Cette vue est utile pour :
+- tracer un graphique dans React / Angular
+- analyser l’évolution du prix dans le temps
+- filtrer par bijouterie, marque, pureté et période
+
+### Filtres disponibles
+- `marque`
+- `purete`
+- `bijouterie`
+- `date_from`
+- `date_to`
+
+### Exemples
+- `/api/prix/evolution/?marque=local&purete=18`
+- `/api/prix/evolution/?marque=local&purete=18&date_from=2026-03-01&date_to=2026-03-31`
+- `/api/prix/evolution/?bijouterie=1`
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                "marque",
+                openapi.IN_QUERY,
+                description="Nom de la marque, ex: local",
+                type=openapi.TYPE_STRING,
+                required=False,
+            ),
+            openapi.Parameter(
+                "purete",
+                openapi.IN_QUERY,
+                description="Valeur de la pureté, ex: 18",
+                type=openapi.TYPE_STRING,
+                required=False,
+            ),
+            openapi.Parameter(
+                "bijouterie",
+                openapi.IN_QUERY,
+                description="ID de la bijouterie",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "date_from",
+                openapi.IN_QUERY,
+                description="Date début au format YYYY-MM-DD",
+                type=openapi.TYPE_STRING,
+                format="date",
+                required=False,
+            ),
+            openapi.Parameter(
+                "date_to",
+                openapi.IN_QUERY,
+                description="Date fin au format YYYY-MM-DD",
+                type=openapi.TYPE_STRING,
+                format="date",
+                required=False,
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Liste chronologique des points d'évolution.",
+                examples={
+                    "application/json": {
+                        "count": 3,
+                        "marque": "local",
+                        "purete": "18",
+                        "results": [
+                            {
+                                "date": "2026-03-20T09:00:00Z",
+                                "prix": "4800.00",
+                                "marque": "local",
+                                "purete": "18",
+                                "source": "api"
+                            },
+                            {
+                                "date": "2026-03-21T09:00:00Z",
+                                "prix": "5000.00",
+                                "marque": "local",
+                                "purete": "18",
+                                "source": "import_excel"
+                            },
+                            {
+                                "date": "2026-03-22T09:00:00Z",
+                                "prix": "5200.00",
+                                "marque": "local",
+                                "purete": "18",
+                                "source": "api"
+                            }
+                        ]
+                    }
+                },
+            )
+        },
+        tags=["Prix / Historique"],
+    )
+    def get(self, request, *args, **kwargs):
+        marque = request.query_params.get("marque")
+        purete = request.query_params.get("purete")
+        bijouterie = request.query_params.get("bijouterie")
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+
+        qs = (
+            MarquePuretePrixHistory.objects
+            .select_related("marque", "purete", "bijouterie", "changed_by")
+            .all()
+        )
+
+        if marque:
+            qs = qs.filter(marque__marque__iexact=marque.strip())
+
+        if purete:
+            qs = qs.filter(purete__purete__iexact=str(purete).strip())
+
+        if bijouterie:
+            qs = qs.filter(bijouterie_id=bijouterie)
+
+        if date_from:
+            qs = qs.filter(changed_at__date__gte=date_from)
+
+        if date_to:
+            qs = qs.filter(changed_at__date__lte=date_to)
+
+        # sécurité manager -> seulement ses bijouteries
+        user = request.user
+        manager = getattr(user, "staff_manager_profile", None)
+        if manager and not getattr(user, "is_superuser", False):
+            if manager.bijouteries.exists():
+                qs = qs.filter(bijouterie__in=manager.bijouteries.all())
+
+        qs = qs.order_by("changed_at", "id")
+
+        results = [
+            {
+                "date": obj.changed_at,
+                "prix": obj.nouveau_prix,
+                "marque": getattr(obj.marque, "marque", None),
+                "purete": getattr(obj.purete, "purete", None),
+                "source": obj.source,
+            }
+            for obj in qs
+        ]
+
+        serializer = MarquePuretePrixEvolutionPointSerializer(results, many=True)
+
+        return Response(
+            {
+                "count": len(serializer.data),
+                "marque": marque,
+                "purete": purete,
+                "results": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+        
+
+class MarquePuretePriceRollbackView(APIView):
+    """
+    Restaure un ancien prix à partir d'une ligne d'historique.
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+    @swagger_auto_schema(
+        operation_id="rollbackMarquePuretePrice",
+        operation_summary="Rollback d'un ancien prix",
+        operation_description="""
+Permet de restaurer un ancien prix à partir d'une ligne d'historique.
+
+Fonctionnement :
+- on lit une ligne d'historique
+- on prend `ancien_prix`
+- on le remet comme prix courant dans `MarquePurete`
+- on crée une nouvelle ligne d'historique avec `source="rollback"`
+
+### Cas d’usage
+- erreur de saisie d’un prix
+- besoin de revenir à une valeur précédente
+- correction rapide par admin ou manager
+        """,
+        responses={
+            200: openapi.Response(
+                description="Rollback effectué avec succès.",
+                examples={
+                    "application/json": {
+                        "message": "Rollback effectué avec succès.",
+                        "marque": "local",
+                        "purete": "18",
+                        "ancien_prix_courant": "5200.00",
+                        "prix_restaure": "5000.00",
+                        "rollback_history_id": 14
+                    }
+                },
+            ),
+            400: openapi.Response(
+                description="Le prix courant est déjà égal au prix à restaurer.",
+                examples={
+                    "application/json": {
+                        "detail": "Le prix courant est déjà égal au prix à restaurer."
+                    }
+                },
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+            404: openapi.Response(
+                description="Historique introuvable.",
+                examples={
+                    "application/json": {
+                        "detail": "Historique introuvable."
+                    }
+                },
+            ),
+        },
+        tags=["Prix / Historique"],
+    )
+    @transaction.atomic
+    def post(self, request, history_id, *args, **kwargs):
+        try:
+            history = (
+                MarquePuretePrixHistory.objects
+                .select_related("marque_purete", "marque", "purete", "bijouterie")
+                .select_for_update()
+                .get(pk=history_id)
+            )
+        except MarquePuretePrixHistory.DoesNotExist:
+            return Response(
+                {"detail": "Historique introuvable."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        obj = history.marque_purete
+
+        # sécurité manager -> seulement ses bijouteries
+        user = request.user
+        manager = getattr(user, "staff_manager_profile", None)
+        if manager and not getattr(user, "is_superuser", False):
+            if history.bijouterie_id and not manager.bijouteries.filter(pk=history.bijouterie_id).exists():
+                return Response(
+                    {"detail": "Vous ne pouvez pas effectuer un rollback sur cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        old_current_price = Decimal(str(obj.prix or "0.00"))
+        rollback_price = Decimal(str(history.ancien_prix or "0.00"))
+
+        if old_current_price == rollback_price:
+            return Response(
+                {"detail": "Le prix courant est déjà égal au prix à restaurer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # mise à jour du prix courant
+        obj.prix = rollback_price
+        obj.save(update_fields=["prix"])
+
+        # nouvelle ligne d'historique
+        rollback_history = MarquePuretePrixHistory.objects.create(
+            marque_purete=obj,
+            marque=obj.marque,
+            purete=obj.purete,
+            bijouterie=history.bijouterie,
+            ancien_prix=old_current_price,
+            nouveau_prix=rollback_price,
+            changed_by=request.user,
+            source=MarquePuretePrixHistory.SOURCE_ROLLBACK,
+            note=f"Rollback depuis historique #{history.id}",
+        )
+
+        return Response(
+            {
+                "message": "Rollback effectué avec succès.",
+                "marque": getattr(obj.marque, "marque", None),
+                "purete": getattr(obj.purete, "purete", None),
+                "ancien_prix_courant": str(old_current_price),
+                "prix_restaure": str(rollback_price),
+                "rollback_history_id": rollback_history.id,
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+        
+
+
+class MarquePuretePriceCompareDatesView(APIView):
+    """
+    Compare le prix d'une combinaison marque / pureté entre deux dates.
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManagerOrVendor]
+
+    def get_price_at(self, *, marque, purete, bijouterie_id, dt):
+        qs = MarquePuretePrixHistory.objects.filter(
+            marque__marque__iexact=marque.strip(),
+            purete__purete__iexact=str(purete).strip(),
+            changed_at__lte=dt,
+        )
+
+        if bijouterie_id:
+            qs = qs.filter(bijouterie_id=bijouterie_id)
+
+        obj = qs.order_by("-changed_at", "-id").first()
+        return obj.nouveau_prix if obj else None
+
+    @swagger_auto_schema(
+        operation_id="compareMarquePuretePriceByDates",
+        operation_summary="Comparer le prix entre deux dates",
+        operation_description="""
+Compare le prix d'une combinaison marque / pureté entre deux dates.
+
+Principe :
+- on cherche la dernière valeur connue avant `date_1`
+- on cherche la dernière valeur connue avant `date_2`
+- on calcule la différence
+
+### Paramètres requis
+- `marque`
+- `purete`
+- `date_1`
+- `date_2`
+
+### Paramètre optionnel
+- `bijouterie_id`
+
+### Exemple
+`/api/prix/compare-dates/?marque=local&purete=18&date_1=2026-03-20T10:00:00Z&date_2=2026-03-22T10:00:00Z`
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                "marque",
+                openapi.IN_QUERY,
+                description="Nom de la marque, ex: local",
+                type=openapi.TYPE_STRING,
+                required=True,
+            ),
+            openapi.Parameter(
+                "purete",
+                openapi.IN_QUERY,
+                description="Valeur de la pureté, ex: 18",
+                type=openapi.TYPE_STRING,
+                required=True,
+            ),
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                description="ID de la bijouterie",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "date_1",
+                openapi.IN_QUERY,
+                description="Première date au format ISO datetime, ex: 2026-03-20T10:00:00Z",
+                type=openapi.TYPE_STRING,
+                format="date-time",
+                required=True,
+            ),
+            openapi.Parameter(
+                "date_2",
+                openapi.IN_QUERY,
+                description="Deuxième date au format ISO datetime, ex: 2026-03-22T10:00:00Z",
+                type=openapi.TYPE_STRING,
+                format="date-time",
+                required=True,
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Comparaison effectuée avec succès.",
+                examples={
+                    "application/json": {
+                        "marque": "local",
+                        "purete": "18",
+                        "bijouterie_id": 1,
+                        "date_1": "2026-03-20T10:00:00Z",
+                        "prix_date_1": "4800.00",
+                        "date_2": "2026-03-22T10:00:00Z",
+                        "prix_date_2": "5200.00",
+                        "difference": "400.00"
+                    }
+                },
+            ),
+            400: openapi.Response(
+                description="Paramètres invalides.",
+                examples={
+                    "application/json": {
+                        "detail": "Les paramètres marque, purete, date_1 et date_2 sont obligatoires."
+                    }
+                },
+            ),
+            403: openapi.Response(description="Accès refusé."),
+        },
+        tags=["Prix / Historique"],
+    )
+    def get(self, request, *args, **kwargs):
+        marque = request.query_params.get("marque")
+        purete = request.query_params.get("purete")
+        bijouterie_id = request.query_params.get("bijouterie_id")
+        date_1 = request.query_params.get("date_1")
+        date_2 = request.query_params.get("date_2")
+
+        if not marque or not purete or not date_1 or not date_2:
+            return Response(
+                {"detail": "Les paramètres marque, purete, date_1 et date_2 sont obligatoires."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dt1 = parse_datetime(date_1)
+        dt2 = parse_datetime(date_2)
+
+        if not dt1 or not dt2:
+            return Response(
+                {"detail": "date_1 et date_2 doivent être au format ISO datetime."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # sécurité manager -> seulement ses bijouteries
+        user = request.user
+        manager = getattr(user, "staff_manager_profile", None)
+        if manager and not getattr(user, "is_superuser", False):
+            if bijouterie_id and not manager.bijouteries.filter(pk=bijouterie_id).exists():
+                return Response(
+                    {"detail": "Vous ne pouvez pas consulter cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        prix_1 = self.get_price_at(
+            marque=marque,
+            purete=purete,
+            bijouterie_id=bijouterie_id,
+            dt=dt1,
+        )
+        prix_2 = self.get_price_at(
+            marque=marque,
+            purete=purete,
+            bijouterie_id=bijouterie_id,
+            dt=dt2,
+        )
+
+        difference = None
+        if prix_1 is not None and prix_2 is not None:
+            difference = Decimal(str(prix_2)) - Decimal(str(prix_1))
+
+        return Response(
+            {
+                "marque": marque,
+                "purete": purete,
+                "bijouterie_id": bijouterie_id,
+                "date_1": date_1,
+                "prix_date_1": str(prix_1) if prix_1 is not None else None,
+                "date_2": date_2,
+                "prix_date_2": str(prix_2) if prix_2 is not None else None,
+                "difference": str(difference) if difference is not None else None,
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+                                

@@ -3,7 +3,9 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from purchase.models import Achat, Fournisseur, Lot, ProduitLine
 from stock.models import Stock
+from store.models import Produit
 
 from .models import Achat, Fournisseur, Lot, ProduitLine
 
@@ -27,10 +29,32 @@ class FournisseurSerializer(serializers.ModelSerializer):
                     "Spécifier soit 'id', soit au minimum 'telephone' pour le fournisseur."
                 )
             return attrs
-        
+
+# class ArrivageCreateInSerializer(serializers.Serializer):
+#     """
+#     Payload complet pour POST /api/achat/arrivage
+#     """
+#     fournisseur = FournisseurInlineSerializer()
+#     description = serializers.CharField(required=False, allow_blank=True)
+#     frais_transport = serializers.DecimalField(
+#         max_digits=12,
+#         decimal_places=2,
+#         required=False,
+#         default=Decimal("0.00"),
+#     )
+#     frais_douane = serializers.DecimalField(
+#         max_digits=12,
+#         decimal_places=2,
+#         required=False,
+#         default=Decimal("0.00"),
+#     )
+#     lots = LotLineInSerializer(many=True)
+
+# -------------------------- ArrivageCreateIn ------------------------------------
 
 
 
+# ================ Arrivage Create In Serializer =================
 class FournisseurInlineSerializer(serializers.Serializer):
     """
     Fournisseur dans le payload d'arrivage.
@@ -54,61 +78,83 @@ class LotLineInSerializer(serializers.Serializer):
     )
 
 
+class LotInSerializer(serializers.Serializer):
+    received_at = serializers.DateTimeField(required=False)
+    description = serializers.CharField(required=False, allow_blank=True)
+    lignes = LotLineInSerializer(many=True)
+
+    def validate_lignes(self, lignes):
+        if not lignes:
+            raise serializers.ValidationError("Au moins une ligne est requise.")
+        return lignes
+
+
 class ArrivageCreateInSerializer(serializers.Serializer):
     """
     Payload complet pour POST /api/achat/arrivage
+    1 Achat → N Lots → lignes
     """
     fournisseur = FournisseurInlineSerializer()
+    reference_commande = serializers.CharField(required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True)
     frais_transport = serializers.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        required=False,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, required=False, default=Decimal("0.00")
     )
     frais_douane = serializers.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        required=False,
-        default=Decimal("0.00"),
+        max_digits=12, decimal_places=2, required=False, default=Decimal("0.00")
     )
-    lots = LotLineInSerializer(many=True)
+
+    lots = LotInSerializer(many=True)
+
+    def validate_lots(self, lots):
+        if not lots:
+            raise serializers.ValidationError("Au moins un lot est requis.")
+        return lots
+# ================ Arrivage Create In Serializer =================
 
 
-# =============================
-# OUT : lignes produit d’un lot
-# =============================
+class ProduitMiniSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Produit
+        fields = ["id", "nom", "poids"]
 
 class ProduitLineOutSerializer(serializers.ModelSerializer):
-    """
-    Ligne d'un lot en sortie.
-    Aligne les noms avec ton modèle actuel ProduitLine :
-      - quantite
-      - prix_achat_gramme
-    """
-    produit_id = serializers.IntegerField(source="produit.id", read_only=True)
-    produit_nom = serializers.CharField(source="produit.nom", read_only=True)
-    produit_purete = serializers.CharField(source="produit.purete", read_only=True)
-    poids_total = serializers.DecimalField(source="poids_total_calc",max_digits=14,decimal_places=3,read_only=True,allow_null=True,)
+    produit = ProduitMiniSerializer(read_only=True)
+
+    poids_total = serializers.SerializerMethodField()
+    montant_ht = serializers.SerializerMethodField()
 
     class Meta:
         model = ProduitLine
         fields = [
             "id",
-            "produit_id",
-            "produit_nom",
-            "produit_purete",
+            "produit",
             "quantite",
             "prix_achat_gramme",
             "poids_total",
+            "montant_ht",
         ]
+
+    def get_poids_total(self, obj):
+        # utilise ton helper existant
+        val = obj.poids_total_calc
+        return None if val is None else Decimal(val).quantize(Decimal("0.01"))
+
+    def get_montant_ht(self, obj):
+        if obj.prix_achat_gramme is None or obj.produit.poids is None:
+            return None
+        return (
+            Decimal(obj.quantite)
+            * Decimal(str(obj.produit.poids))
+            * Decimal(str(obj.prix_achat_gramme))
+        ).quantize(Decimal("0.01"))
 
 
 class LotOutSerializer(serializers.ModelSerializer):
     """
     Lot + ses lignes (utile si tu listes les lots ailleurs)
     """
-    lignes = ProduitLineOutSerializer(many=True, read_only=True)
+    lignes = ProduitLineOutSerializer(many=True, read_only=True)  # ✅ related_name="lignes"
 
     class Meta:
         model = Lot
@@ -181,12 +227,37 @@ class AchatDetailSerializer(serializers.ModelSerializer):
 # -----------------End AchatProduitGetOneView-------------------------
 
 
-# -----------------------------------------------------------
-class AchatCreateResponseSerializer(serializers.ModelSerializer):
+# ==========Serializers de réponse (achat + lots + lignes)==================
+
+class FournisseurOutSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Fournisseur
+        fields = ["id", "nom", "prenom", "telephone", "address", "slug"]
+
+
+class AchatOutSerializer(serializers.ModelSerializer):
+    fournisseur = FournisseurOutSerializer(read_only=True)
+
+    class Meta:
+        model = Achat
+        fields = [
+            "id",
+            "numero_achat",
+            "status",
+            "description",
+            "note",
+            "created_at",
+            "frais_transport",
+            "frais_douane",
+            "montant_total_ht",
+            "montant_total_ttc",
+            "fournisseur",
+        ]
+
+
+class LotArrivageResponseSerializer(serializers.ModelSerializer):
     lignes = ProduitLineOutSerializer(many=True, read_only=True)
     achat = AchatSerializer(read_only=True)
-    has_bijouterie_allocations = serializers.SerializerMethodField()
-
     class Meta:
         model = Lot
         fields = [
@@ -196,17 +267,11 @@ class AchatCreateResponseSerializer(serializers.ModelSerializer):
             "received_at",
             "achat",
             "lignes",
-            "has_bijouterie_allocations",
         ]
 
-    def get_has_bijouterie_allocations(self, obj: Lot) -> bool:
-        # True si AU MOINS UNE ligne du lot est allouée à une bijouterie
-        return Stock.objects.filter(
-            produit_line__lot=obj,
-            bijouterie__isnull=False,
-            quantite_allouee__gt=0,
-        ).exists()
-# ---------------------------------------------------------
+
+# =================Serializers de réponse (achat + lots + lignes)=================
+
 
 # --- Ligne produit dans un lot ---
 class LotDisplayLineSerializer(serializers.ModelSerializer):
@@ -273,7 +338,7 @@ class LotListSerializer(serializers.ModelSerializer):
             "nb_lignes",
             "quantite_total",
         ]
-        
+
 # -----------------------------end Lot list----------------------
 
 
@@ -281,14 +346,7 @@ class LotListSerializer(serializers.ModelSerializer):
 # OUT : réponse ArrivageCreate
 # =============================
 
-class AchatCreateResponseSerializer(serializers.ModelSerializer):
-    """
-    Réponse du ArrivageCreateView :
-      -> on renvoie le Lot nouvellement créé,
-         avec :
-           - ses lignes (lignes)
-           - l'achat en nested (achat)
-    """
+class LotCreateResponseSerializer(serializers.ModelSerializer):
     achat = AchatSerializer(read_only=True)
     lignes = ProduitLineOutSerializer(many=True, read_only=True)
 
@@ -303,7 +361,39 @@ class AchatCreateResponseSerializer(serializers.ModelSerializer):
             "lignes",
         ]
         read_only_fields = fields
-    
+
+
+class ArrivageCreateResponseSerializer(serializers.Serializer):
+    achat = AchatSerializer()
+    # lots = LotCreateResponseSerializer(many=True)
+
+
+# class AchatCreateResponseSerializer(serializers.ModelSerializer):
+#     """
+#     Réponse du ArrivageCreateView :
+#       -> on renvoie le Lot nouvellement créé,
+#          avec :
+#            - ses lignes (lignes)
+#            - l'achat en nested (achat)
+#     """
+#     achat = AchatSerializer(read_only=True)
+#     lignes = ProduitLineOutSerializer(many=True, read_only=True)
+
+#     class Meta:
+#         model = Lot
+#         fields = [
+#             "id",
+#             "numero_lot",
+#             "description",
+#             "received_at",
+#             "achat",
+#             "lignes",
+#         ]
+#         read_only_fields = fields
+
+# ======================================
+#   AND OUT : réponse ArrivageCreate
+# ======================================
 
 # -------------------Achat Update-------------------------------
 
@@ -444,8 +534,8 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
     prix_gramme_achat = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
     # Stock (annotés dans queryset)
-    quantite_allouee = serializers.IntegerField(read_only=True)
-    quantite_disponible_total = serializers.IntegerField(read_only=True)
+    quantite_disponible = serializers.IntegerField(read_only=True)
+    en_stock = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = ProduitLine
@@ -458,6 +548,6 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
             # Ligne achat
             "quantite", "poids_total", "prix_gramme_achat",
             # Stock
-            "quantite_allouee", "quantite_disponible_total",
+            "quantite_disponible", "en_stock",
         ]
 # ---------------------------ProduitLineMiniSerializer------------------------------

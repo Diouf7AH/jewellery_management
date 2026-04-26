@@ -1,0 +1,58 @@
+3. Règle métier recommandée
+
+Je te conseille cette règle simple :
+
+EN_ATTENTE
+    commande créée
+    acompte validé
+    pas encore confiée à un ouvrier
+EN_PRODUCTION
+    dès qu’un ouvrier est affecté
+TERMINEE
+    l’ouvrier a déposé la commande à la boutique
+LIVREE
+    le client a récupéré la commande
+    le solde est totalement payé
+
+
+
+CommandeDashboardSerializer
+
+C’est le serializer principal du dashboard.
+Il retourne :
+    periode
+    kpis
+    statuts
+    ouvriers
+    recentes
+
+CommandeDashboardRecentSerializer
+Il sert pour la liste des 10 dernières commandes avec :
+    client
+    vendeur
+    ouvrier
+    montant total
+    acompte minimum
+    total payé
+    reste
+
+OuvrierDashboardSerializer
+Il sert pour la charge des ouvriers avec :
+    nombre total de commandes
+    en production
+    terminées
+    livrées
+
+
+2. Cartes KPI
+En haut, des cartes résumées :
+    Total commandes
+    Commandes en attente
+    Commandes en production
+    Commandes terminées
+    Commandes livrées
+    Commandes annulées
+    Montant total commandé
+    Total encaissé
+    Reste à encaisser
+    Acompte manquant si tu veux suivre les commandes bloquées

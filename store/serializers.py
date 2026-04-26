@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
-from store.models import (Bijouterie, Categorie, Gallery, HistoriquePrix,
-                        Marque, Modele, Produit, Purete, MarquePurete)
+from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
+                          MarquePuretePrixHistory, Modele, Produit, Purete)
 
 
 # Define a serializer for the Category model
@@ -297,136 +297,6 @@ class ProduitSerializer(serializers.ModelSerializer):
         return None
 
 
-    
-
-# class ProduitSerializer(serializers.ModelSerializer):
-#     # Utilisé pour la création via le nom de catégorie
-#     categorie = serializers.SlugRelatedField(
-#         queryset=Categorie.objects.all(),
-#         slug_field='nom',
-#         write_only=True
-#     )
-#     # Affichage détaillé de la catégorie
-#     categorie_detail = serializers.SerializerMethodField(read_only=True)
-    
-#     # Utilisé pour la création via le nom de marque
-#     marque = serializers.SlugRelatedField(
-#         queryset=Marque.objects.all(),
-#         slug_field='marque',
-#         write_only=True
-#     )
-#     # Affichage détaillé de la marque
-#     marque_detail = serializers.SerializerMethodField(read_only=True)
-    
-#     # Utilisé pour la création via le nom de modele
-#     modele = serializers.SlugRelatedField(
-#         queryset=Modele.objects.all(),
-#         slug_field='modele',
-#         write_only=True
-#     )
-#     # Affichage détaillé de la modele
-#     modele_detail = serializers.SerializerMethodField(read_only=True)
-    
-#     # Utilisé pour la création via le nom de marque
-#     purete = serializers.SlugRelatedField(
-#         queryset=Purete.objects.all(),
-#         slug_field='purete',
-#         write_only=True
-#     )
-#     # Affichage détaillé de la catégorie
-#     purete_detail = serializers.SerializerMethodField(read_only=True)
-    
-#     produit_url = serializers.SerializerMethodField()
-#     qr_code_url = serializers.SerializerMethodField()
-#     categorie = serializers.SerializerMethodField()
-#     marque = serializers.SerializerMethodField()
-#     modele = serializers.SerializerMethodField()
-#     purete = serializers.SerializerMethodField()
-
-#     class Meta:
-#         model = Produit
-#         fields = (
-#             "id", "categorie", "categorie_detail", "nom", "produit_url", "sku", "qr_code_url", "image", "description",
-#             "status", "genre", "marque", "modele", "purete", "matiere", "poids", "taille", "etat"
-#         )
-
-#     def get_categorie_detail(self, obj):
-#         if not obj.categorie:
-#             return None
-#         return {
-#             "id": obj.categorie.id,
-#             "nom": obj.categorie.nom,
-#             "image": obj.categorie.image.url if obj.categorie.image else None,
-#         }
-
-#     def get_marque_detail(self, obj):
-#         if not obj.marque:
-#             return None
-#         return {
-#             "id": obj.marque.id,
-#             "marque": obj.marque.marque,
-#             "prix": obj.marque.prix,
-#             "creation_date": obj.marque.creation_date,
-#             "modification_date": obj.marque.modification_date,
-#             "purete": {
-#                 "id": obj.purete.id if obj.purete else None,
-#                 "purete": obj.purete.purete if obj.purete else None,
-#             } if obj.purete else None
-#         }
-
-#     def get_modele_detail(self, obj):
-#         if not obj.modele:
-#             return None
-#         return {
-#             "id": obj.modele.id,
-#             "modele": obj.modele.modele,
-#             "categorie": {
-#                 "id": obj.categorie.id if obj.categorie else None,
-#                 "nom": obj.categorie.nom if obj.categorie else None,
-#                 "image": obj.categorie.image.url if obj.categorie.image else None,
-#             } if obj.categorie else None
-#         }
-
-#     def get_purete_detail(self, obj):
-#         if not obj.purete:
-#             return None
-#         return {
-#             "id": obj.purete.id,
-#             "purete": obj.purete.purete
-#         }
-#     def get_produit_url(self, obj):
-#         request = self.context.get('request')
-#         if request:
-#             return request.build_absolute_uri(f"/produit/{obj.slug}")
-#         return f"https://www.rio-gold.com/produit/{obj.slug}" if obj.slug else None
-
-#     # def get_qr_code_url(self, obj):
-#     #     request = self.context.get('request')
-#     #     if obj.qr_code and request:
-#     #         return request.build_absolute_uri(obj.qr_code.url)
-#     #     elif obj.qr_code:
-#     #         return obj.qr_code.url
-#     #     return None
-    
-#     def get_qr_code_url(self, obj):
-#         request = self.context.get('request')
-#         if obj.qr_code and request:
-#             return request.build_absolute_uri(obj.qr_code.url)
-#         elif obj.qr_code:
-#             return obj.qr_code.url
-#         return None
-
-#     def to_representation(self, instance):
-#         data = super().to_representation(instance)
-#         # Réassigner les champs enrichis
-#         data['categorie'] = self.get_categorie(instance)
-#         data['produit_url'] = self.get_produit_url(instance)
-#         data['qr_code_url'] = self.get_qr_code_url(instance)
-#         data['purete'] = self.get_purete(instance)
-#         data['marque'] = self.get_marque(instance)
-#         data['modele'] = self.get_modele(instance)
-#         return data
-
 
 
 class GallerySerializer(serializers.ModelSerializer):
@@ -459,10 +329,136 @@ class ProduitWithGallerySerializer(serializers.ModelSerializer):
             'galleries'
         ]
 
-class HistoriquePrixSerializer(serializers.ModelSerializer):
-    marque = MarqueSerializer()
+# class HistoriquePrixSerializer(serializers.ModelSerializer):
+#     marque = MarqueSerializer()
+
+#     class Meta:
+#         model = MarquePuretePrixHistory
+#         fields = '__all__'
+
+
+
+class MarquePuretePrixUpdateItemSerializer(serializers.Serializer):
+    marque = serializers.CharField(
+        label="Nom de la marque",
+        help_text="Nom de la marque (ex: local, dubai, italie)",
+    )
+
+    purete = serializers.CharField(
+        label="Pureté",
+        help_text="Valeur de la pureté (ex: 18, 21, 24)",
+    )
+
+    prix = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        label="Prix journalier",
+        help_text="Prix par gramme pour cette combinaison marque/pureté",
+    )
+
+    def validate_marque(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("La marque est obligatoire.")
+        return value
+
+    def validate_purete(self, value):
+        value = str(value).strip()
+        if not value:
+            raise serializers.ValidationError("La pureté est obligatoire.")
+        return value
+
+    def validate_prix(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Le prix ne peut pas être négatif.")
+        return value
+
+
+# class CommercialSettingsSerializer(serializers.Serializer):
+#     bijouterie_id = serializers.IntegerField(
+#         label="ID de la bijouterie",
+#         help_text="Identifiant de la bijouterie à configurer",
+#     )
+
+#     appliquer_tva = serializers.BooleanField(
+#         required=False,
+#         label="Activer TVA",
+#         help_text="Active ou désactive l'application de la TVA pour la bijouterie",
+#     )
+
+#     taux_tva = serializers.DecimalField(
+#         max_digits=5,
+#         decimal_places=2,
+#         required=False,
+#         allow_null=True,
+#         label="Taux TVA (%)",
+#         help_text="Taux de TVA à appliquer (ex: 18.00). Ignoré si TVA désactivée.",
+#     )
+
+#     prix_marque_purete = MarquePuretePrixUpdateItemSerializer(
+#         many=True,
+#         required=False,
+#         label="Liste des prix journaliers",
+#         help_text="Liste des prix à mettre à jour pour chaque combinaison marque/pureté"
+#     )
+
+#     def validate_taux_tva(self, value):
+#         if value is None:
+#             return value
+#         if value < 0:
+#             raise serializers.ValidationError("Le taux TVA ne peut pas être négatif.")
+#         if value > 100:
+#             raise serializers.ValidationError("Le taux TVA ne peut pas dépasser 100%.")
+#         return value
+
+#     def validate(self, attrs):
+#         appliquer_tva = attrs.get("appliquer_tva")
+#         taux_tva = attrs.get("taux_tva")
+
+#         if appliquer_tva is True and taux_tva is None:
+#             raise serializers.ValidationError({
+#                 "taux_tva": "Le taux TVA est requis lorsque la TVA est activée."
+#             })
+
+#         return attrs 
+
+
+class MarquePuretePrixHistorySerializer(serializers.ModelSerializer):
+    marque_nom = serializers.CharField(source="marque.marque", read_only=True)
+    purete_nom = serializers.CharField(source="purete.purete", read_only=True)
+    bijouterie_nom = serializers.CharField(source="bijouterie.nom", read_only=True)
+    changed_by_username = serializers.CharField(source="changed_by.username", read_only=True)
 
     class Meta:
-        model = HistoriquePrix
-        fields = '__all__'
+        model = MarquePuretePrixHistory
+        fields = [
+            "id",
+            "marque_purete",
+            "marque",
+            "marque_nom",
+            "purete",
+            "purete_nom",
+            "bijouterie",
+            "bijouterie_nom",
+            "ancien_prix",
+            "nouveau_prix",
+            "changed_by",
+            "changed_by_username",
+            "changed_at",
+            "source",
+            "note",
+        ]
+    
+
+class MarquePuretePrixEvolutionPointSerializer(serializers.Serializer):
+    date = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+    prix = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+# class MarquePuretePrixEvolutionPointSerializer(serializers.Serializer):
+#     date = serializers.DateTimeField()
+#     prix = serializers.DecimalField(max_digits=14, decimal_places=2)
+#     marque = serializers.CharField(required=False)
+#     purete = serializers.CharField(required=False)
+#     source = serializers.CharField(required=False, allow_null=True)
+    
 

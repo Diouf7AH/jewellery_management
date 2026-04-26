@@ -1,0 +1,75 @@
+Oui, c’est normal — et même souvent souhaitable dans un ERP relié à un site e-commerce.
+
+Pourquoi c’est normal
+
+Dans la vraie vie, une entreprise peut vendre à :
+
+un client sans compte : achat rapide, commande en boutique, WhatsApp, téléphone, visite directe
+un client avec compte : suivi commandes, historique, adresse, fidélité, paiements, espace client
+
+Un ERP doit pouvoir gérer les deux cas, parce qu’il centralise l’activité réelle de l’entreprise, pas seulement les utilisateurs connectés.
+
+La bonne séparation
+
+Le plus propre, c’est de séparer :
+
+User = compte de connexion
+Client = entité métier de vente
+
+Comme ça :
+
+un Client peut exister sans User
+un Client peut aussi être lié à un User
+
+C’est une très bonne modélisation pour un ERP.
+
+Exemple concret
+
+Cas 1 :
+
+une personne commande via WhatsApp
+tu enregistres son nom et téléphone
+elle devient un Client
+elle n’a pas de compte
+
+Cas 2 :
+
+la même personne crée plus tard un compte sur le site
+tu peux lier ce compte au Client existant
+
+Donc tu gardes l’historique commercial dans Client, sans dépendre du compte.
+
+Pourquoi c’est mieux qu’utiliser seulement User
+
+Si tu mets toute la logique client dans User, tu bloques des cas métier importants :
+
+ventes en magasin sans compte
+ventes saisies par un vendeur
+commandes importées manuellement
+anciens clients sans espace client
+
+Un ERP doit rester métier d’abord, pas authentification d’abord.
+
+Pourquoi cette structure est bonne
+
+Avec ça :
+
+un client peut exister sans compte
+un client peut aussi être lié à un User
+tu gardes la logique métier Client séparée de l’authentification User
+
+C’est exactement une structure saine pour :
+
+ERP
+e-commerce
+ventes en boutique
+commandes WhatsApp
+commandes par vendeur
+Point d’attention important
+
+Avec telephone = unique=True dans PersonBase, tu imposes l’unicité dans chaque table :
+
+deux Client ne peuvent pas avoir le même téléphone
+deux Employee non plus
+
+Mais un Client et un Employee peuvent encore partager le même numéro, car ce sont deux tables différentes.

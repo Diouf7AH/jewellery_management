@@ -14,6 +14,7 @@ from django.utils.text import slugify
 
 from store.models import Produit
 
+TWOPLACES = Decimal("0.01")
 
 # Create your models here.
 class Fournisseur(models.Model):
@@ -105,6 +106,10 @@ class Achat(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="achats_annules"
     )
+    
+    reference_commande = models.CharField(max_length=40, null=True, blank=True, db_index=True,
+        help_text="Référence logique de commande fournisseur (ex: CMD-2026-0001)"
+    )
 
     class Meta:
         ordering = ["-id"]
@@ -141,21 +146,16 @@ class Achat(models.Model):
         return (self.montant_total_ttc or Decimal("0.00")) - (self.montant_total_ht or Decimal("0.00"))
 
     def update_total(self, save: bool = True):
-        """
-        Calcule :
-          base_HT = Σ (ligne.quantite * produit.poids * ligne.prix_achat_gramme)
-          HT      = base_HT + frais_transport + frais_douane
-          TTC     = HT (pas de TVA pour l'instant)
-        """
-        # import local pour éviter les imports circulaires
+        from django.db.models import DecimalField, ExpressionWrapper, F, Sum
+        from django.db.models.functions import Coalesce
+
         from purchase.models import ProduitLine
 
-        # quantite * poids * prix_achat_gramme
         expr_ht = ExpressionWrapper(
             F("quantite")
             * Coalesce(F("produit__poids"), Decimal("0.00"))
             * Coalesce(F("prix_achat_gramme"), Decimal("0.00")),
-            output_field=DecimalField(max_digits=18, decimal_places=2),
+            output_field=DecimalField(max_digits=18, decimal_places=6),  # ✅ laisse de la précision
         )
 
         agg = (
@@ -164,18 +164,20 @@ class Achat(models.Model):
             .aggregate(base_ht=Coalesce(Sum(expr_ht), Decimal("0.00")))
         )
 
-        base_ht = agg["base_ht"] or Decimal("0.00")
+        base_ht = Decimal(str(agg["base_ht"] or "0.00"))
+        frais_transport = Decimal(str(self.frais_transport or "0.00"))
+        frais_douane = Decimal(str(self.frais_douane or "0.00"))
 
-        frais_transport = self.frais_transport or Decimal("0.00")
-        frais_douane    = self.frais_douane or Decimal("0.00")
+        total_ht = base_ht + frais_transport + frais_douane
 
-        self.montant_total_ht  = base_ht + frais_transport + frais_douane
+        # ✅ arrondi strict à 2 décimales
+        self.montant_total_ht = total_ht.quantize(TWOPLACES, rounding=ROUND_HALF_UP)
         self.montant_total_ttc = self.montant_total_ht  # pas de TVA
 
         if save:
             self.full_clean()
             self.save(update_fields=["montant_total_ht", "montant_total_ttc"])
-
+            
     # ----------------- Validation -----------------
     def clean(self):
         if self.montant_total_ht is not None and self.montant_total_ht < 0:
@@ -225,15 +227,15 @@ class Achat(models.Model):
     @property
     def has_bijouterie_allocations(self) -> bool:
         """
-        True si au moins UNE ligne de ce achat est déjà allouée à une bijouterie
-        (donc non modifiable).
+        True si au moins une ligne de cet achat possède du stock en boutique
+        (Stock avec bijouterie != NULL et quantite_totale > 0).
         """
-        from stock.models import Stock  # import local pour éviter les cycles
-        
+        from stock.models import Stock
+
         return Stock.objects.filter(
             produit_line__lot__achat=self,
             bijouterie__isnull=False,
-            quantite_allouee__gt=0,
+            quantite_totale__gt=0,
         ).exists()
 
 

@@ -1,218 +1,66 @@
-from rest_framework.views import APIView
-from django.db import transaction as db_transaction
-from decimal import Decimal, InvalidOperation
-from django.conf import settings
-from rest_framework.response import Response
-from rest_framework import status
-from .models import CompteDepot, Transaction
-from django.template.loader import render_to_string
-from django.http import HttpResponse
-from django.db import transaction
+# compte_depot/views.py
 
+import uuid
+from decimal import Decimal
+
+from django.conf import settings
+from django.db import transaction
+from django.db.models import Count, Sum
+from django.db.models.functions import Coalesce
+from django.http import HttpResponse
+from django.template.loader import render_to_string
+from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
 from rest_framework import status
-from django.utils import timezone
-from rest_framework.response import Response
-import uuid
-
-from backend.renderers import UserRenderer
-from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.exceptions import ValidationError
-from .serializer import ClientDepotSerializer, CompteDepotSerializer, TransactionSerializer
-from .models import ClientDepot, CompteDepot, Transaction
-from .serializer import TransactionCreateSerializer, TransactionSerializer
+
+from backend.renderers import UserRenderer
+
+from .models import ClientDepot, CompteDepot, CompteDepotTransaction
+from .pdf import generate_transaction_ticket_80mm_pdf
+from .serializers import (ClientDepotSerializer, CompteDepotSerializer,
+                          CompteDepotTransactionCreateSerializer,
+                          CompteDepotTransactionSerializer,
+                          CreateOrDepositCompteSerializer)
 from .services import effectuer_depot, effectuer_retrait
 
-
-# class CreateClientAndCompteView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_description="Créer un client et ouvrir un compte bancaire associé.",
-#         request_body=CompteBancaireerializer,
-#         responses={201: openapi.Response("Client et compte créés")},
-#     )
-#     def post(self, request):
-#         serializer = CompteBancaireSerializer(data=request.data)
-#         if serializer.is_valid():
-#             client_data = serializer.validated_data['client']
-#             solde = serializer.validated_data.get('solde', 0)
-
-#             if solde < 0:
-#                 return Response({"detail": "Le solde ne peut pas être négatif."}, status=400)
-
-#             client = ClientBanque.objects.create(**client_data)
-#             numero = self.generer_numero_compte()
-
-#             compte = CompteBancaire.objects.create(
-#                 client=client,
-#                 numero_compte=numero,
-#                 solde=Decimal(solde)
-#             )
-
-#             return Response({
-#                 "message": "Client et compte créés avec succès",
-#                 "client": ClientBanqueSerializer(client).data,
-#                 "compte": {
-#                     "numero_compte": compte.numero_compte,
-#                     "solde": compte.solde,
-#                     "date_creation": compte.date_creation,
-#                 }
-#             }, status=201)
-
-#         return Response(serializer.errors, status=400)
-
-#     def generer_numero_compte(self):
-#         for _ in range(10):
-#             numero = f"CB-{timezone.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
-#             if not CompteBancaire.objects.filter(numero_compte=numero).exists():
-#                 return numero
-#         raise Exception("Impossible de générer un numéro de compte unique.")
+ALLOWED_ROLES = {"admin", "manager", "cashier"}
 
 
-# class CreateClientAndCompteView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_description="Créer un client et ouvrir un compte bancaire associé (solde min. 5000 FCFA).",
-#         request_body=CompteBancaireCreateSerializer,
-#         responses={201: openapi.Response("Client et compte créés avec succès")},
-#     )
-#     def post(self, request):
-#         serializer = CompteBancaireCreateSerializer(data=request.data)
-#         if serializer.is_valid():
-#             client_data = serializer.validated_data['client']
-#             solde = serializer.validated_data.get('solde', 0)
-
-#             # Vérification stricte du solde minimal
-#             if solde < 5000:
-#                 return Response(
-#                     {"detail": "Le solde initial doit être d'au moins 5000 FCFA."},
-#                     status=status.HTTP_400_BAD_REQUEST
-#                 )
-
-#             # Création du client
-#             client = ClientBanque.objects.create(**client_data)
-
-#             # Génération d'un numéro de compte unique
-#             numero = self.generer_numero_compte()
-
-#             # Création du compte bancaire
-#             compte = CompteBancaire.objects.create(
-#                 client=client,
-#                 numero_compte=numero,
-#                 solde=Decimal(solde)
-#             )
-
-#             return Response({
-#                 "message": "Client et compte créés avec succès.",
-#                 "client": ClientBanqueSerializer(client).data,
-#                 "compte": {
-#                     "numero_compte": compte.numero_compte,
-#                     "solde": compte.solde,
-#                     "date_creation": getattr(compte, 'date_creation', timezone.now()),  # fallback si champ absent
-#                 }
-#             }, status=status.HTTP_201_CREATED)
-
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#     def generer_numero_compte(self):
-#         """Génère un numéro de compte unique."""
-#         for _ in range(10):
-#             numero = f"CB-{timezone.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
-#             if not CompteBancaire.objects.filter(numero_compte=numero).exists():
-#                 return numero
-#         raise Exception("Impossible de générer un numéro de compte unique.")
+def _user_role(user):
+    return getattr(getattr(user, "user_role", None), "role", None)
 
 
-# class CreateClientAndCompteView(APIView):
-#     permission_classes = [IsAuthenticated]
+def get_user_bijouterie(user):
+    """
+    Retourne la bijouterie liée à l'utilisateur si elle existe.
+    Adapte cette logique selon ta structure réelle.
+    """
+    vendor_profile = getattr(user, "staff_vendor_profile", None)
+    if vendor_profile and getattr(vendor_profile, "bijouterie", None):
+        return vendor_profile.bijouterie
 
-#     @swagger_auto_schema(
-#         operation_description="Créer un client et ouvrir un compte bancaire associé.",
-#         request_body=CompteBancaireCreateSerializer,
-#         responses={201: openapi.Response("Client et compte créés avec succès")},
-#     )
-#     def post(self, request):
-#         user = request.user
-#         role = getattr(user.user_role, 'role', None)
-#         if role not in ['admin', 'manager', 'cashier']:
-#             return Response({"message": "Access Denied"}, status=403)
+    cashier_profile = getattr(user, "staff_cashier_profile", None)
+    if cashier_profile and getattr(cashier_profile, "bijouterie", None):
+        return cashier_profile.bijouterie
 
-#         serializer = CompteBancaireCreateSerializer(data=request.data)
-#         if serializer.is_valid():
-#             client_data = serializer.validated_data['client']
-#             telephone = client_data.get('telephone')
-#             address = client_data.get('address', 'ADDR') or 'ADDR'  # Valeur par défaut si vide
-#             solde = serializer.validated_data.get('solde', 0)
+    manager_profile = getattr(user, "staff_manager_profile", None)
+    if manager_profile:
+        bijouterie = manager_profile.bijouteries.first()
+        if bijouterie:
+            return bijouterie
 
-#             if solde < 5000:
-#                 return Response(
-#                     {"detail": "Le solde initial doit être au moins de 5000 FCFA."},
-#                     status=status.HTTP_400_BAD_REQUEST
-#                 )
-
-#             if ClientBanque.objects.filter(telephone=telephone).exists():
-#                 return Response(
-#                     {"detail": "Un client avec ce numéro de téléphone existe déjà."},
-#                     status=status.HTTP_400_BAD_REQUEST
-#                 )
-
-#             # 👤 Création du client
-#             client = ClientBanque.objects.create(**client_data)
-
-#             # 🔢 Génération du numéro de compte unique
-#             try:
-#                 numero = self.generer_numero_compte(telephone, address)
-#             except Exception as e:
-#                 return Response(
-#                     {"detail": "Erreur lors de la génération du numéro de compte."},
-#                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
-#                 )
-
-#             # 🏦 Création du compte bancaire
-#             compte = CompteBancaire.objects.create(
-#                 client=client,
-#                 numero_compte=numero,
-#                 solde=Decimal(solde),
-#                 created_by=request.user
-#             )
-
-#             return Response({
-#                 "message": "Client et compte créés avec succès",
-#                 "client": ClientBanqueSerializer(client).data,
-#                 "compte": {
-#                     "numero_compte": compte.numero_compte,
-#                     "solde": compte.solde,
-#                     "date_creation": compte.date_creation,
-#                 }
-#             }, status=status.HTTP_201_CREATED)
-
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#     def generer_numero_compte(self, telephone, address):
-#         """ Génère un numéro de compte basé sur téléphone + mois/année + adresse """
-#         date_str = timezone.now().strftime('%Y%m')
-#         prefix = f"CB-{telephone}-{date_str}-{slugify(address)[:10].upper()}"
-        
-#         for _ in range(10):
-#             numero = f"{prefix}"
-#             if not CompteBancaire.objects.filter(numero_compte=numero).exists():
-#                 return numero
-
-#         # for _ in range(10):
-#         #     numero = f"{prefix}-{uuid.uuid4().hex[:3].upper()}"
-#         #     if not CompteBancaire.objects.filter(numero_compte=numero).exists():
-#         #         return numero
-
-#         raise Exception("Impossible de générer un numéro de compte unique.")
+    return None
 
 
-
+# =========================================================
+# LISTE COMPTES
+# =========================================================
 class ListCompteDepotView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
@@ -222,418 +70,197 @@ class ListCompteDepotView(APIView):
         responses={200: openapi.Response("Liste des comptes", CompteDepotSerializer(many=True))}
     )
     def get(self, request):
-        try:
-            user = request.user
-            role = getattr(user.user_role, 'role', None)
+        role = _user_role(request.user)
+        if role not in ["admin", "manager", "vendor"]:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-            if role not in ['admin', 'manager', 'vendor']:
-                return Response({"message": "Access Denied"}, status=403)
-
-            comptes = CompteDepot.objects.select_related('client', 'created_by').all().order_by('-date_creation')
-            serializer = CompteDepotSerializer(comptes, many=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        comptes = CompteDepot.objects.select_related("client", "created_by").order_by("-date_creation")
+        return Response(CompteDepotSerializer(comptes, many=True).data, status=status.HTTP_200_OK)
 
 
-# class CreateClientAndCompteView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_description="Créer un client et ouvrir un compte dépôt associé.",
-#         request_body=CompteDepotSerializer,
-#         responses={201: openapi.Response("Client et compte créés avec succès")},
-#     )
-#     def post(self, request):
-#         try:
-#             user = request.user
-#             role = getattr(user.user_role, 'role', None)
-#             if role not in ['admin', 'manager', 'cashier']:
-#                 return Response({"message": "Access Denied"}, status=403)
-
-#             serializer = CompteDepotSerializer(data=request.data)
-#             if serializer.is_valid():
-#                 client_data = serializer.validated_data['client']
-#                 telephone = client_data.get('telephone')
-#                 solde = serializer.validated_data.get('solde', 0)
-
-#                 minimum_solde = getattr(settings, "COMPTE_SOLDE_MINIMUM", 5000)
-#                 if solde < minimum_solde:
-#                     return Response(
-#                         {"detail": f"Le solde initial doit être au moins de {minimum_solde} FCFA."},
-#                         status=status.HTTP_400_BAD_REQUEST
-#                     )
-
-#                 client = ClientDepot.objects.filter(telephone=telephone).first()
-#                 if client:
-#                     if CompteDepot.objects.filter(client=client).exists():
-#                         return Response(
-#                             {"detail": "Ce client possède déjà un compte bancaire."},
-#                             status=status.HTTP_400_BAD_REQUEST
-#                         )
-#                 else:
-#                     client = ClientDepot.objects.create(**client_data)
-
-#                 numero = self.generer_numero_compte(telephone)
-
-#                 compte = CompteDepot.objects.create(
-#                     client=client,
-#                     numero_compte=numero,
-#                     solde=Decimal(solde),
-#                     created_by=user
-#                 )
-
-#                 return Response({
-#                     "message": "Client et compte créés avec succès",
-#                     "client": ClientDepotSerializer(client).data,
-#                     "compte": {
-#                         "numero_compte": compte.numero_compte,
-#                         "solde": compte.solde,
-#                         "date_creation": compte.date_creation,
-#                     }
-#                 }, status=status.HTTP_201_CREATED)
-
-#             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#         except Exception as e:
-#             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-#     def generer_numero_compte(self, telephone):
-#         date_str = timezone.now().strftime('%y%m')
-#         prefix = f"{telephone}-{date_str}"
-
-#         if len(prefix) > 25:
-#             prefix = prefix[:25]
-
-#         if not CompteDepot.objects.filter(numero_compte=prefix).exists():
-#             return prefix
-
-#         for _ in range(10):
-#             suffix = uuid.uuid4().hex[:4].upper()
-#             numero = f"{prefix[:25]}-{suffix}"
-#             if not CompteDepot.objects.filter(numero_compte=numero).exists():
-#                 return numero
-
-#         raise Exception("Impossible de générer un numéro de compte unique.")
-
-
-class CreateClientAndCompteView(APIView):
+# =========================================================
+# CREATE OR DEPOSIT
+# =========================================================
+class CreateOrDepositCompteView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Créer un client et ouvrir un compte dépôt associé.",
-        request_body=CompteDepotSerializer,
-        responses={201: openapi.Response("Client et compte créés avec succès")},
+        operation_description=(
+            "Créer un client et un compte dépôt si nécessaire. "
+            "Si le client possède déjà un compte via son téléphone, "
+            "effectuer directement un dépôt sur le compte existant."
+        ),
+        request_body=CreateOrDepositCompteSerializer,
     )
     @transaction.atomic
     def post(self, request):
-        user = request.user
-        role = getattr(getattr(user, 'user_role', None), 'role', None)
-        if role not in ['admin', 'manager', 'cashier']:
-            return Response({"message": "Access Denied"}, status=403)
-
-        s = CompteDepotSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
-
-        client_data = s.validated_data['client']
-        telephone = client_data.get('telephone')
-        solde_initial = s.validated_data.get('solde', 0)
-
-        minimum_solde = getattr(settings, "COMPTE_SOLDE_MINIMUM", 5000)
-        if solde_initial < minimum_solde:
+        role = _user_role(request.user)
+        if role not in ALLOWED_ROLES:
             return Response(
-                {"detail": f"Le solde initial doit être au moins de {minimum_solde} FCFA."},
+                {"message": "Access Denied"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        serializer = CreateOrDepositCompteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        client_data = serializer.validated_data["client"]
+        telephone = client_data.get("telephone")
+        montant = serializer.validated_data["montant"]
+
+        minimum_depot = Decimal(str(getattr(settings, "COMPTE_DEPOT_DEPOT_MINIMUM", 5000)))
+        if montant < minimum_depot:
+            return Response(
+                {"detail": f"Le montant minimum du dépôt est {minimum_depot} FCFA."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # upsert client
         client = ClientDepot.objects.filter(telephone=telephone).first()
-        if client and CompteDepot.objects.filter(client=client).exists():
-            return Response({"detail": "Ce client possède déjà un compte."}, status=400)
-        if not client:
-            client = ClientDepot.objects.create(**client_data)
+
+        # CAS 1 : client existe déjà
+        if client:
+            compte = CompteDepot.objects.filter(client=client).first()
+
+            # CAS 1A : compte existant => dépôt direct
+            if compte:
+                tx = effectuer_depot(
+                    compte_id=compte.id,
+                    montant=montant,
+                    user=request.user,
+                    reference="DEPOT_COMPTE_EXISTANT",
+                    commentaire="Dépôt effectué sur compte existant via téléphone client."
+                )
+                compte.refresh_from_db()
+
+                return Response({
+                    "message": "Compte existant détecté, dépôt effectué avec succès.",
+                    "operation_type": "deposit_existing_account",
+                    "client": ClientDepotSerializer(client).data,
+                    "compte": {
+                        "id": compte.id,
+                        "numero_compte": compte.numero_compte,
+                        "solde": str(compte.solde),
+                        "date_creation": compte.date_creation,
+                    },
+                    "transaction": CompteDepotTransactionSerializer(tx).data,
+                    "receipt_url": request.build_absolute_uri(
+                        f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
+                    ),
+                }, status=status.HTTP_200_OK)
+
+            # CAS 1B : client existe sans compte => création compte + dépôt
+            numero = self.generer_numero_compte(telephone)
+            compte = CompteDepot.objects.create(
+                client=client,
+                numero_compte=numero,
+                created_by=request.user,
+                solde=0,
+            )
+
+            tx = effectuer_depot(
+                compte_id=compte.id,
+                montant=montant,
+                user=request.user,
+                reference="OUVERTURE_COMPTE_CLIENT_EXISTANT",
+                commentaire="Nouveau compte créé puis crédité pour un client existant."
+            )
+            compte.refresh_from_db()
+
+            return Response({
+                "message": "Nouveau compte créé puis crédité avec succès.",
+                "operation_type": "create_account_and_deposit",
+                "client": ClientDepotSerializer(client).data,
+                "compte": {
+                    "id": compte.id,
+                    "numero_compte": compte.numero_compte,
+                    "solde": str(compte.solde),
+                    "date_creation": compte.date_creation,
+                },
+                "transaction": CompteDepotTransactionSerializer(tx).data,
+                "receipt_url": request.build_absolute_uri(
+                    f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
+                ),
+            }, status=status.HTTP_201_CREATED)
+
+        # CAS 2 : client inexistant => création client + compte + dépôt
+        client = ClientDepot.objects.create(**client_data)
 
         numero = self.generer_numero_compte(telephone)
         compte = CompteDepot.objects.create(
             client=client,
             numero_compte=numero,
-            created_by=user,
-            solde=0  # ⚠️ on laisse à 0, puis on crédite via le service
+            created_by=request.user,
+            solde=0,
         )
 
-        # ✅ dépôt initial via le service (traçabilité Transaction)
-        from .services import effectuer_depot
-        effectuer_depot(compte.id, Decimal(solde_initial), user)
+        tx = effectuer_depot(
+            compte_id=compte.id,
+            montant=montant,
+            user=request.user,
+            reference="OUVERTURE_NOUVEAU_COMPTE",
+            commentaire="Nouveau client créé, compte ouvert et crédité."
+        )
+        compte.refresh_from_db()
 
         return Response({
-            "message": "Client et compte créés avec succès",
+            "message": "Nouveau client créé, compte ouvert et crédité avec succès.",
+            "operation_type": "create_client_account_and_deposit",
             "client": ClientDepotSerializer(client).data,
             "compte": {
+                "id": compte.id,
                 "numero_compte": compte.numero_compte,
-                "solde": str(compte.solde),           # déjà mis à jour par le service
+                "solde": str(compte.solde),
                 "date_creation": compte.date_creation,
-            }
+            },
+            "transaction": CompteDepotTransactionSerializer(tx).data,
+            "receipt_url": request.build_absolute_uri(
+                f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
+            ),
         }, status=status.HTTP_201_CREATED)
 
     def generer_numero_compte(self, telephone):
-        date_str = timezone.now().strftime('%y%m')
-        prefix = f"{telephone}-{date_str}"
-        if len(prefix) > 25:
-            prefix = prefix[:25]
+        date_str = timezone.now().strftime("%y%m")
+        prefix = f"{telephone}-{date_str}"[:25]
+
         if not CompteDepot.objects.filter(numero_compte=prefix).exists():
             return prefix
-        # anti-collision
+
         for _ in range(10):
             suffix = uuid.uuid4().hex[:4].upper()
-            numero = f"{prefix[:25]}-{suffix}"
+            numero = f"{prefix}-{suffix}"
             if not CompteDepot.objects.filter(numero_compte=numero).exists():
                 return numero
+
         raise Exception("Impossible de générer un numéro de compte unique.")
 
 
-
-# class DepotView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_description="Effectuer un dépôt sur un compte depot existant.",
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=['numero_compte', 'montant'],
-#             properties={
-#                 'numero_compte': openapi.Schema(type=openapi.TYPE_STRING, description="Numéro du compte depot"),
-#                 'montant': openapi.Schema(type=openapi.TYPE_NUMBER, format='decimal', description="Montant à déposer (positif)"),
-#             }
-#         ),
-#         responses={
-#             200: openapi.Response(description="Dépôt effectué avec succès"),
-#             400: openapi.Response(description="Requête invalide"),
-#             404: openapi.Response(description="Compte non trouvé"),
-#             500: openapi.Response(description="Erreur serveur"),
-#         }
-#     )
-#     def post(self, request):
-#         try:
-#             user = request.user
-#             role = getattr(user.user_role, 'role', None)
-#             if role not in ['admin', 'manager', 'cashier']:
-#                 return Response({"message": "Access Denied"}, status=403)
-
-#             numero_compte = request.data.get('numero_compte')
-#             montant_str = request.data.get('montant')
-
-#             if not numero_compte or not montant_str:
-#                 raise ValidationError("Les champs 'numero_compte' et 'montant' sont requis.")
-
-#             try:
-#                 montant = Decimal(montant_str)
-#             except (InvalidOperation, ValueError):
-#                 raise ValidationError("Le montant doit être un nombre décimal valide.")
-
-#             montant_minimum = getattr(settings, "DEPOT_MINIMUM", 5000)
-#             if montant < Decimal(montant_minimum):
-#                 raise ValidationError(f"Le montant doit être d’au moins {montant_minimum} FCFA.")
-
-#             with db_transaction.atomic():
-#                 compte = CompteDepot.objects.select_for_update().get(numero_compte=numero_compte)
-#                 compte.solde += montant
-#                 compte.save()
-
-#                 trans = Transaction.objects.create(
-#                     compte=compte,
-#                     type_transaction="Depot",
-#                     montant=montant,
-#                     user=request.user,
-#                     statut="Terminé"
-#                 )
-
-#             return Response({
-#                 "statut": "Succès",
-#                 "message": "Dépôt effectué avec succès.",
-#                 "compte": compte.numero_compte,
-#                 "montant": str(montant),
-#                 "nouveau_solde": str(compte.solde),
-#                 "date_transaction": trans.date_transaction.strftime("%Y-%m-%d %H:%M:%S"),
-#             }, status=200)
-
-#         except CompteDepot.DoesNotExist:
-#             return Response({
-#                 "statut": "Échec",
-#                 "error": "Compte non trouvé."
-#             }, status=404)
-
-#         except Exception as e:
-#             return Response({"error": str(e)}, status=500)
-
-# Pour permettre un dépôt via le numéro de téléphone du client (au lieu du numero_compte), il suffit de :
-# Rechercher le client via telephone.
-# Récupérer son compte (CompteDepot) associé.
-# Faire le dépôt.
-# class DepotView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_description="Effectuer un dépôt via le téléphone du client (ou le numéro de compte).",
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=['telephone', 'montant'],
-#             properties={
-#                 'telephone': openapi.Schema(type=openapi.TYPE_STRING, description="Téléphone du client (ou numéro de compte)"),
-#                 'montant': openapi.Schema(type=openapi.TYPE_NUMBER, format='decimal', description="Montant à déposer (positif)"),
-#             }
-#         ),
-#         responses={
-#             200: openapi.Response(description="Dépôt effectué avec succès"),
-#             400: openapi.Response(description="Requête invalide"),
-#             404: openapi.Response(description="Client ou compte non trouvé"),
-#             500: openapi.Response(description="Erreur serveur"),
-#         }
-#     )
-#     def post(self, request):
-#         try:
-#             user = request.user
-#             role = getattr(user.user_role, 'role', None)
-#             if role not in ['admin', 'manager', 'cashier']:
-#                 return Response({"message": "Access Denied"}, status=403)
-
-#             telephone = request.data.get('telephone')
-#             montant_str = request.data.get('montant')
-
-#             if not telephone or not montant_str:
-#                 raise ValidationError("Les champs 'telephone' et 'montant' sont requis.")
-
-#             try:
-#                 montant = Decimal(montant_str)
-#             except (InvalidOperation, ValueError):
-#                 raise ValidationError("Le montant doit être un nombre décimal valide.")
-
-#             montant_minimum = getattr(settings, "DEPOT_MINIMUM", 5000)
-#             if montant < Decimal(montant_minimum):
-#                 raise ValidationError(f"Le montant doit être d’au moins {montant_minimum} FCFA.")
-
-#             with db_transaction.atomic():
-#                 client = ClientDepot.objects.filter(telephone=telephone).first()
-#                 if not client:
-#                     return Response({"error": "Client introuvable."}, status=404)
-
-#                 compte = CompteDepot.objects.select_for_update().filter(client=client).first()
-#                 if not compte:
-#                     return Response({"error": "Compte associé introuvable."}, status=404)
-
-#                 compte.solde += montant
-#                 compte.save()
-
-#                 trans = Transaction.objects.create(
-#                     compte=compte,
-#                     type_transaction="Depot",
-#                     montant=montant,
-#                     user=user,
-#                     statut="Terminé"
-#                 )
-
-#             return Response({
-#                 "statut": "Succès",
-#                 "message": "Dépôt effectué avec succès.",
-#                 "telephone": telephone,
-#                 "numero_compte": compte.numero_compte,
-#                 "montant": str(montant),
-#                 "nouveau_solde": str(compte.solde),
-#                 "date_transaction": trans.date_transaction.strftime("%Y-%m-%d %H:%M:%S"),
-#             }, status=200)
-
-#         except Exception as e:
-#             return Response({"error": str(e)}, status=500)
-
-
-# class RetraitView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_description="Effectuer un retrait sur un compte bancaire.",
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["telephone", "montant"],
-#             properties={
-#                 "telephone": openapi.Schema(type=openapi.TYPE_STRING, description="Numéro de telephone depot"),
-#                 "montant": openapi.Schema(type=openapi.TYPE_NUMBER, format='float', description="Montant à retirer (≥ minimum)"),
-#             }
-#         ),
-#         responses={
-#             200: openapi.Response(description="Reçu PDF du retrait"),
-#             400: openapi.Response(description="Requête invalide"),
-#             404: openapi.Response(description="Compte non trouvé"),
-#             500: openapi.Response(description="Erreur lors du retrait"),
-#         }
-#     )
-#     def post(self, request):
-#         try:
-#             user = request.user
-#             role = getattr(user.user_role, 'role', None)
-#             if role not in ['admin', 'manager', 'cashier']:
-#                 return Response({"message": "Access Denied"}, status=403)
-
-#             telephone = request.data.get('telephone')
-#             montant_str = request.data.get("montant")
-
-#             if not telephone or not montant_str:
-#                 raise ValidationError("Les champs 'telephone' et 'montant' sont requis.")
-
-#             try:
-#                 montant = Decimal(montant_str)
-#             except (ValueError, InvalidOperation):
-#                 raise ValidationError("Le montant doit être un nombre valide.")
-
-#             montant_minimum = getattr(settings, "RETRAIT_MINIMUM", 5000)
-#             if montant < montant_minimum:
-#                 raise ValidationError(f"Le montant minimum de retrait est de {montant_minimum} FCFA.")
-
-#             with db_transaction.atomic():
-#                 # compte = CompteDepot.objects.select_for_update().get(telephone=telephone)
-#                 compte = CompteDepot.objects.select_for_update().get(client__telephone=telephone)
-                
-#                 if compte.solde < montant:
-#                     return Response({"error": "Solde insuffisant"}, status=status.HTTP_400_BAD_REQUEST)
-
-#                 compte.solde -= montant
-#                 compte.save()
-
-#                 transaction = Transaction.objects.create(
-#                     compte=compte,
-#                     type_transaction="Retrait",
-#                     montant=montant,
-#                     user=user,
-#                     statut="Terminé"
-#                 )
-
-#             serializer = TransactionSerializer(transaction)
-#             return Response(serializer.data, status=status.HTTP_200_OK)
-
-#         except CompteDepot.DoesNotExist:
-#             return Response({"error": "Compte non trouvé"}, status=status.HTTP_404_NOT_FOUND)
-
-#         except Exception as e:
-#             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-ALLOWED_ROLES = {"admin", "manager", "cashier"}
-
-def _user_role(user):
-    return getattr(getattr(user, "user_role", None), "role", None)
-
+# =========================================================
+# DEPOT
+# =========================================================
 class DepotView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Effectuer un dépôt sur un compte par son numéro.",
-        request_body=TransactionCreateSerializer,
-        responses={201: openapi.Response("Dépôt enregistré", TransactionSerializer)},
+        operation_summary="Effectuer un dépôt sur un compte dépôt",
+        operation_description="Effectue un dépôt sur un compte existant à partir de son numéro de compte.",
+        request_body=CompteDepotTransactionCreateSerializer,
+        responses={
+            201: openapi.Response(
+                description="Dépôt effectué avec succès"
+            ),
+            400: openapi.Response(
+                description="Données invalides"
+            ),
+            403: openapi.Response(
+                description="Accès refusé"
+            ),
+            404: openapi.Response(
+                description="Compte introuvable"
+            ),
+        }
     )
     @transaction.atomic
-    def post(self, request, numero_compte: str):
+    def post(self, request, numero_compte):
         role = _user_role(request.user)
         if role not in ALLOWED_ROLES:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
@@ -643,31 +270,46 @@ class DepotView(APIView):
         except CompteDepot.DoesNotExist:
             return Response({"detail": "Compte introuvable."}, status=status.HTTP_404_NOT_FOUND)
 
-        s = TransactionCreateSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
+        serializer = CompteDepotTransactionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        try:
-            tx = effectuer_depot(compte.id, Decimal(s.validated_data["montant"]), request.user)
-        except ValidationError as e:
-            return Response({"detail": e.message}, status=status.HTTP_400_BAD_REQUEST)
+        tx = effectuer_depot(
+            compte_id=compte.id,
+            montant=serializer.validated_data["montant"],
+            user=request.user,
+            reference=serializer.validated_data.get("reference"),
+            commentaire=serializer.validated_data.get("commentaire"),
+        )
+        compte.refresh_from_db()
 
         return Response({
-            "message": "Dépôt enregistré",
-            "transaction": TransactionSerializer(tx).data,
-            "nouveau_solde": str(compte.solde),  # le service a mis à jour le solde
+            "message": "Dépôt effectué avec succès.",
+            "transaction": CompteDepotTransactionSerializer(tx).data,
+            "nouveau_solde": str(compte.solde),
+            "receipt_url": request.build_absolute_uri(
+                f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
+            ),
         }, status=status.HTTP_201_CREATED)
 
-
+# =========================================================
+# RETRAIT
+# =========================================================
 class RetraitView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Effectuer un retrait sur un compte par son numéro.",
-        request_body=TransactionCreateSerializer,
-        responses={201: openapi.Response("Retrait enregistré", TransactionSerializer)},
+        operation_summary="Effectuer un retrait sur un compte dépôt",
+        operation_description="Effectue un retrait sur un compte existant à partir de son numéro de compte.",
+        request_body=CompteDepotTransactionCreateSerializer,
+        responses={
+            201: openapi.Response(description="Retrait effectué avec succès"),
+            400: openapi.Response(description="Données invalides"),
+            403: openapi.Response(description="Accès refusé"),
+            404: openapi.Response(description="Compte introuvable"),
+        }
     )
     @transaction.atomic
-    def post(self, request, numero_compte: str):
+    def post(self, request, numero_compte):
         role = _user_role(request.user)
         if role not in ALLOWED_ROLES:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
@@ -677,149 +319,374 @@ class RetraitView(APIView):
         except CompteDepot.DoesNotExist:
             return Response({"detail": "Compte introuvable."}, status=status.HTTP_404_NOT_FOUND)
 
-        s = TransactionCreateSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
+        serializer = CompteDepotTransactionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        try:
-            tx = effectuer_retrait(compte.id, Decimal(s.validated_data["montant"]), request.user)
-        except ValidationError as e:
-            return Response({"detail": e.message}, status=status.HTTP_400_BAD_REQUEST)
+        tx = effectuer_retrait(
+            compte_id=compte.id,
+            montant=serializer.validated_data["montant"],
+            user=request.user,
+            reference=serializer.validated_data.get("reference"),
+            commentaire=serializer.validated_data.get("commentaire"),
+        )
+        compte.refresh_from_db()
 
         return Response({
-            "message": "Retrait enregistré",
-            "transaction": TransactionSerializer(tx).data,
+            "message": "Retrait effectué avec succès.",
+            "transaction": CompteDepotTransactionSerializer(tx).data,
             "nouveau_solde": str(compte.solde),
+            "receipt_url": request.build_absolute_uri(
+                f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
+            ),
         }, status=status.HTTP_201_CREATED)
-        
 
+# =========================================================
+# SOLDE
+# =========================================================
 class GetSoldeAPIView(APIView):
     permission_classes = [IsAuthenticated]
     renderer_classes = [UserRenderer]
-    
+
     @swagger_auto_schema(
-        operation_description="Récupérer le solde d’un compte bancaire à partir du numéro de compte.",
+        operation_description="Récupérer le solde d’un compte dépôt à partir du numéro de compte.",
         manual_parameters=[
             openapi.Parameter(
-                'numero_compte', openapi.IN_QUERY,
-                description="Numéro du compte bancaire",
+                "numero_compte",
+                openapi.IN_QUERY,
+                description="Numéro du compte dépôt",
                 type=openapi.TYPE_STRING,
                 required=True
             )
         ],
-        responses={
-            200: openapi.Response("Solde récupéré avec succès"),
-            404: openapi.Response("Compte non trouvé"),
-            400: openapi.Response("Paramètre manquant"),
-        }
     )
     def get(self, request):
+        role = _user_role(request.user)
+        if role not in ["admin", "manager", "cashier", "vendor"]:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        numero_compte = request.query_params.get("numero_compte")
+        if not numero_compte:
+            return Response(
+                {"detail": "Le paramètre 'numero_compte' est requis."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         try:
-            user = request.user
-            role = getattr(user.user_role, 'role', None)
-            if role not in ['admin', 'manager', 'cashier', 'vendor']:
-                return Response({"message": "Access Denied"}, status=403)
+            compte = CompteDepot.objects.get(numero_compte=numero_compte)
+        except CompteDepot.DoesNotExist:
+            return Response({"detail": "Compte non trouvé."}, status=status.HTTP_404_NOT_FOUND)
 
-            numero_compte = request.query_params.get('numero_compte')
-
-            if not numero_compte:
-                return Response({"detail": "Le paramètre 'numero_compte' est requis."}, status=status.HTTP_400_BAD_REQUEST)
-
-            try:
-                compte = CompteDepot.objects.get(numero_compte=numero_compte)
-                return Response({
-                    "numero_compte": compte.numero_compte,
-                    "solde": compte.solde,
-                    "date_creation": compte.date_creation
-                }, status=status.HTTP_200_OK)
-            except CompteDepot.DoesNotExist:
-                return Response({"detail": "Compte non trouvé."}, status=status.HTTP_404_NOT_FOUND)
-
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({
+            "numero_compte": compte.numero_compte,
+            "solde": compte.solde,
+            "date_creation": compte.date_creation,
+        }, status=status.HTTP_200_OK)
 
 
-
+# =========================================================
+# LISTE COMPTES AVEC FILTRE
+# =========================================================
 class ListerTousComptesAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Lister tous les comptes depots. Optionnel : filtrer par téléphone du client (partiel ou complet).",
+        operation_description="Lister tous les comptes dépôt. Optionnel : filtrer par téléphone du client.",
         manual_parameters=[
             openapi.Parameter(
-                'telephone', openapi.IN_QUERY,
-                description="Numéro de téléphone (partiel ou complet) du client",
+                "telephone",
+                openapi.IN_QUERY,
+                description="Numéro de téléphone partiel ou complet",
                 type=openapi.TYPE_STRING,
                 required=False
             )
         ],
-        responses={
-            200: openapi.Response("Liste des comptes", CompteDepotSerializer(many=True)),
-        }
+        responses={200: openapi.Response("Liste des comptes", CompteDepotSerializer(many=True))}
     )
     def get(self, request):
-        try:
-            user = request.user
-            role = getattr(user.user_role, 'role', None)
-            if role not in ['admin', 'manager', 'cashier', 'vendor']:
-                return Response({"message": "Access Denied"}, status=403)
+        role = _user_role(request.user)
+        if role not in ["admin", "manager", "cashier", "vendor"]:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-            telephone = request.query_params.get('telephone')
+        telephone = request.query_params.get("telephone")
+        comptes = CompteDepot.objects.select_related("client", "created_by")
 
-            comptes = CompteDepot.objects.select_related('client', 'created_by')
+        if telephone:
+            comptes = comptes.filter(client__telephone__icontains=telephone)
 
-            if telephone:
-                comptes = comptes.filter(client__telephone__icontains=telephone)
-
-            serializer = CompteDepotSerializer(comptes, many=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        serializer = CompteDepotSerializer(comptes.order_by("-date_creation"), many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class ListerToutesTransactionsAPIView(APIView):
+# =========================================================
+# LISTE TRANSACTIONS
+# =========================================================
+class ListerToutesCompteDepotTransactionsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Lister toutes les transactions (dépôts et retraits). Optionnel : filtrer par téléphone ou numéro de compte.",
+        operation_description="Lister toutes les transactions. Filtres possibles : téléphone, numéro compte, type, statut, dates.",
         manual_parameters=[
-            openapi.Parameter(
-                'telephone', openapi.IN_QUERY,
-                description="Numéro de téléphone (partiel ou complet) du client",
-                type=openapi.TYPE_STRING,
-                required=False
-            ),
-            # openapi.Parameter(
-            #     'numero_compte', openapi.IN_QUERY,
-            #     description="Numéro exact du compte",
-            #     type=openapi.TYPE_STRING,
-            #     required=False
-            # ),
+            openapi.Parameter("telephone", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("numero_compte", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("type_transaction", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("statut", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("start_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
+            openapi.Parameter("end_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
         ],
-        responses={
-            200: openapi.Response("Liste des transactions", TransactionSerializer(many=True)),
-        }
+        responses={200: openapi.Response("Liste des transactions", CompteDepotTransactionSerializer(many=True))}
     )
     def get(self, request):
+        role = _user_role(request.user)
+        if role not in ["admin", "manager", "cashier", "vendor"]:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        telephone = request.query_params.get("telephone")
+        numero_compte = request.query_params.get("numero_compte")
+        type_transaction = request.query_params.get("type_transaction")
+        statut = request.query_params.get("statut")
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        qs = CompteDepotTransaction.objects.select_related("compte__client", "user").order_by("-date_transaction")
+
+        if telephone:
+            qs = qs.filter(compte__client__telephone__icontains=telephone)
+        if numero_compte:
+            qs = qs.filter(compte__numero_compte__icontains=numero_compte)
+        if type_transaction:
+            qs = qs.filter(type_transaction=type_transaction)
+        if statut:
+            qs = qs.filter(statut=statut)
+        if start_date:
+            qs = qs.filter(date_transaction__date__gte=start_date)
+        if end_date:
+            qs = qs.filter(date_transaction__date__lte=end_date)
+
+        serializer = CompteDepotTransactionSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+# =========================================================
+# EXPORT EXCEL TRANSACTIONS
+# =========================================================
+class ExportCompteDepotTransactionsExcelAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description="Exporter les transactions compte dépôt en Excel. Filtres possibles : téléphone, numéro compte, type, statut, dates.",
+        manual_parameters=[
+            openapi.Parameter("telephone", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("numero_compte", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("type_transaction", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("statut", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("start_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
+            openapi.Parameter("end_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
+        ]
+    )
+    def get(self, request):
+        role = _user_role(request.user)
+        if role not in ["admin", "manager", "cashier"]:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        telephone = request.query_params.get("telephone")
+        numero_compte = request.query_params.get("numero_compte")
+        type_transaction = request.query_params.get("type_transaction")
+        statut = request.query_params.get("statut")
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        qs = CompteDepotTransaction.objects.select_related("compte__client", "user").order_by("-date_transaction")
+
+        if telephone:
+            qs = qs.filter(compte__client__telephone__icontains=telephone)
+        if numero_compte:
+            qs = qs.filter(compte__numero_compte__icontains=numero_compte)
+        if type_transaction:
+            qs = qs.filter(type_transaction=type_transaction)
+        if statut:
+            qs = qs.filter(statut=statut)
+        if start_date:
+            qs = qs.filter(date_transaction__date__gte=start_date)
+        if end_date:
+            qs = qs.filter(date_transaction__date__lte=end_date)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Transactions Compte Depot"
+
+        headers = [
+            "Date",
+            "Type",
+            "Statut",
+            "Numero compte",
+            "Nom",
+            "Prenom",
+            "Telephone",
+            "Montant",
+            "Solde avant",
+            "Solde apres",
+            "Reference",
+            "Commentaire",
+            "Utilisateur",
+        ]
+        ws.append(headers)
+
+        header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+        header_font = Font(bold=True, color="FFFFFF")
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+
+        for tx in qs:
+            client = getattr(tx.compte, "client", None)
+            user_label = ""
+            if tx.user:
+                user_label = getattr(tx.user, "email", None) or getattr(tx.user, "username", "") or str(tx.user)
+
+            ws.append([
+                timezone.localtime(tx.date_transaction).strftime("%Y-%m-%d %H:%M:%S") if tx.date_transaction else "",
+                tx.get_type_transaction_display(),
+                tx.get_statut_display(),
+                tx.compte.numero_compte,
+                getattr(client, "nom", "") if client else "",
+                getattr(client, "prenom", "") if client else "",
+                getattr(client, "telephone", "") if client else "",
+                float(tx.montant),
+                float(tx.solde_avant),
+                float(tx.solde_apres),
+                tx.reference or "",
+                tx.commentaire or "",
+                user_label,
+            ])
+
+        for column_cells in ws.columns:
+            length = max(len(str(cell.value or "")) for cell in column_cells)
+            ws.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 40)
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        filename = f"transactions_compte_depot_{timezone.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        wb.save(response)
+        return response
+
+
+# =========================================================
+# DASHBOARD COMPTE DEPOT
+# =========================================================
+class CompteDepotDashboardAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description="Dashboard global des comptes dépôt.",
+        manual_parameters=[
+            openapi.Parameter("start_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
+            openapi.Parameter("end_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
+        ]
+    )
+    def get(self, request):
+        role = _user_role(request.user)
+        if role not in ["admin", "manager", "cashier", "vendor"]:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+
+        tx_qs = CompteDepotTransaction.objects.select_related("compte__client", "user")
+        compte_qs = CompteDepot.objects.select_related("client")
+
+        if start_date:
+            tx_qs = tx_qs.filter(date_transaction__date__gte=start_date)
+        if end_date:
+            tx_qs = tx_qs.filter(date_transaction__date__lte=end_date)
+
+        total_comptes = compte_qs.count()
+        total_solde_global = compte_qs.aggregate(
+            total=Coalesce(Sum("solde"), Decimal("0.00"))
+        )["total"]
+
+        total_depots = tx_qs.filter(
+            type_transaction=CompteDepotTransaction.TYPE_DEPOT,
+            statut=CompteDepotTransaction.STAT_TERMINE
+        ).aggregate(total=Coalesce(Sum("montant"), Decimal("0.00")))["total"]
+
+        total_retraits = tx_qs.filter(
+            type_transaction=CompteDepotTransaction.TYPE_RETRAIT,
+            statut=CompteDepotTransaction.STAT_TERMINE
+        ).aggregate(total=Coalesce(Sum("montant"), Decimal("0.00")))["total"]
+
+        nombre_transactions = tx_qs.count()
+
+        top_comptes = compte_qs.order_by("-solde")[:10]
+        top_comptes_data = []
+        for compte in top_comptes:
+            client = getattr(compte, "client", None)
+            top_comptes_data.append({
+                "numero_compte": compte.numero_compte,
+                "solde": compte.solde,
+                "client_nom": getattr(client, "nom", "") if client else "",
+                "client_prenom": getattr(client, "prenom", "") if client else "",
+                "telephone": getattr(client, "telephone", "") if client else "",
+            })
+
+        transactions_par_type = tx_qs.values("type_transaction").annotate(
+            count=Count("id"),
+            total=Coalesce(Sum("montant"), Decimal("0.00"))
+        ).order_by("type_transaction")
+
+        latest_transactions = tx_qs.order_by("-date_transaction")[:10]
+
+        return Response({
+            "periode": {
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            "kpis": {
+                "total_comptes": total_comptes,
+                "total_solde_global": total_solde_global,
+                "total_depots": total_depots,
+                "total_retraits": total_retraits,
+                "nombre_transactions": nombre_transactions,
+            },
+            "transactions_par_type": list(transactions_par_type),
+            "top_comptes": top_comptes_data,
+            "dernieres_transactions": CompteDepotTransactionSerializer(latest_transactions, many=True).data,
+        }, status=status.HTTP_200_OK)
+
+
+
+# =========================================================
+# RECU PDF 80MM
+# =========================================================
+class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Reçu ticket 80mm d'une transaction compte dépôt",
+        operation_description="Génère un reçu PDF thermique 80mm pour une transaction compte dépôt."
+    )
+    def get(self, request, transaction_id):
+        role = _user_role(request.user)
+        if role not in ["admin", "manager", "cashier", "vendor"]:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
         try:
-            user = request.user
-            role = getattr(user.user_role, 'role', None)
-            if role not in ['admin', 'manager', 'cashier', 'vendor']:
-                return Response({"message": "Access Denied"}, status=403)
+            tx = CompteDepotTransaction.objects.select_related(
+                "compte__client",
+                "user",
+            ).get(pk=transaction_id)
+        except CompteDepotTransaction.DoesNotExist:
+            return Response(
+                {"detail": "Transaction introuvable."},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-            telephone = request.query_params.get('telephone')
-            # numero_compte = request.query_params.get('numero_compte')
+        return generate_transaction_ticket_80mm_pdf(
+            tx,
+            organisation_name="BANQUE TAKAYE"
+        )
+        
 
-            transactions = Transaction.objects.select_related('compte__client', 'user').order_by('-date_transaction')
-
-            # if numero_compte:
-            #     transactions = transactions.filter(compte__numero_compte=numero_compte)
-            if telephone:
-                transactions = transactions.filter(compte__client__telephone__icontains=telephone)
-
-            serializer = TransactionSerializer(transactions, many=True)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

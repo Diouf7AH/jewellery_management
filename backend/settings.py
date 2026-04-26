@@ -53,7 +53,8 @@ INSTALLED_APPS = [
     #Custom Apps
     # 'userauths',
     'userauths.apps.UserauthsConfig',
-    'store',
+    # 'store',
+    "store.apps.StoreConfig",
     'stock',
     'staff',
     'inventory',
@@ -61,7 +62,7 @@ INSTALLED_APPS = [
     'sale.apps.SaleConfig',
     'api',
     'vendor',
-    'employee',
+    'person',
     'purchase',
     'compte_depot',
     'order',
@@ -127,6 +128,9 @@ REST_FRAMEWORK = {
     # "PAGE_SIZE": 20,
 }
 
+# Pagination par défaut
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 100
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -308,6 +312,9 @@ LOGGING = {
 }
 
 # changer le montant minimum du dépôt sans modifier le code source
-COMPTE_SOLDE_MINIMUM = 5000  # montant en FCFA
-DEPOT_MINIMUM = 5000  # Montant minimal pour un dépôt
-RETRAIT_MINIMUM = 5000  # Retrait minimal pour un compte
+COMPTE_DEPOT_RETRAIT_MINIMUM = 5
+COMPTE_DEPOT_RETRAIT_MULTIPLE = 5
+COMPTE_DEPOT_DEPOT_MINIMUM = 5000
+
+# logo
+RIO_LOGO_DIR = os.path.join(MEDIA_ROOT, "logo")

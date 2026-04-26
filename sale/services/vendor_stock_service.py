@@ -1,71 +1,148 @@
+# sale/services/vendor_stock_service.py
 from __future__ import annotations
+
+from typing import Dict, List
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import F
+from django.db.models import ExpressionWrapper, F, IntegerField, Sum
+from django.db.models.functions import Coalesce
 
 from stock.models import VendorStock
-from store.models import Produit
-from vendor.models import Vendor
 
 
-@transaction.atomic
-def consume_vendor_stock(*, vendor: Vendor, produit: Produit, quantite: int):
+def _en_stock_expr():
     """
-    Décrément FIFO sur VendorStock (quantite_vendue += qte).
-    Retourne une liste de consommation par produit_line.
+    Stock disponible SQL :
+    quantite_allouee - quantite_vendue
     """
-    remaining = int(quantite or 0)
-    if remaining <= 0:
-        raise ValidationError("Quantité à consommer doit être > 0.")
+    return ExpressionWrapper(
+        Coalesce(F("quantite_allouee"), 0) - Coalesce(F("quantite_vendue"), 0),
+        output_field=IntegerField(),
+    )
+
+
+def ensure_vendor_stock_available(*, vendor, bijouterie, produit, quantite: int) -> None:
+    """
+    Vérifie, sans consommer, que le vendeur a assez de stock
+    pour ce produit dans cette bijouterie.
+    """
+    q = int(quantite or 0)
+    if q <= 0:
+        raise ValidationError({"quantite": "Doit être >= 1."})
 
     qs = (
         VendorStock.objects
         .select_for_update()
-        .select_related("produit_line", "produit_line__lot")
+        .select_related("produit_line", "produit_line__produit", "produit_line__lot")
         .filter(
             vendor=vendor,
+            bijouterie=bijouterie,
             produit_line__produit=produit,
-            quantite_allouee__gt=F("quantite_vendue"),
         )
-        .order_by("produit_line__lot__received_at", "produit_line_id")
+        .annotate(stock_disponible=_en_stock_expr())
+        .filter(stock_disponible__gt=0)
     )
 
-    moves = []
-    for vs in qs:
+    total_dispo = int(
+        qs.aggregate(total=Coalesce(Sum("stock_disponible"), 0))["total"] or 0
+    )
+
+    if total_dispo < q:
+        prod_name = getattr(produit, "nom", None) or f"ID={getattr(produit, 'id', '')}"
+        raise ValidationError({
+            "stock": (
+                f"Stock insuffisant. Produit: {prod_name}. "
+                f"Disponible: {total_dispo}, demandé: {q}."
+            )
+        })
+
+
+def consume_vendor_stock(*, vendor, bijouterie, produit, quantite: int) -> List[Dict]:
+    """
+    Consomme FIFO sur VendorStock.
+    Retour :
+    [
+        {"produit_line_id": int, "qty": int},
+        ...
+    ]
+    """
+    q = int(quantite or 0)
+    if q <= 0:
+        raise ValidationError({"quantite": "Doit être >= 1."})
+
+    qs = (
+        VendorStock.objects
+        .select_for_update()
+        .select_related("produit_line", "produit_line__lot", "produit_line__produit")
+        .filter(
+            vendor=vendor,
+            bijouterie=bijouterie,
+            produit_line__produit=produit,
+        )
+        .annotate(stock_disponible=_en_stock_expr())
+        .filter(stock_disponible__gt=0)
+        .order_by("produit_line_id")  # FIFO
+    )
+
+    total_dispo = int(
+        qs.aggregate(total=Coalesce(Sum("stock_disponible"), 0))["total"] or 0
+    )
+
+    if total_dispo < q:
+        prod_name = getattr(produit, "nom", None) or f"ID={getattr(produit, 'id', '')}"
+        raise ValidationError({
+            "stock": (
+                f"Stock insuffisant (FIFO). Produit: {prod_name}. "
+                f"Disponible: {total_dispo}, demandé: {q}."
+            )
+        })
+
+    remaining = q
+    moves: List[Dict] = []
+
+    for row in qs:
         if remaining <= 0:
             break
 
-        dispo = int((vs.quantite_allouee or 0) - (vs.quantite_vendue or 0))
-        if dispo <= 0:
-            continue
-
+        dispo = int(row.stock_disponible)
         take = min(dispo, remaining)
 
-        updated = (
-            VendorStock.objects
-            .filter(pk=vs.pk, quantite_allouee__gte=F("quantite_vendue") + take)
-            .update(quantite_vendue=F("quantite_vendue") + take)
+        updated = VendorStock.objects.filter(
+            pk=row.pk,
+            quantite_vendue__lte=F("quantite_allouee"),
+        ).update(
+            quantite_vendue=F("quantite_vendue") + take
         )
-        if not updated:
-            raise ValidationError("Conflit de stock détecté, réessayez.")
 
-        moves.append({"produit_line_id": vs.produit_line_id, "qty": take})
+        if not updated:
+            raise ValidationError({
+                "stock": "Conflit de mise à jour du stock vendeur. Réessayez."
+            })
+
+        moves.append({
+            "produit_line_id": int(row.produit_line_id),
+            "qty": int(take),
+        })
         remaining -= take
 
     if remaining > 0:
-        raise ValidationError(
-            f"Stock vendeur insuffisant pour '{getattr(produit, 'nom', produit.id)}'. Manque {remaining}."
-        )
+        raise ValidationError({
+            "stock": f"Incohérence FIFO: manque {remaining} après consommation."
+        })
 
     return moves
 
 
 @transaction.atomic
-def restore_vendor_stock(*, vendor: Vendor, produit: Produit, quantite: int):
+def restore_vendor_stock(*, vendor, bijouterie, produit, quantite: int) -> List[Dict[str, int]]:
     """
-    Restaure VendorStock (quantite_vendue -= qte).
-    Stratégie: on prend d'abord les plus récents (LIFO) pour éviter négatif.
+    Restaure le stock vendeur (LIFO simple).
+    Retour :
+    [
+        {"produit_line_id": int, "qty": int},
+        ...
+    ]
     """
     remaining = int(quantite or 0)
     if remaining <= 0:
@@ -77,36 +154,43 @@ def restore_vendor_stock(*, vendor: Vendor, produit: Produit, quantite: int):
         .select_related("produit_line", "produit_line__lot")
         .filter(
             vendor=vendor,
+            bijouterie=bijouterie,
             produit_line__produit=produit,
             quantite_vendue__gt=0,
         )
-        .order_by("-produit_line__lot__received_at", "-produit_line_id")
+        .order_by("-produit_line_id")  # LIFO simple
     )
 
-    restored = []
+    restored: List[Dict[str, int]] = []
+
     for vs in qs:
         if remaining <= 0:
             break
 
         sold = int(vs.quantite_vendue or 0)
-        if sold <= 0:
-            continue
-
         take = min(sold, remaining)
 
-        updated = (
-            VendorStock.objects
-            .filter(pk=vs.pk, quantite_vendue__gte=take)
-            .update(quantite_vendue=F("quantite_vendue") - take)
+        updated = VendorStock.objects.filter(
+            pk=vs.pk,
+            quantite_vendue__gte=take
+        ).update(
+            quantite_vendue=F("quantite_vendue") - take
         )
+
         if not updated:
             raise ValidationError("Conflit restauration stock, réessayez.")
 
-        restored.append({"produit_line_id": vs.produit_line_id, "qty": take})
+        restored.append({
+            "produit_line_id": int(vs.produit_line_id),
+            "qty": int(take),
+        })
         remaining -= take
 
     if remaining > 0:
         raise ValidationError("Impossible de restaurer tout le stock (données incohérentes).")
 
     return restored
+
+    
+    
 

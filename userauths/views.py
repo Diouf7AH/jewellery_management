@@ -7,7 +7,7 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model
 from django.db import IntegrityError, transaction
 from django.http import Http404
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -16,21 +16,24 @@ from django.views.decorators.http import require_GET, require_http_methods
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import parsers, status
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
+from backend.permissions import IsAdminOrManager
 from backend.renderers import UserRenderer
 from userauths.utils import send_confirmation_email, verify_email_token
 
 from .auth_backend import EmailPhoneUsernameAuthenticationBackend as EoP
 from .models import Profile, Role
 # (optionnel) si tu mets en place la file d’attente :
-from .serializers import (ProfileSerializer, RoleSerializer,
-                          UserChangePasswordSerializer, UserDetailSerializer,
-                          UserLoginSerializer, UserRegistrationSerializer)
+from .serializers import (ProfileSerializer, ProfileUpdateSerializer,
+                          RoleSerializer, UserChangePasswordSerializer,
+                          UserDetailSerializer, UserLoginSerializer,
+                          UserRegistrationSerializer)
 from .utils import generate_email_token, send_confirmation_email
 
 # versio angular
@@ -51,131 +54,6 @@ def get_tokens_for_user(user):
         'refresh': str(refresh),
         'access': str(refresh.access_token),
     }
-
-# class UserRegistrationView(APIView):
-#     permission_classes = [AllowAny]
-
-#     @swagger_auto_schema(
-#         operation_description="Inscription d’un nouvel utilisateur avec confirmation email",
-#         request_body=UserRegistrationSerializer,
-#         responses={
-#             201: openapi.Response('Inscription réussie', UserRegistrationSerializer),
-#             400: openapi.Response('Requête invalide')
-#         }
-#     )
-#     def post(self, request, format=None):
-#         serializer = UserRegistrationSerializer(data=request.data, context={'request': request})
-#         serializer.is_valid(raise_exception=True)
-#         user = serializer.save()
-#         data = {
-#             'message': "Inscription réussie ✅. Vérifiez votre email.",
-#             'user': UserRegistrationSerializer(user).data,
-#             'tokens': serializer.tokens
-#         }
-#         return Response(data, status=status.HTTP_201_CREATED)
-
-
-
-# class UserRegistrationView(APIView):
-#     permission_classes = [AllowAny]
-
-#     @swagger_auto_schema(
-#         operation_summary="Inscription d’un nouvel utilisateur avec confirmation email",
-#         operation_description="Crée l'utilisateur, génère les tokens JWT et envoie l'email de confirmation.",
-#         request_body=UserRegistrationSerializer,
-#         responses={
-#             201: openapi.Response('Inscription réussie'),
-#             400: openapi.Response('Requête invalide')
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request, format=None):
-#         s = UserRegistrationSerializer(data=request.data)
-#         s.is_valid(raise_exception=True)
-#         data = s.validated_data
-
-#         # --- Création utilisateur ---
-#         email_norm = (data["email"] or "").strip().lower()
-#         username = (data.get("username") or "").strip()
-#         telephone = (data.get("telephone") or "").strip()
-
-#         try:
-#             user = User(
-#                 email=email_norm,
-#                 username=username,
-#                 telephone=telephone,
-#                 is_active=False,          # actif après confirmation
-#                 is_email_verified=False,
-#             )
-#             user.set_password(data["password"])
-#             user.save()
-#         except IntegrityError:
-#             return Response(
-#                 {"email": ["Cet email est déjà utilisé."]},
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
-
-#         # --- JWT tokens ---
-#         refresh = RefreshToken.for_user(user)
-#         tokens = {
-#             "access": str(refresh.access_token),
-#             "refresh": str(refresh),
-#         }
-
-#         # --- Lien de confirmation ---
-#         token = generate_email_token(user)
-
-#         frontend = (
-#             getattr(settings, "FRONTEND_BASE_URL", "")
-#             or getattr(settings, "FRONTEND_URL", "")
-#             or ""
-#         ).rstrip("/")
-
-#         if frontend:
-#             # URL front : https://rio-gold.com/confirm-email?token=...
-#             confirm_url = f"{frontend}/confirm-email?token={token}"
-#             home_url = frontend
-#         else:
-#             # Fallback backend
-#             from django.urls import reverse
-#             confirm_url = request.build_absolute_uri(
-#                 reverse("verify-email") + f"?token={token}"
-#             )
-#             home_url = request.build_absolute_uri("/")
-
-#         # --- Envoi direct (pas d'outbox) ---
-#         email_status = "sent"
-#         try:
-#             send_confirmation_email(
-#                 user,
-#                 request=None,
-#                 confirm_url=confirm_url,
-#                 home_url=home_url,
-#             )
-#         except (SMTPRecipientsRefused, SMTPDataError, SMTPSenderRefused, SMTPException) as e:
-#             print("ERREUR SMTP >>>", e)  # utile en dev
-#             email_status = "failed"
-#         except Exception as e:
-#             print("ERREUR ENVOI EMAIL >>>", e)
-#             email_status = "failed"
-
-#         # --- Réponse ---
-#         return Response(
-#             {
-#                 "message": "Inscription réussie ✅. Vérifiez votre email.",
-#                 "user": {
-#                     "id": user.id,
-#                     "email": user.email,
-#                     "username": user.username,
-#                     "telephone": user.telephone,
-#                     "is_active": user.is_active,
-#                     "is_email_verified": getattr(user, "is_email_verified", False),
-#                 },
-#                 "tokens": tokens,
-#                 "email_status": email_status,  # "sent" ou "failed"
-#             },
-#             status=status.HTTP_201_CREATED,
-#         )
 
 
 class UserRegistrationView(APIView):
@@ -258,102 +136,6 @@ class UserRegistrationView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
-
-
-# @method_decorator(require_GET, name="dispatch")
-# class EmailVerificationView(APIView):
-#     permission_classes = []  # public
-
-#     def get(self, request):
-#         token = request.GET.get('token')
-#         if not token:
-#             return render(request, "emails/email_invalid.html", status=400)
-
-#         result = verify_email_token(token) or {}
-#         status_token = result.get("status")
-#         email = result.get("email")
-
-#         if status_token == "invalid" or not email:
-#             return render(request, "emails/email_invalid.html", status=400)
-
-#         if status_token == "expired":
-#             # Lien expiré → template avec explication + éventuellement bouton vers ton front
-#             return render(request, "emails/email_expired.html", status=410)
-
-#         # status == "ok"
-#         try:
-#             user = User.objects.get(email=email)
-#         except User.DoesNotExist:
-#             return render(request, "emails/email_invalid.html", status=404)
-
-#         if not getattr(user, "is_email_verified", False):
-#             user.is_email_verified = True
-#             user.save(update_fields=["is_email_verified"])
-
-#         return render(request, "emails/email_confirmed.html", status=200)
-    
-    
-
-# class EmailVerificationView(APIView):
-#     permission_classes = []
-
-#     def get(self, request):
-#         token = request.GET.get('token')
-#         result = verify_email_token(token)
-#         status_token = result.get("status")
-#         email = result.get("email")
-
-#         if status_token == "invalid":
-#             return render(request, "emails/email_invalid.html", status=400)
-#         elif status_token == "expired":
-#             return render(request, "emails/email_expired.html", status=410)
-
-#         try:
-#             user = User.objects.get(email=email)
-#             if not user.is_email_verified:
-#                 user.is_active = True
-#                 user.is_email_verified = True
-#                 user.save()
-#             return render(request, "emails/email_confirmed.html")
-#         except User.DoesNotExist:
-#             return render(request, "emails/email_invalid.html", status=404)
-
-# @method_decorator(require_GET, name="dispatch")
-# class EmailVerificationView(APIView):
-#     permission_classes = []  # public
-
-#     def get(self, request):
-#         token = request.GET.get('token')
-#         if not token:
-#             return render(request, "emails/email_invalid.html", status=400)
-
-#         result = verify_email_token(token) or {}
-#         status_token = result.get("status")
-#         email = result.get("email")
-
-#         # 1️⃣ D'abord : token expiré
-#         if status_token == "expired":
-#             return render(request, "emails/email_expired.html", status=410)
-
-#         # 2️⃣ Ensuite : token invalide
-#         if status_token == "invalid":
-#             return render(request, "emails/email_invalid.html", status=400)
-
-#         # 3️⃣ Puis : pas d'email retourné (sécurité)
-#         if not email:
-#             return render(request, "emails/email_invalid.html", status=400)
-
-#         # 4️⃣ Token OK → on vérifie l'utilisateur
-#         try:
-#             user = User.objects.get(email=email)
-#         except User.DoesNotExist:
-#             return render(request, "emails/email_invalid.html", status=404)
-
-#         if not getattr(user, "is_email_verified", False):
-#             user.is_email_verified = True
-#             user.save(update_fields=["is_email_verified"])
-
-#         return render(request, "emails/email_confirmed.html", status=200)
 
 
 @method_decorator(require_GET, name="dispatch")
@@ -914,87 +696,137 @@ class DeleteRoleAPIView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 # profile
-# class ProfileView(APIView):
-#     permission_classes = [IsAuthenticated]
 
-#     @swagger_auto_schema(
-#         operation_description="Récupérer le profil de l'utilisateur connecté.",
-#         responses={200: openapi.Response('Profil récupéré avec succès', ProfileSerializer)},
-#     )
-#     def get(self, request, format=None):
-#         try:
-#             profile = Profile.objects.get(user=request.user)
-#         except Profile.DoesNotExist:
-#             return Response({"detail": "Profil introuvable."}, status=404)
-
-#         serializer = ProfileSerializer(profile)
-#         return Response(serializer.data)
-
-#     @swagger_auto_schema(
-#         operation_description="Mettre à jour totalement le profil de l'utilisateur connecté.",
-#         request_body=ProfileSerializer,
-#         responses={200: openapi.Response('Profil mis à jour avec succès', ProfileSerializer)},
-#     )
-#     def put(self, request, format=None):
-#         try:
-#             profile = Profile.objects.get(user=request.user)
-#         except Profile.DoesNotExist:
-#             return Response({"detail": "Profil introuvable."}, status=404)
-
-#         serializer = ProfileSerializer(profile, data=request.data)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data)
-#         return Response(serializer.errors, status=400)
-
-#     @swagger_auto_schema(
-#         operation_description="Mettre à jour partiellement le profil de l'utilisateur connecté.",
-#         request_body=ProfileSerializer,
-#         responses={200: openapi.Response('Profil partiellement mis à jour', ProfileSerializer)},
-#     )
-#     def patch(self, request, format=None):
-#         try:
-#             profile = Profile.objects.get(user=request.user)
-#         except Profile.DoesNotExist:
-#             return Response({"detail": "Profil introuvable."}, status=404)
-
-#         serializer = ProfileSerializer(profile, data=request.data, partial=True)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data)
-#         return Response(serializer.errors, status=400)
-
-
-class ProfileView(APIView):
+class MyProfileView(APIView):
     permission_classes = [IsAuthenticated]
-    # ← autorise JSON, form-data et multipart (pour image)
-    parser_classes = [parsers.JSONParser, parsers.FormParser, parsers.MultiPartParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     @swagger_auto_schema(
-        operation_summary="Voir mon profil",
-        operation_description="Retourne le profil de l’utilisateur connecté.",
-        responses={200: ProfileSerializer, 401: "Non authentifié"},
-        tags=["Profil"]
+        operation_id="getMyProfile",
+        operation_summary="Récupérer mon profil",
+        operation_description=(
+            "Retourne le profil complet de l'utilisateur connecté, "
+            "avec les informations du compte User et du Profile."
+        ),
+        tags=["Profil utilisateur"],
+        responses={
+            200: ProfileSerializer,
+            401: "Non authentifié",
+        },
     )
     def get(self, request):
         profile, _ = Profile.objects.get_or_create(user=request.user)
-        return Response(ProfileSerializer(profile).data)
+        serializer = ProfileSerializer(profile, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     @swagger_auto_schema(
-        operation_summary="Modifier mon profil (partiel)",
+        operation_id="updateMyProfilePut",
+        operation_summary="Mettre à jour complètement mon profil",
         operation_description=(
-            "Met à jour partiellement le profil de l’utilisateur connecté. "
-            "Accepte JSON ou multipart/form-data pour l’upload de l’image."
+            "Met à jour complètement le profil utilisateur connecté. "
+            "Supporte aussi l'envoi d'image avec multipart/form-data."
         ),
-        request_body=ProfileSerializer,  # champs du serializer; PATCH est partiel
-        responses={200: ProfileSerializer, 400: "Requête invalide", 401: "Non authentifié"},
-        consumes=['application/json', 'multipart/form-data'],
-        tags=["Profil"]
+        tags=["Profil utilisateur"],
+        request_body=ProfileUpdateSerializer,
+        responses={
+            200: openapi.Response(
+                description="Profil mis à jour avec succès"
+            ),
+            400: "Données invalides",
+            401: "Non authentifié",
+        },
+    )
+    def put(self, request):
+        profile, _ = Profile.objects.get_or_create(user=request.user)
+        serializer = ProfileUpdateSerializer(profile, data=request.data, partial=False)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        output = ProfileSerializer(profile, context={"request": request})
+        return Response(
+            {
+                "message": "Profil mis à jour avec succès.",
+                "data": output.data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+    @swagger_auto_schema(
+        operation_id="updateMyProfilePatch",
+        operation_summary="Mettre à jour partiellement mon profil",
+        operation_description=(
+            "Met à jour partiellement le profil utilisateur connecté. "
+            "Supporte aussi l'envoi d'image avec multipart/form-data."
+        ),
+        tags=["Profil utilisateur"],
+        request_body=ProfileUpdateSerializer,
+        responses={
+            200: openapi.Response(
+                description="Profil mis à jour avec succès"
+            ),
+            400: "Données invalides",
+            401: "Non authentifié",
+        },
     )
     def patch(self, request):
         profile, _ = Profile.objects.get_or_create(user=request.user)
-        s = ProfileSerializer(profile, data=request.data, partial=True)
-        s.is_valid(raise_exception=True)
-        s.save()
-        return Response(s.data, status=status.HTTP_200_OK)
+        serializer = ProfileUpdateSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
 
+        output = ProfileSerializer(profile, context={"request": request})
+        return Response(
+            {
+                "message": "Profil mis à jour avec succès.",
+                "data": output.data,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class ProfileDetailAdminView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+    def _is_admin_or_manager(self, user):
+        return bool(
+            user.is_authenticated and
+            (getattr(user, "is_admin", False) or getattr(user, "is_manager", False))
+        )
+
+    @swagger_auto_schema(
+        operation_id="getUserProfileById",
+        operation_summary="Voir le profil d'un utilisateur",
+        operation_description=(
+            "Permet à un admin ou manager de consulter le profil d'un utilisateur via son user_id."
+        ),
+        tags=["Profil utilisateur"],
+        manual_parameters=[
+            openapi.Parameter(
+                "user_id",
+                openapi.IN_PATH,
+                description="ID de l'utilisateur",
+                type=openapi.TYPE_INTEGER,
+                required=True,
+            )
+        ],
+        responses={
+            200: ProfileSerializer,
+            403: "Accès refusé",
+            404: "Profil introuvable",
+        },
+    )
+    def get(self, request, user_id):
+        if not self._is_admin_or_manager(request.user):
+            return Response(
+                {"detail": "Vous n'avez pas la permission d'effectuer cette action."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        profile = get_object_or_404(
+            Profile.objects.select_related("user"),
+            user_id=user_id
+        )
+        serializer = ProfileSerializer(profile, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    

@@ -1,0 +1,131 @@
+4. Explication claire de chaque classe
+MarquePuretePriceEvolutionView
+
+Cette classe sert à construire le graphique d’évolution du prix.
+
+Elle :
+
+lit l’historique des prix,
+filtre par marque, purete, bijouterie_id,
+trie dans l’ordre chronologique,
+retourne une liste de points {date, prix}.
+
+Elle est utile pour :
+
+afficher une courbe dans React,
+voir comment le prix a évolué dans le temps.
+MarquePuretePrixHistoryListView
+
+Cette classe sert à faire l’audit des changements.
+
+Elle :
+
+liste toutes les lignes d’historique,
+peut filtrer par bijouterie, marque, pureté, source, utilisateur,
+peut filtrer entre deux dates.
+
+Elle est utile pour :
+
+savoir qui a changé le prix,
+quand,
+de combien à combien,
+par quelle source (api, admin, rollback, etc.).
+MarquePuretePriceRollbackView
+
+Cette classe sert à restaurer un ancien prix.
+
+Elle :
+
+prend un history_id,
+retrouve la ligne d’historique,
+remet ancien_prix comme prix courant,
+crée une nouvelle ligne d’historique avec source="rollback".
+
+Elle est utile quand :
+
+un manager ou un admin a mis un mauvais prix,
+tu veux revenir rapidement à la valeur précédente,
+tu veux garder une trace du retour en arrière.
+MarquePuretePriceCompareDatesView
+
+Cette classe sert à comparer le prix entre deux dates.
+
+Elle :
+
+prend marque, purete, date_1, date_2,
+cherche la dernière valeur connue avant chaque date,
+retourne prix_date_1, prix_date_2, et difference.
+
+Elle est utile pour :
+
+analyse métier,
+reporting,
+comparaison historique,
+savoir de combien un prix a augmenté ou diminué.
+5. Ordre conseillé d’implémentation
+
+Le plus logique pour toi :
+
+MarquePuretePrixHistoryListView
+MarquePuretePriceEvolutionView
+MarquePuretePriceRollbackView
+MarquePuretePriceCompareDatesView
+
+Parce que rollback et comparaison dépendent d’un historique fiable.
+
+6. Point important
+
+Pour que tout marche bien, il faut que chaque mise à jour de prix crée bien une ligne dans MarquePuretePrixHistory.
+
+Envoie-moi ton modèle MarquePuretePrixHistory si tu veux que je le vérifie et le rende parfaitement cohérent avec ces vues.
+
+
+
+
+🔥 source → ça veut dire d’où vient le changement de prix
+
+Quand un prix change, tu veux savoir :
+
+👉 QUI a changé ?
+👉 COMMENT ça a été changé ?
+
+Le champ source sert à répondre à :
+
+Comment ce changement a été fait ?
+📌 Explication des valeurs
+1. SOURCE_API = "api"
+
+👉 Le prix a été modifié via ton API
+
+Exemple :
+
+écran React / Angular
+ton endpoint /settings/commercial/
+Admin → change prix dans interface → API → DB
+2. SOURCE_ADMIN = "admin"
+
+👉 Le prix a été modifié via Django admin
+
+Exemple :
+
+tu ou ton équipe allez dans /admin
+vous modifiez MarquePurete
+Admin Django → modification directe
+3. SOURCE_IMPORT = "import_excel"
+
+👉 Le prix a été modifié via un fichier Excel
+
+Exemple :
+
+upload Excel
+mise à jour en masse
+Excel → import → update DB
+4. SOURCE_ROLLBACK = "rollback"
+
+👉 Le prix a été restauré (retour en arrière)
+
+Exemple :
+
+erreur : prix 5000 → 50000 ❌
+rollback → retour à 5000
+Rollback manuel → ancien prix restauré

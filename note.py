@@ -58,3 +58,4 @@ class Marque(models.Model):
 
 est-ce que dans une application ERP on peut avoir deux façon de facture 
 les facture pour les ventes direct et les factures pour les ventes avec commend qui doit avoir un acompte
+

@@ -1,0 +1,87 @@
+1. InventoryMovementListView
+
+C’est la vue la plus importante pour l’audit.
+
+Elle sert à :
+
+tracer tous les mouvements,
+comprendre une anomalie,
+filtrer par date, produit, lot, facture, vendeur, bijouterie.
+
+👉 Sans elle, tu perds le journal de vérité.
+
+2. ProduitLineWithInventoryListView
+
+Elle est très utile pour la lecture stock par lot.
+
+Elle sert à :
+
+voir le stock par ProduitLine,
+relier achat → lot → produit → stock,
+afficher une vraie “photo inventaire”.
+
+👉 Pour un ERP bijouterie avec FIFO, elle est presque indispensable.
+
+3. InventoryBijouterieView
+
+À garder si tu veux un dashboard manager/admin.
+
+Elle sert à :
+
+résumer entrées/sorties par bijouterie,
+piloter chaque boutique,
+faire du reporting rapide.
+
+👉 Très utile côté gestion.
+
+4. InventoryVendorView
+
+À garder si la vente se fait depuis le vendeur.
+
+Elle sert à :
+
+suivre ce qui a été affecté au vendeur,
+suivre ce qu’il a vendu,
+voir son stock restant.
+
+👉 Dans ton cas, elle est importante.
+
+Donc dans ton ERP actuel
+
+Les 4 vues sont utiles.
+
+Celles qui sont prioritaires
+
+Si je devais classer :
+
+Priorité 1
+InventoryMovementListView
+ProduitLineWithInventoryListView
+Priorité 2
+InventoryVendorView
+InventoryBijouterieView
+Si tu veux alléger ton API au minimum
+
+Tu peux fonctionner avec seulement :
+
+InventoryMovementListView
+ProduitLineWithInventoryListView
+InventoryVendorView
+
+et rendre InventoryBijouterieView optionnelle.
+
+Pourquoi ?
+Parce que le résumé bijouterie peut toujours être recalculé plus tard depuis InventoryMovement.
+
+Ma recommandation finale
+Garde absolument
+InventoryMovementListView
+ProduitLineWithInventoryListView
+InventoryVendorView
+Optionnelle mais fortement recommandée
+InventoryBijouterieView
+En une phrase
+journal = indispensable
+photo stock = indispensable
+stock vendeur = indispensable dans ton métier
+résumé bijouterie = très utile, mais plus “dashboard” que “coeur métier”

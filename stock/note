@@ -1,3 +1,276 @@
-En une phrase
-reserved = stock central non affecté
-in_stock = tout ce qui est réellement disponible, où qu’il soit
+Et là on est dans le cœur logique de ton ERP Rio-Gold 🔥
+Tu as 3 notions différentes :
+
+1. Stock.en_stock
+2. Stock.quantite_disponible
+3. VendorStock.quantite_allouee
+Elles ne veulent pas du tout dire la même chose.
+
+🟢 1️⃣ Stock.en_stock (table Stock)
+
+👉 C’est le stock physique total pour une ProduitLine dans un bucket donné.
+
+Dans ton cas :
+
+    bijouterie=None → stock RÉSERVE centrale
+    bijouterie=X → stock de la bijouterie X
+
+💡 Exemple
+Tu fais un arrivage de 10 pièces :
+    en_stock = 10
+    quantite_disponible = 10
+
+
+Si plus tard tu réserves 4 pièces pour une bijouterie :
+    en_stock = 10   (toujours 10 physiquement)
+    quantite_disponible = 6
+
+
+👉 Donc :
+    en_stock = quantité physique totale présente
+
+🟡 2️⃣ Stock.quantite_disponible
+👉 C’est la quantité encore libre dans ce bucket.
+Formule logique :
+    quantite_disponible = en_stock - quantité déjà transférée / réservée
+
+
+Dans le bucket RÉSERVE :
+
+en_stock  |	quantite_disponible	  |  Signification
+ 10	      |      10	              |   rien n’est alloué
+ 10	      |      6	              |   4 ont été transférés
+ 10	      |      0	              |   tout a été alloué
+
+👉 Donc :
+    quantite_disponible = ce que tu peux encore bouger
+
+🔵 3️⃣ VendorStock.quantite_allouee
+Ça c’est encore autre chose.
+👉 C’est la quantité attribuée à un vendeur précis.
+
+Exemple :
+    Réserve = 10 pièces
+-Tu alloues :
+    Vendeur A → 3
+    Vendeur B → 2
+
+Alors :
+
+Stock (réserve)
+    en_stock = 10
+    quantite_disponible = 5
+
+VendorStock :
+    A → 3
+    B → 2
+
+
+👉 Donc :
+VendorStock.quantite_allouee = ce qu’un vendeur a dans son stock personnel
+
+🎯 Résumé clair
+    Champ	            |    Où	         |       Signification
+  en_stock	            |   Stock	     |   Total physique dans ce bucket
+  quantite_disponible	|   Stock	     |   Ce qui reste libre
+  quantite_allouee	    |  VendorStock	 |   Ce qu’un vendeur détient
+
+
+🧠 Logique complète Rio-Gold
+Arrivage
+    Réserve:
+    - en_stock += qte
+    - quantite_disponible += qte
+
+Allocation vers vendeur
+    Réserve.quantite_disponible -= qte
+    VendorStock.quantite_allouee += qte
+
+Vente confirmée
+    VendorStock.quantite_allouee -= qte
+    (en_stock ne bouge que si sortie réelle)
+
+⚠️ Important pour ton architecture
+
+Si tu veux une architecture propre et scalable :
+
+Stock = niveau entrepôt / bijouterie
+VendorStock = niveau vendeur
+InventoryMovement = audit
+
+👉 Ne mélange jamais les responsabilités.
+
+
+
+
+
+Oui, je te la dessine 🔥 (version simple + ERP, sans casser ton système).
+
+✅ Flux Stock Rio-Gold (ERP)
+1) ARRIVAGE (Achat → Lot → ProduitLine)
+
+But : enregistrer ce qui arrive du fournisseur.
+
+Effet :
+    Création Achat, Lot, ProduitLine
+    Tout va en RÉSERVE (centrale)
+
+Stock (Réserve : bijouterie=None)
+    en_stock += qte
+    quantite_disponible += qte
+
+InventoryMovement
+    PURCHASE_IN : EXTERNAL → RESERVED
+
+2) ALLOCATION vers une BIJOUTERIE
+But : déplacer une partie de la réserve vers une bijouterie.
+RÉSERVE (bijouterie=None)
+    quantite_disponible -= qte
+    en_stock ne change pas si tu considères “en_stock réserve” comme total réserve
+    (mais si tu fais un vrai transfert, tu diminues en_stock réserve aussi)
+
+BIJOUTERIE (bijouterie=X)
+    en_stock += qte
+    quantite_disponible += qte
+
+InventoryMovement
+    ALLOCATE : RESERVED → BIJOUTERIE
+
+✅ Ici tu gardes une traçabilité : d’où vient le stock, quel lot, quel produit_line.
+
+3) ALLOCATION vers un VENDEUR (VendorStock)
+
+But : donner au vendeur un stock personnel pour vendre.
+
+Stock BIJOUTERIE
+    quantite_disponible -= qte
+
+VendorStock
+    quantite_allouee += qte
+
+InventoryMovement
+    TRANSFER_TO_VENDOR : BIJOUTERIE → VENDOR
+
+4) VENTE (création vente + facture PROFORMA)
+
+But : enregistrer la vente, sans consommer encore le stock (optionnel).
+
+✅ Tu peux faire comme tu fais déjà :
+    Vente + Facture proforma
+    VendorStock pas touché tant que paiement/livraison pas confirmée
+
+5) CONFIRMATION (paiement / livraison confirmée)
+But : consommer le stock vendeur réellement.
+
+VendorStock
+    quantite_allouee -= qte
+
+InventoryMovement
+    SALE_OUT : VENDOR → EXTERNAL
+
+✅ Là tu as un flux propre :
+    vendeur “détient” le stock
+    vente confirmée = sortie réelle
+
+🔥 Diagramme simple (lecture rapide)
+FOURNISSEUR
+   |
+   |  PURCHASE_IN
+   v
+RÉSERVE (Stock bijouterie=None)
+   |
+   |  ALLOCATE
+   v
+BIJOUTERIE (Stock bijouterie=X)
+   |
+   |  TRANSFER_TO_VENDOR
+   v
+VENDEUR (VendorStock)
+   |
+   |  SALE_OUT (confirmation)
+   v
+CLIENT (EXTERNAL)
+
+✅ Pourquoi c’est “ERP propre” ?
+
+Parce que tu as :
+Stock pour les lieux (Réserve / Bijouterie)
+VendorStock pour le vendeur
+InventoryMovement pour tracer tout
+Et chaque action correspond à un “movement_type”.
+
+
+
+
+🎯 2️⃣ Si on pense FRONTEND / API publique
+Là, c’est différent.
+Un développeur frontend qui voit :
+{
+  "en_stock": 3,
+  "quantite_disponible": 10
+}
+Il va poser la question :
+“c’est quoi la différence ?”
+Alors que :
+{
+  "stock_total": 10,
+  "stock_reel": 3
+}
+
+
+
+
+
+Principe
+
+Au lieu de gérer seulement :
+
+vendeur
+
+produit
+
+quantité allouée
+
+quantité vendue
+
+on garde aussi :
+
+le lot d’origine
+
+la bijouterie
+
+le produit_line
+
+l’ordre FIFO
+
+Comme ça, quand un vendeur vend un bijou, le système sait exactement de quel lot il sort.
+
+Pourquoi c’est meilleur
+
+Avec ce modèle, tu peux :
+
+tracer chaque vente jusqu’au lot d’achat
+
+connaître le coût réel par lot
+
+faire un audit propre
+
+gérer les retours correctement
+
+faire des rapports précis
+
+éviter les incohérences de stock
+
+C’est la bonne approche pour un ERP bijouterie sérieux.
+
+Structure recommandée
+1. Stock
+
+Stock général par produit_line et bijouterie
+
+2. VendorStock
+
+Stock alloué au vendeur par produit_line
+Donc chaque ligne vendeur correspond déjà à un lot précis.
+
+👉 C’est ça qui te donne le FIFO par lot.
