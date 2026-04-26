@@ -137,12 +137,24 @@ class MarqueSerializer(serializers.ModelSerializer):
 #marque purete
 
 class MarquePureteListSerializer(serializers.ModelSerializer):
-    marque = serializers.CharField(source='marque.marque', read_only=True)
-    purete = serializers.CharField(source='purete.nom', read_only=True)
+    marque = serializers.SerializerMethodField()
+    purete = serializers.SerializerMethodField()
 
     class Meta:
         model = MarquePurete
         fields = ['id', 'marque', 'purete', 'prix', 'date_ajout']
+
+    def get_marque(self, obj):
+        return {
+            "id": obj.marque.id,
+            "nom": obj.marque.marque
+        }
+
+    def get_purete(self, obj):
+        return {
+            "id": obj.purete.id,
+            "purete": obj.purete.purete
+        }
 
 class PuretePrixInputSerializer(serializers.Serializer):
     purete_id = serializers.IntegerField()
@@ -317,14 +329,14 @@ class ProduitWithGallerySerializer(serializers.ModelSerializer):
     categorie_nom = serializers.CharField(source='categorie.nom', read_only=True)
     marque_nom = serializers.CharField(source='marque.marque', read_only=True)
     modele_nom = serializers.CharField(source='modele.modele', read_only=True)
-    purete_valeur = serializers.CharField(source='purete.purete', read_only=True)
+    purete_purete = serializers.CharField(source='purete.purete', read_only=True)
 
     class Meta:
         model = Produit
         fields = [
             'id', 'nom', 'sku', 'etat', 'status',
             'poids', 'taille',
-            'categorie_nom', 'marque_nom', 'modele_nom', 'purete_valeur',
+            'categorie_nom', 'marque_nom', 'modele_nom', 'purete_purete',
             'image', 'description', 'date_ajout', 'date_modification',
             'galleries'
         ]
@@ -346,7 +358,7 @@ class MarquePuretePrixUpdateItemSerializer(serializers.Serializer):
 
     purete = serializers.CharField(
         label="Pureté",
-        help_text="Valeur de la pureté (ex: 18, 21, 24)",
+        help_text="Pureté de la pureté (ex: 18, 21, 24)",
     )
 
     prix = serializers.DecimalField(

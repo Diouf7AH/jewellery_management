@@ -528,18 +528,98 @@ class MarqueListAPIView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+# class ListMarquePureteView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister toutes les liaisons Marque–Pureté avec prix",
+#         responses={200: MarquePureteListSerializer(many=True)}
+#     )
+#     def get(self, request):
+#         queryset = MarquePurete.objects.select_related('marque', 'purete').all()
+#         serializer = MarquePureteListSerializer(queryset, many=True)
+#         return Response(serializer.data, status=200)
+
 class ListMarquePureteView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Lister toutes les liaisons Marque–Pureté avec prix",
-        responses={200: MarquePureteListSerializer(many=True)}
+        operation_description="""
+        Liste les prix des marques par pureté.
+
+        Filtres disponibles :
+        - ?marque=Dubai
+        - ?purete=18
+        - ?prix_min=40000
+        - ?prix_max=60000
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                "marque",
+                openapi.IN_QUERY,
+                description="Filtrer par nom de marque",
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "purete",
+                openapi.IN_QUERY,
+                description="Filtrer par pureté",
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "prix_min",
+                openapi.IN_QUERY,
+                description="Prix minimum",
+                type=openapi.TYPE_NUMBER,
+            ),
+            openapi.Parameter(
+                "prix_max",
+                openapi.IN_QUERY,
+                description="Prix maximum",
+                type=openapi.TYPE_NUMBER,
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Liste des liaisons Marque–Pureté",
+                schema=MarquePureteListSerializer(many=True),
+            )
+        },
+        tags=["Marques"],
     )
     def get(self, request):
-        queryset = MarquePurete.objects.select_related('marque', 'purete').all()
-        serializer = MarquePureteListSerializer(queryset, many=True)
-        return Response(serializer.data, status=200)
+        queryset = MarquePurete.objects.select_related(
+            "marque",
+            "purete"
+        ).order_by("marque__marque", "purete__purete")
 
+        marque = request.query_params.get("marque")
+        purete = request.query_params.get("purete")
+        prix_min = request.query_params.get("prix_min")
+        prix_max = request.query_params.get("prix_max")
+
+        if marque:
+            queryset = queryset.filter(marque__marque__icontains=marque)
+
+        if purete:
+            queryset = queryset.filter(purete__purete__icontains=purete)
+
+        if prix_min:
+            queryset = queryset.filter(prix__gte=prix_min)
+
+        if prix_max:
+            queryset = queryset.filter(prix__lte=prix_max)
+
+        serializer = MarquePureteListSerializer(queryset, many=True)
+
+        return Response(
+            {
+                "count": queryset.count(),
+                "results": serializer.data,
+            },
+            status=status.HTTP_200_OK
+        )
 
 # class MarqueCreateAPIView(APIView):
 #     renderer_classes = [UserRenderer]
