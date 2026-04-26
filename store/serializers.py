@@ -161,16 +161,16 @@ class MarqueListSerializer(serializers.Serializer):
 #         }
 
 
-class PuretePrixListSerializer(serializers.Serializer):
+class PuretePrixSerializer(serializers.Serializer):
     purete_id = serializers.IntegerField()
-    purete = serializers.CharField()
-    prix = serializers.CharField()
+    purete = serializers.CharField(read_only=True)
+    prix = serializers.DecimalField(max_digits=10, decimal_places=2)
 
 
 class MarqueListSerializer(serializers.Serializer):
-    marque_id = serializers.IntegerField()
     marque = serializers.CharField()
-    puretes = PuretePrixListSerializer(many=True)
+    puretes = PuretePrixSerializer(many=True)
+    
 
 class PuretePrixInputSerializer(serializers.Serializer):
     purete_id = serializers.IntegerField()
