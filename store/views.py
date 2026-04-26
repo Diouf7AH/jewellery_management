@@ -546,46 +546,21 @@ class ListMarquePureteView(APIView):
     @swagger_auto_schema(
         operation_summary="Lister toutes les liaisons Marque–Pureté avec prix",
         operation_description="""
-        Liste les prix des marques par pureté.
+        Liste simple des prix par marque et pureté.
 
-        Filtres disponibles :
+        Filtres :
         - ?marque=Dubai
         - ?purete=18
         - ?prix_min=40000
         - ?prix_max=60000
         """,
         manual_parameters=[
-            openapi.Parameter(
-                "marque",
-                openapi.IN_QUERY,
-                description="Filtrer par nom de marque",
-                type=openapi.TYPE_STRING,
-            ),
-            openapi.Parameter(
-                "purete",
-                openapi.IN_QUERY,
-                description="Filtrer par pureté",
-                type=openapi.TYPE_STRING,
-            ),
-            openapi.Parameter(
-                "prix_min",
-                openapi.IN_QUERY,
-                description="Prix minimum",
-                type=openapi.TYPE_NUMBER,
-            ),
-            openapi.Parameter(
-                "prix_max",
-                openapi.IN_QUERY,
-                description="Prix maximum",
-                type=openapi.TYPE_NUMBER,
-            ),
+            openapi.Parameter("marque", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("purete", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("prix_min", openapi.IN_QUERY, type=openapi.TYPE_NUMBER),
+            openapi.Parameter("prix_max", openapi.IN_QUERY, type=openapi.TYPE_NUMBER),
         ],
-        responses={
-            200: openapi.Response(
-                description="Liste des liaisons Marque–Pureté",
-                schema=MarquePureteListSerializer(many=True),
-            )
-        },
+        responses={200: MarquePureteListSerializer(many=True)},
         tags=["Marques"],
     )
     def get(self, request):
@@ -613,13 +588,7 @@ class ListMarquePureteView(APIView):
 
         serializer = MarquePureteListSerializer(queryset, many=True)
 
-        return Response(
-            {
-                "count": queryset.count(),
-                "results": serializer.data,
-            },
-            status=status.HTTP_200_OK
-        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 # class MarqueCreateAPIView(APIView):
 #     renderer_classes = [UserRenderer]
