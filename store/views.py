@@ -697,18 +697,63 @@ class ListMarquePureteView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Lister les marques avec leurs puretés et prix",
+        operation_summary="Lister les marques avec leurs puretés",
         operation_description="""
         Retourne une liste groupée par marque.
+
+        Le prix est affiché au niveau de la marque.
+
+        Exemple de réponse :
+        [
+            {
+                "marque": "Local",
+                "prix": "5000.00",
+                "puretes": [
+                    {
+                        "purete_id": 2,
+                        "purete": "18"
+                    }
+                ]
+            }
+        ]
 
         Filtres :
         - ?marque=Local
         - ?purete=18
         """,
         manual_parameters=[
-            openapi.Parameter("marque", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("purete", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter(
+                "marque",
+                openapi.IN_QUERY,
+                description="Filtrer par nom de marque",
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "purete",
+                openapi.IN_QUERY,
+                description="Filtrer par pureté",
+                type=openapi.TYPE_STRING,
+            ),
         ],
+        responses={
+            200: openapi.Response(
+                description="Liste groupée des marques avec puretés",
+                examples={
+                    "application/json": [
+                        {
+                            "marque": "Local",
+                            "prix": "5000.00",
+                            "puretes": [
+                                {
+                                    "purete_id": 2,
+                                    "purete": "18"
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        },
         tags=["Marques"],
     )
     def get(self, request):
@@ -734,13 +779,13 @@ class ListMarquePureteView(APIView):
             if marque_id not in grouped:
                 grouped[marque_id] = {
                     "marque": item.marque.marque,
+                    "prix": str(item.prix),
                     "puretes": []
                 }
 
             grouped[marque_id]["puretes"].append({
                 "purete_id": item.purete.id,
-                "purete": item.purete.purete,  # 👈 utile frontend
-                "prix": str(item.prix),
+                "purete": item.purete.purete,
             })
 
         return Response(list(grouped.values()), status=200)
