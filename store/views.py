@@ -648,7 +648,6 @@ class ListMarquePureteView(APIView):
 #             "updated": updated
 #         }, status=status_code)
 
-
 class CreateMarquePureteView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -660,72 +659,285 @@ class CreateMarquePureteView(APIView):
     @transaction.atomic
     def post(self, request):
         s = MarquePureteSerializer(data=request.data)
-        if not s.is_valid():
-            return Response(s.errors, status=400)
+        s.is_valid(raise_exception=True)
 
         modele_nom = s.validated_data.get("modele")
         marque_nom = s.validated_data["marque"]
-        items = s.validated_data["puretes"]  # [{purete_id, prix}...]
+        items = s.validated_data["puretes"]
 
-        # Optionnel : créer le modèle si fourni
         if modele_nom:
-            Modele.objects.get_or_create(modele=modele_nom)
+            Modele.objects.get_or_create(modele=modele_nom.strip().title())
 
         marque, _ = Marque.objects.get_or_create(marque=marque_nom)
 
-        # Déduplication simple: dernier prix par purete_id
-        latest = {int(e["purete_id"]): Decimal(e["prix"]) for e in items}
+        latest = {
+            int(e["purete_id"]): Decimal(e["prix"])
+            for e in items
+        }
 
-        # Vérifier existence des puretés
         ids = list(latest.keys())
-        found = set(Purete.objects.filter(id__in=ids).values_list("id", flat=True))
+
+        found = set(
+            Purete.objects.filter(id__in=ids)
+            .values_list("id", flat=True)
+        )
+
         missing = sorted(set(ids) - found)
+
         if missing:
-            return Response({"error": f"Pureté(s) introuvable(s): {missing}"}, status=404)
+            return Response(
+                {"error": f"Pureté(s) introuvable(s): {missing}"},
+                status=404
+            )
 
-        # Précharger existants
-        existing = {mp.purete_id: mp for mp in MarquePurete.objects.filter(marque=marque, purete_id__in=ids)}
+        existing = {
+            mp.purete_id: mp
+            for mp in MarquePurete.objects
+            .select_related("purete")
+            .filter(marque=marque, purete_id__in=ids)
+        }
 
-        created, updated, history = [], [], []
+        created = []
+        updated = []
+        unchanged = []
+        history = []
+
         user = request.user if request.user.is_authenticated else None
 
         for pid, new_price in latest.items():
             mp = existing.get(pid)
+
             if mp:
                 if mp.prix != new_price:
-                    # 1) Log de l’ancien prix
+                    old_price = mp.prix
+
                     MarquePuretePrixHistory.objects.create(
                         marque=marque,
                         purete=mp.purete,
-                        ancien_prix=mp.prix,
+                        ancien_prix=old_price,
                         nouveau_prix=new_price,
                         modifier_par=user,
                     )
-                    # 2) Mise à jour du prix courant
+
                     mp.prix = new_price
                     mp.save(update_fields=["prix", "date_modification"])
 
-                    updated.append({"id": pid, "purete": mp.purete.purete, "prix": str(mp.prix)})
+                    updated.append({
+                        "id": pid,
+                        "purete": mp.purete.purete,
+                        "ancien_prix": str(old_price),
+                        "prix": str(new_price),
+                    })
+
                     history.append({
-                        "id": pid, "purete": mp.purete.purete,
-                        "ancien_prix": str(mp.prix), "nouveau_prix": str(new_price)
+                        "id": pid,
+                        "purete": mp.purete.purete,
+                        "ancien_prix": str(old_price),
+                        "nouveau_prix": str(new_price),
                     })
                 else:
-                    # rien à faire (prix identique)
-                    updated.append({"id": pid, "purete": mp.purete.purete, "prix": str(mp.prix)})
+                    unchanged.append({
+                        "id": pid,
+                        "purete": mp.purete.purete,
+                        "prix": str(mp.prix),
+                    })
             else:
-                new = MarquePurete.objects.create(marque=marque, purete_id=pid, prix=new_price)
-                created.append({"id": pid, "purete": new.purete.purete, "prix": str(new.prix)})
+                new = MarquePurete.objects.create(
+                    marque=marque,
+                    purete_id=pid,
+                    prix=new_price
+                )
+
+                created.append({
+                    "id": pid,
+                    "purete": new.purete.purete,
+                    "prix": str(new.prix),
+                })
 
         return Response({
-            "message": "✅ Enregistré (historique conservé lors des mises à jour).",
-            "marque": {"id": marque.id, "nom": marque.marque},
+            "message": "✅ Enregistré avec succès.",
+            "marque": {
+                "id": marque.id,
+                "nom": marque.marque,
+            },
             "created": created,
             "updated": updated,
-            "history_records": history  # traces des modifs faites pendant cet appel
+            "unchanged": unchanged,
+            "history_records": history,
         }, status=201 if created else 200)
         
 
+class MarqueUpdateAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    allowed_roles_admin_manager = ["admin", "manager"]
+
+    def has_permission_role(self, user):
+        return user.user_role and user.user_role.role in self.allowed_roles_admin_manager
+
+    @swagger_auto_schema(
+        operation_summary="Modifier une marque + ses puretés + prix",
+        operation_description="""
+        Modifie une marque existante et ses prix par pureté.
+
+        - Met à jour le nom de la marque.
+        - Crée les nouvelles liaisons Marque–Pureté si elles n'existent pas.
+        - Met à jour le prix si la liaison existe.
+        - Journalise l'ancien prix dans MarquePuretePrixHistory.
+        """,
+        request_body=MarquePureteSerializer,
+        responses={
+            200: "Marque mise à jour",
+            201: "Nouvelle liaison créée",
+            400: "Erreur de validation",
+            403: "Accès refusé",
+            404: "Marque non trouvée / Pureté introuvable",
+        },
+        tags=["Marques"],
+    )
+    @transaction.atomic
+    def put(self, request, pk):
+        user = request.user
+
+        if not self.has_permission_role(user):
+            return Response(
+                {"message": "Access Denied"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        s = MarquePureteSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+
+        marque_nom = s.validated_data["marque"]
+        items = s.validated_data["puretes"]
+
+        try:
+            marque = Marque.objects.select_for_update().get(pk=pk)
+        except Marque.DoesNotExist:
+            return Response(
+                {"detail": "Marque non trouvée."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        old_marque_name = marque.marque
+        marque.marque = marque_nom
+        marque.save(update_fields=["marque"])
+
+        latest = {
+            int(e["purete_id"]): Decimal(e["prix"])
+            for e in items
+        }
+
+        ids = list(latest.keys())
+
+        found = set(
+            Purete.objects.filter(id__in=ids)
+            .values_list("id", flat=True)
+        )
+
+        missing = sorted(set(ids) - found)
+
+        if missing:
+            return Response(
+                {"error": f"Pureté(s) introuvable(s): {missing}"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        existing = {
+            mp.purete_id: mp
+            for mp in MarquePurete.objects.select_for_update()
+            .select_related("purete")
+            .filter(marque=marque, purete_id__in=ids)
+        }
+
+        created = []
+        updated = []
+        unchanged = []
+        history = []
+
+        for pid, new_price in latest.items():
+            mp = existing.get(pid)
+
+            if mp:
+                old_price = mp.prix
+
+                if old_price != new_price:
+                    MarquePuretePrixHistory.objects.create(
+                        marque=marque,
+                        purete=mp.purete,
+                        ancien_prix=old_price,
+                        nouveau_prix=new_price,
+                        modifier_par=user,
+                    )
+
+                    mp.prix = new_price
+                    mp.save(update_fields=["prix", "date_modification"])
+
+                    updated.append({
+                        "id": pid,
+                        "purete": mp.purete.purete,
+                        "ancien_prix": str(old_price),
+                        "prix": str(new_price),
+                    })
+
+                    history.append({
+                        "id": pid,
+                        "purete": mp.purete.purete,
+                        "ancien_prix": str(old_price),
+                        "nouveau_prix": str(new_price),
+                    })
+
+                else:
+                    unchanged.append({
+                        "id": pid,
+                        "purete": mp.purete.purete,
+                        "prix": str(mp.prix),
+                    })
+
+            else:
+                new = MarquePurete.objects.create(
+                    marque=marque,
+                    purete_id=pid,
+                    prix=new_price
+                )
+
+                created.append({
+                    "id": pid,
+                    "purete": new.purete.purete,
+                    "prix": str(new.prix),
+                })
+
+        return Response(
+            {
+                "message": "✅ Marque mise à jour avec succès.",
+                "marque": {
+                    "id": marque.id,
+                    "ancien_nom": old_marque_name,
+                    "nom": marque.marque,
+                },
+                "created": created,
+                "updated": updated,
+                "unchanged": unchanged,
+                "history_records": history,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        )
+
+    @swagger_auto_schema(
+        operation_summary="Modifier partiellement une marque + ses puretés + prix",
+        request_body=MarquePureteSerializer,
+        responses={
+            200: "Marque partiellement mise à jour",
+            201: "Nouvelle liaison créée",
+            400: "Erreur de validation",
+            403: "Accès refusé",
+            404: "Marque non trouvée / Pureté introuvable",
+        },
+        tags=["Marques"],
+    )
+    @transaction.atomic
+    def patch(self, request, pk):
+        return self.put(request, pk)
 
 
 class MarquePureteHistoryListView(APIView):
@@ -807,114 +1019,71 @@ class MarquePureteHistoryListView(APIView):
 
         return Response(data, status=200)
 
-class MarqueUpdateAPIView(APIView):
-    renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
+# class MarqueUpdateAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
 
-    allowed_roles_admin_manager = ["admin", "manager"]
+#     # ✅ Rôles autorisés à modifier une marque
+#     allowed_roles_admin_manager = ['admin', 'manager']
 
-    def get_object(self, pk):
-        try:
-            return Marque.objects.prefetch_related(
-                "marque_puretes__purete"
-            ).get(pk=pk)
-        except Marque.DoesNotExist:
-            return None
+#     def get_object(self, pk):
+#         try:
+#             return Marque.objects.get(pk=pk)
+#         except Marque.DoesNotExist:
+#             return None
 
-    def has_permission_role(self, user):
-        return user.user_role and user.user_role.role in self.allowed_roles_admin_manager
+#     @swagger_auto_schema(
+#         operation_summary="Mettre à jour une marque (PUT)",
+#         operation_description="Permet de remplacer complètement une marque avec les nouvelles données.",
+#         request_body=MarqueSerializer,
+#         responses={
+#             200: openapi.Response(description="Marque mise à jour avec succès", schema=MarqueSerializer),
+#             400: "Erreur de validation",
+#             403: "Accès refusé",
+#             404: "Marque non trouvée"
+#         }
+#     )
+#     def put(self, request, pk):
+#         user = request.user
+#         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-    @swagger_auto_schema(
-        operation_summary="Mettre à jour une marque avec pureté et prix",
-        operation_description="""
-        Permet de modifier une marque et ses prix par pureté.
+#         marque = self.get_object(pk)
+#         if not marque:
+#             return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
 
-        Exemple :
-        {
-            "marque": "Dubai",
-            "puretes": [
-                {
-                    "purete": "18",
-                    "prix": "45000"
-                },
-                {
-                    "purete": "21",
-                    "prix": "52000"
-                }
-            ]
-        }
-        """,
-        request_body=MarqueSerializer,
-        responses={
-            200: openapi.Response(
-                description="Marque mise à jour avec succès",
-                schema=MarqueSerializer
-            ),
-            400: "Erreur de validation",
-            403: "Accès refusé",
-            404: "Marque non trouvée",
-        },
-        tags=["marque"],
-    )
-    @transaction.atomic
-    def put(self, request, pk):
-        user = request.user
+#         serializer = MarqueSerializer(marque, data=request.data)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data)
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        if not self.has_permission_role(user):
-            return Response(
-                {"message": "Access Denied"},
-                status=status.HTTP_403_FORBIDDEN
-            )
+#     @swagger_auto_schema(
+#         operation_summary="Modifier une marque partiellement (PATCH)",
+#         operation_description="Permet de mettre à jour certains champs d'une marque.",
+#         request_body=MarqueSerializer,
+#         responses={
+#             200: openapi.Response(description="Marque partiellement mise à jour", schema=MarqueSerializer),
+#             400: "Erreur de validation",
+#             403: "Accès refusé",
+#             404: "Marque non trouvée"
+#         }
+#     )
+#     def patch(self, request, pk):
+#         user = request.user
+#         if not user.user_role or user.user_role.role not in self.allowed_roles_admin_manager:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        marque = self.get_object(pk)
-        if not marque:
-            return Response(
-                {"detail": "Marque non trouvée"},
-                status=status.HTTP_404_NOT_FOUND
-            )
+#         marque = self.get_object(pk)
+#         if not marque:
+#             return Response({"detail": "Marque non trouvée"}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = MarqueSerializer(marque, data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
+#         serializer = MarqueSerializer(marque, data=request.data, partial=True)
+#         if serializer.is_valid():
+#             serializer.save()
+#             return Response(serializer.data)
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    @swagger_auto_schema(
-        operation_summary="Modifier partiellement une marque avec pureté et prix",
-        request_body=MarqueSerializer,
-        responses={
-            200: openapi.Response(
-                description="Marque partiellement mise à jour",
-                schema=MarqueSerializer
-            ),
-            400: "Erreur de validation",
-            403: "Accès refusé",
-            404: "Marque non trouvée",
-        },
-        tags=["Marques"],
-    )
-    @transaction.atomic
-    def patch(self, request, pk):
-        user = request.user
-
-        if not self.has_permission_role(user):
-            return Response(
-                {"message": "Access Denied"},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
-        marque = self.get_object(pk)
-        if not marque:
-            return Response(
-                {"detail": "Marque non trouvée"},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        serializer = MarqueSerializer(marque, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-
-        return Response(serializer.data, status=status.HTTP_200_OK)
     
 
 class MarqueDeleteAPIView(APIView):

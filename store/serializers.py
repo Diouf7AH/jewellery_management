@@ -110,109 +110,30 @@ class PureteSerializer(serializers.ModelSerializer):
 #         return data
 
 
-# class MarqueSerializer(serializers.ModelSerializer):
-#     # Utilisé pour la création via le nom de catégorie
-#     purete = serializers.SlugRelatedField(
-#         queryset=Purete.objects.all(),
-#         slug_field='purete',
-#         write_only=True
-#     )
-#     # Affichage détaillé de la catégorie
-#     purete_detail = serializers.SerializerMethodField(read_only=True)
-
-#     class Meta:
-#         model = Marque
-#         fields = ['id', 'marque', 'purete', 'purete_detail']
-#         # fields = ['id', 'marque', 'prix', 'purete', 'purete_detail']
-    
-#     def get_purete_detail(self, obj):
-#         if not obj.purete:
-#             return None
-#         return {
-#                 "id": obj.purete.id,
-#                 "purete": obj.purete.purete
-#             }
-
-# class MarquePureteSerializer(serializers.ModelSerializer):
-#     purete = serializers.SlugRelatedField(
-#         queryset=Purete.objects.all(),
-#         slug_field="purete"
-#     )
-
-#     purete_detail = serializers.SerializerMethodField(read_only=True)
-
-#     class Meta:
-#         model = MarquePurete
-#         fields = ["id", "purete", "purete_detail", "prix"]
-
-#     def get_purete_detail(self, obj):
-#         return {
-#             "id": obj.purete.id,
-#             "purete": obj.purete.purete,
-#             "prix": obj.prix,
-#         }
-
-class MarquePureteSerializer(serializers.ModelSerializer):
+class MarqueSerializer(serializers.ModelSerializer):
+    # Utilisé pour la création via le nom de catégorie
     purete = serializers.SlugRelatedField(
         queryset=Purete.objects.all(),
-        slug_field="purete"
+        slug_field='purete',
+        write_only=True
     )
-
+    # Affichage détaillé de la catégorie
     purete_detail = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
-        model = MarquePurete
-        fields = ["id", "purete", "purete_detail", "prix"]
-
-    def get_purete_detail(self, obj):
-        return {
-            "id": obj.purete.id,
-            "purete": obj.purete.purete,
-            "prix": obj.prix,
-        }
-
-
-class MarqueSerializer(serializers.ModelSerializer):
-    puretes = MarquePureteSerializer(
-        source="marque_puretes",
-        many=True
-    )
-
-    class Meta:
         model = Marque
-        fields = ["id", "marque", "puretes"]
+        fields = ['id', 'marque', 'purete', 'purete_detail']
+        # fields = ['id', 'marque', 'prix', 'purete', 'purete_detail']
+    
+    def get_purete_detail(self, obj):
+        if not obj.purete:
+            return None
+        return {
+                "id": obj.purete.id,
+                "purete": obj.purete.purete
+            }
 
-    def create(self, validated_data):
-        puretes_data = validated_data.pop("marque_puretes", [])
 
-        marque = Marque.objects.create(**validated_data)
-
-        for item in puretes_data:
-            MarquePurete.objects.create(
-                marque=marque,
-                purete=item["purete"],
-                prix=item["prix"]
-            )
-
-        return marque
-
-    def update(self, instance, validated_data):
-        puretes_data = validated_data.pop("marque_puretes", None)
-
-        instance.marque = validated_data.get("marque", instance.marque)
-        instance.save()
-
-        if puretes_data is not None:
-            for item in puretes_data:
-                MarquePurete.objects.update_or_create(
-                    marque=instance,
-                    purete=item["purete"],
-                    defaults={
-                        "prix": item["prix"]
-                    }
-                )
-
-        return instance
 #marque purete
 
 class MarquePureteListSerializer(serializers.ModelSerializer):
@@ -234,30 +155,30 @@ class PuretePrixInputSerializer(serializers.Serializer):
         return value
 
 
-# class MarquePureteSerializer(serializers.Serializer):
-#     # modele = serializers.CharField(max_length=100)
-#     marque = serializers.CharField(max_length=100)
-#     puretes = PuretePrixInputSerializer(many=True)
+class MarquePureteSerializer(serializers.Serializer):
+    # modele = serializers.CharField(max_length=100)
+    marque = serializers.CharField(max_length=100)
+    puretes = PuretePrixInputSerializer(many=True)
 
-#     # def validate_modele(self, value):
-#     #     """Nettoie et formate le nom du modèle."""
-#     #     return value.strip().title()
+    # def validate_modele(self, value):
+    #     """Nettoie et formate le nom du modèle."""
+    #     return value.strip().title()
 
-#     def validate_marque(self, value):
-#         """Nettoie et formate le nom de la marque."""
-#         return value.strip().title()
+    def validate_marque(self, value):
+        """Nettoie et formate le nom de la marque."""
+        return value.strip().title()
 
-#     def validate(self, data):
-#         """Validation globale."""
-#         if not data.get("puretes"):
-#             raise serializers.ValidationError({"puretes": "Au moins une pureté est requise."})
+    def validate(self, data):
+        """Validation globale."""
+        if not data.get("puretes"):
+            raise serializers.ValidationError({"puretes": "Au moins une pureté est requise."})
 
-#         # Vérifie que les purete_id sont uniques dans la requête
-#         ids = [p["purete_id"] for p in data["puretes"]]
-#         if len(ids) != len(set(ids)):
-#             raise serializers.ValidationError({"puretes": "Les pureté_id doivent être uniques."})
+        # Vérifie que les purete_id sont uniques dans la requête
+        ids = [p["purete_id"] for p in data["puretes"]]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError({"puretes": "Les pureté_id doivent être uniques."})
 
-#         return data
+        return data
 
 #marque purete
 
