@@ -110,28 +110,28 @@ class PureteSerializer(serializers.ModelSerializer):
 #         return data
 
 
-# class MarqueSerializer(serializers.ModelSerializer):
-#     # Utilisé pour la création via le nom de catégorie
-#     purete = serializers.SlugRelatedField(
-#         queryset=Purete.objects.all(),
-#         slug_field='purete',
-#         write_only=True
-#     )
-#     # Affichage détaillé de la catégorie
-#     purete_detail = serializers.SerializerMethodField(read_only=True)
+class MarqueSerializer(serializers.ModelSerializer):
+    # Utilisé pour la création via le nom de catégorie
+    purete = serializers.SlugRelatedField(
+        queryset=Purete.objects.all(),
+        slug_field='purete',
+        write_only=True
+    )
+    # Affichage détaillé de la catégorie
+    purete_detail = serializers.SerializerMethodField(read_only=True)
 
-#     class Meta:
-#         model = Marque
-#         fields = ['id', 'marque', 'purete', 'purete_detail']
-#         # fields = ['id', 'marque', 'prix', 'purete', 'purete_detail']
+    class Meta:
+        model = Marque
+        fields = ['id', 'marque', 'purete', 'purete_detail']
+        # fields = ['id', 'marque', 'prix', 'purete', 'purete_detail']
     
-#     def get_purete_detail(self, obj):
-#         if not obj.purete:
-#             return None
-#         return {
-#                 "id": obj.purete.id,
-#                 "purete": obj.purete.purete
-#             }
+    def get_purete_detail(self, obj):
+        if not obj.purete:
+            return None
+        return {
+                "id": obj.purete.id,
+                "purete": obj.purete.purete
+            }
 
 
 class MarqueListSerializer(serializers.Serializer):
