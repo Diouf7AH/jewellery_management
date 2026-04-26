@@ -74,7 +74,6 @@ urlpatterns = [
     path('purete/update/<int:pk>', store_views.PureteUpdateAPIView.as_view(), name='purity_update'),
     path('purete/delete/<int:pk>', store_views.PureteDeleteAPIView.as_view(), name='purety_Delete'),
     # Marque
-    path('marque/list', store_views.MarqueListAPIView.as_view(), name='marque_list'),
     path('marque-purete/list', store_views.ListMarquePureteView.as_view(), name='list-marque-purete'),
     path('marque-purete/history-prix', store_views.MarquePureteHistoryListView.as_view(), name='marque-purete-history-prix'),
     # path('marque/create', store_views.MarqueCreateAPIView.as_view(), name='marque_create'),
