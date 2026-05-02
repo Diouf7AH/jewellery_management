@@ -138,28 +138,6 @@ class MarqueListSerializer(serializers.Serializer):
     marque = serializers.CharField()
     puretes = serializers.ListField()
 
-#marque purete
-
-# class MarquePureteListSerializer(serializers.ModelSerializer):
-#     marque = serializers.SerializerMethodField()
-#     purete = serializers.SerializerMethodField()
-
-#     class Meta:
-#         model = MarquePurete
-#         fields = ['id', 'marque', 'purete', 'prix', 'date_ajout']
-
-#     def get_marque(self, obj):
-#         return {
-#             "id": obj.marque.id,
-#             "nom": obj.marque.marque
-#         }
-
-#     def get_purete(self, obj):
-#         return {
-#             "id": obj.purete.id,
-#             "purete": obj.purete.purete
-#         }
-
 
 class PuretePrixSerializer(serializers.Serializer):
     purete_id = serializers.IntegerField()

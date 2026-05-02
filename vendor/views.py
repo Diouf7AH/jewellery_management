@@ -169,7 +169,7 @@ class VendorDashboardView(APIView):
             .filter(vendor=vendor, vente__created_at__gte=start_week)
             .aggregate(
                 total_quantite=Sum("quantite"),
-                total_ttc=Sum("prix_ttc")
+                total_ttc=Sum("montant_total")
             )
         )
 
@@ -186,7 +186,7 @@ class VendorDashboardView(APIView):
             .filter(vendor=vendor, vente__created_at__gte=start_month)
             .aggregate(
                 total_quantite=Sum("quantite"),
-                total_ttc=Sum("prix_ttc")
+                total_ttc=Sum("montant_total")
             )
         )
 
@@ -203,7 +203,7 @@ class VendorDashboardView(APIView):
             .filter(vendor=vendor, vente__created_at__gte=start_year)
             .aggregate(
                 total_quantite=Sum("quantite"),
-                total_ttc=Sum("prix_ttc")
+                total_ttc=Sum("montant_total")
             )
         )
 
@@ -221,7 +221,7 @@ class VendorDashboardView(APIView):
             .values("produit__id", "produit__nom", "produit__sku")
             .annotate(
                 total_quantite=Sum("quantite"),
-                total_ttc=Sum("prix_ttc")
+                total_ttc=Sum("montant_total")
             )
             .order_by("-total_quantite")[:10]
         )
@@ -266,7 +266,7 @@ class VendorDashboardView(APIView):
         graphique_rows = (
             VenteProduit.objects
             .filter(vendor=vendor, vente__created_at__gte=start_month)
-            .values("vente__created_at", "quantite", "prix_ttc")
+            .values("vente__created_at", "quantite", "montant_total")
             .order_by("vente__created_at")
         )
 
@@ -282,7 +282,7 @@ class VendorDashboardView(APIView):
 
             local_day = timezone.localtime(dt).date().isoformat()
             by_day[local_day]["total_quantite"] += int(row["quantite"] or 0)
-            by_day[local_day]["total_ttc"] += float(row["prix_ttc"] or 0)
+            by_day[local_day]["total_ttc"] += float(row["montant_total"] or 0)
 
         graphique = []
         for day in sorted(by_day.keys()):

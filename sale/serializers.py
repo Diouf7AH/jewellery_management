@@ -343,7 +343,7 @@ class ClientInSerializer(serializers.Serializer):
 
 
 class VenteProduitInSerializer(serializers.Serializer):
-    produit_id = serializers.IntegerField(required=False)
+    produit_id = serializers.IntegerField(min_value=1, required=False)
     sku = serializers.CharField(required=False, allow_blank=True)
     qr = serializers.CharField(required=False, allow_blank=True)
 

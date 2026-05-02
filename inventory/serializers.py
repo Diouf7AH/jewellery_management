@@ -153,9 +153,6 @@ class InventoryMovementMiniSerializer(serializers.ModelSerializer):
 
 
 class ProduitLineWithInventorySerializer(serializers.ModelSerializer):
-    """
-    Serializer détaillé pour ProduitLineWithInventoryListView
-    """
     # ----- Lot -----
     lot_id = serializers.IntegerField(source="lot.id", read_only=True, default=None)
     numero_lot = serializers.CharField(source="lot.numero_lot", read_only=True, default=None)
@@ -164,48 +161,37 @@ class ProduitLineWithInventorySerializer(serializers.ModelSerializer):
     # ----- Achat / fournisseur -----
     achat_id = serializers.IntegerField(source="lot.achat.id", read_only=True, default=None)
     numero_achat = serializers.CharField(source="lot.achat.numero_achat", read_only=True, default=None)
-
-    fournisseur_id = serializers.IntegerField(
-        source="lot.achat.fournisseur.id",
-        read_only=True,
-        default=None,
-    )
-    fournisseur_nom = serializers.CharField(
-        source="lot.achat.fournisseur.nom",
-        read_only=True,
-        default=None,
-    )
+    fournisseur_id = serializers.IntegerField(source="lot.achat.fournisseur.id", read_only=True, default=None)
+    fournisseur_nom = serializers.CharField(source="lot.achat.fournisseur.nom", read_only=True, default=None)
 
     # ----- Produit -----
     produit_id = serializers.IntegerField(source="produit.id", read_only=True)
     produit_nom = serializers.CharField(source="produit.nom", read_only=True)
     produit_sku = serializers.CharField(source="produit.sku", read_only=True, default=None)
-    produit_poids = serializers.CharField(source="produit.poids", read_only=True, default=None)
-
-    categorie_nom = serializers.CharField(
-        source="produit.categorie.nom",
-        read_only=True,
-        default=None,
-    )
-    marque_nom = serializers.CharField(
-        source="produit.marque.marque",
-        read_only=True,
-        default=None,
-    )
-    purete_nom = serializers.CharField(
-        source="produit.purete.purete",
-        read_only=True,
-        default=None,
-    )
+    produit_poids = serializers.DecimalField(source="produit.poids", max_digits=12, decimal_places=3, read_only=True)
+    categorie_nom = serializers.CharField(source="produit.categorie.nom", read_only=True, default=None)
+    marque_nom = serializers.CharField(source="produit.marque.marque", read_only=True, default=None)
+    purete_nom = serializers.CharField(source="produit.purete.purete", read_only=True, default=None)
 
     # ----- Ligne achat -----
     quantite = serializers.IntegerField(read_only=True)
-    poids_total = serializers.DecimalField(max_digits=12, decimal_places=3, read_only=True)
-    prix_achat_gramme = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    poids_total = serializers.DecimalField(
+        source="poids_total_calc",
+        max_digits=14,
+        decimal_places=3,
+        read_only=True,
+        allow_null=True,
+    )
+    prix_achat_gramme = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
 
-    # ----- Agrégats stock (annotate dans la vue) -----
-    quantite_allouee = serializers.IntegerField(read_only=True, default=0)
-    quantite_disponible_total = serializers.IntegerField(read_only=True, default=0)
+    # ----- Stock actuel -----
+    quantite_totale = serializers.IntegerField(read_only=True, default=0)
+    en_stock_total = serializers.IntegerField(read_only=True, default=0)
+
+    # ----- Stock vendeur -----
+    vendor_quantite_allouee = serializers.IntegerField(read_only=True, default=0)
+    vendor_quantite_vendue = serializers.IntegerField(read_only=True, default=0)
+    vendor_en_stock = serializers.SerializerMethodField()
 
     # ----- Mouvements -----
     movements = serializers.SerializerMethodField()
@@ -236,19 +222,27 @@ class ProduitLineWithInventorySerializer(serializers.ModelSerializer):
             "poids_total",
             "prix_achat_gramme",
 
-            "quantite_allouee",
-            "quantite_disponible_total",
+            "quantite_totale",
+            "en_stock_total",
+
+            "vendor_quantite_allouee",
+            "vendor_quantite_vendue",
+            "vendor_en_stock",
 
             "movements",
         ]
 
+    def get_vendor_en_stock(self, obj):
+        return max(
+            0,
+            int(getattr(obj, "vendor_quantite_allouee", 0) or 0)
+            - int(getattr(obj, "vendor_quantite_vendue", 0) or 0)
+        )
+
     def get_movements(self, obj):
-        # Cas optimal : préchargé dans la vue via
-        # Prefetch("inventory_movements", queryset=..., to_attr="prefetched_movements")
         if hasattr(obj, "prefetched_movements"):
             return InventoryMovementMiniSerializer(obj.prefetched_movements, many=True).data
 
-        # Fallback si pas de prefetch
         qs = (
             InventoryMovement.objects
             .select_related(
@@ -264,4 +258,6 @@ class ProduitLineWithInventorySerializer(serializers.ModelSerializer):
             .order_by("-occurred_at", "-id")
         )
         return InventoryMovementMiniSerializer(qs, many=True).data
+
     
+

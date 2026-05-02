@@ -594,8 +594,10 @@ class ProduitLineWithInventoryListView(ListAPIView):
                 )
             )
             .annotate(
-                quantite_allouee=Coalesce(Sum("stocks__quantite_allouee"), 0),
-                quantite_disponible_total=Coalesce(Sum("stocks__quantite_disponible"), 0),
+                quantite_totale=Coalesce(Sum("stocks__quantite_totale"), 0),
+                en_stock_total=Coalesce(Sum("stocks__en_stock"), 0),
+                vendor_quantite_allouee=Coalesce(Sum("vendor_stocks__quantite_allouee"), 0),
+                vendor_quantite_vendue=Coalesce(Sum("vendor_stocks__quantite_vendue"), 0),
             )
             .filter(lot__received_at__year=year)
         )

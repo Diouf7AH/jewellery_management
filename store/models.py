@@ -493,37 +493,7 @@ class Produit(models.Model):
         if self.taille is not None and self.taille < 0:
             raise ValidationError("La taille ne peut pas être négative.")
 
-    # def skuGet(self):
-    #     # Ne pas bloquer sur poids/taille=0.00
-    #     if not (self.categorie and self.modele and self.marque and self.purete and self.etat):
-    #         return None
 
-    #     poids = self.poids if self.poids is not None else Decimal("0.00")
-    #     taille = self.taille if self.taille is not None else Decimal("0.00")
-
-    #     poids_str = str(poids).replace('.', 'g')
-    #     taille_str = str(taille).replace('.', 'cm')
-            
-    #     return (
-    #         f"{(self.categorie.nom or '')[:4].upper()}-"
-    #         f"{(self.modele.modele or '')[:4].upper()}-"
-    #         f"{self.etat}-"
-    #         f"{self.purete.purete}-"
-    #         f"{(self.marque.marque or '')[:3].upper()}-"
-    #         f"P{poids_str}-T{taille_str}"
-    #     )
-
-    # def _make_unique_sku(self, base_sku: str) -> str:
-    #     if not base_sku:
-    #         return base_sku
-
-    #     sku = base_sku
-    #     i = 2
-    #     while Produit.objects.filter(sku=sku).exclude(pk=self.pk).exists():
-    #         sku = f"{base_sku}-{i}"
-    #         i += 1
-    #     return sku
-    
     def skuGet(self):
         if not (self.categorie and self.modele and self.marque and self.purete and self.etat):
             return None
@@ -560,22 +530,6 @@ class Produit(models.Model):
             i += 1
 
         return sku
-
-
-    # @staticmethod
-    # def generate_qr_code_image(*, content: str, filename_hint: str | None = None) -> File:
-    #     qr = qrcode.QRCode(version=1, box_size=10, border=4)
-    #     qr.add_data(content or "")
-    #     qr.make(fit=True)
-
-    #     img = qr.make_image(fill_color="black", back_color="white")
-    #     buffer = BytesIO()
-    #     img.save(buffer, format="PNG")
-    #     buffer.seek(0)
-
-    #     # Nom court et stable
-    #     safe_name = slugify(filename_hint or "")[:40] or uuid.uuid4().hex[:10]
-    #     return File(buffer, name=f"qr_{safe_name}.png")
 
     
     @staticmethod

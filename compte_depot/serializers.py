@@ -18,7 +18,6 @@ class ClientDepotSerializer(serializers.ModelSerializer):
             "nom",
             "prenom",
             "telephone",
-            "address",
             "CNI",
             "photo",
         ]

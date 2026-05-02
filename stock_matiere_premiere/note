@@ -1,0 +1,71 @@
+pour un rachat ou in achat de matier premiere on ne fait de updat on annul et recree
+
+Exemple payload
+Pour vendor et manager, tu peux ne pas envoyer bijouterie_id. Pour admin, il est obligatoire.
+Si téléphone existe → récupérer le client
+Sinon → créer le client avec nom + prénom + téléphone
+
+{
+  "bijouterie_id": 1,
+  "nom": "Ndiaye",
+  "prenom": "Awa",
+  "telephone": "770000000",
+  "montant_total": "150000",
+  "mode_paiement": "especes",
+  "adresse_vendeur": "Dakar",
+  "piece_identite": "CNI123456789",
+  "items": [
+    {
+      "description": "Bague cassée",
+      "matiere": "or",
+      "purete_id": 2,
+      "poids": "4.000"
+    },
+    {
+      "description": "Chaîne ancienne",
+      "matiere": "or",
+      "purete_id": 3,
+      "poids": "6.000"
+    }
+  ]
+}
+
+
+
+fournisseur
+{
+  "fournisseur": {
+    "nom": "Diallo",
+    "prenom": "Mamadou",
+    "telephone": "780000000"
+  },
+  "montant_total": "300000",
+  "mode_paiement": "especes",
+  "items": [
+    {
+      "description": "Lingot",
+      "matiere": "or",
+      "purete_id": 2,
+      "poids": "10.000"
+    },
+    {
+      "description": "Or brut",
+      "matiere": "or",
+      "purete_id": 3,
+      "poids": "5.000"
+    }
+  ]
+}
+
+
+path(
+        "dashboard-matiere-premiere/",
+        DashboardMatierePremiereView.as_view(),
+        name="dashboard-matiere-premiere",
+    ),
+
+GET /api/stock-matiere-premiere/dashboard-matiere-premiere
+Avec filtre :
+GET /api/stock-matiere-premiere/dashboard-matiere-premiere/?start_date=2026-01-01&end_date=2026-12-31
+Pour admin :
+GET /api/stock-matiere-premiere/dashboard-matiere-premiere/?bijouterie_id=1

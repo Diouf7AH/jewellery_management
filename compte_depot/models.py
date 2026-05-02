@@ -9,7 +9,6 @@ from sale.models import Client
 
 class ClientDepot(Client):
     CNI = models.CharField(max_length=50, blank=True, null=True)
-    address = models.CharField(max_length=255, null=True, blank=True)
     photo = models.ImageField(upload_to="client/", default="client/default.jpg", null=True, blank=True)
 
     class Meta:

@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     'purchase',
     'compte_depot',
     'order',
+    'stock_matiere_premiere',
     
     #Third Party App
     'rest_framework',

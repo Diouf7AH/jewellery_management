@@ -9,6 +9,7 @@ from purchase import views as achat_views
 from sale import views as sale_views
 from staff import views as staff_views
 from stock import views as stock_views
+from stock_matiere_premiere import views as stock_matiere_premiere_views
 # Produits & structure
 from store import views as store_views
 # Authentification
@@ -129,7 +130,7 @@ urlpatterns = [
     path("achat/arrivage/<int:lot_id>/meta", achat_views.ArrivageMetaUpdateView.as_view(), name="arrivage-meta-update"),
     path("achat/arrivage/<int:lot_id>/adjustments", achat_views.ArrivageAdjustmentsView.as_view(), name="arrivage-adjustments"),
     path("achat/produit-lines", achat_views.InventoryPhotoView.as_view(),name="produitline-list",),
-    
+    path("achat/dashboard", achat_views.AchatDashboardView.as_view(), name="achat-dashboard"),
     
     # path("achat/lots/export/csv", achat_views.LotExportCSVView.as_view(), name="lots-export-csv"),
     # path("achat/lots/export/xlsx", achat_views.LotExportExcelView.as_view(), name="lots-export-xlsx"),
@@ -162,8 +163,8 @@ urlpatterns = [
     # 🔹 Stats d’allocations par vendor / année
     # path("inventory/vendors/<int:vendor_id>/allocations/", inv_views.VendorAllocationStatsView.as_view(),name="vendor-allocation-stats",),
     path("inventory/produit-lines", inv_views.ProduitLineWithInventoryListView.as_view(),name="produit-line-with-inventory-list",),
-    path("summary/bijouteries", inv_views.InventoryBijouterieView.as_view(),name="inventory-summary-bijouteries",),
-    path("summary/vendors",inv_views.InventoryVendorView.as_view(),name="inventory-summary-vendors",),
+    path("inventory/bijouteries", inv_views.InventoryBijouterieView.as_view(),name="inventory-summary-bijouteries",),
+    path("inventory/vendors",inv_views.InventoryVendorView.as_view(),name="inventory-summary-vendors",),
     # END INVENTORY
     
     # staff
@@ -262,4 +263,19 @@ urlpatterns = [
     # path('', include('stock.urls')),
     # path('', include('sale.urls')),
     
+    
+    # rachats-clients
+    # path("dashboard-matiere-premiere",stock_matiere_premiere_views.DashboardMatierePremiereView.as_view(),name="dashboard-matiere-premiere",),
+    # ///
+    path("rachats-clients/create",stock_matiere_premiere_views.RachatClientCreateView.as_view(),name="rachat-client-create",),
+    path("rachats/<int:rachat_id>/ticket-58mm/",stock_matiere_premiere_views.RachatClientTicket58mmPDFView.as_view(),name="rachat-client-ticket-58mm",),
+    path( "rachats/<str:numero_ticket>/payer/",stock_matiere_premiere_views.PayRachatClientTicketView.as_view(),name="pay-rachat-client-ticket",),
+    path("rachats/<int:rachat_id>/attestation/",stock_matiere_premiere_views.RachatClientAttestationPDFView.as_view(),name="rachat-client-attestation",),
+    path("rachats/<int:rachat_id>/cancel/",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="cancel-rachat-client",),
+    # /////
+    
+    # path("achats-fournisseurs/create",stock_matiere_premiere_views.AchatMatierePremiereCreateView.as_view(),name="achat-matiere-premiere-create",),
+    # path("rachats-clients/<int:rachat_id>/fiche-pdf",stock_matiere_premiere_views.RachatClientFichePDFView.as_view(),name="rachat-client-fiche-pdf",),
+    path("rachats-clients/<int:rachat_id>/cancel",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="rachat-client-cancel",),
+    # path("achats-matiere/<int:achat_id>/cancel",stock_matiere_premiere_views.CancelAchatMatierePremiereView.as_view(),name="achat-matiere-cancel",)
 ]

@@ -23,17 +23,64 @@ ZERO = Decimal("0.00")
 # =========================
 # Client
 # =========================
+# class Client(models.Model):
+#     prenom = models.CharField(max_length=100)
+#     nom = models.CharField(max_length=100)
+#     telephone = models.CharField(max_length=15, unique=True, blank=True, null=True)
+
+#     @property
+#     def full_name(self):
+#         return f"{self.prenom} {self.nom}".strip()
+
+#     def __str__(self):
+#         return self.full_name
+
 class Client(models.Model):
     prenom = models.CharField(max_length=100)
     nom = models.CharField(max_length=100)
-    telephone = models.CharField(max_length=15, unique=True, blank=True, null=True)
+
+    telephone = models.CharField(
+        max_length=15,
+        unique=True,
+        blank=True,
+        null=True,
+        db_index=True
+    )
+
+    cni = models.CharField(
+        max_length=50,
+        unique=True,
+        blank=True,
+        null=True,
+        db_index=True,
+        verbose_name="Numéro CNI"
+    )
+
+    address = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name="Adresse"
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["telephone"]),
+            models.Index(fields=["cni"]),
+        ]
+        verbose_name = "Client"
+        verbose_name_plural = "Clients"
 
     @property
     def full_name(self):
         return f"{self.prenom} {self.nom}".strip()
 
     def __str__(self):
-        return self.full_name
+        return self.full_name or self.telephone or f"Client #{self.pk}"
+    
 
 
 # =========================
