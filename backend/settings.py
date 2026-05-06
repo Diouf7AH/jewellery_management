@@ -68,6 +68,9 @@ INSTALLED_APPS = [
     'order',
     'stock_matiere_premiere',
     
+    #depense
+    "finance",
+    
     #Third Party App
     'rest_framework',
     # 'knox',

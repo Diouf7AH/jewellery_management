@@ -2,6 +2,7 @@ from django.urls import include, path
 
 from api import views as api_views
 from compte_depot import views as compte_depot_views
+from finance import views as finance_views
 from inventory import views as inv_views
 from order import views as order_views
 from purchase import views as achat_views
@@ -247,17 +248,17 @@ urlpatterns = [
     # path('commande-client/<str:numero_commande>/changer-statut', order_views.ChangeCommandeStatusView.as_view(), name='changer-statut-commande'),
     # path("commande-client/paiement-acompte-bon/<str:numero_bon>/acompte", order_views.PaiementAcompteBonCommandeView.as_view(), name="paiement-acompte-bon")
     
-     path("commandes", order_views.CommandeClientListView.as_view(), name="commande-list"),
-    path("commandes/create", order_views.CommandeClientCreateView.as_view(), name="commande-create"),
-    path("commandes/<int:pk>", order_views.CommandeClientDetailView.as_view(), name="commande-detail"),
+     path("commandes/", order_views.CommandeClientListView.as_view(), name="commande-list"),
+    path("commandes/create/", order_views.CommandeClientCreateView.as_view(), name="commande-create"),
+    path("commandes/<int:pk>/", order_views.CommandeClientDetailView.as_view(), name="commande-detail"),
 
-    path("commandes/<int:pk>/assigner-ouvrier", order_views.CommandeAssignerOuvrierView.as_view(), name="commande-assigner-ouvrier"),
-    path("commandes/<int:pk>/terminer", order_views.CommandeTerminerView.as_view(), name="commande-terminer"),
-    path("commandes/<int:pk>/payer-solde", order_views.CommandePayerSoldeView.as_view(), name="commande-payer-solde"),
-    path("commandes/<int:pk>/livrer", order_views.CommandeLivrerView.as_view(), name="commande-livrer"),
+    path("commandes/<int:pk>/assigner-ouvrier/", order_views.CommandeAssignerOuvrierView.as_view(), name="commande-assigner-ouvrier"),
+    path("commandes/<int:pk>/terminer/", order_views.CommandeTerminerView.as_view(), name="commande-terminer"),
+    path("commandes/<int:pk>/payer-solde/", order_views.CommandePayerSoldeView.as_view(), name="commande-payer-solde"),
+    path("commandes/<int:pk>/livrer/", order_views.CommandeLivrerView.as_view(), name="commande-livrer"),
 
-    path("commandes/<int:pk>/bon-commande", order_views.CommandeBonCommandePDFView.as_view(), name="commande-bon-commande-pdf"),
-    path("commandes/dashboard", order_views.CommandeDashboardView.as_view(), name="commande-dashboard"),
+    path("commandes/<int:pk>/bon-commande/", order_views.CommandeBonCommandePDFView.as_view(), name="commande-bon-commande-pdf"),
+    path("commandes/dashboard/", order_views.CommandeDashboardView.as_view(), name="commande-dashboard"),
     # path('', include('userauths.urls')),
     # path('', include('store.urls')),
     # path('', include('stock.urls')),
@@ -267,7 +268,7 @@ urlpatterns = [
     # rachats-clients
     # path("dashboard-matiere-premiere",stock_matiere_premiere_views.DashboardMatierePremiereView.as_view(),name="dashboard-matiere-premiere",),
     # ///
-    path("rachats-clients/create",stock_matiere_premiere_views.RachatClientCreateView.as_view(),name="rachat-client-create",),
+    path("rachats-clients/create/",stock_matiere_premiere_views.RachatClientCreateView.as_view(),name="rachat-client-create",),
     path("rachats/<int:rachat_id>/ticket-58mm/",stock_matiere_premiere_views.RachatClientTicket58mmPDFView.as_view(),name="rachat-client-ticket-58mm",),
     path( "rachats/<str:numero_ticket>/payer/",stock_matiere_premiere_views.PayRachatClientTicketView.as_view(),name="pay-rachat-client-ticket",),
     path("rachats/<int:rachat_id>/attestation/",stock_matiere_premiere_views.RachatClientAttestationPDFView.as_view(),name="rachat-client-attestation",),
@@ -276,6 +277,17 @@ urlpatterns = [
     
     # path("achats-fournisseurs/create",stock_matiere_premiere_views.AchatMatierePremiereCreateView.as_view(),name="achat-matiere-premiere-create",),
     # path("rachats-clients/<int:rachat_id>/fiche-pdf",stock_matiere_premiere_views.RachatClientFichePDFView.as_view(),name="rachat-client-fiche-pdf",),
-    path("rachats-clients/<int:rachat_id>/cancel",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="rachat-client-cancel",),
+    path("rachats-clients/<int:rachat_id>/cancel/",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="rachat-client-cancel",),
     # path("achats-matiere/<int:achat_id>/cancel",stock_matiere_premiere_views.CancelAchatMatierePremiereView.as_view(),name="achat-matiere-cancel",)
+    path("achats-rachats-matiere-premiere/",stock_matiere_premiere_views.AchatRachatMatierePremiereListView.as_view(),name="achat-rachat-matiere-premiere-list",),
+    path("dashboard/achats-rachats-matiere-premiere/",stock_matiere_premiere_views.DashboardAchatRachatMatierePremiereView.as_view(),name="dashboard-achats-rachats-matiere-premiere",),
+    path("raffinages/create/",stock_matiere_premiere_views.RaffinageCreateView.as_view(),name="raffinage-create",),
+    path("export/dashboard-matiere-premiere/",stock_matiere_premiere_views.ExportDashboardMatierePremiereExcelView.as_view(),),
+    
+    #Depenses
+    path("depenses/create/", finance_views.DepenseCreateView.as_view()),
+    path("depenses/", finance_views.DepenseListView.as_view()),
+    path("depenses/<int:depense_id>/cancel/", finance_views.CancelDepenseView.as_view()),
+    path("depenses/dashboard/", finance_views.DepenseDashboardView.as_view()),
+    path("depenses/export-excel/", finance_views.ExportDepensesExcelView.as_view()),
 ]

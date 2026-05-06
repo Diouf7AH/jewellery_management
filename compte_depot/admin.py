@@ -39,7 +39,8 @@ class CompteDepotAdmin(admin.ModelAdmin):
         "client_telephone",
         "solde",
         "created_by",
-        "date_creation",
+        "created_at",
+        "updated_at",
     )
     search_fields = (
         "numero_compte",
@@ -49,8 +50,8 @@ class CompteDepotAdmin(admin.ModelAdmin):
         "client__CNI",
         "created_by__username",
     )
-    list_filter = ("date_creation",)
-    readonly_fields = ("date_creation",)
+    list_filter = ("created_at", "updated_at")
+    readonly_fields = ("created_at", "updated_at")
     autocomplete_fields = ["client"]
     raw_id_fields = ("created_by",)
     inlines = [TransactionInline]

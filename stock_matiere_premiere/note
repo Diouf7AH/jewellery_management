@@ -69,3 +69,165 @@ Avec filtre :
 GET /api/stock-matiere-premiere/dashboard-matiere-premiere/?start_date=2026-01-01&end_date=2026-12-31
 Pour admin :
 GET /api/stock-matiere-premiere/dashboard-matiere-premiere/?bijouterie_id=1
+
+#####################
+GET /achats-rachats-matiere-premiere/
+→ affiche année en cours
+
+GET /achats-rachats-matiere-premiere/?year=2025
+→ affiche 2025
+
+GET /achats-rachats-matiere-premiere/?start_date=2026-01-01&end_date=2026-03-31
+→ affiche période précise
+
+#######################
+GET /achats-rachats-matiere-premiere/5/?type=achat
+GET /achats-rachats-matiere-premiere/5/?type=rachat
+
+
+###################################
+cycle de vie de la matière première
+architecture :
+
+RachatClient / AchatMatierePremiere
+        ↓
+Stock Matière Première
+        ↓
+Décision / Transformation
+1. Après rachat client
+Rachat client payé
+↓
+Stock matière première
+↓
+3 destinations possibles
+Destination 1 : Remise en vente
+Stock matière première
+↓
+Créer Produit vendable
+↓
+Stock vente
+
+Exemple : une bague rachetée peut redevenir un produit en boutique.
+
+Destination 2 : Vente comme matière
+Stock matière première
+↓
+Vente au poids
+↓
+Sortie stock matière première
+
+Exemple : vendre 10g d’or 18K.
+
+Destination 3 : Raffinage
+Stock matière première
+↓
+Sortie raffinage
+↓
+Traitement
+↓
+Stock raffiné
+2. Après achat matière première
+Achat fournisseur
+↓
+Stock matière première
+
+Puis :
+
+- envoyé au raffinage
+- vendu au poids
+3. Après raffinage
+Stock raffiné
+↓
+2 destinations
+Utilisé pour commande client
+Stock raffiné
+↓
+Commande client / fabrication
+↓
+Sortie stock raffiné
+Vendu au poids
+Stock raffiné
+↓
+Vente au poids
+↓
+Sortie stock raffiné
+###################################
+
+
+###################################
+stock
+✔ 1 seul stock matière première
+✔ plusieurs entrées (rachat / achat)
+✔ plusieurs sorties (raffinage / vente / transformation)
+✔ traçabilité via Movement
+
+- Raffinage ✔ 
+- Vente matière ✔
+- Dashboard ✔
+- Historique complet ✔
+
+- dashboard vente matière
+- total vendu par période
+- stock faible alerte
+- historique client matière
+#########################
+Vente 
+1. Vente matière première avant raffinage
+   → retire du MatierePremiereStock
+2. Vente matière après raffinage
+   → retire du StockRaffine
+Vente avant raffinage = sortie MatierePremiereStock
+Vente après raffinage = sortie StockRaffine
+
+
+👉 traçabilité complète (origine matière)
+👉 coût moyen pondéré
+👉 marge sur vente matière
+
+
+
+##############################"
+UTILISATION
+/api/dashboard/matiere-premiere/
+→ année actuelle
+/api/dashboard/matiere-premiere/?year=2024
+→ année spécifique
+/api/dashboard/matiere-premiere/?bijouterie_id=1
+→ filtré bijouterie
+/api/dashboard/matiere-premiere/?year=2024&bijouterie_id=1
+→ filtre complet
+
+✔ /export/ → année actuelle
+✔ /export/?mode=multi → 3 ans
+✔ /export/?year=2024 → année spécifique
+✔ /export/?bijouterie_id=1 → filtré
+✔ /export/?year=2024&bijouterie_id=1 → combinaison complète
+
+Sheet: 2026
+
+1. Résumé
+Stock brut total : 120.500
+Stock raffiné total : 80.000
+Total achats : 15
+Total rachats : 20
+Total ventes : 10
+
+2. Stock brut
+Or | 18K | 50.000
+Argent | 925 | 70.500
+
+3. Mouvements
+rachat_client | 30.000
+vente_poids   | 20.000
+
+4. Raffinage
+Entrée : 40.000
+Sortie : 38.000
+Perte  : 2.000
+
+5. Vente
+avant_raffinage | 10g | 500000
+apres_raffinage | 5g  | 300000
+
+6. Alertes
+Or | 18K | 3.000g

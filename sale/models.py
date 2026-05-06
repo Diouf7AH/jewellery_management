@@ -38,32 +38,12 @@ ZERO = Decimal("0.00")
 class Client(models.Model):
     prenom = models.CharField(max_length=100)
     nom = models.CharField(max_length=100)
-
-    telephone = models.CharField(
-        max_length=15,
-        unique=True,
-        blank=True,
-        null=True,
-        db_index=True
-    )
-
-    cni = models.CharField(
-        max_length=50,
-        unique=True,
-        blank=True,
-        null=True,
-        db_index=True,
-        verbose_name="Numéro CNI"
-    )
-
-    address = models.CharField(
-        max_length=255,
-        blank=True,
-        null=True,
-        verbose_name="Adresse"
-    )
-
+    telephone = models.CharField(max_length=15,unique=True,blank=True,null=True,db_index=True)
+    cni = models.CharField(max_length=50,unique=True,blank=True,null=True,db_index=True,verbose_name="Numéro CNI")
+    address = models.CharField(max_length=255,blank=True,null=True,verbose_name="Adresse")
+    #a chaque auto_now_add=True met de
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-id"]

@@ -3,8 +3,8 @@
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
 from django.db import transaction
+from rest_framework.exceptions import ValidationError
 
 from .models import CompteDepot, CompteDepotTransaction
 

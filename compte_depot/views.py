@@ -74,7 +74,7 @@ class ListCompteDepotView(APIView):
         if role not in ["admin", "manager", "vendor"]:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        comptes = CompteDepot.objects.select_related("client", "created_by").order_by("-date_creation")
+        comptes = CompteDepot.objects.select_related("client", "created_by").order_by("-created_at")
         return Response(CompteDepotSerializer(comptes, many=True).data, status=status.HTTP_200_OK)
 
 
@@ -140,7 +140,7 @@ class CreateOrDepositCompteView(APIView):
                         "id": compte.id,
                         "numero_compte": compte.numero_compte,
                         "solde": str(compte.solde),
-                        "date_creation": compte.date_creation,
+                        "created_at": compte.created_at,
                     },
                     "transaction": CompteDepotTransactionSerializer(tx).data,
                     "receipt_url": request.build_absolute_uri(
@@ -174,7 +174,7 @@ class CreateOrDepositCompteView(APIView):
                     "id": compte.id,
                     "numero_compte": compte.numero_compte,
                     "solde": str(compte.solde),
-                    "date_creation": compte.date_creation,
+                    "created_at": compte.created_at,
                 },
                 "transaction": CompteDepotTransactionSerializer(tx).data,
                 "receipt_url": request.build_absolute_uri(
@@ -210,7 +210,7 @@ class CreateOrDepositCompteView(APIView):
                 "id": compte.id,
                 "numero_compte": compte.numero_compte,
                 "solde": str(compte.solde),
-                "date_creation": compte.date_creation,
+                "created_at": compte.created_at,
             },
             "transaction": CompteDepotTransactionSerializer(tx).data,
             "receipt_url": request.build_absolute_uri(
@@ -379,7 +379,7 @@ class GetSoldeAPIView(APIView):
         return Response({
             "numero_compte": compte.numero_compte,
             "solde": compte.solde,
-            "date_creation": compte.date_creation,
+            "created_at": compte.created_at,
         }, status=status.HTTP_200_OK)
 
 
@@ -413,7 +413,7 @@ class ListerTousComptesAPIView(APIView):
         if telephone:
             comptes = comptes.filter(client__telephone__icontains=telephone)
 
-        serializer = CompteDepotSerializer(comptes.order_by("-date_creation"), many=True)
+        serializer = CompteDepotSerializer(comptes.order_by("-created_at"), many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 

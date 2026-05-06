@@ -49,7 +49,8 @@ class CompteDepotSerializer(serializers.ModelSerializer):
             "telephone",
             "numero_compte",
             "solde",
-            "date_creation",
+            "created_at",
+            "updated_at",
             "created_by",
         ]
         read_only_fields = fields

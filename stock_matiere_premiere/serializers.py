@@ -10,7 +10,8 @@ from purchase.models import Fournisseur
 from sale.models import Client
 
 from .models import (AchatMatierePremiere, AchatMatierePremiereItem,
-                     MatierePremiereStock, RachatClient, RachatClientItem)
+                     MatierePremiereStock, RachatClient, RachatClientItem,
+                     VenteMatierePremiere)
 
 
 def generate_ticket_number(prefix, model_class):
@@ -358,3 +359,67 @@ class AchatMatierePremiereDetailSerializer(serializers.ModelSerializer):
         ]
 
 
+class ReverseAchatMatierePremiereSerializer(serializers.Serializer):
+    reason = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        help_text="Motif obligatoire de la correction."
+    )
+    
+################################################################
+#####################   Rafinage   #############################
+################################################################
+
+class RaffinageCreateSerializer(serializers.Serializer):
+    matiere = serializers.ChoiceField(choices=MatierePremiereStock.MATIERE_CHOICES)
+    purete_avant_id = serializers.IntegerField()
+    purete_apres_id = serializers.IntegerField()
+    poids_entree = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        min_value=Decimal("0.001"),
+    )
+    poids_sortie = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        min_value=Decimal("0.001"),
+    )
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    def validate(self, attrs):
+        if attrs["poids_sortie"] > attrs["poids_entree"]:
+            raise serializers.ValidationError({
+                "poids_sortie": "Le poids sortie ne peut pas être supérieur au poids entrée."
+            })
+        return attrs
+    
+
+###################################################################
+#####################  Vente de matiere premiere###################
+###################################################################
+class VenteMatierePremiereCreateSerializer(serializers.Serializer):
+    source_stock = serializers.ChoiceField(
+        choices=VenteMatierePremiere.SOURCE_CHOICES
+    )
+    client_id = serializers.IntegerField(required=False, allow_null=True)
+
+    matiere = serializers.ChoiceField(
+        choices=MatierePremiereStock.MATIERE_CHOICES
+    )
+    purete_id = serializers.IntegerField()
+
+    poids = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        min_value=Decimal("0.001"),
+    )
+    prix_gramme = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.01"),
+    )
+
+    def validate(self, attrs):
+        attrs["montant_total"] = attrs["poids"] * attrs["prix_gramme"]
+        return attrs
+####################################################################

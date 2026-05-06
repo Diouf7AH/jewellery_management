@@ -33,10 +33,11 @@ class CompteDepot(models.Model):
     )
     numero_compte = models.CharField(max_length=30, unique=True, db_index=True)
     solde = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    date_creation = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["-date_creation"]
+        ordering = ["-created_at"]
         constraints = [
             CheckConstraint(
                 check=Q(solde__gte=0),
@@ -45,7 +46,7 @@ class CompteDepot(models.Model):
         ]
         indexes = [
             models.Index(fields=["client"]),
-            models.Index(fields=["date_creation"]),
+            models.Index(fields=["created_at"]),
         ]
 
     def __str__(self):
