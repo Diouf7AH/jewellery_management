@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -53,6 +54,7 @@ from sale.serializers import (CancelProformaVenteSerializer,
                               VenteListSerializer)
 from sale.services.comptable_export_service import export_comptable_factures
 from sale.services.confirm_service import confirm_sale_out_from_vendor
+from sale.services.export.export_facture_excel import export_factures_excel
 from sale.services.facture_hash_service import generate_facture_hash
 from sale.services.facture_pdf_service import generate_facture_pdf
 from sale.services.facture_qr_service import generate_facture_qr
@@ -788,12 +790,41 @@ class TicketPaiement80mmESCPosView(APIView):
         )
 
 
+# class FactureA5PaysageView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, numero_facture: str):
+#         facture = get_object_or_404(
+#             Facture.objects.select_related("vente", "bijouterie", "vente__client"),
+#             numero_facture__iexact=numero_facture,
+#         )
+
+#         if not _can_access_facture(request.user, facture):
+#             return Response(
+#                 {"detail": "⛔ Accès refusé à cette facture."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         pdf_buffer = build_facture_a5_paysage_pdf(facture=facture)
+
+#         filename = f"facture_{facture.numero_facture}.pdf"
+#         return FileResponse(pdf_buffer, as_attachment=False, filename=filename)
+    
+
+
 class FactureA5PaysageView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, numero_facture: str):
+
         facture = get_object_or_404(
-            Facture.objects.select_related("vente", "bijouterie", "vente__client"),
+            Facture.objects.select_related(
+                "vente",
+                "vente__client",
+            ).prefetch_related(
+                "vente__produits__produit",
+                "paiements",
+            ),
             numero_facture__iexact=numero_facture,
         )
 
@@ -803,14 +834,112 @@ class FactureA5PaysageView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        pdf_buffer = build_facture_a5_paysage_pdf(facture=facture)
+        # =========================
+        # PDF buffer
+        # =========================
+        buffer = BytesIO()
+
+        vente = facture.vente
+        client = vente.client if vente else None
+
+        # =========================
+        # lignes produits
+        # =========================
+        lines = []
+
+        if vente:
+            for vp in vente.produits.all():
+
+                produit_nom = (
+                    vp.produit.nom
+                    if vp.produit else "Produit supprimé"
+                )
+
+                lines.append({
+                    "designation": produit_nom,
+                    "qty": vp.quantite,
+                    "unit_price": vp.prix_vente_grammes,
+                    "discount": vp.remise or 0,
+                    "extra": vp.autres or 0,
+                    "total": vp.sous_total_prix_vent,
+                })
+
+        # =========================
+        # DATA PDF
+        # =========================
+        data = {
+            "shop_name": "RIO GOLD",
+            "shop_phone": "",
+            "shop_ninea": "",
+            "shop_address": "",
+
+            "title": "FACTURE",
+
+            "invoice_no": facture.numero_facture,
+
+            "date": facture.date_creation.strftime("%d/%m/%Y %H:%M"),
+
+            "document_type": "FACTURE",
+
+            "client_name": (
+                f"{client.prenom} {client.nom}"
+                if client else ""
+            ),
+
+            "client_phone": (
+                client.telephone
+                if client else ""
+            ),
+
+            "client_address": "",
+
+            "vendor": "",
+
+            "cashier": "",
+
+            "sale_no": (
+                vente.numero_vente
+                if vente else ""
+            ),
+
+            "status": facture.status,
+
+            "lines": lines,
+
+            "total_ht": facture.montant_total,
+
+            "taux_tva": 0,
+
+            "montant_tva": 0,
+
+            "total_ttc": facture.montant_total,
+
+            "amount_paid": facture.total_paye,
+
+            "deposit_amount": 0,
+
+            "remaining_amount": facture.reste_a_payer,
+
+            "thanks": "Merci pour votre confiance.",
+
+            "footer_note": "Facture générée automatiquement.",
+        }
+
+        # =========================
+        # génération PDF
+        # =========================
+        build_facture_a5_paysage_pdf(buffer, data)
+
+        buffer.seek(0)
 
         filename = f"facture_{facture.numero_facture}.pdf"
-        return FileResponse(pdf_buffer, as_attachment=False, filename=filename)
-    
 
-
-from sale.services.export.export_facture_excel import export_factures_excel
+        return FileResponse(
+            buffer,
+            as_attachment=False,
+            filename=filename,
+            content_type="application/pdf",
+        )
 
 
 class ExportFacturesExcelView(APIView):

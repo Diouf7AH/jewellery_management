@@ -620,9 +620,6 @@ class ProduitLineWithInventoryListView(ListAPIView):
 
 
 
-
-
-
 class InventoryBijouterieView(ExportXlsxMixin, APIView):
     """
     Résumé des entrées / sorties de stock par bijouterie.
