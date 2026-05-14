@@ -1,3 +1,13 @@
+✅ Le champ reference
+
+Le champ reference dans PaiementLigne sert pour :
+
+Moyen	            Référence
+Wave	            TXN458745
+Orange Money	    OM-774848
+Carte	            BANK-98484
+Cash	            vide
+
 {
   "numero_facture": "FAC-20260309-0001",
   "lignes": [
@@ -122,3 +132,18 @@ facture officielle → génération + stockage fichier
 C’est une très bonne architecture.
 
 Si tu veux, je peux te donner la vue DRF finale complète pour retourner ce PDF sans stockage.
+
+////////////////////////
+UPDATE store_bijouterie
+SET appliquer_tva = 0,
+    taux_tva = NULL;
+////////////////////////
+
+
+is_locked sert à rendre une facture non modifiable définitivement après validation finale.
+Dans un ERP de vente/facturation, c’est très important pour éviter :
+modification après paiement
+fraude
+changement des montants
+modification TVA
+modification produits après impression PDF

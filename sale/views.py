@@ -38,8 +38,10 @@ from compte_depot.models import (ClientDepot, CompteDepot,
                                  CompteDepotTransaction)
 from inventory.models import InventoryMovement
 from inventory.services import log_move
-from sale.models import VenteProduit  # adapte le chemin si besoin
-from sale.models import Client, Facture, Paiement, PaiementLigne, Vente
+from sale.models import (Client, Facture,  # adapte le chemin si besoin
+                         ModePaiement, Paiement, PaiementLigne, Vente,
+                         VenteProduit)
+from sale.pdf.escpos_ticket_58mm import build_escpos_ticket_proforma_58mm
 from sale.pdf.escpos_ticket_80mm import build_escpos_recu_paiement_80mm
 from sale.pdf.facture_A5_paysage import build_facture_a5_paysage_pdf
 from sale.pdf.ticket_paiement_80mm import build_ticket_paiement_80mm_pdf
@@ -77,7 +79,7 @@ MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
 
 class VenteProduitCreateView(APIView):
     permission_classes = [CanCreateSale]
-    http_method_names = ["post"]
+    http_method_names = ["post", "options"]
 
     def _resolve_produit_id(self, item):
         produit_id = item.get("produit_id")
@@ -298,12 +300,12 @@ class ListFacturePayeesView(APIView):
             .select_related("bijouterie", "vente", "vente__client")
             .prefetch_related(
                 "paiements",
-                "vente__produits__vendor",
-                "vente__produits__produit",
-                "vente__produits__produit__categorie",
-                "vente__produits__produit__marque",
-                "vente__produits__produit__purete",
-                "vente__produits__produit__modele",
+                "vente__lignes__vendor",
+                "vente__lignes__produit",
+                "vente__lignes__produit__categorie",
+                "vente__lignes__produit__marque",
+                "vente__lignes__produit__purete",
+                "vente__lignes__produit__modele",
             )
             .filter(status=Facture.STAT_PAYE)
         )
@@ -421,12 +423,12 @@ class ListFacturesAPayerView(APIView):
             .select_related("bijouterie", "vente", "vente__client")
             .prefetch_related(
                 "paiements",
-                "vente__produits__vendor",
-                "vente__produits__produit",
-                "vente__produits__produit__categorie",
-                "vente__produits__produit__marque",
-                "vente__produits__produit__purete",
-                "vente__produits__produit__modele",
+                "vente__lignes__vendor",
+                "vente__lignes__produit",
+                "vente__lignes__produit__categorie",
+                "vente__lignes__produit__marque",
+                "vente__lignes__produit__purete",
+                "vente__lignes__produit__modele",
             )
             .filter(status=Facture.STAT_NON_PAYE)
         )
@@ -497,38 +499,40 @@ class ListFacturesAPayerView(APIView):
         )
 
 
-
 class PaiementFactureMultiModeView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Paiement facture multi-mode",
         operation_description="""
-    Paiement d'une facture avec plusieurs modes :
+Paiement d'une facture avec plusieurs modes :
 
-    - cash
-    - wave
-    - orange money
-    - dépôt
+- cash
+- wave
+- orange_money
+- depot
+- carte
 
-    Règles :
-    - PROFORMA → FACTURE au premier paiement
-    - si facture PAYÉE → consommation stock
-    - génération automatique PDF facture
-    - aucun stockage du reçu de paiement
-            """,
+Règles :
+- PROFORMA → FACTURE au premier paiement
+- Si facture totalement PAYÉE → consommation stock vendeur FIFO
+- Génération automatique PDF uniquement si facture totalement payée
+- Aucun stockage du reçu de paiement
+        """,
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=["numero_facture", "client", "lignes"],
+            required=["numero_facture", "lignes"],
             properties={
-                "numero_facture": openapi.Schema(type=openapi.TYPE_STRING),
+                "numero_facture": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    example="FAC-20260512-0003"
+                ),
                 "client": openapi.Schema(
                     type=openapi.TYPE_OBJECT,
-                    required=["nom", "prenom"],
                     properties={
-                        "nom": openapi.Schema(type=openapi.TYPE_STRING),
-                        "prenom": openapi.Schema(type=openapi.TYPE_STRING),
-                        "telephone": openapi.Schema(type=openapi.TYPE_STRING),
+                        "nom": openapi.Schema(type=openapi.TYPE_STRING, example="Diop"),
+                        "prenom": openapi.Schema(type=openapi.TYPE_STRING, example="Awa"),
+                        "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
                     },
                 ),
                 "lignes": openapi.Schema(
@@ -537,138 +541,228 @@ class PaiementFactureMultiModeView(APIView):
                         type=openapi.TYPE_OBJECT,
                         required=["mode", "montant"],
                         properties={
-                            "mode": openapi.Schema(type=openapi.TYPE_STRING),
-                            "montant": openapi.Schema(type=openapi.TYPE_NUMBER),
-                            "reference": openapi.Schema(type=openapi.TYPE_STRING),
+                            "mode": openapi.Schema(type=openapi.TYPE_STRING, example="cash"),
+                            "montant": openapi.Schema(type=openapi.TYPE_NUMBER, example=10000),
+                            "reference": openapi.Schema(type=openapi.TYPE_STRING, example="WAVE-123456"),
                         },
                     ),
                 ),
             },
         ),
-        responses={201: "Paiement effectué"},
+        responses={
+            201: "Paiement effectué",
+            400: "Erreur validation",
+            403: "Accès refusé",
+            404: "Facture introuvable",
+        },
         tags=["Paiements"],
     )
     @transaction.atomic
     def post(self, request):
-
-        numero_facture = request.data.get("numero_facture")
-        client_data = request.data.get("client", {})
-        lignes_data = request.data.get("lignes", [])
+        numero_facture = str(request.data.get("numero_facture") or "").strip()
+        client_data = request.data.get("client") or {}
+        lignes_data = request.data.get("lignes") or []
 
         if not numero_facture:
-            return Response({"detail": "numero_facture requis"}, status=400)
+            return Response(
+                {"detail": "numero_facture requis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not lignes_data:
-            return Response({"detail": "lignes requises"}, status=400)
+            return Response(
+                {"detail": "lignes requises."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # 🔒 Lock facture
         facture = (
             Facture.objects
             .select_for_update()
             .select_related("vente", "vente__client", "bijouterie")
             .prefetch_related("paiements__lignes")
-            .get(numero_facture=numero_facture)
+            .filter(numero_facture__iexact=numero_facture)
+            .first()
         )
 
-        validate_facture_payable(facture)
+        if not facture:
+            return Response(
+                {"detail": f"Facture introuvable avec le numéro : {numero_facture}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-        # 👤 client
-        client = upsert_client_for_payment(
-            facture=facture,
-            client_data=client_data
-        )
+        try:
+            validate_facture_payable(facture)
+        except DjangoValidationError as e:
+            return Response(
+                {"detail": getattr(e, "message", str(e))},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # 💰 paiement principal
+        try:
+            client = upsert_client_for_payment(
+                facture=facture,
+                client_data=client_data,
+            )
+        except DjangoValidationError as e:
+            return Response(
+                {"detail": getattr(e, "message", str(e))},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        total = Decimal("0.00")
+        normalized_lignes = []
+
+        for index, item in enumerate(lignes_data):
+            mode = str(item.get("mode") or "").strip()
+            reference = item.get("reference")
+
+            if not mode:
+                return Response(
+                    {"detail": f"Le mode de paiement est obligatoire à la ligne {index + 1}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            try:
+                montant = Decimal(str(item.get("montant") or "0"))
+            except (InvalidOperation, TypeError):
+                return Response(
+                    {"detail": f"Montant invalide à la ligne {index + 1}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if montant <= 0:
+                return Response(
+                    {"detail": f"Le montant doit être supérieur à 0 à la ligne {index + 1}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            total += montant
+
+            normalized_lignes.append({
+                "mode": mode,
+                "montant": montant,
+                "reference": reference,
+            })
+
+        if total > facture.reste_a_payer:
+            return Response(
+                {
+                    "detail": "Le montant payé dépasse le reste à payer.",
+                    "reste_a_payer": str(facture.reste_a_payer),
+                    "montant_recu": str(total),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        cashier = Cashier.objects.filter(user=request.user).first()
+
         paiement = Paiement.objects.create(
             facture=facture,
             created_by=request.user,
-            cashier=Cashier.objects.filter(user=request.user).first()
+            cashier=cashier,
         )
-
-        total = Decimal("0.00")
 
         lignes_creees = []
 
-        for item in lignes_data:
-            mode = item.get("mode")
-            montant = Decimal(str(item.get("montant") or "0"))
+        for item in normalized_lignes:
+            mode_obj = ModePaiement.objects.filter(code__iexact=item["mode"]).first()
 
-            if montant <= 0:
-                raise DjangoValidationError("Montant invalide")
-
-            ligne = PaiementLigne.objects.create(
-                paiement=paiement,
-                montant_paye=montant,
-                reference=item.get("reference"),
+        if not mode_obj:
+            return Response(
+                {"detail": f"Mode de paiement invalide : {item['mode']}"},
+                status=400
             )
 
-            total += montant
-            lignes_creees.append(ligne)
+        ligne = PaiementLigne.objects.create(
+            paiement=paiement,
+            mode_paiement=mode_obj,
+            montant_paye=item["montant"],
+            reference=item.get("reference"),
+        )
 
-        if total > facture.reste_a_payer:
-            raise DjangoValidationError("Montant dépasse le reste")
-
-        # 🔄 statut facture
         Facture.recompute_facture_status(facture)
         facture.refresh_from_db()
 
-        # 🔁 PROFORMA → FACTURE
         if facture.type_facture == Facture.TYPE_PROFORMA:
             facture.type_facture = Facture.TYPE_FACTURE
             facture.save(update_fields=["type_facture"])
 
-        # 📦 consommation stock
-        audit = {"created": 0, "already": 0, "lines_done": 0}
+        audit = {
+            "created": 0,
+            "already": 0,
+            "lines_done": 0,
+        }
 
         if facture.status == Facture.STAT_PAYE and not facture.stock_consumed:
-            audit = confirm_sale_out_from_vendor(
-                facture=facture,
-                by_user=request.user
-            )
+            try:
+                audit = confirm_sale_out_from_vendor(
+                    facture=facture,
+                    by_user=request.user,
+                )
+                facture.refresh_from_db()
+            except DjangoValidationError as e:
+                transaction.set_rollback(True)
+                return Response(
+                    {"detail": getattr(e, "message", str(e))},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        # 📄 génération PDF facture
         facture_pdf_url = None
-            
-            
+
         if facture.status == Facture.STAT_PAYE:
-
             if not facture.facture_pdf:
-
-                # 🔒 1. recalcul propre AVANT signature
                 facture.refresh_from_db()
 
-                # 🔐 2. générer hash (signature logique)
                 if not facture.integrity_hash:
                     generate_facture_hash(facture)
 
-                # 📱 3. générer QR code
                 if not facture.qr_code_image:
                     generate_facture_qr(facture)
 
-                # 📄 4. générer PDF FINAL
                 facture_pdf_url = generate_facture_pdf(facture)
 
-                # 🔒 5. LOCK après tout
                 facture.is_locked = True
                 facture.locked_at = timezone.now()
                 facture.save(update_fields=["is_locked", "locked_at"])
-
             else:
                 try:
                     facture_pdf_url = facture.facture_pdf.url
-                except:
+                except Exception:
                     facture_pdf_url = None
 
-        # 🎯 RESPONSE
-        return Response({
-            "message": "Paiement effectué avec succès",
-            "facture": facture.numero_facture,
-            "status": facture.status,
-            "total_paye": str(facture.total_paye),
-            "reste": str(facture.reste_a_payer),
-            "facture_pdf_url": facture_pdf_url,
-            "stock": audit,
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "message": "Paiement effectué avec succès.",
+                "paiement_id": paiement.id,
+                "facture": {
+                    "id": facture.id,
+                    "numero_facture": facture.numero_facture,
+                    "type_facture": facture.type_facture,
+                    "status": facture.status,
+                    "montant_total": str(facture.montant_total),
+                    "total_paye": str(facture.total_paye),
+                    "reste_a_payer": str(facture.reste_a_payer),
+                },
+                "client": {
+                    "id": client.id if client else None,
+                    "nom": getattr(client, "nom", None) if client else None,
+                    "prenom": getattr(client, "prenom", None) if client else None,
+                    "telephone": getattr(client, "telephone", None) if client else None,
+                },
+                "lignes": [
+                    {
+                        "id": ligne.id,
+                        "mode_paiement": ligne.mode_paiement,
+                        "montant_paye": str(ligne.montant_paye),
+                        "reference": ligne.reference,
+                    }
+                    for ligne in lignes_creees
+                ],
+                "stock": audit,
+                "facture_pdf_url": facture_pdf_url,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 # -------------------END PaiementFactureView-------------------
 
 
@@ -703,12 +797,17 @@ def _can_access_facture(user, facture: Facture) -> bool:
     return False
 
 
+        
 class TicketProforma58mmView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, numero_facture: str):
         facture = get_object_or_404(
-            Facture.objects.select_related("vente", "bijouterie", "vente__client"),
+            Facture.objects.select_related(
+                "vente",
+                "bijouterie",
+                "vente__client",
+            ),
             numero_facture__iexact=numero_facture,
         )
 
@@ -724,20 +823,49 @@ class TicketProforma58mmView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        pdf_buffer = build_ticket_proforma_58mm_pdf(
-            vente=facture.vente,
-            facture=facture,
+        bijouterie = facture.bijouterie
+
+        shop_name = getattr(bijouterie, "nom", None) or "BIJOUTERIE RIO-GOLD"
+
+        shop_phone = (
+            getattr(bijouterie, "telephone_portable_1", None)
+            or getattr(bijouterie, "telephone_portable_2", None)
+            or getattr(bijouterie, "telephone_fix", None)
+            or ""
         )
 
-        filename = f"ticket_proforma_{facture.numero_facture}.pdf"
-        return FileResponse(pdf_buffer, as_attachment=False, filename=filename)
+        date_txt = facture.date_creation.strftime("%d/%m/%Y %H:%M")
+
+        escpos_bytes = build_escpos_ticket_proforma_58mm(
+            shop_name=shop_name,
+            shop_phone=shop_phone,
+            numero_facture=facture.numero_facture,
+            date_txt=date_txt,
+            montant_a_payer=facture.reste_a_payer,
+            statut_txt=facture.get_status_display() if hasattr(facture, "get_status_display") else facture.status,
+            note="Ticket PROFORMA - à régler en caisse",
+        )
+
+        return HttpResponse(
+            escpos_bytes,
+            content_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
+            }
+        )
+        
+
 
 class TicketPaiement80mmESCPosView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, numero_facture: str):
         facture = get_object_or_404(
-            Facture.objects.select_related("vente", "bijouterie", "vente__client"),
+            Facture.objects.select_related(
+                "vente",
+                "bijouterie",
+                "vente__client",
+            ),
             numero_facture__iexact=numero_facture,
         )
 
@@ -751,6 +879,7 @@ class TicketPaiement80mmESCPosView(APIView):
             Paiement.objects
             .filter(facture=facture)
             .select_related("facture", "cashier", "created_by")
+            .prefetch_related("lignes__mode_paiement")
             .order_by("-date_paiement", "-id")
             .first()
         )
@@ -762,33 +891,36 @@ class TicketPaiement80mmESCPosView(APIView):
             )
 
         bijouterie = facture.bijouterie
-        client = getattr(facture.vente, "client", None)
 
-        shop_name = getattr(bijouterie, "nom", "RIO-GOLD")
-        shop_phone = getattr(bijouterie, "telephone", None)
+        shop_name = getattr(bijouterie, "nom", None) or "RIO-GOLD"
+        shop_phone = (
+            getattr(bijouterie, "telephone_portable_1", None)
+            or getattr(bijouterie, "telephone_portable_2", None)
+            or getattr(bijouterie, "telephone_fix", None)
+            or ""
+        )
 
-        client_nom = None
-        if client:
-            client_nom = f"{client.prenom} {client.nom}".strip()
-
-        cashier_nom = None
-        if paiement.cashier:
-            cashier_nom = str(paiement.cashier)
+        montant_paye = paiement.lignes.aggregate(
+            total=Sum("montant_paye")
+        )["total"] or Decimal("0.00")
 
         escpos_bytes = build_escpos_recu_paiement_80mm(
             shop_name=shop_name,
             shop_phone=shop_phone,
             numero_facture=facture.numero_facture,
             date_paiement=paiement.date_paiement,
-            montant_paye=paiement.montant_total_paye,
+            montant_paye=montant_paye,
             reste_a_payer=facture.reste_a_payer,
         )
 
         return HttpResponse(
             escpos_bytes,
-            content_type="application/octet-stream"
+            content_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'inline; filename="ticket_paiement_{facture.numero_facture}.bin"'
+            }
         )
-
+        
 
 # class FactureA5PaysageView(APIView):
 #     permission_classes = [IsAuthenticated]
@@ -811,18 +943,19 @@ class TicketPaiement80mmESCPosView(APIView):
 #         return FileResponse(pdf_buffer, as_attachment=False, filename=filename)
     
 
-
 class FactureA5PaysageView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, numero_facture: str):
-
         facture = get_object_or_404(
-            Facture.objects.select_related(
+            Facture.objects
+            .select_related(
                 "vente",
                 "vente__client",
-            ).prefetch_related(
-                "vente__produits__produit",
+                "bijouterie",
+            )
+            .prefetch_related(
+                "vente__lignes__produit",
                 "paiements",
             ),
             numero_facture__iexact=numero_facture,
@@ -834,113 +967,99 @@ class FactureA5PaysageView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # =========================
-        # PDF buffer
-        # =========================
         buffer = BytesIO()
 
         vente = facture.vente
         client = vente.client if vente else None
+        bijouterie = facture.bijouterie
 
-        # =========================
-        # lignes produits
-        # =========================
         lines = []
 
         if vente:
-            for vp in vente.produits.all():
-
+            for vp in vente.lignes.all():
                 produit_nom = (
                     vp.produit.nom
                     if vp.produit else "Produit supprimé"
                 )
 
                 lines.append({
-                    "designation": produit_nom,
+                    "label": produit_nom,
                     "qty": vp.quantite,
-                    "unit_price": vp.prix_vente_grammes,
-                    "discount": vp.remise or 0,
-                    "extra": vp.autres or 0,
-                    "total": vp.sous_total_prix_vent,
+                    "pu": vp.prix_vente_grammes,
+                    "ttc": vp.montant_total,
                 })
 
-        # =========================
-        # DATA PDF
-        # =========================
+        shop_phone = (
+            getattr(bijouterie, "telephone_portable_1", None)
+            or getattr(bijouterie, "telephone_portable_2", None)
+            or getattr(bijouterie, "telephone_fix", None)
+            or ""
+        )
+
         data = {
-            "shop_name": "RIO GOLD",
-            "shop_phone": "",
-            "shop_ninea": "",
-            "shop_address": "",
+            "shop_name": getattr(bijouterie, "nom", None) or "RIO GOLD",
+            "shop_phone": shop_phone,
+            "shop_ninea": getattr(bijouterie, "ninea", None) or "",
+            "shop_address": getattr(bijouterie, "adresse", None) or "",
 
             "title": "FACTURE",
-
             "invoice_no": facture.numero_facture,
-
+            "qr_code_path": (
+                facture.qr_code_image.path
+                if getattr(facture, "qr_code_image", None)
+                else None
+            ),
             "date": facture.date_creation.strftime("%d/%m/%Y %H:%M"),
-
-            "document_type": "FACTURE",
+            # "document_type": facture.type_facture.upper(),
 
             "client_name": (
                 f"{client.prenom} {client.nom}"
                 if client else ""
             ),
-
-            "client_phone": (
-                client.telephone
-                if client else ""
-            ),
-
+            "client_phone": client.telephone if client else "",
             "client_address": "",
 
-            "vendor": "",
-
+            "vendor": (
+                str(vente.vendor)
+                if vente and getattr(vente, "vendor", None)
+                else ""
+            ),
             "cashier": "",
 
-            "sale_no": (
-                vente.numero_vente
-                if vente else ""
-            ),
-
+            "sale_no": vente.numero_vente if vente else "",
             "status": facture.status,
 
             "lines": lines,
 
-            "total_ht": facture.montant_total,
-
-            "taux_tva": 0,
-
-            "montant_tva": 0,
-
+            "total_ht": facture.montant_ht,
+            "taux_tva": facture.taux_tva,
+            "montant_tva": facture.montant_tva,
             "total_ttc": facture.montant_total,
 
             "amount_paid": facture.total_paye,
-
             "deposit_amount": 0,
-
             "remaining_amount": facture.reste_a_payer,
 
             "thanks": "Merci pour votre confiance.",
-
-            "footer_note": "Facture générée automatiquement.",
+            "footer_note": "A la prochaine visite insha Allah.",
         }
 
-        # =========================
-        # génération PDF
-        # =========================
         build_facture_a5_paysage_pdf(buffer, data)
 
         buffer.seek(0)
 
         filename = f"facture_{facture.numero_facture}.pdf"
 
-        return FileResponse(
+        response = FileResponse(
             buffer,
-            as_attachment=False,
+            as_attachment=True,
             filename=filename,
             content_type="application/pdf",
         )
-
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+    
+    
 
 class ExportFacturesExcelView(APIView):
     permission_classes = [IsAuthenticated]
@@ -1181,19 +1300,19 @@ def _recalculate_facture_from_vente(facture, vente, vendor):
 # ==========================================================
 # 1. UPDATE VENTE AVANT PAIEMENT
 # ==========================================================
-
 class UpdateVenteProduitView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Modifier une vente avant paiement",
         operation_description="""
-        Modifie une vente avant paiement.
+Modifie une vente avant paiement.
 
-        Important :
-        - Ne touche pas au VendorStock.
-        - Ne crée pas InventoryMovement.
-        - Le stock sera consommé seulement au paiement complet.
+Important :
+- Ne touche pas au VendorStock.
+- Ne crée pas InventoryMovement.
+- Le stock sera consommé seulement au paiement complet.
+- Modification autorisée uniquement si la facture est NON PAYÉE et sans paiement.
         """,
         request_body=UpdateVenteProduitSerializer,
         responses={200: VenteDetailSerializer},
@@ -1205,14 +1324,20 @@ class UpdateVenteProduitView(APIView):
         role = get_role_name(user)
 
         if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
-            return error_response("ACCESS_DENIED", "Accès refusé.", status.HTTP_403_FORBIDDEN)
+            return error_response(
+                "ACCESS_DENIED",
+                "Accès refusé.",
+                status.HTTP_403_FORBIDDEN
+            )
 
         input_serializer = UpdateVenteProduitSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         data = input_serializer.validated_data
 
         vente = get_object_or_404(
-            Vente.objects.select_for_update().select_related("vendor", "bijouterie", "client"),
+            Vente.objects
+            .select_for_update()
+            .select_related("vendor", "bijouterie", "client"),
             id=vente_id,
         )
 
@@ -1224,11 +1349,32 @@ class UpdateVenteProduitView(APIView):
             )
 
         facture = _get_facture_locked(vente)
+
+        # ✅ Contrôle AVANT toute modification
         facture_error = _validate_before_payment(facture)
         if facture_error:
             return facture_error
 
-        vendor, vendor_error = _resolve_vendor_for_update(data, request, vente, role)
+        if facture and facture.status != Facture.STAT_NON_PAYE:
+            return error_response(
+                "FACTURE_NOT_EDITABLE",
+                "Modification impossible : la facture n'est plus non payée.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        if facture and facture.total_paye > 0:
+            return error_response(
+                "FACTURE_HAS_PAYMENT",
+                "Modification impossible : un paiement existe déjà.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        vendor, vendor_error = _resolve_vendor_for_update(
+            data,
+            request,
+            vente,
+            role
+        )
         if vendor_error:
             return vendor_error
 
@@ -1238,7 +1384,7 @@ class UpdateVenteProduitView(APIView):
 
         produits_data = data["produits"]
 
-        # On remplace les lignes sans toucher au stock
+        # ✅ Remplacement des lignes sans toucher au stock
         VenteProduit.objects.select_for_update().filter(vente=vente).delete()
 
         for item in produits_data:
@@ -1283,31 +1429,43 @@ class UpdateVenteProduitView(APIView):
 
         _recalculate_facture_from_vente(facture, vente, vendor)
 
-        return Response(VenteDetailSerializer(vente).data, status=status.HTTP_200_OK)
+        vente.refresh_from_db()
+
+        return Response(
+            VenteDetailSerializer(vente).data,
+            status=status.HTTP_200_OK
+        )
 
     @transaction.atomic
     def patch(self, request, vente_id):
         return self.put(request, vente_id)
 
-
 # ==========================================================
 # 2. CANCEL PROFORMA
 # ==========================================================
-
 class CancelProformaVenteView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Annuler une vente non payée / proforma",
         operation_description="""
-        Annule une vente non payée.
+Annule une vente non payée ou proforma.
 
-        Important :
-        - Ne touche pas au VendorStock.
-        - Ne crée pas InventoryMovement.
-        - Marque seulement la vente comme annulée.
+Important :
+- Ne touche pas au VendorStock.
+- Ne crée pas InventoryMovement.
+- Ne restaure pas le stock, car le stock n'a pas encore été consommé.
+- Marque seulement la vente comme annulée.
+- Verrouille la facture liée si elle existe.
+- Refuse l'annulation si un paiement existe déjà.
         """,
         request_body=CancelProformaVenteSerializer,
+        responses={
+            200: "Vente annulée avec succès",
+            400: "Vente déjà annulée ou facture non annulable",
+            403: "Accès refusé",
+            404: "Vente introuvable",
+        },
         tags=["Ventes"],
     )
     @transaction.atomic
@@ -1316,14 +1474,20 @@ class CancelProformaVenteView(APIView):
         role = get_role_name(user)
 
         if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
-            return error_response("ACCESS_DENIED", "Accès refusé.", status.HTTP_403_FORBIDDEN)
+            return error_response(
+                "ACCESS_DENIED",
+                "Accès refusé.",
+                status.HTTP_403_FORBIDDEN,
+            )
 
         input_serializer = CancelProformaVenteSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         data = input_serializer.validated_data
 
         vente = get_object_or_404(
-            Vente.objects.select_for_update().select_related("vendor", "bijouterie", "client"),
+            Vente.objects
+            .select_for_update()
+            .select_related("vendor", "bijouterie", "client"),
             id=vente_id,
         )
 
@@ -1335,24 +1499,52 @@ class CancelProformaVenteView(APIView):
             )
 
         facture = _get_facture_locked(vente)
+
         facture_error = _validate_before_payment(facture)
         if facture_error:
             return facture_error
 
-        _, vendor_error = _resolve_vendor_for_update(data, request, vente, role)
+        if facture and facture.status != Facture.STAT_NON_PAYE:
+            return error_response(
+                "FACTURE_NOT_CANCELABLE",
+                "Annulation impossible : la facture n'est plus non payée.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        if facture and facture.total_paye > 0:
+            return error_response(
+                "FACTURE_HAS_PAYMENT",
+                "Annulation impossible : un paiement existe déjà.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        _, vendor_error = _resolve_vendor_for_update(
+            data,
+            request,
+            vente,
+            role,
+        )
         if vendor_error:
             return vendor_error
 
         vente.is_cancelled = True
         vente.cancelled_at = timezone.now()
         vente.cancelled_by = user
-        vente.save(update_fields=["is_cancelled", "cancelled_at", "cancelled_by"])
+        vente.save(
+            update_fields=[
+                "is_cancelled",
+                "cancelled_at",
+                "cancelled_by",
+            ]
+        )
 
         if facture:
             Facture.objects.filter(id=facture.id).update(
                 is_locked=True,
                 locked_at=timezone.now(),
             )
+
+        vente.refresh_from_db()
 
         return Response(
             {
@@ -1364,43 +1556,53 @@ class CancelProformaVenteView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-
 # ==========================================================
 # 3. RETOUR CLIENT SOUS 72H APRÈS PAIEMENT
 # ==========================================================
-
 class RetourVenteProduitView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Retour client sous 72h après paiement",
         operation_description="""
-        Retour client après paiement.
+Retour client après paiement.
 
-        Conditions :
-        - facture payée
-        - stock déjà consommé
-        - délai maximum 72h
-        - restaure VendorStock
-        - crée InventoryMovement RETURN_IN
+Conditions :
+- facture payée
+- stock déjà consommé
+- délai maximum 72h
+- restaure VendorStock
+- crée InventoryMovement RETURN_IN
+- FIFO réel basé sur SALE_OUT
         """,
         request_body=RetourVenteProduitSerializer,
         tags=["Ventes"],
     )
     @transaction.atomic
     def post(self, request, vente_id):
+
         user = request.user
         role = get_role_name(user)
 
         if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
-            return error_response("ACCESS_DENIED", "Accès refusé.", status.HTTP_403_FORBIDDEN)
+            return error_response(
+                "ACCESS_DENIED",
+                "Accès refusé.",
+                status.HTTP_403_FORBIDDEN,
+            )
 
         input_serializer = RetourVenteProduitSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         data = input_serializer.validated_data
 
         vente = get_object_or_404(
-            Vente.objects.select_for_update().select_related("vendor", "bijouterie", "client"),
+            Vente.objects
+            .select_for_update()
+            .select_related(
+                "vendor",
+                "bijouterie",
+                "client",
+            ),
             id=vente_id,
         )
 
@@ -1416,115 +1618,198 @@ class RetourVenteProduitView(APIView):
         if not facture:
             return error_response(
                 "FACTURE_NOT_FOUND",
-                "Retour impossible : aucune facture liée à cette vente.",
+                "Retour impossible : aucune facture liée.",
                 status.HTTP_404_NOT_FOUND,
             )
 
         if facture.status != Facture.STAT_PAYE:
             return error_response(
                 "FACTURE_NOT_PAID",
-                "Retour impossible : la facture doit être payée.",
+                "Retour impossible : facture non payée.",
                 status.HTTP_400_BAD_REQUEST,
             )
 
         if not facture.stock_consumed:
             return error_response(
                 "STOCK_NOT_CONSUMED",
-                "Retour impossible : le stock n'a pas encore été consommé.",
+                "Retour impossible : stock non consommé.",
                 status.HTTP_400_BAD_REQUEST,
             )
 
         reference_date = vente.delivered_at or facture.date_creation
+
         if timezone.now() > reference_date + timedelta(hours=72):
             return error_response(
                 "RETURN_DELAY_EXPIRED",
-                "Retour impossible : le délai de 72 heures est dépassé.",
+                "Retour impossible : délai 72h dépassé.",
                 status.HTTP_400_BAD_REQUEST,
             )
 
-        _, vendor_error = _resolve_vendor_for_update(data, request, vente, role)
+        _, vendor_error = _resolve_vendor_for_update(
+            data,
+            request,
+            vente,
+            role,
+        )
+
         if vendor_error:
             return vendor_error
 
-        reason = data.get("reason") or "Retour client sous 72h"
+        reason = (
+            data.get("reason")
+            or "Retour client sous 72h"
+        )
+
         produits_retour = data.get("produits") or []
 
+        # =====================================================
+        # AGREGER LES DEMANDES
+        # =====================================================
         requested_by_line = {}
 
         for item in produits_retour:
-            ligne_id = item["vente_ligne_id"]
-            qty = item["quantite"]
-            requested_by_line[int(ligne_id)] = requested_by_line.get(int(ligne_id), 0) + qty
 
-        sale_outs = InventoryMovement.objects.select_for_update().filter(
-            vente=vente,
-            facture=facture,
-            movement_type=InventoryMovement.MovementType.SALE_OUT,
-        ).select_related(
-            "produit",
-            "produit_line",
-            "lot",
-            "vendor",
-            "vente_ligne",
-        ).order_by("vente_ligne_id", "produit_line_id", "id")
+            ligne_id = int(item["vente_ligne_id"])
+            qty = int(item["quantite"])
+
+            if qty <= 0:
+                return error_response(
+                    "INVALID_QTY",
+                    "La quantité doit être supérieure à 0.",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+            requested_by_line[ligne_id] = (
+                requested_by_line.get(ligne_id, 0) + qty
+            )
+
+        # =====================================================
+        # FIFO DES SALE_OUT
+        # =====================================================
+        sale_outs = (
+            InventoryMovement.objects
+            .select_for_update()
+            .filter(
+                vente=vente,
+                facture=facture,
+                movement_type=InventoryMovement.MovementType.SALE_OUT,
+            )
+            .select_related(
+                "produit",
+                "produit_line",
+                "lot",
+                "vendor",
+                "vente_ligne",
+            )
+            .order_by(
+                "vente_ligne_id",
+                "produit_line_id",
+                "id",
+            )
+        )
 
         if requested_by_line:
-            sale_outs = sale_outs.filter(vente_ligne_id__in=requested_by_line.keys())
+            sale_outs = sale_outs.filter(
+                vente_ligne_id__in=requested_by_line.keys()
+            )
 
         total_returned_now = 0
+
         details = []
 
+        # =====================================================
+        # PARCOURS FIFO
+        # =====================================================
         for move in sale_outs:
+
             ligne = move.vente_ligne
+
             if not ligne:
                 continue
 
-            already_returned = InventoryMovement.objects.filter(
-                vente=vente,
-                facture=facture,
-                movement_type=InventoryMovement.MovementType.RETURN_IN,
-                vente_ligne=ligne,
-                produit_line=move.produit_line,
-            ).aggregate(total=Sum("qty"))["total"] or 0
+            already_returned = (
+                InventoryMovement.objects
+                .filter(
+                    vente=vente,
+                    facture=facture,
+                    movement_type=InventoryMovement.MovementType.RETURN_IN,
+                    vente_ligne=ligne,
+                    produit_line=move.produit_line,
+                )
+                .aggregate(total=Sum("qty"))["total"]
+                or 0
+            )
 
-            remaining_returnable = int(move.qty) - int(already_returned)
+            remaining_returnable = (
+                int(move.qty)
+                - int(already_returned)
+            )
 
             if remaining_returnable <= 0:
                 continue
 
+            # =================================================
+            # MODE PARTIEL
+            # =================================================
             if requested_by_line:
-                wanted_for_line = requested_by_line.get(ligne.id, 0)
+
+                wanted_for_line = requested_by_line.get(
+                    ligne.id,
+                    0,
+                )
 
                 if wanted_for_line <= 0:
                     continue
 
-                qty_to_return = min(remaining_returnable, wanted_for_line)
+                qty_to_return = min(
+                    remaining_returnable,
+                    wanted_for_line,
+                )
+
                 requested_by_line[ligne.id] -= qty_to_return
+
             else:
                 qty_to_return = remaining_returnable
 
-            stock = VendorStock.objects.select_for_update().filter(
-                vendor=move.vendor,
-                produit_line=move.produit_line,
-            ).first()
+            # =================================================
+            # RESTAURATION VENDOR STOCK
+            # =================================================
+            stock = (
+                VendorStock.objects
+                .select_for_update()
+                .filter(
+                    vendor=move.vendor,
+                    produit_line=move.produit_line,
+                )
+                .first()
+            )
 
             if not stock:
                 return error_response(
                     "VENDOR_STOCK_NOT_FOUND",
-                    f"Stock vendeur introuvable pour la ligne {ligne.id}.",
+                    f"Stock vendeur introuvable pour ligne {ligne.id}.",
                     status.HTTP_400_BAD_REQUEST,
                 )
 
             if stock.quantite_vendue < qty_to_return:
                 return error_response(
                     "INVALID_VENDOR_STOCK_STATE",
-                    f"Retour impossible : quantite_vendue insuffisante pour {move.produit.nom}.",
+                    f"Stock vendeur incohérent pour {move.produit.nom}.",
                     status.HTTP_400_BAD_REQUEST,
                 )
 
             stock.quantite_vendue -= qty_to_return
-            stock.save(update_fields=["quantite_vendue", "updated_at"])
 
+            stock.save(
+                update_fields=[
+                    "quantite_vendue",
+                    "updated_at",
+                ]
+            )
+
+            # =================================================
+            # INVENTORY MOVEMENT RETURN_IN
+            # =================================================
             log_move(
                 produit=move.produit,
                 qty=qty_to_return,
@@ -1544,31 +1829,47 @@ class RetourVenteProduitView(APIView):
             )
 
             total_returned_now += qty_to_return
-            details.append(
-                {
-                    "vente_ligne_id": ligne.id,
-                    "produit_id": move.produit_id,
-                    "produit": move.produit.nom,
-                    "produit_line_id": move.produit_line_id,
-                    "quantite_retournee": qty_to_return,
-                }
-            )
 
+            details.append({
+                "vente_ligne_id": ligne.id,
+                "produit_id": move.produit_id,
+                "produit": move.produit.nom,
+                "produit_line_id": move.produit_line_id,
+                "lot_id": move.lot_id,
+                "quantite_retournee": qty_to_return,
+            })
+
+        # =====================================================
+        # QUANTITES NON RETOURNABLES
+        # =====================================================
         if requested_by_line:
-            not_returned = {k: v for k, v in requested_by_line.items() if v > 0}
+
+            not_returned = {
+                k: v
+                for k, v in requested_by_line.items()
+                if v > 0
+            }
 
             if not_returned:
+
                 transaction.set_rollback(True)
+
                 return error_response(
                     "RETURN_QTY_TOO_HIGH",
-                    f"Quantité demandée supérieure à la quantité retournable : {not_returned}",
+                    (
+                        "Quantité demandée supérieure "
+                        f"à la quantité retournable : {not_returned}"
+                    ),
                     status.HTTP_400_BAD_REQUEST,
                 )
 
+        # =====================================================
+        # RIEN RETOURNE
+        # =====================================================
         if total_returned_now <= 0:
             return error_response(
                 "NOTHING_TO_RETURN",
-                "Aucune quantité retournable trouvée pour cette vente.",
+                "Aucune quantité retournable trouvée.",
                 status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1577,13 +1878,20 @@ class RetourVenteProduitView(APIView):
                 "status": "success",
                 "code": "RETURN_IN_CREATED",
                 "message": "Retour client enregistré avec succès.",
+
                 "vente_id": vente.id,
+                "numero_vente": vente.numero_vente,
+
                 "facture": facture.numero_facture,
+
                 "quantite_totale_retournee": total_returned_now,
+
                 "details": details,
             },
             status=status.HTTP_200_OK,
         )
         
+
+
 
 

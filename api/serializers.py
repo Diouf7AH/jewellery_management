@@ -50,5 +50,3 @@ class CommercialSettingsSerializer(serializers.Serializer):
             })
 
         return attrs 
-
-        return attrs 

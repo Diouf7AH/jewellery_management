@@ -64,8 +64,10 @@ class Bijouterie(models.Model):
     telephone_portable_5 = models.CharField(max_length=30, null=True, blank=True)
     telephone_fix = models.CharField(max_length=30, null=True, blank=True)
 
-    appliquer_tva = models.BooleanField(default=True)
-    taux_tva = models.DecimalField(max_digits=5,decimal_places=2,default=Decimal("18.00"))
+    # appliquer_tva = models.BooleanField(default=True)
+    appliquer_tva = models.BooleanField(default=False)
+    # taux_tva = models.DecimalField(max_digits=5,decimal_places=2,default=Decimal("18.00"))
+    taux_tva = models.DecimalField(max_digits=5,decimal_places=2,null=True,blank=True,default=None)
 
     ninea = models.CharField(
         max_length=20,
@@ -106,6 +108,15 @@ class Bijouterie(models.Model):
                     "ninea": "Le NINEA doit contenir uniquement des lettres et chiffres."
                 })
 
+        if not self.appliquer_tva:
+            self.taux_tva = None
+
+        if self.appliquer_tva and self.taux_tva is None:
+            raise ValidationError({
+                "taux_tva": "Le taux de TVA est obligatoire si la TVA est activée."
+            })
+        
+        
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)

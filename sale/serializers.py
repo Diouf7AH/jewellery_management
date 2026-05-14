@@ -671,19 +671,18 @@ class VenteDetailSerializer(serializers.ModelSerializer):
         model = Vente
         ref_name = "VenteDetailOut_V2"
         fields = [
-            "id",
-            "client",
-            "produits",
-            "vente",
-            "facture",
-            "bijouterie",
-            "montant_total",
-            "total_autres",
-            "total_ttc",
-            "total_remise",
-            "total_ht",
-            "totaux",
+            "id", "client", "produits", "vente", "facture", "bijouterie",
+            "montant_total", "total_autres", "total_ttc",
+            "total_remise", "total_ht", "totaux",
         ]
+
+    def _lignes(self, obj):
+        if hasattr(obj, "_prefetched_objects_cache") and "lignes" in obj._prefetched_objects_cache:
+            return obj._prefetched_objects_cache["lignes"]
+        return obj.lignes.all()
+
+    def _str_or_none(self, value):
+        return str(value) if value is not None else None
 
     def get_client(self, obj):
         c = getattr(obj, "client", None)
@@ -718,39 +717,41 @@ class VenteDetailSerializer(serializers.ModelSerializer):
             "type_facture": facture.type_facture,
             "status": facture.status,
             "montant_ht": str(facture.montant_ht),
-            "taux_tva": str(facture.taux_tva),
-            "montant_tva": str(facture.montant_tva),
+            "taux_tva": self._str_or_none(facture.taux_tva),
+            "montant_tva": self._str_or_none(facture.montant_tva),
             "montant_total": str(facture.montant_total),
             "total_paye": str(facture.total_paye),
             "reste_a_payer": str(facture.reste_a_payer),
         }
 
     def get_total_remise(self, obj):
-        total = sum((ligne.remise or Decimal("0.00")) for ligne in obj.lignes.all())
+        total = sum((ligne.remise or Decimal("0.00")) for ligne in self._lignes(obj))
         return str(total)
 
     def get_total_autres(self, obj):
-        total = sum((ligne.autres or Decimal("0.00")) for ligne in obj.lignes.all())
+        total = sum((ligne.autres or Decimal("0.00")) for ligne in self._lignes(obj))
         return str(total)
 
     def get_total_ht(self, obj):
-        total = sum((ligne.montant_ht or Decimal("0.00")) for ligne in obj.lignes.all())
+        total = sum((ligne.montant_ht or Decimal("0.00")) for ligne in self._lignes(obj))
         return str(total)
 
     def get_total_ttc(self, obj):
         facture = getattr(obj, "facture_vente", None)
         if facture:
             return str(facture.montant_total)
-        total = sum((ligne.montant_total or Decimal("0.00")) for ligne in obj.lignes.all())
+
+        total = sum((ligne.montant_total or Decimal("0.00")) for ligne in self._lignes(obj))
         return str(total)
 
     def get_totaux(self, obj):
         facture = getattr(obj, "facture_vente", None)
+        lignes = self._lignes(obj)
 
-        total_ht = sum((ligne.montant_ht or Decimal("0.00")) for ligne in obj.lignes.all())
-        total_remise = sum((ligne.remise or Decimal("0.00")) for ligne in obj.lignes.all())
-        total_autres = sum((ligne.autres or Decimal("0.00")) for ligne in obj.lignes.all())
-        total_lignes = sum((ligne.montant_total or Decimal("0.00")) for ligne in obj.lignes.all())
+        total_ht = sum((ligne.montant_ht or Decimal("0.00")) for ligne in lignes)
+        total_remise = sum((ligne.remise or Decimal("0.00")) for ligne in lignes)
+        total_autres = sum((ligne.autres or Decimal("0.00")) for ligne in lignes)
+        total_lignes = sum((ligne.montant_total or Decimal("0.00")) for ligne in lignes)
 
         return {
             "montant_ht_lignes": str(total_ht),
@@ -758,11 +759,10 @@ class VenteDetailSerializer(serializers.ModelSerializer):
             "autres_total": str(total_autres),
             "montant_total_lignes": str(total_lignes),
             "montant_ht_facture": str(facture.montant_ht) if facture else None,
-            "taux_tva": str(facture.taux_tva) if facture else None,
-            "montant_tva": str(facture.montant_tva) if facture else None,
+            "taux_tva": self._str_or_none(facture.taux_tva) if facture else None,
+            "montant_tva": self._str_or_none(facture.montant_tva) if facture else None,
             "montant_total_facture": str(facture.montant_total) if facture else None,
         }
-
 
 
 class VenteProduitDetailSerializer(serializers.ModelSerializer):

@@ -77,69 +77,311 @@ def upsert_client_for_payment(*, facture, client_data: dict):
     return client
 
 
+# @transaction.atomic
+# def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Facture, int]:
+#     """
+#     Création vente :
+#     - stock NON consommé ici
+#     - client optionnel
+#     - bijouterie = celle du vendeur
+#     - Vente.montant_total = total des lignes (HT métier)
+#     - Facture = HT + TVA + total TTC
+#     """
+#     client_in = payload.get("client") or {}
+#     items = payload.get("produits") or []
+    
+    
+#     # --------------------------------------------------
+#     # Agrégation des lignes produit
+#     # évite doublons produit
+#     # --------------------------------------------------
+#     grouped = {}
+
+#     for item in items:
+
+#         pid = int(item["produit_id"])
+#         qty = int(item.get("quantite") or 0)
+
+#         if pid not in grouped:
+#             grouped[pid] = {
+#                 "quantite": 0,
+#                 "prix_vente_grammes": dec(item.get("prix_vente_grammes")),
+#                 "remise": dec(item.get("remise")) or ZERO,
+#                 "autres": dec(item.get("autres")) or ZERO,
+#             }
+
+#         grouped[pid]["quantite"] += qty
+            
+
+#     if not items:
+#         raise ValidationError({"produits": "Au moins un produit est requis."})
+
+#     vendor, bijouterie = resolve_vendor_and_bijouterie_for_sale(
+#         role=role,
+#         user=user,
+#         vendor_email=payload.get("vendor_email"),
+#     )
+
+#     # --------------------------------------------------
+#     # Client optionnel
+#     # --------------------------------------------------
+#     nom = (client_in.get("nom") or "").strip()
+#     prenom = (client_in.get("prenom") or "").strip()
+#     tel = (client_in.get("telephone") or "").strip()
+
+#     client = None
+#     if nom and prenom:
+#         lookup = {"telephone": tel} if tel else {"nom": nom, "prenom": prenom}
+#         client, _ = Client.objects.get_or_create(
+#             defaults={"nom": nom, "prenom": prenom, "telephone": tel or None},
+#             **lookup,
+#         )
+#     elif any([nom, prenom, tel]):
+#         raise ValidationError({"client": "Si client est fourni, nom et prenom sont obligatoires."})
+
+#     # --------------------------------------------------
+#     # Préchargement produits
+#     # --------------------------------------------------
+#     produit_ids = []
+#     for pid, total_qty in grouped.items():
+#         try:
+#             produit_ids.append(int(item["produit_id"]))
+#         except Exception:
+#             raise ValidationError({f"produits[{i}].produit_id": "Requis (int)."})
+
+#     produits_qs = (
+#         Produit.objects
+#         .select_related("marque", "purete")
+#         .filter(id__in=list(set(produit_ids)))
+#     )
+#     produits = {p.id: p for p in produits_qs}
+
+#     missing = [pid for pid in set(produit_ids) if pid not in produits]
+#     if missing:
+#         raise ValidationError({"produits": f"Produits introuvables: {missing}"})
+
+#     # --------------------------------------------------
+#     # Tarifs fallback marque/pureté
+#     # --------------------------------------------------
+#     pairs = {
+#         (p.marque_id, p.purete_id)
+#         for p in produits.values()
+#         if p.marque_id and p.purete_id
+#     }
+
+#     tarifs = {}
+#     if pairs:
+#         marques = [m for (m, _) in pairs]
+#         puretes = [r for (_, r) in pairs]
+
+#         for mp in MarquePurete.objects.filter(
+#             marque_id__in=marques,
+#             purete_id__in=puretes,
+#         ):
+#             tarifs[(mp.marque_id, mp.purete_id)] = Decimal(str(mp.prix))
+
+#     # --------------------------------------------------
+#     # Vérification stock vendeur sans consommation
+#     # --------------------------------------------------
+#     for pid, total_qty in grouped.items():
+#         produit = produits[pid]
+#         qte = total_qty
+
+#         if qte <= 0:
+#             raise ValidationError({f"produits[{i}].quantite": "Doit être >= 1."})
+
+#         ensure_vendor_stock_available(
+#             vendor=vendor,
+#             bijouterie=bijouterie,
+#             produit=produit,
+#             quantite=qte,
+#         )
+
+#     # --------------------------------------------------
+#     # Création vente
+#     # --------------------------------------------------
+#     vente = Vente.objects.create(
+#         client=client,
+#         created_by=user,
+#         bijouterie=bijouterie,
+#         vendor=vendor,
+#     )
+
+#     # --------------------------------------------------
+#     # Création lignes
+#     # --------------------------------------------------
+#     for pid, total_qty in grouped.items():
+#         produit = produits[pid]
+#         qte = total_qty
+
+#         prix_vente = dec(item.get("prix_vente_grammes"))
+#         if not prix_vente or prix_vente <= 0:
+#             prix_vente = tarifs.get((produit.marque_id, produit.purete_id))
+#             if not prix_vente or prix_vente <= 0:
+#                 raise ValidationError({
+#                     f"produits[{i}].prix_vente_grammes": f"Tarif manquant pour {produit.nom}."
+#                 })
+
+#         VenteProduit.objects.create(
+#             vente=vente,
+#             produit=produit,
+#             vendor=vendor,
+#             quantite=qte,
+#             prix_vente_grammes=prix_vente,
+#             remise=dec(item.get("remise")) or ZERO,
+#             autres=dec(item.get("autres")) or ZERO,
+#         )
+
+#     # Total de vente = total lignes
+#     vente.mettre_a_jour_montant_total()
+
+#     # --------------------------------------------------
+#     # Création facture PROFORMA
+#     # TVA copiée depuis la bijouterie
+#     # --------------------------------------------------
+#     facture = Facture.objects.create(
+#         vente=vente,
+#         bijouterie=bijouterie,
+#         montant_ht=vente.montant_total or Decimal("0.00"),
+#         appliquer_tva=bool(getattr(bijouterie, "appliquer_tva", True)),
+#         taux_tva=Decimal(str(getattr(bijouterie, "taux_tva", "0.00") or "0.00")),
+#         status=Facture.STAT_NON_PAYE,
+#         type_facture=Facture.TYPE_PROFORMA,
+#     )
+
+#     return vente, facture, 0
+
+
+def dec(v):
+    try:
+        if v in [None, "", "null"]:
+            return ZERO
+        return Decimal(str(v))
+    except Exception:
+        return ZERO
+
+
 @transaction.atomic
 def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Facture, int]:
     """
-    Création vente :
-    - stock NON consommé ici
-    - client optionnel
-    - bijouterie = celle du vendeur
-    - Vente.montant_total = total des lignes (HT métier)
-    - Facture = HT + TVA + total TTC
+    Création vente PROFORMA.
+
+    IMPORTANT :
+    - Ne consomme PAS le stock ici
+    - Vérifie seulement disponibilité stock vendeur
+    - La consommation FIFO sera faite au paiement
     """
+
     client_in = payload.get("client") or {}
     items = payload.get("produits") or []
 
     if not items:
-        raise ValidationError({"produits": "Au moins un produit est requis."})
+        raise ValidationError({
+            "produits": "Au moins un produit est requis."
+        })
 
+    # =========================================================
+    # Agrégation des produits
+    # évite doublons produit dans payload
+    # =========================================================
+    grouped = {}
+
+    for item in items:
+
+        produit_id = item.get("produit_id")
+
+        if not produit_id:
+            raise ValidationError({
+                "produit_id": "Champ requis."
+            })
+
+        try:
+            pid = int(produit_id)
+        except Exception:
+            raise ValidationError({
+                "produit_id": "Doit être un entier."
+            })
+
+        qty = int(item.get("quantite") or 0)
+
+        if qty <= 0:
+            raise ValidationError({
+                f"produit_{pid}": "Quantité invalide."
+            })
+
+        if pid not in grouped:
+            grouped[pid] = {
+                "quantite": 0,
+                "prix_vente_grammes": dec(item.get("prix_vente_grammes")),
+                "remise": dec(item.get("remise")) or ZERO,
+                "autres": dec(item.get("autres")) or ZERO,
+            }
+
+        grouped[pid]["quantite"] += qty
+
+    # =========================================================
+    # Résolution vendeur + bijouterie
+    # =========================================================
     vendor, bijouterie = resolve_vendor_and_bijouterie_for_sale(
         role=role,
         user=user,
         vendor_email=payload.get("vendor_email"),
     )
 
-    # --------------------------------------------------
+    # =========================================================
     # Client optionnel
-    # --------------------------------------------------
+    # =========================================================
     nom = (client_in.get("nom") or "").strip()
     prenom = (client_in.get("prenom") or "").strip()
     tel = (client_in.get("telephone") or "").strip()
 
     client = None
+
     if nom and prenom:
-        lookup = {"telephone": tel} if tel else {"nom": nom, "prenom": prenom}
+
+        lookup = (
+            {"telephone": tel}
+            if tel else
+            {"nom": nom, "prenom": prenom}
+        )
+
         client, _ = Client.objects.get_or_create(
-            defaults={"nom": nom, "prenom": prenom, "telephone": tel or None},
+            defaults={
+                "nom": nom,
+                "prenom": prenom,
+                "telephone": tel or None,
+            },
             **lookup,
         )
-    elif any([nom, prenom, tel]):
-        raise ValidationError({"client": "Si client est fourni, nom et prenom sont obligatoires."})
 
-    # --------------------------------------------------
+    elif any([nom, prenom, tel]):
+        raise ValidationError({
+            "client": "nom et prenom sont obligatoires."
+        })
+
+    # =========================================================
     # Préchargement produits
-    # --------------------------------------------------
-    produit_ids = []
-    for i, item in enumerate(items):
-        try:
-            produit_ids.append(int(item["produit_id"]))
-        except Exception:
-            raise ValidationError({f"produits[{i}].produit_id": "Requis (int)."})
+    # =========================================================
+    produit_ids = list(grouped.keys())
 
     produits_qs = (
         Produit.objects
         .select_related("marque", "purete")
-        .filter(id__in=list(set(produit_ids)))
+        .filter(id__in=produit_ids)
     )
+
     produits = {p.id: p for p in produits_qs}
 
-    missing = [pid for pid in set(produit_ids) if pid not in produits]
-    if missing:
-        raise ValidationError({"produits": f"Produits introuvables: {missing}"})
+    missing = [pid for pid in produit_ids if pid not in produits]
 
-    # --------------------------------------------------
-    # Tarifs fallback marque/pureté
-    # --------------------------------------------------
+    if missing:
+        raise ValidationError({
+            "produits": f"Produits introuvables : {missing}"
+        })
+
+    # =========================================================
+    # Tarifs marque/pureté
+    # =========================================================
     pairs = {
         (p.marque_id, p.purete_id)
         for p in produits.values()
@@ -147,25 +389,29 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
     }
 
     tarifs = {}
-    if pairs:
-        marques = [m for (m, _) in pairs]
-        puretes = [r for (_, r) in pairs]
 
-        for mp in MarquePurete.objects.filter(
+    if pairs:
+
+        marques = [m for (m, _) in pairs]
+        puretes = [p for (_, p) in pairs]
+
+        mp_qs = MarquePurete.objects.filter(
             marque_id__in=marques,
             purete_id__in=puretes,
-        ):
+        )
+
+        for mp in mp_qs:
             tarifs[(mp.marque_id, mp.purete_id)] = Decimal(str(mp.prix))
 
-    # --------------------------------------------------
-    # Vérification stock vendeur sans consommation
-    # --------------------------------------------------
-    for i, item in enumerate(items):
-        produit = produits[int(item["produit_id"])]
-        qte = int(item.get("quantite") or 0)
+    # =========================================================
+    # Vérification stock vendeur
+    # IMPORTANT :
+    # pas de consommation ici
+    # =========================================================
+    for pid, data_item in grouped.items():
 
-        if qte <= 0:
-            raise ValidationError({f"produits[{i}].quantite": "Doit être >= 1."})
+        produit = produits[pid]
+        qte = data_item["quantite"]
 
         ensure_vendor_stock_available(
             vendor=vendor,
@@ -174,9 +420,9 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
             quantite=qte,
         )
 
-    # --------------------------------------------------
+    # =========================================================
     # Création vente
-    # --------------------------------------------------
+    # =========================================================
     vente = Vente.objects.create(
         client=client,
         created_by=user,
@@ -184,19 +430,29 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
         vendor=vendor,
     )
 
-    # --------------------------------------------------
-    # Création lignes
-    # --------------------------------------------------
-    for i, item in enumerate(items):
-        produit = produits[int(item["produit_id"])]
-        qte = int(item.get("quantite") or 0)
+    # =========================================================
+    # Création lignes vente
+    # =========================================================
+    for pid, data_item in grouped.items():
 
-        prix_vente = dec(item.get("prix_vente_grammes"))
+        produit = produits[pid]
+
+        qte = data_item["quantite"]
+
+        prix_vente = data_item["prix_vente_grammes"]
+
+        # fallback prix marque/pureté
         if not prix_vente or prix_vente <= 0:
-            prix_vente = tarifs.get((produit.marque_id, produit.purete_id))
+
+            prix_vente = tarifs.get(
+                (produit.marque_id, produit.purete_id)
+            )
+
             if not prix_vente or prix_vente <= 0:
                 raise ValidationError({
-                    f"produits[{i}].prix_vente_grammes": f"Tarif manquant pour {produit.nom}."
+                    f"produit_{pid}": (
+                        f"Tarif manquant pour {produit.nom}."
+                    )
                 })
 
         VenteProduit.objects.create(
@@ -205,23 +461,45 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
             vendor=vendor,
             quantite=qte,
             prix_vente_grammes=prix_vente,
-            remise=dec(item.get("remise")) or ZERO,
-            autres=dec(item.get("autres")) or ZERO,
+            remise=data_item["remise"],
+            autres=data_item["autres"],
         )
 
-    # Total de vente = total lignes
+    # =========================================================
+    # Recalcul total vente
+    # =========================================================
     vente.mettre_a_jour_montant_total()
 
-    # --------------------------------------------------
+    # =========================================================
     # Création facture PROFORMA
-    # TVA copiée depuis la bijouterie
-    # --------------------------------------------------
+    # =========================================================
+    apply_tva = bool(
+        getattr(bijouterie, "appliquer_tva", False)
+    )
+
+    taux_tva = None
+
+    if apply_tva:
+        taux_tva = Decimal(
+            str(
+                getattr(
+                    bijouterie,
+                    "taux_tva",
+                    "0.00"
+                ) or "0.00"
+            )
+        )
+
     facture = Facture.objects.create(
         vente=vente,
         bijouterie=bijouterie,
-        montant_ht=vente.montant_total or Decimal("0.00"),
-        appliquer_tva=bool(getattr(bijouterie, "appliquer_tva", True)),
-        taux_tva=Decimal(str(getattr(bijouterie, "taux_tva", "0.00") or "0.00")),
+
+        montant_ht=vente.montant_total or ZERO,
+
+        appliquer_tva=apply_tva,
+
+        taux_tva=taux_tva,
+
         status=Facture.STAT_NON_PAYE,
         type_facture=Facture.TYPE_PROFORMA,
     )

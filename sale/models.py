@@ -342,19 +342,23 @@ class Facture(models.Model):
     )
 
     # Configuration TVA figée au moment d'émission
-    appliquer_tva = models.BooleanField(default=True)
+    appliquer_tva = models.BooleanField(default=False)
 
     taux_tva = models.DecimalField(
         max_digits=5,
         decimal_places=2,
-        default=ZERO,
+        null=True,
+        blank=True,
+        default=None
     )
 
     # Montants calculés
     montant_tva = models.DecimalField(
-        max_digits=14,
+        max_digits=12,
         decimal_places=2,
-        default=ZERO,
+        null=True,
+        blank=True,
+        default=None
     )
 
     montant_total = models.DecimalField(
@@ -421,9 +425,9 @@ class Facture(models.Model):
         ]
         constraints = [
             CheckConstraint(check=Q(montant_ht__gte=0), name="facture_montant_ht_gte_0"),
-            CheckConstraint(check=Q(taux_tva__gte=0), name="facture_taux_tva_gte_0"),
+            CheckConstraint(check=Q(taux_tva__isnull=True) | Q(taux_tva__gte=0),name="facture_taux_tva_gte_0",),
             CheckConstraint(check=Q(taux_tva__lte=100), name="facture_taux_tva_lte_100"),
-            CheckConstraint(check=Q(montant_tva__gte=0), name="facture_montant_tva_gte_0"),
+            CheckConstraint(check=Q(montant_tva__isnull=True) | Q(montant_tva__gte=0),name="facture_montant_tva_gte_0",),
             CheckConstraint(check=Q(montant_total__gte=0), name="facture_montant_total_gte_0"),
             models.UniqueConstraint(
                 fields=["bijouterie", "numero_facture"],
@@ -441,21 +445,44 @@ class Facture(models.Model):
         return f"FAC-{day}-{seq:04d}"
 
     def recalculer_totaux(self):
+
         ht = Decimal(str(self.montant_ht or ZERO))
 
-        taux = Decimal(str(self.taux_tva or ZERO))
+        # =========================================
+        # TVA NON APPLIQUÉE
+        # =========================================
         if not self.appliquer_tva:
-            taux = ZERO
 
-        # on refige la valeur réellement appliquée
-        self.taux_tva = taux.quantize(TWOPLACES, rounding=ROUND_HALF_UP)
+            self.taux_tva = None
+            self.montant_tva = None
 
-        self.montant_tva = (ht * self.taux_tva / Decimal("100")).quantize(
+            self.montant_total = ht.quantize(
+                TWOPLACES,
+                rounding=ROUND_HALF_UP,
+            )
+
+            return
+
+        # =========================================
+        # TVA APPLIQUÉE
+        # =========================================
+        taux = Decimal(str(self.taux_tva or ZERO))
+
+        self.taux_tva = taux.quantize(
             TWOPLACES,
             rounding=ROUND_HALF_UP,
         )
 
-        self.montant_total = (ht + self.montant_tva).quantize(
+        self.montant_tva = (
+            ht * self.taux_tva / Decimal("100")
+        ).quantize(
+            TWOPLACES,
+            rounding=ROUND_HALF_UP,
+        )
+
+        self.montant_total = (
+            ht + self.montant_tva
+        ).quantize(
             TWOPLACES,
             rounding=ROUND_HALF_UP,
         )
@@ -477,14 +504,16 @@ class Facture(models.Model):
             facture.save(update_fields=["status"])
 
     def save(self, *args, **kwargs):
+        if self.pk:
+            old = Facture.objects.filter(pk=self.pk).only("is_locked").first()
+            if old and old.is_locked:
+                raise ValidationError("Facture verrouillée")
+
         if not self.numero_facture:
             if not self.bijouterie_id:
                 raise ValueError("La bijouterie est obligatoire pour numéroter la facture.")
 
             self.numero_facture = self.generer_numero_unique(self.bijouterie)
-
-        if self.is_locked:
-            raise ValidationError("Facture verrouillée")
 
         self.recalculer_totaux()
         super().save(*args, **kwargs)
@@ -624,7 +653,8 @@ class PaiementLigne(models.Model):
     reference = models.CharField(
         max_length=255,
         null=True,
-        blank=True
+        blank=True,
+        help_text="Référence transaction Wave / OM / banque"
     )
 
     compte_depot = models.ForeignKey(

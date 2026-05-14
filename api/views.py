@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import time as dtime
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.db.models import (Case, Count, DecimalField, ExpressionWrapper, F,
@@ -449,7 +449,6 @@ class ManagerDashboardAPIView(APIView):
         
 
 
-
 class CommercialSettingsUpdateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrManager]
 
@@ -463,15 +462,17 @@ Permet à l’admin ou au manager de :
 - modifier le taux de TVA
 - mettre à jour le prix journalier d’un ou plusieurs couples marque/pureté
 - créer automatiquement un historique des changements de prix
+
+### Règles métier
+- Si `appliquer_tva = false`, alors `taux_tva` devient automatiquement `null`.
+- Si `appliquer_tva = true`, alors `taux_tva` doit être fourni ou déjà existant.
+- Le prix marque/pureté doit être supérieur à 0.
+- Un manager ne peut modifier que les bijouteries qu’il gère.
         """,
         request_body=CommercialSettingsSerializer,
         responses={
-            200: openapi.Response(
-                description="Paramétrage commercial mis à jour avec succès."
-            ),
-            400: openapi.Response(
-                description="Erreur de validation ou couple marque/pureté introuvable."
-            ),
+            200: openapi.Response(description="Paramétrage commercial mis à jour avec succès."),
+            400: openapi.Response(description="Erreur de validation ou couple marque/pureté introuvable."),
             403: openapi.Response(description="Accès refusé."),
             404: openapi.Response(description="Bijouterie introuvable."),
         },
@@ -479,7 +480,7 @@ Permet à l’admin ou au manager de :
     )
     @transaction.atomic
     def patch(self, request, *args, **kwargs):
-        serializer = CommercialSettingsSerializer(data=request.data)
+        serializer = CommercialSettingsSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
@@ -491,10 +492,11 @@ Permet à l’admin ou au manager de :
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # manager -> seulement ses bijouteries
         role = get_role_name(request.user)
+
         if role == "manager":
             manager = getattr(request.user, "staff_manager_profile", None)
+
             if not manager or not manager.bijouteries.filter(pk=bijouterie.pk).exists():
                 return Response(
                     {"detail": "Vous ne pouvez pas modifier cette bijouterie."},
@@ -503,30 +505,80 @@ Permet à l’admin ou au manager de :
 
         updated_prices = []
 
-        # -------------------------
+        old_appliquer_tva = bijouterie.appliquer_tva
+        old_taux_tva = bijouterie.taux_tva
+
+        # =========================
         # TVA
-        # -------------------------
+        # =========================
+        tva_updated = False
+
         if "appliquer_tva" in data:
             bijouterie.appliquer_tva = data["appliquer_tva"]
+            tva_updated = True
 
-        if "taux_tva" in data and data["taux_tva"] is not None:
+        if "taux_tva" in data:
             bijouterie.taux_tva = data["taux_tva"]
+            tva_updated = True
 
-        if "appliquer_tva" in data or "taux_tva" in data:
-            update_fields = []
-            if "appliquer_tva" in data:
-                update_fields.append("appliquer_tva")
-            if "taux_tva" in data and data["taux_tva"] is not None:
-                update_fields.append("taux_tva")
+        # Cohérence TVA
+        if not bijouterie.appliquer_tva:
+            bijouterie.taux_tva = None
+        else:
+            if bijouterie.taux_tva is None:
+                return Response(
+                    {"detail": "Le taux de TVA est obligatoire lorsque la TVA est activée."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if bijouterie.taux_tva < 0 or bijouterie.taux_tva > 100:
+                return Response(
+                    {"detail": "Le taux de TVA doit être compris entre 0 et 100."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if tva_updated:
+            update_fields = ["appliquer_tva", "taux_tva"]
+
             if hasattr(bijouterie, "updated_at"):
                 update_fields.append("updated_at")
 
             bijouterie.save(update_fields=update_fields)
 
-        # -------------------------
+            # Optionnel si tu as un modèle TVAHistory :
+            # TVAHistory.objects.create(
+            #     bijouterie=bijouterie,
+            #     old_appliquer_tva=old_appliquer_tva,
+            #     new_appliquer_tva=bijouterie.appliquer_tva,
+            #     old_taux_tva=old_taux_tva,
+            #     new_taux_tva=bijouterie.taux_tva,
+            #     changed_by=request.user,
+            #     source="api",
+            # )
+
+        # =========================
         # PRIX MARQUE / PURETE
-        # -------------------------
+        # =========================
         for item in data.get("prix_marque_purete", []):
+            try:
+                new_price = Decimal(str(item["prix"]))
+            except (InvalidOperation, TypeError, KeyError):
+                return Response(
+                    {"detail": "Prix invalide."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if new_price <= 0:
+                return Response(
+                    {
+                        "detail": (
+                            f"Le prix doit être supérieur à 0 "
+                            f"pour marque='{item.get('marque')}'."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             obj = (
                 MarquePurete.objects
                 .select_for_update()
@@ -550,11 +602,16 @@ Permet à l’admin ou au manager de :
                 )
 
             old_price = Decimal(str(obj.prix or "0.00"))
+            
+            # if self.appliquer_tva and (self.taux_tva is None or Decimal(str(self.taux_tva)) <= 0):
+            #     raise ValidationError({
+            #         "taux_tva": "Le taux de TVA est obligatoire lorsque la TVA est activée."
+            #     })
 
             try:
                 obj, history = update_marque_purete_price(
                     obj=obj,
-                    new_price=item["prix"],
+                    new_price=new_price,
                     user=request.user,
                     bijouterie=bijouterie,
                     source="api",
@@ -579,18 +636,27 @@ Permet à l’admin ou au manager de :
         return Response(
             {
                 "message": "Paramétrage commercial mis à jour avec succès.",
+
+                "tva_updated": tva_updated,
+                "prix_updated": len(updated_prices) > 0,
+
                 "bijouterie": {
                     "id": bijouterie.id,
                     "nom": bijouterie.nom,
                     "appliquer_tva": bijouterie.appliquer_tva,
-                    "taux_tva": str(bijouterie.taux_tva),
+                    "taux_tva": (
+                        str(bijouterie.taux_tva)
+                        if bijouterie.taux_tva is not None
+                        else None
+                    ),
                 },
+
                 "prix_updates_count": len(updated_prices),
                 "prix_updates": updated_prices,
             },
             status=status.HTTP_200_OK,
         )
         
-
+        
 
 
