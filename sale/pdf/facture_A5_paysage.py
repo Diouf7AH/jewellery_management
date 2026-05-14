@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 
 import qrcode
 from django.conf import settings
 from reportlab.lib.pagesizes import A5, landscape
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from .theme_riogold import (DARK, GOLD, LINE, MID, MUTED, WHITE, money_fcfa,
@@ -48,13 +50,36 @@ def _doc_type_label(value: str) -> str:
     }.get(value, "FACTURE")
 
 
-def _make_invoice_qr(numero_facture: str):
-    qr_dir = os.path.join(settings.MEDIA_ROOT, "factures", "qr_temp")
-    os.makedirs(qr_dir, exist_ok=True)
+# def _make_invoice_qr(numero_facture: str):
+#     qr_dir = os.path.join(settings.MEDIA_ROOT, "factures", "qr_temp")
+#     os.makedirs(qr_dir, exist_ok=True)
 
-    path = os.path.join(qr_dir, f"qr_{numero_facture}.png")
-    qrcode.make(numero_facture).save(path)
-    return path
+#     path = os.path.join(qr_dir, f"qr_{numero_facture}.png")
+#     qrcode.make(numero_facture).save(path)
+#     return path
+def _make_invoice_qr_reader(numero_facture):
+    """
+    Génère le QR Code entièrement en mémoire
+    sans créer de fichier temporaire.
+    """
+    buffer = BytesIO()
+
+    qr = qrcode.QRCode(
+        version=1,
+        box_size=10,
+        border=2,
+    )
+
+    qr.add_data(numero_facture)
+    qr.make(fit=True)
+
+    img = qr.make_image(fill_color="black", back_color="white")
+
+    img.save(buffer, format="PNG")
+
+    buffer.seek(0)
+
+    return ImageReader(buffer)
 
 
 def _draw_page_header(c, w, h, data):
@@ -263,27 +288,19 @@ def _draw_conditions_box(c, x, y):
 
 
 def _draw_qr_box(c, x, y, data):
-    qr_path = data.get("qr_code_path")
+    qr_image = _make_invoice_qr_reader(
+        data.get("invoice_no")
+    )
 
-    if not qr_path and data.get("invoice_no"):
-        qr_path = _make_invoice_qr(data.get("invoice_no"))
-
-    box_w = 32 * mm
-    box_h = 32 * mm
-
-    c.setStrokeColor(LINE)
-    c.roundRect(x, y, box_w, box_h, 3 * mm, stroke=1, fill=0)
-
-    if qr_path and os.path.exists(qr_path):
-        c.drawImage(
-            qr_path,
-            x + 1 * mm,
-            y + 1 * mm,
-            width=30 * mm,
-            height=30 * mm,
-            preserveAspectRatio=True,
-            mask="auto",
-        )
+    c.drawImage(
+        qr_image,
+        x + 5 * mm,
+        y + 8 * mm,
+        width=24 * mm,
+        height=24 * mm,
+        preserveAspectRatio=True,
+        mask="auto",
+    )
 
     # c.setFillColor(DARK)
     # c.setFont("Helvetica", 8)
