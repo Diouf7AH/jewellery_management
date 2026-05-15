@@ -67,7 +67,8 @@ class ListCompteDepotView(APIView):
 
     @swagger_auto_schema(
         operation_description="Lister tous les comptes dépôt avec les informations du client.",
-        responses={200: openapi.Response("Liste des comptes", CompteDepotSerializer(many=True))}
+        responses={200: openapi.Response("Liste des comptes", CompteDepotSerializer(many=True))},
+        tags=["compte dépôt"],  
     )
     def get(self, request):
         role = _user_role(request.user)
@@ -90,6 +91,7 @@ class CreateOrDepositCompteView(APIView):
             "Si le client possède déjà un compte via son téléphone, "
             "effectuer directement un dépôt sur le compte existant."
         ),
+        tags=["compte dépôt"],  
         request_body=CreateOrDepositCompteSerializer,
     )
     @transaction.atomic
@@ -257,7 +259,8 @@ class DepotView(APIView):
             404: openapi.Response(
                 description="Compte introuvable"
             ),
-        }
+        },
+        tags=["compte dépôt"],  
     )
     @transaction.atomic
     def post(self, request, numero_compte):
@@ -306,7 +309,8 @@ class RetraitView(APIView):
             400: openapi.Response(description="Données invalides"),
             403: openapi.Response(description="Accès refusé"),
             404: openapi.Response(description="Compte introuvable"),
-        }
+        },
+        tags=["compte dépôt"],
     )
     @transaction.atomic
     def post(self, request, numero_compte):
@@ -358,6 +362,7 @@ class GetSoldeAPIView(APIView):
                 required=True
             )
         ],
+        tags=["compte dépôt"],
     )
     def get(self, request):
         role = _user_role(request.user)
@@ -399,7 +404,9 @@ class ListerTousComptesAPIView(APIView):
                 type=openapi.TYPE_STRING,
                 required=False
             )
+            
         ],
+        tags=["compte dépôt"],
         responses={200: openapi.Response("Liste des comptes", CompteDepotSerializer(many=True))}
     )
     def get(self, request):
@@ -433,6 +440,7 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
             openapi.Parameter("start_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
             openapi.Parameter("end_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
         ],
+        tags=["compte dépôt"],
         responses={200: openapi.Response("Liste des transactions", CompteDepotTransactionSerializer(many=True))}
     )
     def get(self, request):
@@ -481,7 +489,8 @@ class ExportCompteDepotTransactionsExcelAPIView(APIView):
             openapi.Parameter("statut", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
             openapi.Parameter("start_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
             openapi.Parameter("end_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
-        ]
+        ],
+        tags=["compte dépôt"],  
     )
     def get(self, request):
         role = _user_role(request.user)
@@ -584,7 +593,8 @@ class CompteDepotDashboardAPIView(APIView):
         manual_parameters=[
             openapi.Parameter("start_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
             openapi.Parameter("end_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, format=openapi.FORMAT_DATE, required=False),
-        ]
+        ],
+        tags=["compte dépôt"],  
     )
     def get(self, request):
         role = _user_role(request.user)
@@ -665,7 +675,8 @@ class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Reçu ticket 80mm d'une transaction compte dépôt",
-        operation_description="Génère un reçu PDF thermique 80mm pour une transaction compte dépôt."
+        operation_description="Génère un reçu PDF thermique 80mm pour une transaction compte dépôt.",
+        tags=["compte dépôt"],  
     )
     def get(self, request, transaction_id):
         role = _user_role(request.user)

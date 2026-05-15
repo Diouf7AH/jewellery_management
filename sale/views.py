@@ -798,8 +798,109 @@ def _can_access_facture(user, facture: Facture) -> bool:
 
 
         
+# class TicketProforma58mmView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, numero_facture: str):
+#         facture = get_object_or_404(
+#             Facture.objects.select_related(
+#                 "vente",
+#                 "bijouterie",
+#                 "vente__client",
+#             ),
+#             numero_facture__iexact=numero_facture,
+#         )
+
+#         if not _can_access_facture(request.user, facture):
+#             return Response(
+#                 {"detail": "⛔ Accès refusé à cette facture."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         if not facture.vente_id:
+#             return Response(
+#                 {"detail": "Aucune vente associée à cette facture."},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         bijouterie = facture.bijouterie
+
+#         shop_name = getattr(bijouterie, "nom", None) or "BIJOUTERIE RIO-GOLD"
+
+#         shop_phone = (
+#             getattr(bijouterie, "telephone_portable_1", None)
+#             or getattr(bijouterie, "telephone_portable_2", None)
+#             or getattr(bijouterie, "telephone_fix", None)
+#             or ""
+#         )
+
+#         date_txt = facture.date_creation.strftime("%d/%m/%Y %H:%M")
+
+#         escpos_bytes = build_escpos_ticket_proforma_58mm(
+#             shop_name=shop_name,
+#             shop_phone=shop_phone,
+#             numero_facture=facture.numero_facture,
+#             date_txt=date_txt,
+#             montant_a_payer=facture.reste_a_payer,
+#             statut_txt=facture.get_status_display() if hasattr(facture, "get_status_display") else facture.status,
+#             note="Ticket PROFORMA - à régler en caisse",
+#         )
+
+#         return HttpResponse(
+#             escpos_bytes,
+#             content_type="application/octet-stream",
+#             headers={
+#                 "Content-Disposition": f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
+#             }
+#         )
+        
+
 class TicketProforma58mmView(APIView):
     permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        operation_summary="Télécharger le ticket PROFORMA 58mm pour POS",
+        operation_description="""
+        Génère un ticket PROFORMA au format ESC/POS 58mm.
+
+        Utilisation :
+        - Sans debug : retourne un fichier `.bin` destiné à une imprimante thermique POS.
+        - Avec `?debug=1` : retourne le contenu lisible en texte brut pour vérification dans le navigateur.
+
+        Exemple :
+        `/api/factures/FAC-20260509-0001/ticket-proforma-58mm/`
+
+        Exemple debug :
+        `/api/factures/FAC-20260509-0001/ticket-proforma-58mm/?debug=1`
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                name="numero_facture",
+                in_=openapi.IN_PATH,
+                description="Numéro de la facture proforma",
+                type=openapi.TYPE_STRING,
+                required=True,
+                example="FAC-20260509-0001",
+            ),
+            openapi.Parameter(
+                name="debug",
+                in_=openapi.IN_QUERY,
+                description="Mettre 1 pour afficher le ticket en texte lisible au lieu du fichier .bin",
+                type=openapi.TYPE_STRING,
+                required=False,
+                example="1",
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Ticket PROFORMA généré avec succès. Retourne un fichier .bin ou du texte si debug=1."
+            ),
+            400: "Aucune vente associée à cette facture.",
+            403: "Accès refusé.",
+            404: "Facture introuvable.",
+        },
+        tags=["Tickets POS"],
+    )
 
     def get(self, request, numero_facture: str):
         facture = get_object_or_404(
@@ -842,23 +943,143 @@ class TicketProforma58mmView(APIView):
             numero_facture=facture.numero_facture,
             date_txt=date_txt,
             montant_a_payer=facture.reste_a_payer,
-            statut_txt=facture.get_status_display() if hasattr(facture, "get_status_display") else facture.status,
+            statut_txt=facture.get_status_display()
+            if hasattr(facture, "get_status_display")
+            else facture.status,
             note="Ticket PROFORMA - à régler en caisse",
         )
 
+        # ✅ Mode debug pour vérifier le contenu dans le navigateur
+        if request.query_params.get("debug") == "1":
+            return HttpResponse(
+                escpos_bytes.decode("cp1252", errors="ignore"),
+                content_type="text/plain; charset=utf-8",
+            )
+
+        # ✅ Mode POS normal : fichier ESC/POS pour imprimante thermique
         return HttpResponse(
             escpos_bytes,
             content_type="application/octet-stream",
             headers={
-                "Content-Disposition": f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
-            }
+                "Content-Disposition": (
+                    f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
+                )
+            },
         )
+
+
+# class TicketPaiement80mmESCPosView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, numero_facture: str):
+#         facture = get_object_or_404(
+#             Facture.objects.select_related(
+#                 "vente",
+#                 "bijouterie",
+#                 "vente__client",
+#             ),
+#             numero_facture__iexact=numero_facture,
+#         )
+
+#         if not _can_access_facture(request.user, facture):
+#             return Response(
+#                 {"detail": "⛔ Accès refusé"},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         paiement = (
+#             Paiement.objects
+#             .filter(facture=facture)
+#             .select_related("facture", "cashier", "created_by")
+#             .prefetch_related("lignes__mode_paiement")
+#             .order_by("-date_paiement", "-id")
+#             .first()
+#         )
+
+#         if not paiement:
+#             return Response(
+#                 {"detail": "Aucun paiement trouvé"},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         bijouterie = facture.bijouterie
+
+#         shop_name = getattr(bijouterie, "nom", None) or "RIO-GOLD"
+#         shop_phone = (
+#             getattr(bijouterie, "telephone_portable_1", None)
+#             or getattr(bijouterie, "telephone_portable_2", None)
+#             or getattr(bijouterie, "telephone_fix", None)
+#             or ""
+#         )
+
+#         montant_paye = paiement.lignes.aggregate(
+#             total=Sum("montant_paye")
+#         )["total"] or Decimal("0.00")
+
+#         escpos_bytes = build_escpos_recu_paiement_80mm(
+#             shop_name=shop_name,
+#             shop_phone=shop_phone,
+#             numero_facture=facture.numero_facture,
+#             date_paiement=paiement.date_paiement,
+#             montant_paye=montant_paye,
+#             reste_a_payer=facture.reste_a_payer,
+#         )
+
+#         return HttpResponse(
+#             escpos_bytes,
+#             content_type="application/octet-stream",
+#             headers={
+#                 "Content-Disposition": f'inline; filename="ticket_paiement_{facture.numero_facture}.bin"'
+#             }
+#         )
         
 
 
 class TicketPaiement80mmESCPosView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary="Télécharger le ticket de paiement 80mm pour POS",
+        operation_description="""
+        Génère un reçu de paiement au format ESC/POS 80mm.
+
+        - Sans `debug` : retourne un fichier `.bin` destiné à une imprimante thermique POS.
+        - Avec `?debug=1` : affiche le contenu lisible du ticket dans le navigateur.
+
+        Exemple :
+        `/api/factures/FAC-20260509-0001/ticket-paiement-80mm/`
+
+        Exemple debug :
+        `/api/factures/FAC-20260509-0001/ticket-paiement-80mm/?debug=1`
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                name="numero_facture",
+                in_=openapi.IN_PATH,
+                description="Numéro de la facture",
+                type=openapi.TYPE_STRING,
+                required=True,
+                example="FAC-20260509-0001",
+            ),
+            openapi.Parameter(
+                name="debug",
+                in_=openapi.IN_QUERY,
+                description="Mettre 1 pour afficher le ticket en texte lisible",
+                type=openapi.TYPE_STRING,
+                required=False,
+                example="1",
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Ticket de paiement généré avec succès. Retourne un fichier .bin ou du texte si debug=1."
+            ),
+            400: "Aucun paiement trouvé.",
+            403: "Accès refusé.",
+            404: "Facture introuvable.",
+        },
+        tags=["Tickets POS"],
+    )
     def get(self, request, numero_facture: str):
         facture = get_object_or_404(
             Facture.objects.select_related(
@@ -893,6 +1114,7 @@ class TicketPaiement80mmESCPosView(APIView):
         bijouterie = facture.bijouterie
 
         shop_name = getattr(bijouterie, "nom", None) or "RIO-GOLD"
+
         shop_phone = (
             getattr(bijouterie, "telephone_portable_1", None)
             or getattr(bijouterie, "telephone_portable_2", None)
@@ -913,14 +1135,21 @@ class TicketPaiement80mmESCPosView(APIView):
             reste_a_payer=facture.reste_a_payer,
         )
 
+        if request.query_params.get("debug") == "1":
+            return HttpResponse(
+                escpos_bytes.decode("cp1252", errors="ignore"),
+                content_type="text/plain; charset=utf-8",
+            )
+
         return HttpResponse(
             escpos_bytes,
             content_type="application/octet-stream",
             headers={
-                "Content-Disposition": f'inline; filename="ticket_paiement_{facture.numero_facture}.bin"'
-            }
+                "Content-Disposition": (
+                    f'inline; filename="ticket_paiement_{facture.numero_facture}.bin"'
+                )
+            },
         )
-        
 
 # class FactureA5PaysageView(APIView):
 #     permission_classes = [IsAuthenticated]
@@ -1004,6 +1233,7 @@ class FactureA5PaysageView(APIView):
 
             "title": "FACTURE",
             "invoice_no": facture.numero_facture,
+            "invoice_type": facture.type_facture,
             "qr_code_path": (
                 facture.qr_code_image.path
                 if getattr(facture, "qr_code_image", None)

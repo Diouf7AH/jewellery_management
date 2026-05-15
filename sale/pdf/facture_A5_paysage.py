@@ -181,9 +181,19 @@ def _draw_page_header(c, w, h, data):
     # Bloc facture à droite, sans TYPE
     right_x = w - 10 * mm
 
+    # c.setFillColor(DARK)
+    # c.setFont("Helvetica-Bold", 17)
+    # c.drawRightString(right_x, h - 11 * mm, "FACTURE")
+    
+    doc_type = _doc_type_label(data.get("invoice_type"))
+
     c.setFillColor(DARK)
-    c.setFont("Helvetica-Bold", 17)
-    c.drawRightString(right_x, h - 11 * mm, "FACTURE")
+    c.setFont("Helvetica-Bold", 15)
+    c.drawRightString(
+        right_x,
+        h - 11 * mm,
+        doc_type,
+    )
 
     c.setFont("Helvetica", 10)
     c.drawRightString(
@@ -263,12 +273,33 @@ def _draw_lines(c, left, right, y_top, data):
         )
 
 
+# def _draw_conditions_box(c, x, y):
+#     box_w = 60 * mm
+#     box_h = 22 * mm
+
+#     c.setStrokeColor(LINE)
+#     c.roundRect(x, y, box_w, box_h, 3 * mm, stroke=1, fill=0)
+
+#     c.setFillColor(GOLD)
+#     c.setFont("Helvetica-Bold", 9)
+#     c.drawString(x + 5 * mm, y + box_h - 7 * mm, "CONDITIONS")
+
+#     c.setStrokeColor(GOLD)
+#     c.setLineWidth(0.5)
+#     c.line(x + 5 * mm, y + box_h - 10 * mm, x + box_w - 5 * mm, y + box_h - 10 * mm)
+
+#     c.setFillColor(DARK)
+#     c.setFont("Helvetica", 8.5)
+#     c.drawString(x + 5 * mm, y + 7.5 * mm, "Marchandises ni reprises ni échangées")
+    
+#     c.setFillColor(DARK)
+#     c.setFont("Helvetica", 8.5)
+#     c.drawString(x + 5 * mm,y + 5 * mm,"Vérifiez vos articles avant de partir.")
+
+
 def _draw_conditions_box(c, x, y):
     box_w = 60 * mm
     box_h = 22 * mm
-
-    c.setStrokeColor(LINE)
-    c.roundRect(x, y, box_w, box_h, 3 * mm, stroke=1, fill=0)
 
     c.setFillColor(GOLD)
     c.setFont("Helvetica-Bold", 9)
@@ -276,16 +307,26 @@ def _draw_conditions_box(c, x, y):
 
     c.setStrokeColor(GOLD)
     c.setLineWidth(0.5)
-    c.line(x + 5 * mm, y + box_h - 10 * mm, x + box_w - 5 * mm, y + box_h - 10 * mm)
+    c.line(
+        x + 5 * mm,
+        y + box_h - 10 * mm,
+        x + box_w - 5 * mm,
+        y + box_h - 10 * mm
+    )
 
     c.setFillColor(DARK)
     c.setFont("Helvetica", 8.5)
-    c.drawString(x + 5 * mm, y + 7.5 * mm, "Marchandises ni reprises ni échangées")
-    
-    c.setFillColor(DARK)
-    c.setFont("Helvetica", 8.5)
-    c.drawString(x + 5 * mm,y + 5 * mm,"Vérifiez vos articles avant de partir.")
+    c.drawString(
+        x + 5 * mm,
+        y + 7.5 * mm,
+        "Marchandises ni reprises ni échangées"
+    )
 
+    c.drawString(
+        x + 5 * mm,
+        y + 5 * mm,
+        "Vérifiez vos articles avant de partir."
+    )
 
 def _draw_qr_box(c, x, y, data):
     qr_image = _make_invoice_qr_reader(
@@ -324,13 +365,21 @@ def _draw_totals_box(c, x, y, data):
         else f"TVA ({data.get('taux_tva')}%)"
     )
 
+    remaining_amount = _dec(data.get("remaining_amount"))
+
     rows = [
         ("TOTAL HT", data.get("total_ht"), False),
         (tva_label, data.get("montant_tva") or 0, False),
         ("TOTAL TTC", data.get("total_ttc"), True),
         ("MONTANT PAYÉ", data.get("amount_paid"), False),
-        ("RESTE À PAYER", data.get("remaining_amount"), False),
+        # ("RESTE À PAYER", data.get("remaining_amount"), False),
     ]
+    
+    # ✅ Ajouter seulement si reste > 0
+    if remaining_amount > 0:
+        rows.append(
+            ("RESTE À PAYER", remaining_amount, False)
+        )
 
     yrow = y + box_h - 8 * mm
 
