@@ -55,35 +55,11 @@ class CommandeClient(models.Model):
 
     numero_commande = models.CharField(max_length=50, unique=True, editable=False)
 
-    client = models.ForeignKey(
-        "sale.Client",
-        on_delete=models.PROTECT,
-        related_name="commandes_clients",
-    )
-    bijouterie = models.ForeignKey(
-        "store.Bijouterie",
-        on_delete=models.PROTECT,
-        related_name="commandes_clients",
-    )
-    vendor = models.ForeignKey(
-        "vendor.Vendor",
-        on_delete=models.PROTECT,
-        related_name="commandes_clients",
-    )
-    ouvrier = models.ForeignKey(
-        Ouvrier,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="commandes_clients",
-    )
-
-    statut = models.CharField(
-        max_length=20,
-        choices=STATUT_CHOICES,
-        default=STATUT_BROUILLON,
-        db_index=True,
-    )
+    client = models.ForeignKey("sale.Client",on_delete=models.PROTECT,related_name="commandes_clients",)
+    bijouterie = models.ForeignKey("store.Bijouterie",on_delete=models.PROTECT,related_name="commandes_clients",)
+    vendor = models.ForeignKey("vendor.Vendor",on_delete=models.PROTECT,related_name="commandes_clients",)
+    ouvrier = models.ForeignKey(Ouvrier,on_delete=models.SET_NULL,null=True,blank=True,related_name="commandes_clients",)
+    statut = models.CharField(max_length=20,choices=STATUT_CHOICES,default=STATUT_BROUILLON,db_index=True,)
 
     date_commande = models.DateTimeField(default=timezone.now)
     date_debut = models.DateField(null=True, blank=True)
@@ -99,23 +75,31 @@ class CommandeClient(models.Model):
     notes_client = models.TextField(blank=True, default="")
     notes_internes = models.TextField(blank=True, default="")
 
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="commandes_client_creees",
-    )
-    updated_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="commandes_client_modifiees",
-    )
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True,blank=True,related_name="commandes_client_creees",)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True,blank=True,related_name="commandes_client_modifiees",)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    
+    poids_envoye_ouvrier = models.DecimalField(max_digits=10,decimal_places=3,default=Decimal("0.000"))
+    poids_retour_ouvrier = models.DecimalField(max_digits=10,decimal_places=3,default=Decimal("0.000"))
+    poids_perte = models.DecimalField(max_digits=10,decimal_places=3,default=Decimal("0.000"))
+
+    matiere = models.CharField(
+        max_length=20,
+        choices=[
+            ("or", "Or"),
+            ("argent", "Argent"),
+        ],
+        default="or"
+    )
+
+    purete = models.ForeignKey(
+        "store.Purete",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         ordering = ["-id"]

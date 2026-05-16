@@ -7,11 +7,23 @@ from django.utils import timezone
 from ..models import CommandeClient
 from .commande_finance_service import create_facture_finale_for_commande
 from .commande_history_service import add_commande_history
+from .commande_matiere_service import (retourner_matiere_ouvrier,
+                                       sortir_matiere_pour_ouvrier)
 
 
 @transaction.atomic
-def assigner_ouvrier_commande(*, commande, ouvrier, user=None, commentaire=""):
-    if commande.statut not in [CommandeClient.STATUT_BROUILLON, CommandeClient.STATUT_EN_ATTENTE]:
+def assigner_ouvrier_commande(
+    *,
+    commande,
+    ouvrier,
+    poids_envoye_ouvrier,
+    user=None,
+    commentaire="",
+):
+    if commande.statut not in [
+        CommandeClient.STATUT_BROUILLON,
+        CommandeClient.STATUT_EN_ATTENTE,
+    ]:
         raise ValidationError(
             f"Impossible d'assigner un ouvrier depuis le statut {commande.statut}."
         )
@@ -22,28 +34,51 @@ def assigner_ouvrier_commande(*, commande, ouvrier, user=None, commentaire=""):
         )
 
     old_statut = commande.statut
+
     commande.ouvrier = ouvrier
     commande.date_affectation_ouvrier = timezone.now()
     commande.statut = CommandeClient.STATUT_EN_PRODUCTION
     commande.updated_by = user
     commande.save()
 
+    sortir_matiere_pour_ouvrier(
+        commande=commande,
+        poids=poids_envoye_ouvrier,
+        user=user,
+    )
+
     add_commande_history(
         commande=commande,
         ancien_statut=old_statut,
         nouveau_statut=commande.statut,
-        commentaire=commentaire or "Commande affectée à un ouvrier et passée en production.",
+        commentaire=commentaire or "Commande affectée à un ouvrier et matière sortie du stock.",
         user=user,
     )
+
     return commande
 
 
 @transaction.atomic
-def terminer_commande(*, commande, user=None, date_depot_boutique=None, date_fin_reelle=None, commentaire=""):
+def terminer_commande(
+    *,
+    commande,
+    poids_retour_ouvrier,
+    user=None,
+    date_depot_boutique=None,
+    date_fin_reelle=None,
+    commentaire="",
+):
     if commande.statut != CommandeClient.STATUT_EN_PRODUCTION:
         raise ValidationError("Seule une commande en production peut être terminée.")
 
+    retourner_matiere_ouvrier(
+        commande=commande,
+        poids_retour=poids_retour_ouvrier,
+        user=user,
+    )
+
     old_statut = commande.statut
+
     commande.statut = CommandeClient.STATUT_TERMINEE
     commande.date_depot_boutique = date_depot_boutique or timezone.now()
     commande.date_fin_reelle = date_fin_reelle or timezone.localdate()
@@ -57,9 +92,10 @@ def terminer_commande(*, commande, user=None, date_depot_boutique=None, date_fin
         commande=commande,
         ancien_statut=old_statut,
         nouveau_statut=commande.statut,
-        commentaire=commentaire or "Commande terminée et déposée à la boutique.",
+        commentaire=commentaire or "Commande terminée, matière retournée et déposée à la boutique.",
         user=user,
     )
+
     return commande
 
 
@@ -72,6 +108,7 @@ def livrer_commande(*, commande, user=None):
         raise ValidationError("Impossible de livrer : le solde n'est pas entièrement réglé.")
 
     old_statut = commande.statut
+
     commande.statut = CommandeClient.STATUT_LIVREE
     commande.date_livraison = timezone.now()
     commande.updated_by = user
@@ -84,5 +121,6 @@ def livrer_commande(*, commande, user=None):
         commentaire="Commande livrée au client.",
         user=user,
     )
+
     return commande
 

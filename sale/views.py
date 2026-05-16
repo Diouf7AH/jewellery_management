@@ -903,69 +903,85 @@ class TicketProforma58mmView(APIView):
     )
 
     def get(self, request, numero_facture: str):
-        facture = get_object_or_404(
-            Facture.objects.select_related(
-                "vente",
-                "bijouterie",
-                "vente__client",
-            ),
-            numero_facture__iexact=numero_facture,
-        )
+        try:
 
-        if not _can_access_facture(request.user, facture):
-            return Response(
-                {"detail": "⛔ Accès refusé à cette facture."},
-                status=status.HTTP_403_FORBIDDEN,
+            facture = get_object_or_404(
+                Facture.objects.select_related(
+                    "vente",
+                    "bijouterie",
+                    "vente__client",
+                ),
+                numero_facture__iexact=numero_facture,
             )
 
-        if not facture.vente_id:
-            return Response(
-                {"detail": "Aucune vente associée à cette facture."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        bijouterie = facture.bijouterie
-
-        shop_name = getattr(bijouterie, "nom", None) or "BIJOUTERIE RIO-GOLD"
-
-        shop_phone = (
-            getattr(bijouterie, "telephone_portable_1", None)
-            or getattr(bijouterie, "telephone_portable_2", None)
-            or getattr(bijouterie, "telephone_fix", None)
-            or ""
-        )
-
-        date_txt = facture.date_creation.strftime("%d/%m/%Y %H:%M")
-
-        escpos_bytes = build_escpos_ticket_proforma_58mm(
-            shop_name=shop_name,
-            shop_phone=shop_phone,
-            numero_facture=facture.numero_facture,
-            date_txt=date_txt,
-            montant_a_payer=facture.reste_a_payer,
-            statut_txt=facture.get_status_display()
-            if hasattr(facture, "get_status_display")
-            else facture.status,
-            note="Ticket PROFORMA - à régler en caisse",
-        )
-
-        # ✅ Mode debug pour vérifier le contenu dans le navigateur
-        if request.query_params.get("debug") == "1":
-            return HttpResponse(
-                escpos_bytes.decode("cp1252", errors="ignore"),
-                content_type="text/plain; charset=utf-8",
-            )
-
-        # ✅ Mode POS normal : fichier ESC/POS pour imprimante thermique
-        return HttpResponse(
-            escpos_bytes,
-            content_type="application/octet-stream",
-            headers={
-                "Content-Disposition": (
-                    f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
+            if not _can_access_facture(request.user, facture):
+                return Response(
+                    {"detail": "⛔ Accès refusé à cette facture."},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
-            },
-        )
+
+            if not facture.vente_id:
+                return Response(
+                    {"detail": "Aucune vente associée à cette facture."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            bijouterie = facture.bijouterie
+
+            shop_name = (
+                getattr(bijouterie, "nom", None)
+                or "BIJOUTERIE RIO-GOLD"
+            )
+
+            shop_phone = (
+                getattr(bijouterie, "telephone_portable_1", None)
+                or getattr(bijouterie, "telephone_portable_2", None)
+                or getattr(bijouterie, "telephone_fix", None)
+                or ""
+            )
+
+            date_txt = facture.date_creation.strftime("%d/%m/%Y %H:%M")
+
+            escpos_bytes = build_escpos_ticket_proforma_58mm(
+                shop_name=shop_name,
+                shop_phone=shop_phone,
+                numero_facture=facture.numero_facture,
+                date_txt=date_txt,
+                montant_a_payer=facture.reste_a_payer,
+                statut_txt=(
+                    facture.get_status_display()
+                    if hasattr(facture, "get_status_display")
+                    else facture.status
+                ),
+                note="Ticket PROFORMA - à régler en caisse",
+            )
+
+            # ✅ Mode debug
+            if request.query_params.get("debug") == "1":
+                return HttpResponse(
+                    escpos_bytes.decode("cp1252", errors="ignore"),
+                    content_type="text/plain; charset=utf-8",
+                )
+
+            # ✅ Mode POS
+            return HttpResponse(
+                escpos_bytes,
+                content_type="application/octet-stream",
+                headers={
+                    "Content-Disposition": (
+                        f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
+                    )
+                },
+            )
+
+        except Exception as e:
+            return Response(
+                {
+                    "detail": "Erreur lors de la génération du ticket proforma.",
+                    "error": str(e),
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 # class TicketPaiement80mmESCPosView(APIView):
