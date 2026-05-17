@@ -205,9 +205,9 @@ urlpatterns = [
     # SALE
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
     # PDF
-    path("factures/<str:numero_facture>/ticket-58mm",sale_views.TicketProforma58mmView.as_view(),name="ticket-proforma-58mm",),
-    path("factures/<str:numero_facture>/ticket-paiement-80mm",sale_views.TicketPaiement80mmESCPosView.as_view(),name="ticket-paiement-80mm",),
-    path("factures/<str:numero_facture>/facture-a5",sale_views.FactureA5PaysageView.as_view(),name="facture-a5-paysage",),
+    path("factures/<str:numero_facture>/ticket-58mm/",sale_views.TicketProforma58mmView.as_view(),name="ticket-proforma-58mm",),
+    path("factures/<str:numero_facture>/ticket-paiement-80mm/",sale_views.TicketPaiement80mmESCPosView.as_view(),name="ticket-paiement-80mm",),
+    path("factures/<str:numero_facture>/facture-a5/",sale_views.FactureA5PaysageView.as_view(),name="facture-a5-paysage",),
     # path('vente/list-produit', sale_views.VenteListAPIView.as_view(), name='vente-produit-list'),
     # path('vente/rapport-mensuel/', sale_views.RapportVentesMensuelAPIView.as_view(), name='rapport-ventes-mensuel'),
     path("ventes/<int:vente_id>/update", sale_views.UpdateVenteProduitView.as_view(), name="vente-update"),
