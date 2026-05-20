@@ -393,9 +393,28 @@ class VenteListAPIView(APIView):
         if role not in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
             return Response({"detail": "⛔ Accès refusé."}, status=403)
 
+        # qs = (
+        #     Vente.objects
+        #     .select_related("client", "vendor", "vendor__user", "bijouterie")
+        #     .prefetch_related(
+        #         "lignes",
+        #         "lignes__produit",
+        #         "lignes__vendor",
+        #         "lignes__vendor__user",
+        #     )
+        #     .filter(scope_bijouterie_q(user, field="bijouterie_id"))
+        #     .order_by("-created_at", "-id")
+        # )
+        
         qs = (
             Vente.objects
-            .select_related("client", "vendor", "vendor__user", "bijouterie")
+            .select_related(
+                "client",
+                "vendor",
+                "vendor__user",
+                "bijouterie",
+                "facture_vente",
+            )
             .prefetch_related(
                 "lignes",
                 "lignes__produit",

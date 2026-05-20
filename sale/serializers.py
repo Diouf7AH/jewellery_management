@@ -634,13 +634,39 @@ class FactureDetailSerializer(FactureSerializer):
 # ---------------------------------------------------
 # Vente list
 # ---------------------------------------------------
+# class VenteListSerializer(serializers.ModelSerializer):
+#     client = serializers.SerializerMethodField()
+#     produits = VenteProduitSerializer(source="lignes", many=True, read_only=True)
+
+#     class Meta:
+#         model = Vente
+#         fields = ["id", "produits", "numero_vente", "created_at", "montant_total", "client"]
+#         ref_name = "VenteList_V2"
+
+#     def get_client(self, obj):
+#         c = getattr(obj, "client", None)
+#         return {
+#             "prenom": c.prenom,
+#             "nom": c.nom,
+#             "telephone": c.telephone,
+#         } if c else None
+
 class VenteListSerializer(serializers.ModelSerializer):
     client = serializers.SerializerMethodField()
     produits = VenteProduitSerializer(source="lignes", many=True, read_only=True)
+    facture = serializers.SerializerMethodField()
 
     class Meta:
         model = Vente
-        fields = ["id", "produits", "numero_vente", "created_at", "montant_total", "client"]
+        fields = [
+            "id",
+            "numero_vente",
+            "created_at",
+            "montant_total",
+            "client",
+            "facture",
+            "produits",
+        ]
         ref_name = "VenteList_V2"
 
     def get_client(self, obj):
@@ -651,6 +677,20 @@ class VenteListSerializer(serializers.ModelSerializer):
             "telephone": c.telephone,
         } if c else None
 
+    def get_facture(self, obj):
+        facture = getattr(obj, "facture_vente", None)
+        if not facture:
+            return None
+
+        return {
+            "id": facture.id,
+            "numero_facture": facture.numero_facture,
+            "type_facture": facture.type_facture,
+            "status": facture.status,
+            "montant_ht": str(facture.montant_ht),
+            "montant_tva": str(facture.montant_tva),
+            "montant_total": str(facture.montant_total),
+        }
 
 # ---------------------------------------------------
 # Vente detail
