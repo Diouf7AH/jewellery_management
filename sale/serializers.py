@@ -833,7 +833,7 @@ class PaiementMultiModeSerializer(serializers.Serializer):
             code = (item.get("mode_paiement") or "").strip()
 
             try:
-                mode = ModePaiement.objects.get(code=code, actif=True)
+                mode = ModePaiement.objects.get(code=code, active=True)
             except ModePaiement.DoesNotExist:
                 raise serializers.ValidationError({
                     "lignes": {

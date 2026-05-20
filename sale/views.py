@@ -75,6 +75,8 @@ from .utils import ensure_role_and_bijouterie, user_bijouterie
 DEFAULT_PAGE_SIZE = getattr(settings, "DEFAULT_PAGE_SIZE", 50)
 MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
 
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
 
 
 class VenteProduitCreateView(APIView):
@@ -282,8 +284,199 @@ def error_response(code, message, status_code=status.HTTP_400_BAD_REQUEST):
     )
 
 
-DEFAULT_PAGE_SIZE = 20
-MAX_PAGE_SIZE = 100
+class VenteListAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Lister les ventes",
+        operation_description="""
+    Liste les ventes selon le rôle connecté.
+
+    Règles :
+    - admin : voit toutes les ventes
+    - manager : voit les ventes de ses bijouteries
+    - vendor : voit les ventes de sa bijouterie
+    - cashier : voit les ventes de sa bijouterie
+
+    Filtres disponibles :
+    - numero_vente
+    - client_q
+    - vendor_id
+    - status_facture
+    - page
+    - page_size
+            """,
+        manual_parameters=[
+            openapi.Parameter(
+                "numero_vente",
+                openapi.IN_QUERY,
+                description="Recherche par numéro de vente",
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "client_q",
+                openapi.IN_QUERY,
+                description="Recherche client : nom, prénom ou téléphone",
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "vendor_id",
+                openapi.IN_QUERY,
+                description="Filtrer par vendeur",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "status_facture",
+                openapi.IN_QUERY,
+                description="Statut facture : non_paye, partiel, paye",
+                type=openapi.TYPE_STRING,
+                enum=["non_paye", "partiel", "paye"],
+            ),
+            openapi.Parameter(
+                "page",
+                openapi.IN_QUERY,
+                description="Page",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "page_size",
+                openapi.IN_QUERY,
+                description="Nombre d’éléments par page",
+                type=openapi.TYPE_INTEGER,
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Liste des ventes",
+                examples={
+                    "application/json": {
+                        "count": 1,
+                        "page": 1,
+                        "page_size": 20,
+                        "num_pages": 1,
+                        "results": [
+                            {
+                                "id": 12,
+                                "numero_vente": "VENTE-20260520-0001",
+                                "created_at": "2026-05-20T12:30:00Z",
+                                "montant_total": "150000.00",
+                                "client": {
+                                    "prenom": "Awa",
+                                    "nom": "Diop",
+                                    "telephone": "771234567"
+                                },
+                                "produits": [
+                                    {
+                                        "id": 30,
+                                        "quantite": 2,
+                                        "prix_vente_grammes": "25000.00",
+                                        "remise": "0.00",
+                                        "autres": "0.00",
+                                        "montant_ht": "150000.00",
+                                        "montant_total": "150000.00"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                },
+            ),
+            400: "Erreur de filtre",
+            403: "Accès refusé",
+        },
+        tags=["Ventes"],
+    )
+    def get(self, request):
+        user = request.user
+        role = (get_role_name(user) or "").lower().strip()
+
+        if role not in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
+            return Response({"detail": "⛔ Accès refusé."}, status=403)
+
+        qs = (
+            Vente.objects
+            .select_related("client", "vendor", "vendor__user", "bijouterie")
+            .prefetch_related(
+                "lignes",
+                "lignes__produit",
+                "lignes__vendor",
+                "lignes__vendor__user",
+            )
+            .filter(scope_bijouterie_q(user, field="bijouterie_id"))
+            .order_by("-created_at", "-id")
+        )
+
+        months = 36 if role == ROLE_ADMIN else 18
+        min_date = timezone.now() - timedelta(days=months * 30)
+        qs = qs.filter(created_at__gte=min_date)
+
+        numero_vente = (request.query_params.get("numero_vente") or "").strip()
+        if numero_vente:
+            qs = qs.filter(numero_vente__icontains=numero_vente)
+
+        client_q = (request.query_params.get("client_q") or "").strip()
+        if client_q:
+            qs = qs.filter(
+                Q(client__nom__icontains=client_q) |
+                Q(client__prenom__icontains=client_q) |
+                Q(client__telephone__icontains=client_q)
+            )
+
+        vendor_id = request.query_params.get("vendor_id")
+        if vendor_id:
+            try:
+                vendor_id = int(vendor_id)
+            except ValueError:
+                return Response({"vendor_id": "Doit être un entier."}, status=400)
+
+            if role == ROLE_VENDOR:
+                my_vendor = getattr(user, "staff_vendor_profile", None)
+                if not my_vendor or my_vendor.id != vendor_id:
+                    return Response(
+                        {"detail": "Un vendeur ne peut filtrer que ses propres ventes."},
+                        status=403,
+                    )
+
+            qs = qs.filter(vendor_id=vendor_id)
+
+        status_facture = (request.query_params.get("status_facture") or "").strip()
+        if status_facture:
+            qs = qs.filter(facture_vente__status=status_facture)
+
+        def to_int(name, default):
+            try:
+                return int(request.query_params.get(name, default))
+            except Exception:
+                return default
+
+        page = max(1, to_int("page", 1))
+        page_size = min(max(1, to_int("page_size", 20)), 100)
+
+        paginator = Paginator(qs, page_size)
+
+        if paginator.count == 0:
+            return Response({
+                "count": 0,
+                "page": 1,
+                "page_size": page_size,
+                "num_pages": 0,
+                "results": [],
+            })
+
+        try:
+            page_obj = paginator.page(page)
+        except EmptyPage:
+            page_obj = paginator.page(paginator.num_pages)
+
+        return Response({
+            "count": paginator.count,
+            "page": page_obj.number,
+            "page_size": page_size,
+            "num_pages": paginator.num_pages,
+            "results": VenteListSerializer(page_obj.object_list, many=True).data,
+        })
+
+
 
 class ListFacturePayeesView(APIView):
     permission_classes = [IsAuthenticated]

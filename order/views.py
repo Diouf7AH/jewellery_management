@@ -61,12 +61,12 @@ class CommandeClientCreateView(APIView):
     @swagger_auto_schema(
         operation_summary="Créer une commande client",
         operation_description="""
-Crée une commande client avec :
-- lignes de commande
-- paiement acompte accepté de 50% à 100%
-- facture d'acompte automatique
-- historique initial
-""",
+    Crée une commande client avec :
+    - lignes de commande
+    - paiement acompte accepté de 50% à 100%
+    - facture d'acompte automatique
+    - historique initial
+    """,
         request_body=CreateCommandeClientSerializer,
         responses={201: CommandeClientDetailSerializer},
     )

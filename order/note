@@ -1,4 +1,9 @@
-3. Règle métier recommandée
+Règle métier recommandée
+
+Ouvrier interne  → bijouterie obligatoire
+Ouvrier externe  → nom_atelier obligatoire
+Commande         → un seul ouvrier
+Ouvrier          → plusieurs commandes
 
 Je te conseille cette règle simple :
 

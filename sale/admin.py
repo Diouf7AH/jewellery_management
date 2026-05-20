@@ -190,13 +190,13 @@ class ModePaiementAdmin(admin.ModelAdmin):
         "id",
         "nom",
         "code",
-        "actif",
+        "active",
         "est_mode_depot",
         "necessite_reference",
         "ordre_affichage",
     )
-    list_filter = ("actif", "est_mode_depot", "necessite_reference")
+    list_filter = ("active", "est_mode_depot", "necessite_reference")
     search_fields = ("nom", "code")
-    list_editable = ("actif", "ordre_affichage")
+    list_editable = ("active", "ordre_affichage")
     list_per_page = 50
     

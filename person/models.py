@@ -84,7 +84,23 @@ class Employee(PersonBase):
         return self.full_name or f"Employé #{self.pk}"
 
 
+
 class Ouvrier(PersonBase):
+    TYPE_INTERNE = "interne"
+    TYPE_EXTERNE = "externe"
+
+    TYPE_CHOICES = [
+        (TYPE_INTERNE, "Interne à la bijouterie"),
+        (TYPE_EXTERNE, "Atelier externe"),
+    ]
+
+    type_ouvrier = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES,
+        default=TYPE_INTERNE,
+        db_index=True,
+    )
+
     bijouterie = models.ForeignKey(
         Bijouterie,
         on_delete=models.SET_NULL,
@@ -92,6 +108,9 @@ class Ouvrier(PersonBase):
         blank=True,
         related_name="ouvriers",
     )
+
+    nom_atelier = models.CharField(max_length=150, blank=True, default="")
+    adresse_atelier = models.TextField(blank=True, default="")
     specialite = models.CharField(max_length=100, null=True, blank=True)
 
     class Meta:
@@ -100,11 +119,37 @@ class Ouvrier(PersonBase):
         ordering = ["-id"]
         indexes = [
             models.Index(fields=["active"]),
+            models.Index(fields=["type_ouvrier"]),
             models.Index(fields=["nom", "prenom"]),
+            models.Index(fields=["bijouterie", "type_ouvrier"]),
         ]
 
+    def clean(self):
+        super().clean()
+
+        if self.type_ouvrier == self.TYPE_INTERNE and not self.bijouterie_id:
+            raise ValidationError({
+                "bijouterie": "La bijouterie est obligatoire pour un ouvrier interne."
+            })
+
+        if self.type_ouvrier == self.TYPE_EXTERNE and not self.nom_atelier:
+            raise ValidationError({
+                "nom_atelier": "Le nom de l'atelier est obligatoire pour un ouvrier externe."
+            })
+
+    @property
+    def est_interne(self):
+        return self.type_ouvrier == self.TYPE_INTERNE
+
+    @property
+    def est_externe(self):
+        return self.type_ouvrier == self.TYPE_EXTERNE
+
     def __str__(self):
+        if self.est_externe and self.nom_atelier:
+            return f"{self.full_name} - {self.nom_atelier}".strip()
         return self.full_name or f"Ouvrier #{self.pk}"
+
 
 
 # class Client(PersonBase):

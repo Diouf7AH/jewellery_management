@@ -7,12 +7,13 @@ from django.db import transaction
 from rest_framework import serializers
 
 from compte_depot.models import CompteDepot, CompteDepotTransaction
+from person.models import Ouvrier
 from sale.models import Client, Facture, ModePaiement
 from store.models import Bijouterie, Categorie, Marque, Modele, Produit, Purete
 from vendor.models import Vendor
 
 from .models import (CommandeClient, CommandeClientHistorique,
-                     CommandeProduitClient, Ouvrier)
+                     CommandeProduitClient)
 from .services.commande_finance_service import (
     create_facture_acompte_for_commande, register_facture_payment)
 from .services.commande_history_service import add_commande_history
@@ -38,7 +39,7 @@ class OuvrierSerializer(serializers.ModelSerializer):
             "prenom",
             "telephone",
             "specialite",
-            "actif",
+            "active",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]
@@ -256,7 +257,7 @@ class CommandeClientDetailSerializer(serializers.ModelSerializer):
 class PaiementLigneInSerializer(serializers.Serializer):
     mode_paiement_id = serializers.PrimaryKeyRelatedField(
         source="mode_paiement",
-        queryset=ModePaiement.objects.filter(actif=True),
+        queryset=ModePaiement.objects.filter(active=True),
     )
     montant_paye = serializers.DecimalField(max_digits=10, decimal_places=2)
     reference = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -455,7 +456,7 @@ class CreateCommandeClientSerializer(serializers.Serializer):
 class AssignerOuvrierSerializer(serializers.Serializer):
     ouvrier_id = serializers.PrimaryKeyRelatedField(
         source="ouvrier",
-        queryset=Ouvrier.objects.filter(actif=True),
+        queryset=Ouvrier.objects.filter(active=True),
     )
     commentaire = serializers.CharField(required=False, allow_blank=True)
 

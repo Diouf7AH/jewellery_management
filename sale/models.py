@@ -594,7 +594,7 @@ def get_default_mode_paiement():
         code="cash",
         defaults={
             "nom": "Cash",
-            "actif": True,
+            "active": True,
             "ordre_affichage": 1,
             "necessite_reference": False,
             "est_mode_depot": False,
@@ -605,7 +605,7 @@ def get_default_mode_paiement():
 class ModePaiement(models.Model):
     nom = models.CharField(max_length=100, unique=True)
     code = models.SlugField(max_length=50, unique=True, db_index=True)
-    actif = models.BooleanField(default=True)
+    active = models.BooleanField(default=True)
 
     est_mode_depot = models.BooleanField(default=False)
     necessite_reference = models.BooleanField(default=False)
@@ -711,7 +711,7 @@ class PaiementLigne(models.Model):
 
         mode = self.mode_paiement
 
-        if not mode.actif:
+        if not mode.active:
             raise ValidationError({
                 "mode_paiement": "Ce mode de paiement est inactif."
             })

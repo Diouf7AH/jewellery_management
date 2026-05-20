@@ -8,6 +8,8 @@ from django.db import models
 from django.db.models import Sum
 from django.utils import timezone
 
+from person.models import Ouvrier
+
 ZERO = Decimal("0.00")
 HALF = Decimal("0.50")
 
@@ -19,22 +21,7 @@ def dec(v) -> Decimal:
         return Decimal(str(v))
     except Exception:
         raise ValidationError(f"Valeur décimale invalide : {v}")
-
-
-class Ouvrier(models.Model):
-    nom = models.CharField(max_length=100)
-    prenom = models.CharField(max_length=100, blank=True, default="")
-    telephone = models.CharField(max_length=30, blank=True, default="")
-    specialite = models.CharField(max_length=120, blank=True, default="")
-    actif = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["nom", "prenom"]
-
-    def __str__(self):
-        return f"{self.prenom} {self.nom}".strip()
-
+    
 
 class CommandeClient(models.Model):
     STATUT_BROUILLON = "BROUILLON"
@@ -80,7 +67,7 @@ class CommandeClient(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+    description_commande = models.TextField(blank=True,null=True)
     poids_envoye_ouvrier = models.DecimalField(max_digits=10,decimal_places=3,default=Decimal("0.000"))
     poids_retour_ouvrier = models.DecimalField(max_digits=10,decimal_places=3,default=Decimal("0.000"))
     poids_perte = models.DecimalField(max_digits=10,decimal_places=3,default=Decimal("0.000"))
@@ -104,12 +91,31 @@ class CommandeClient(models.Model):
     class Meta:
         ordering = ["-id"]
         indexes = [
+            models.Index(fields=["ouvrier"]),
+            models.Index(fields=["statut", "ouvrier"]),
             models.Index(fields=["numero_commande"]),
             models.Index(fields=["statut"]),
             models.Index(fields=["date_commande"]),
             models.Index(fields=["bijouterie", "statut"]),
             models.Index(fields=["vendor", "statut"]),
         ]
+        
+    constraints = [
+        models.CheckConstraint(
+            check=models.Q(poids_envoye_ouvrier__gte=0),
+            name="commande_poids_envoye_gte_0",
+        ),
+
+        models.CheckConstraint(
+            check=models.Q(poids_retour_ouvrier__gte=0),
+            name="commande_poids_retour_gte_0",
+        ),
+
+        models.CheckConstraint(
+            check=models.Q(poids_perte__gte=0),
+            name="commande_poids_perte_gte_0",
+        ),
+    ]
 
     def __str__(self):
         return self.numero_commande
@@ -119,6 +125,24 @@ class CommandeClient(models.Model):
             if self.vendor.bijouterie_id != self.bijouterie_id:
                 raise ValidationError("Le vendeur ne dépend pas de cette bijouterie.")
 
+        if self.poids_envoye_ouvrier < ZERO:
+            raise ValidationError({
+                "poids_envoye_ouvrier":
+                "Le poids envoyé à l'ouvrier ne peut pas être négatif."
+            })
+
+        if self.poids_retour_ouvrier < ZERO:
+            raise ValidationError({
+                "poids_retour_ouvrier":
+                "Le poids retourné ne peut pas être négatif."
+            })
+
+        if self.poids_retour_ouvrier > self.poids_envoye_ouvrier:
+            raise ValidationError({
+                "poids_retour_ouvrier":
+                "Le poids retourné ne peut pas dépasser le poids envoyé."
+            })
+    
         if self.date_debut and self.date_fin_prevue and self.date_fin_prevue < self.date_debut:
             raise ValidationError("La date de fin prévue ne peut pas être antérieure à la date de début.")
 
@@ -134,8 +158,17 @@ class CommandeClient(models.Model):
     def save(self, *args, **kwargs):
         if not self.numero_commande:
             self.numero_commande = self.generate_numero_commande()
+            
+        self.poids_perte = max(
+            dec(self.poids_envoye_ouvrier) - dec(self.poids_retour_ouvrier),
+            Decimal("0.000")
+        )
+        
         self.full_clean()
         super().save(*args, **kwargs)
+
+        if self.commande_id:
+            self.commande.recalculate_total(save=True)
 
     @classmethod
     def generate_numero_commande(cls) -> str:
@@ -168,11 +201,21 @@ class CommandeClient(models.Model):
         return (dec(self.montant_total) * HALF).quantize(Decimal("0.01"))
 
     @property
-    def total_acompte_paye(self) -> Decimal:
-        return sum(
-            (facture.total_paye for facture in self.factures.filter(type_facture="acompte")),
-            ZERO
+    def total_acompte_paye(self):
+        from django.apps import apps
+
+        PaiementLigne = apps.get_model("sale", "PaiementLigne")
+
+        total = (
+            PaiementLigne.objects
+            .filter(
+                paiement__facture__commande_client=self,
+                paiement__facture__type_facture="acompte",
+            )
+            .aggregate(total=Sum("montant_paye"))["total"]
         )
+
+        return total or ZERO
 
     @property
     def total_paye_global(self):
@@ -206,7 +249,6 @@ class CommandeClient(models.Model):
         from .services.commande_pdf_service import generate_bon_commande_pdf
         return generate_bon_commande_pdf(commande=self)
 
-
 class CommandeProduitClient(models.Model):
     commande = models.ForeignKey(
         CommandeClient,
@@ -223,6 +265,7 @@ class CommandeProduitClient(models.Model):
     )
 
     nom_modele = models.CharField(max_length=150)
+
     categorie = models.ForeignKey(
         "store.Categorie",
         on_delete=models.SET_NULL,
@@ -264,23 +307,48 @@ class CommandeProduitClient(models.Model):
 
     class Meta:
         ordering = ["id"]
+        indexes = [
+            models.Index(fields=["commande"]),
+            models.Index(fields=["produit"]),
+            models.Index(fields=["purete"]),
+        ]
 
     def __str__(self):
         return f"{self.commande.numero_commande} - {self.nom_modele}"
 
     def clean(self):
+        if not self.nom_modele and not self.produit_id:
+            raise ValidationError("Le nom du modèle ou le produit est obligatoire.")
+
         if self.quantite < 1:
             raise ValidationError("La quantité doit être >= 1.")
+
         if dec(self.poids) <= ZERO:
             raise ValidationError("Le poids doit être > 0.")
+
         if dec(self.prix_gramme) < ZERO:
             raise ValidationError("Le prix/gramme ne peut pas être négatif.")
 
     def save(self, *args, **kwargs):
-        self.sous_total = (dec(self.poids) * dec(self.prix_gramme) * Decimal(self.quantite)).quantize(Decimal("0.01"))
+        self.sous_total = (
+            dec(self.poids)
+            * dec(self.prix_gramme)
+            * Decimal(self.quantite)
+        ).quantize(Decimal("0.01"))
+
         self.full_clean()
         super().save(*args, **kwargs)
 
+        if self.commande_id:
+            self.commande.recalculate_total(save=True)
+
+    def delete(self, *args, **kwargs):
+        commande = self.commande
+        super().delete(*args, **kwargs)
+
+        if commande:
+            commande.recalculate_total(save=True)
+            
 
 class CommandeClientHistorique(models.Model):
     commande = models.ForeignKey(
@@ -301,8 +369,15 @@ class CommandeClientHistorique(models.Model):
 
     class Meta:
         ordering = ["-id"]
+        indexes = [
+            models.Index(fields=["commande"]),
+            models.Index(fields=["nouveau_statut"]),
+            models.Index(fields=["changed_at"]),
+        ]
 
     def __str__(self):
-        return f"{self.commande.numero_commande}: {self.ancien_statut} -> {self.nouveau_statut}"
-    
-    
+        return (
+            f"{self.commande.numero_commande}: "
+            f"{self.ancien_statut or '-'} -> {self.nouveau_statut}"
+        )
+
