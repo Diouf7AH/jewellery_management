@@ -20,6 +20,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from backend.renderers import UserRenderer
+from backend.utils.helpers import (resolve_bijouterie_for_user,
+                                   user_can_access_bijouterie)
 
 from .models import ClientDepot, CompteDepot, CompteDepotTransaction
 from .pdf import generate_transaction_ticket_80mm_pdf
@@ -84,6 +86,7 @@ class ListCompteDepotView(APIView):
 # =========================================================
 class CreateOrDepositCompteView(APIView):
     permission_classes = [IsAuthenticated]
+    ALLOWED_ROLES = {"manager", "cashier"}
 
     @swagger_auto_schema(
         operation_description=(
@@ -118,6 +121,23 @@ class CreateOrDepositCompteView(APIView):
             )
 
         client = ClientDepot.objects.filter(telephone=telephone).first()
+
+        user_bijouterie = resolve_bijouterie_for_user(request.user)
+
+        if not user_bijouterie:
+            return Response(
+                {"detail": "Aucune bijouterie associée à cet utilisateur."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if client and not user_can_access_bijouterie(
+            request.user,
+            client.bijouterie
+        ):
+            return Response(
+                {"detail": "Ce compte appartient à une autre bijouterie."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         # CAS 1 : client existe déjà
         if client:
@@ -185,7 +205,10 @@ class CreateOrDepositCompteView(APIView):
             }, status=status.HTTP_201_CREATED)
 
         # CAS 2 : client inexistant => création client + compte + dépôt
-        client = ClientDepot.objects.create(**client_data)
+        client = ClientDepot.objects.create(
+            **client_data,
+            bijouterie=user_bijouterie
+        )
 
         numero = self.generer_numero_compte(telephone)
         compte = CompteDepot.objects.create(
@@ -239,39 +262,119 @@ class CreateOrDepositCompteView(APIView):
 # =========================================================
 # DEPOT
 # =========================================================
+# class DepotView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Effectuer un dépôt sur un compte dépôt",
+#         operation_description="Effectue un dépôt sur un compte existant à partir de son numéro de compte.",
+#         request_body=CompteDepotTransactionCreateSerializer,
+#         responses={
+#             201: openapi.Response(
+#                 description="Dépôt effectué avec succès"
+#             ),
+#             400: openapi.Response(
+#                 description="Données invalides"
+#             ),
+#             403: openapi.Response(
+#                 description="Accès refusé"
+#             ),
+#             404: openapi.Response(
+#                 description="Compte introuvable"
+#             ),
+#         },
+#         tags=["compte dépôt"],  
+#     )
+#     @transaction.atomic
+#     def post(self, request, numero_compte):
+#         role = _user_role(request.user)
+#         if role not in ALLOWED_ROLES:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+#         try:
+#             compte = CompteDepot.objects.select_for_update().get(numero_compte=numero_compte)
+#         except CompteDepot.DoesNotExist:
+#             return Response({"detail": "Compte introuvable."}, status=status.HTTP_404_NOT_FOUND)
+
+#         serializer = CompteDepotTransactionCreateSerializer(data=request.data)
+#         serializer.is_valid(raise_exception=True)
+
+#         tx = effectuer_depot(
+#             compte_id=compte.id,
+#             montant=serializer.validated_data["montant"],
+#             user=request.user,
+#             reference=serializer.validated_data.get("reference"),
+#             commentaire=serializer.validated_data.get("commentaire"),
+#         )
+#         compte.refresh_from_db()
+
+#         return Response({
+#             "message": "Dépôt effectué avec succès.",
+#             "transaction": CompteDepotTransactionSerializer(tx).data,
+#             "nouveau_solde": str(compte.solde),
+#             "receipt_url": request.build_absolute_uri(
+#                 f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
+#             ),
+#         }, status=status.HTTP_201_CREATED)
 class DepotView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Effectuer un dépôt sur un compte dépôt",
-        operation_description="Effectue un dépôt sur un compte existant à partir de son numéro de compte.",
+        operation_description="""
+        Effectue un dépôt sur un compte dépôt.
+
+        Règles :
+        - Manager : uniquement ses bijouteries
+        - Caissier : uniquement sa bijouterie
+        - Admin : non autorisé
+        - Vendeur : non autorisé
+        """,
         request_body=CompteDepotTransactionCreateSerializer,
         responses={
-            201: openapi.Response(
-                description="Dépôt effectué avec succès"
-            ),
-            400: openapi.Response(
-                description="Données invalides"
-            ),
-            403: openapi.Response(
-                description="Accès refusé"
-            ),
-            404: openapi.Response(
-                description="Compte introuvable"
-            ),
+            201: openapi.Response(description="Dépôt effectué avec succès"),
+            400: openapi.Response(description="Données invalides"),
+            403: openapi.Response(description="Accès refusé"),
+            404: openapi.Response(description="Compte introuvable"),
         },
-        tags=["compte dépôt"],  
+        tags=["compte dépôt"],
     )
     @transaction.atomic
     def post(self, request, numero_compte):
         role = _user_role(request.user)
-        if role not in ALLOWED_ROLES:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        if role not in ["manager", "cashier"]:
+            return Response(
+                {"message": "Seul le manager ou le caissier peut effectuer un dépôt."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         try:
-            compte = CompteDepot.objects.select_for_update().get(numero_compte=numero_compte)
+            compte = (
+                CompteDepot.objects
+                .select_for_update()
+                .select_related("client")
+                .get(numero_compte=numero_compte)
+            )
         except CompteDepot.DoesNotExist:
-            return Response({"detail": "Compte introuvable."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Compte introuvable."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        client_bijouterie = getattr(compte.client, "bijouterie", None)
+
+        if not client_bijouterie:
+            return Response(
+                {"message": "Ce compte dépôt n'est lié à aucune bijouterie."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not user_can_access_bijouterie(request.user, client_bijouterie):
+            return Response(
+                {"message": "Vous ne pouvez effectuer un dépôt que dans votre bijouterie."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         serializer = CompteDepotTransactionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -283,6 +386,7 @@ class DepotView(APIView):
             reference=serializer.validated_data.get("reference"),
             commentaire=serializer.validated_data.get("commentaire"),
         )
+
         compte.refresh_from_db()
 
         return Response({
@@ -293,7 +397,6 @@ class DepotView(APIView):
                 f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
             ),
         }, status=status.HTTP_201_CREATED)
-
 # =========================================================
 # RETRAIT
 # =========================================================
@@ -302,7 +405,15 @@ class RetraitView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Effectuer un retrait sur un compte dépôt",
-        operation_description="Effectue un retrait sur un compte existant à partir de son numéro de compte.",
+        operation_description="""
+        Effectue un retrait sur un compte dépôt.
+
+        Règles :
+        - Manager : uniquement ses bijouteries
+        - Caissier : uniquement sa bijouterie
+        - Admin : non autorisé
+        - Vendeur : non autorisé
+        """,
         request_body=CompteDepotTransactionCreateSerializer,
         responses={
             201: openapi.Response(description="Retrait effectué avec succès"),
@@ -315,13 +426,39 @@ class RetraitView(APIView):
     @transaction.atomic
     def post(self, request, numero_compte):
         role = _user_role(request.user)
-        if role not in ALLOWED_ROLES:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        if role not in ["manager", "cashier"]:
+            return Response(
+                {"message": "Seul le manager ou le caissier peut effectuer un retrait."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         try:
-            compte = CompteDepot.objects.select_for_update().get(numero_compte=numero_compte)
+            compte = (
+                CompteDepot.objects
+                .select_for_update()
+                .select_related("client")
+                .get(numero_compte=numero_compte)
+            )
         except CompteDepot.DoesNotExist:
-            return Response({"detail": "Compte introuvable."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Compte introuvable."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        client_bijouterie = getattr(compte.client, "bijouterie", None)
+
+        if not client_bijouterie:
+            return Response(
+                {"message": "Ce compte dépôt n'est lié à aucune bijouterie."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not user_can_access_bijouterie(request.user, client_bijouterie):
+            return Response(
+                {"message": "Vous ne pouvez effectuer un retrait que dans votre bijouterie."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         serializer = CompteDepotTransactionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -333,6 +470,7 @@ class RetraitView(APIView):
             reference=serializer.validated_data.get("reference"),
             commentaire=serializer.validated_data.get("commentaire"),
         )
+
         compte.refresh_from_db()
 
         return Response({
@@ -343,7 +481,7 @@ class RetraitView(APIView):
                 f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
             ),
         }, status=status.HTTP_201_CREATED)
-
+        
 # =========================================================
 # SOLDE
 # =========================================================
@@ -352,7 +490,15 @@ class GetSoldeAPIView(APIView):
     renderer_classes = [UserRenderer]
 
     @swagger_auto_schema(
-        operation_description="Récupérer le solde d’un compte dépôt à partir du numéro de compte.",
+        operation_description="""
+        Récupérer le solde d’un compte dépôt.
+
+        Règles :
+        - Vendor : uniquement sa bijouterie
+        - Manager : uniquement ses bijouteries
+        - Caissier : uniquement sa bijouterie
+        - Admin : non autorisé
+        """,
         manual_parameters=[
             openapi.Parameter(
                 "numero_compte",
@@ -366,10 +512,15 @@ class GetSoldeAPIView(APIView):
     )
     def get(self, request):
         role = _user_role(request.user)
-        if role not in ["admin", "manager", "cashier", "vendor"]:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        if role not in ["vendor", "manager", "cashier"]:
+            return Response(
+                {"message": "Accès refusé."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         numero_compte = request.query_params.get("numero_compte")
+
         if not numero_compte:
             return Response(
                 {"detail": "Le paramètre 'numero_compte' est requis."},
@@ -377,16 +528,36 @@ class GetSoldeAPIView(APIView):
             )
 
         try:
-            compte = CompteDepot.objects.get(numero_compte=numero_compte)
+            compte = (
+                CompteDepot.objects
+                .select_related("client")
+                .get(numero_compte=numero_compte)
+            )
         except CompteDepot.DoesNotExist:
-            return Response({"detail": "Compte non trouvé."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Compte non trouvé."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        client_bijouterie = getattr(compte.client, "bijouterie", None)
+
+        if not client_bijouterie:
+            return Response(
+                {"detail": "Ce compte n'est lié à aucune bijouterie."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not user_can_access_bijouterie(request.user, client_bijouterie):
+            return Response(
+                {"detail": "Vous ne pouvez consulter que les comptes de votre bijouterie."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         return Response({
             "numero_compte": compte.numero_compte,
             "solde": compte.solde,
             "created_at": compte.created_at,
         }, status=status.HTTP_200_OK)
-
 
 # =========================================================
 # LISTE COMPTES AVEC FILTRE
@@ -395,7 +566,15 @@ class ListerTousComptesAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Lister tous les comptes dépôt. Optionnel : filtrer par téléphone du client.",
+        operation_description="""
+        Lister les comptes dépôt.
+
+        Règles :
+        - Vendor : uniquement sa bijouterie
+        - Manager : uniquement ses bijouteries
+        - Caissier : uniquement sa bijouterie
+        - Admin : non autorisé
+        """,
         manual_parameters=[
             openapi.Parameter(
                 "telephone",
@@ -404,25 +583,89 @@ class ListerTousComptesAPIView(APIView):
                 type=openapi.TYPE_STRING,
                 required=False
             )
-            
         ],
         tags=["compte dépôt"],
-        responses={200: openapi.Response("Liste des comptes", CompteDepotSerializer(many=True))}
+        responses={
+            200: openapi.Response(
+                "Liste des comptes",
+                CompteDepotSerializer(many=True)
+            )
+        }
     )
     def get(self, request):
         role = _user_role(request.user)
-        if role not in ["admin", "manager", "cashier", "vendor"]:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        if role not in ["vendor", "manager", "cashier"]:
+            return Response(
+                {"message": "Access Denied"},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         telephone = request.query_params.get("telephone")
-        comptes = CompteDepot.objects.select_related("client", "created_by")
+
+        comptes = (
+            CompteDepot.objects
+            .select_related("client", "created_by")
+        )
+
+        # =========================
+        # FILTRE BIJOUTERIE
+        # =========================
+
+        if role == "vendor":
+            vendor_profile = getattr(request.user, "staff_vendor_profile", None)
+
+            if not vendor_profile or not vendor_profile.bijouterie:
+                return Response(
+                    {"detail": "Bijouterie vendeur introuvable."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            comptes = comptes.filter(
+                client__bijouterie=vendor_profile.bijouterie
+            )
+
+        elif role == "cashier":
+            cashier_profile = getattr(request.user, "staff_cashier_profile", None)
+
+            if not cashier_profile or not cashier_profile.bijouterie:
+                return Response(
+                    {"detail": "Bijouterie caissier introuvable."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            comptes = comptes.filter(
+                client__bijouterie=cashier_profile.bijouterie
+            )
+
+        elif role == "manager":
+            manager_profile = getattr(request.user, "staff_manager_profile", None)
+
+            if not manager_profile:
+                return Response(
+                    {"detail": "Profil manager introuvable."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            comptes = comptes.filter(
+                client__bijouterie__in=manager_profile.bijouteries.all()
+            )
+
+        # =========================
+        # FILTRE TELEPHONE
+        # =========================
 
         if telephone:
-            comptes = comptes.filter(client__telephone__icontains=telephone)
+            comptes = comptes.filter(
+                client__telephone__icontains=telephone
+            )
 
-        serializer = CompteDepotSerializer(comptes.order_by("-created_at"), many=True)
+        serializer = CompteDepotSerializer(
+            comptes.order_by("-created_at"),
+            many=True
+        )
+
         return Response(serializer.data, status=status.HTTP_200_OK)
-
 
 # =========================================================
 # LISTE TRANSACTIONS
@@ -445,7 +688,7 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
     )
     def get(self, request):
         role = _user_role(request.user)
-        if role not in ["admin", "manager", "cashier", "vendor"]:
+        if role not in ["admin", "manager", "cashier"]:
             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
         telephone = request.query_params.get("telephone")
@@ -456,6 +699,33 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
         end_date = request.query_params.get("end_date")
 
         qs = CompteDepotTransaction.objects.select_related("compte__client", "user").order_by("-date_transaction")
+
+        # ✅ Scope par bijouterie
+        if role == "manager":
+            manager = getattr(request.user, "staff_manager_profile", None)
+
+            if not manager:
+                return Response(
+                    {"detail": "Profil manager introuvable."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            qs = qs.filter(
+                compte__client__bijouterie__in=manager.bijouteries.all()
+            )
+
+        elif role == "cashier":
+            cashier = getattr(request.user, "staff_cashier_profile", None)
+
+            if not cashier or not cashier.bijouterie:
+                return Response(
+                    {"detail": "Profil caissier invalide."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            qs = qs.filter(
+                compte__client__bijouterie=cashier.bijouterie
+            )
 
         if telephone:
             qs = qs.filter(compte__client__telephone__icontains=telephone)

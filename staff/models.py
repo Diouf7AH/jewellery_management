@@ -65,29 +65,6 @@ class Cashier(StaffCore):
         return self.full_name or f"Caissier #{self.pk}"
 
 
-# class Manager(StaffCore):
-#     user = models.OneToOneField(
-#         settings.AUTH_USER_MODEL,
-#         on_delete=models.CASCADE,
-#         related_name="staff_manager_profile",
-#         related_query_name="manager_profile",
-#     )
-#     bijouteries = models.ManyToManyField(
-#         "store.Bijouterie",
-#         blank=True,
-#         related_name="managers",
-#         related_query_name="manager",
-#     )
-
-#     class Meta:
-#         verbose_name = "Manager"
-#         verbose_name_plural = "Managers"
-#         ordering = ["-id"]
-
-#     def __str__(self):
-#         return self.full_name or f"Manager #{self.pk}"
-
-
 class Manager(StaffCore):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,

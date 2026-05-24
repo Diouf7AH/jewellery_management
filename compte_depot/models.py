@@ -10,7 +10,8 @@ from sale.models import Client
 class ClientDepot(Client):
     CNI = models.CharField(max_length=50, blank=True, null=True)
     photo = models.ImageField(upload_to="client/", default="client/default.jpg", null=True, blank=True)
-
+    bijouterie = models.ForeignKey("store.Bijouterie",on_delete=models.SET_NULL,null=True,blank=True,related_name="clients_depot",)
+    
     class Meta:
         verbose_name = "Client (compte dépôt)"
         verbose_name_plural = "Clients (compte dépôt)"

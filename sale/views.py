@@ -574,7 +574,9 @@ class ListFacturePayeesView(APIView):
 
         payment_mode = (request.query_params.get("payment_mode") or "").strip()
         if payment_mode:
-            qs = qs.filter(paiements__mode_paiement__iexact=payment_mode).distinct()
+            qs = qs.filter(
+                paiements__lignes__mode_paiement__code__iexact=payment_mode
+            ).distinct()
 
         qs = qs.order_by("-date_creation")
 
