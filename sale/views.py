@@ -1248,7 +1248,7 @@ class TicketPaiement80mmESCPosView(APIView):
             200: openapi.Response(
                 description="Ticket de paiement généré avec succès. Retourne un fichier .bin ou du texte si debug=1."
             ),
-            400: "Aucun paiement trouvé.",
+            400: "Facture non entièrement payée ou aucun paiement trouvé.",
             403: "Accès refusé.",
             404: "Facture introuvable.",
         },
@@ -1268,6 +1268,17 @@ class TicketPaiement80mmESCPosView(APIView):
             return Response(
                 {"detail": "⛔ Accès refusé"},
                 status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # ✅ Ticket paiement 80mm seulement si facture totalement payée
+        if facture.status != Facture.STAT_PAYE or facture.reste_a_payer > Decimal("0.00"):
+            return Response(
+                {
+                    "detail": "Le ticket 80mm ne peut être imprimé que si la facture est entièrement payée.",
+                    "status_facture": facture.status,
+                    "reste_a_payer": str(facture.reste_a_payer),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         paiement = (
