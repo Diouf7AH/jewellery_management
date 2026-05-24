@@ -721,6 +721,75 @@ class ListFacturesAPayerView(APIView):
 class PaiementFactureMultiModeView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary="Paiement facture multi-mode",
+        operation_description="""
+        Permet de payer une facture avec un ou plusieurs modes de paiement.
+
+        Modes possibles :
+        - cash
+        - wave
+        - orange_money
+        - carte
+        - depot
+
+        Règles :
+        - Le cumul des modes de paiement ne doit pas dépasser le reste à payer.
+        - Si paiement partiel : statut facture = partiel.
+        - Si paiement complet : statut facture = payé.
+        - Si la facture est totalement payée, le stock vendeur est consommé.
+        - Si la facture est totalement payée, le PDF officiel est généré.
+        """,
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["numero_facture", "lignes"],
+            properties={
+                "numero_facture": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    example="FAC-20260512-0003",
+                ),
+                "client": openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "nom": openapi.Schema(type=openapi.TYPE_STRING, example="Diop"),
+                        "prenom": openapi.Schema(type=openapi.TYPE_STRING, example="Awa"),
+                        "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
+                    },
+                ),
+                "lignes": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Schema(
+                        type=openapi.TYPE_OBJECT,
+                        required=["mode", "montant"],
+                        properties={
+                            "mode": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                example="cash",
+                                description="Code du mode de paiement : cash, wave, orange_money, carte, depot",
+                            ),
+                            "montant": openapi.Schema(
+                                type=openapi.TYPE_NUMBER,
+                                example=10000,
+                            ),
+                            "reference": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                example="WAVE-123456",
+                            ),
+                        },
+                    ),
+                ),
+            },
+        ),
+        responses={
+            201: openapi.Response(
+                description="Paiement effectué avec succès."
+            ),
+            400: "Erreur de validation.",
+            403: "Accès refusé.",
+            404: "Facture introuvable.",
+        },
+        tags=["Paiements"],
+    )
     @transaction.atomic
     def post(self, request):
         numero_facture = str(request.data.get("numero_facture") or "").strip()
