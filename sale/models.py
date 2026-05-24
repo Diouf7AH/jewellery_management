@@ -489,13 +489,19 @@ class Facture(models.Model):
 
     @staticmethod
     def recompute_facture_status(facture):
-        total_paye = facture.total_paye
-        reste = facture.reste_a_payer
 
-        if total_paye <= ZERO:
-            new_status = facture.__class__.STAT_NON_PAYE
-        elif reste == ZERO:
+        total_paye = Decimal(str(facture.total_paye or ZERO))
+        reste = Decimal(str(facture.reste_a_payer or ZERO))
+
+        # ✅ Facture totalement payée
+        if reste <= ZERO:
             new_status = facture.__class__.STAT_PAYE
+
+        # ✅ Aucun paiement
+        elif total_paye <= ZERO:
+            new_status = facture.__class__.STAT_NON_PAYE
+
+        # ✅ Paiement partiel
         else:
             new_status = facture.__class__.STAT_PARTIEL
 

@@ -714,61 +714,6 @@ class ListFacturesAPayerView(APIView):
 class PaiementFactureMultiModeView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
-        operation_summary="Paiement facture multi-mode",
-        operation_description="""
-Paiement d'une facture avec plusieurs modes :
-
-- cash
-- wave
-- orange_money
-- depot
-- carte
-
-Règles :
-- PROFORMA → FACTURE au premier paiement
-- Si facture totalement PAYÉE → consommation stock vendeur FIFO
-- Génération automatique PDF uniquement si facture totalement payée
-- Aucun stockage du reçu de paiement
-        """,
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["numero_facture", "lignes"],
-            properties={
-                "numero_facture": openapi.Schema(
-                    type=openapi.TYPE_STRING,
-                    example="FAC-20260512-0003"
-                ),
-                "client": openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "nom": openapi.Schema(type=openapi.TYPE_STRING, example="Diop"),
-                        "prenom": openapi.Schema(type=openapi.TYPE_STRING, example="Awa"),
-                        "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
-                    },
-                ),
-                "lignes": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Schema(
-                        type=openapi.TYPE_OBJECT,
-                        required=["mode", "montant"],
-                        properties={
-                            "mode": openapi.Schema(type=openapi.TYPE_STRING, example="cash"),
-                            "montant": openapi.Schema(type=openapi.TYPE_NUMBER, example=10000),
-                            "reference": openapi.Schema(type=openapi.TYPE_STRING, example="WAVE-123456"),
-                        },
-                    ),
-                ),
-            },
-        ),
-        responses={
-            201: "Paiement effectué",
-            400: "Erreur validation",
-            403: "Accès refusé",
-            404: "Facture introuvable",
-        },
-        tags=["Paiements"],
-    )
     @transaction.atomic
     def post(self, request):
         numero_facture = str(request.data.get("numero_facture") or "").strip()
@@ -776,16 +721,10 @@ Règles :
         lignes_data = request.data.get("lignes") or []
 
         if not numero_facture:
-            return Response(
-                {"detail": "numero_facture requis."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "numero_facture requis."}, status=400)
 
         if not lignes_data:
-            return Response(
-                {"detail": "lignes requises."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "lignes requises."}, status=400)
 
         facture = (
             Facture.objects
@@ -799,16 +738,13 @@ Règles :
         if not facture:
             return Response(
                 {"detail": f"Facture introuvable avec le numéro : {numero_facture}"},
-                status=status.HTTP_404_NOT_FOUND,
+                status=404,
             )
 
         try:
             validate_facture_payable(facture)
         except DjangoValidationError as e:
-            return Response(
-                {"detail": getattr(e, "message", str(e))},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": getattr(e, "message", str(e))}, status=400)
 
         try:
             client = upsert_client_for_payment(
@@ -816,10 +752,7 @@ Règles :
                 client_data=client_data,
             )
         except DjangoValidationError as e:
-            return Response(
-                {"detail": getattr(e, "message", str(e))},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": getattr(e, "message", str(e))}, status=400)
 
         total = Decimal("0.00")
         normalized_lignes = []
@@ -831,7 +764,7 @@ Règles :
             if not mode:
                 return Response(
                     {"detail": f"Le mode de paiement est obligatoire à la ligne {index + 1}."},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    status=400,
                 )
 
             try:
@@ -839,13 +772,13 @@ Règles :
             except (InvalidOperation, TypeError):
                 return Response(
                     {"detail": f"Montant invalide à la ligne {index + 1}."},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    status=400,
                 )
 
             if montant <= 0:
                 return Response(
                     {"detail": f"Le montant doit être supérieur à 0 à la ligne {index + 1}."},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    status=400,
                 )
 
             total += montant
@@ -859,11 +792,11 @@ Règles :
         if total > facture.reste_a_payer:
             return Response(
                 {
-                    "detail": "Le montant payé dépasse le reste à payer.",
+                    "detail": "Le cumul des modes de paiement ne doit pas dépasser le reste à payer.",
                     "reste_a_payer": str(facture.reste_a_payer),
                     "montant_recu": str(total),
                 },
-                status=status.HTTP_400_BAD_REQUEST,
+                status=400,
             )
 
         cashier = Cashier.objects.filter(user=request.user).first()
@@ -877,23 +810,34 @@ Règles :
         lignes_creees = []
 
         for item in normalized_lignes:
-            mode_obj = ModePaiement.objects.filter(code__iexact=item["mode"]).first()
+            mode_obj = ModePaiement.objects.filter(
+                code__iexact=item["mode"],
+                actif=True,
+            ).first()
 
-        if not mode_obj:
-            return Response(
-                {"detail": f"Mode de paiement invalide : {item['mode']}"},
-                status=400
+            if not mode_obj:
+                transaction.set_rollback(True)
+                return Response(
+                    {"detail": f"Mode de paiement invalide ou inactif : {item['mode']}"},
+                    status=400,
+                )
+
+            ligne = PaiementLigne.objects.create(
+                paiement=paiement,
+                mode_paiement=mode_obj,
+                montant_paye=item["montant"],
+                reference=item.get("reference"),
             )
 
-        ligne = PaiementLigne.objects.create(
-            paiement=paiement,
-            mode_paiement=mode_obj,
-            montant_paye=item["montant"],
-            reference=item.get("reference"),
-        )
+            lignes_creees.append(ligne)
 
         Facture.recompute_facture_status(facture)
         facture.refresh_from_db()
+        
+        if facture.reste_a_payer <= Decimal("0.00") and facture.status != Facture.STAT_PAYE:
+            facture.status = Facture.STAT_PAYE
+            facture.save(update_fields=["status"])
+            facture.refresh_from_db()
 
         if facture.type_facture == Facture.TYPE_PROFORMA:
             facture.type_facture = Facture.TYPE_FACTURE
@@ -914,10 +858,7 @@ Règles :
                 facture.refresh_from_db()
             except DjangoValidationError as e:
                 transaction.set_rollback(True)
-                return Response(
-                    {"detail": getattr(e, "message", str(e))},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"detail": getattr(e, "message", str(e))}, status=400)
 
         facture_pdf_url = None
 
@@ -964,7 +905,7 @@ Règles :
                 "lignes": [
                     {
                         "id": ligne.id,
-                        "mode_paiement": ligne.mode_paiement,
+                        "mode_paiement": ligne.mode_paiement.code,
                         "montant_paye": str(ligne.montant_paye),
                         "reference": ligne.reference,
                     }
@@ -973,7 +914,7 @@ Règles :
                 "stock": audit,
                 "facture_pdf_url": facture_pdf_url,
             },
-            status=status.HTTP_201_CREATED,
+            status=201,
         )
 # -------------------END PaiementFactureView-------------------
 
