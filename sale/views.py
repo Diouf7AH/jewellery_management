@@ -642,7 +642,12 @@ class ListFacturesAPayerView(APIView):
                 "vente__lignes__produit__purete",
                 "vente__lignes__produit__modele",
             )
-            .filter(status=Facture.STAT_NON_PAYE)
+            .filter(
+                status__in=[
+                    Facture.STAT_NON_PAYE,
+                    Facture.STAT_PARTIEL,
+                ]
+            )
         )
 
         # ✅ Scope bijouterie
