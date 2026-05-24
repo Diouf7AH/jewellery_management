@@ -812,7 +812,7 @@ class PaiementFactureMultiModeView(APIView):
         for item in normalized_lignes:
             mode_obj = ModePaiement.objects.filter(
                 code__iexact=item["mode"],
-                actif=True,
+                active=True,
             ).first()
 
             if not mode_obj:
