@@ -26,9 +26,9 @@ from backend.utils.helpers import (resolve_bijouterie_for_user,
 from .models import ClientDepot, CompteDepot, CompteDepotTransaction
 from .pdf import generate_transaction_ticket_80mm_pdf
 from .serializers import (ClientDepotSerializer, CompteDepotSerializer,
-                          CompteDepotTransactionCreateSerializer,
+                          CompteDepotTelephoneTransactionSerializer,
                           CompteDepotTransactionSerializer,
-                          CreateOrDepositCompteSerializer)
+                          CreateOrDepotCompteSerializer)
 from .services import effectuer_depot, effectuer_retrait
 
 ALLOWED_ROLES = {"admin", "manager", "cashier"}
@@ -63,28 +63,28 @@ def get_user_bijouterie(user):
 # =========================================================
 # LISTE COMPTES
 # =========================================================
-class ListCompteDepotView(APIView):
-    renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
+# class ListCompteDepotView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
-        operation_description="Lister tous les comptes dépôt avec les informations du client.",
-        responses={200: openapi.Response("Liste des comptes", CompteDepotSerializer(many=True))},
-        tags=["compte dépôt"],  
-    )
-    def get(self, request):
-        role = _user_role(request.user)
-        if role not in ["admin", "manager", "vendor"]:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+#     @swagger_auto_schema(
+#         operation_description="Lister tous les comptes dépôt avec les informations du client.",
+#         responses={200: openapi.Response("Liste des comptes", CompteDepotSerializer(many=True))},
+#         tags=["compte dépôt"],  
+#     )
+#     def get(self, request):
+#         role = _user_role(request.user)
+#         if role not in ["admin", "manager", "vendor"]:
+#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
 
-        comptes = CompteDepot.objects.select_related("client", "created_by").order_by("-created_at")
-        return Response(CompteDepotSerializer(comptes, many=True).data, status=status.HTTP_200_OK)
+#         comptes = CompteDepot.objects.select_related("client", "created_by").order_by("-created_at")
+#         return Response(CompteDepotSerializer(comptes, many=True).data, status=status.HTTP_200_OK)
 
 
 # =========================================================
 # CREATE OR DEPOSIT
 # =========================================================
-class CreateOrDepositCompteView(APIView):
+class CreateOrDepotCompteView(APIView):
     permission_classes = [IsAuthenticated]
     ALLOWED_ROLES = {"manager", "cashier"}
 
@@ -95,7 +95,7 @@ class CreateOrDepositCompteView(APIView):
             "effectuer directement un dépôt sur le compte existant."
         ),
         tags=["compte dépôt"],  
-        request_body=CreateOrDepositCompteSerializer,
+        request_body=CreateOrDepotCompteSerializer,
     )
     @transaction.atomic
     def post(self, request):
@@ -106,7 +106,7 @@ class CreateOrDepositCompteView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        serializer = CreateOrDepositCompteSerializer(data=request.data)
+        serializer = CreateOrDepotCompteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         client_data = serializer.validated_data["client"]
@@ -322,7 +322,7 @@ class DepotView(APIView):
     @swagger_auto_schema(
         operation_summary="Effectuer un dépôt sur un compte dépôt",
         operation_description="""
-        Effectue un dépôt sur un compte dépôt.
+        Effectue un dépôt sur un compte dépôt via téléphone client.
 
         Règles :
         - Manager : uniquement ses bijouteries
@@ -330,7 +330,7 @@ class DepotView(APIView):
         - Admin : non autorisé
         - Vendeur : non autorisé
         """,
-        request_body=CompteDepotTransactionCreateSerializer,
+        request_body=CompteDepotTelephoneTransactionSerializer,
         responses={
             201: openapi.Response(description="Dépôt effectué avec succès"),
             400: openapi.Response(description="Données invalides"),
@@ -340,7 +340,7 @@ class DepotView(APIView):
         tags=["compte dépôt"],
     )
     @transaction.atomic
-    def post(self, request, numero_compte):
+    def post(self, request):
         role = _user_role(request.user)
 
         if role not in ["manager", "cashier"]:
@@ -349,12 +349,17 @@ class DepotView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        serializer = CompteDepotTelephoneTransactionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        telephone = serializer.validated_data["telephone"]
+
         try:
             compte = (
                 CompteDepot.objects
                 .select_for_update()
                 .select_related("client")
-                .get(numero_compte=numero_compte)
+                .get(client__telephone=telephone)
             )
         except CompteDepot.DoesNotExist:
             return Response(
@@ -376,9 +381,6 @@ class DepotView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        serializer = CompteDepotTransactionCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
         tx = effectuer_depot(
             compte_id=compte.id,
             montant=serializer.validated_data["montant"],
@@ -391,8 +393,16 @@ class DepotView(APIView):
 
         return Response({
             "message": "Dépôt effectué avec succès.",
+            "client": {
+                "nom": compte.client.nom,
+                "prenom": compte.client.prenom,
+                "telephone": compte.client.telephone,
+            },
             "transaction": CompteDepotTransactionSerializer(tx).data,
-            "nouveau_solde": str(compte.solde),
+            "compte": {
+                "numero_compte": compte.numero_compte,
+                "nouveau_solde": str(compte.solde),
+            },
             "receipt_url": request.build_absolute_uri(
                 f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
             ),
@@ -406,7 +416,7 @@ class RetraitView(APIView):
     @swagger_auto_schema(
         operation_summary="Effectuer un retrait sur un compte dépôt",
         operation_description="""
-        Effectue un retrait sur un compte dépôt.
+        Effectue un retrait sur un compte dépôt via téléphone client.
 
         Règles :
         - Manager : uniquement ses bijouteries
@@ -414,7 +424,7 @@ class RetraitView(APIView):
         - Admin : non autorisé
         - Vendeur : non autorisé
         """,
-        request_body=CompteDepotTransactionCreateSerializer,
+        request_body=CompteDepotTelephoneTransactionSerializer,
         responses={
             201: openapi.Response(description="Retrait effectué avec succès"),
             400: openapi.Response(description="Données invalides"),
@@ -424,7 +434,7 @@ class RetraitView(APIView):
         tags=["compte dépôt"],
     )
     @transaction.atomic
-    def post(self, request, numero_compte):
+    def post(self, request):
         role = _user_role(request.user)
 
         if role not in ["manager", "cashier"]:
@@ -433,12 +443,17 @@ class RetraitView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        serializer = CompteDepotTelephoneTransactionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        telephone = serializer.validated_data["telephone"]
+
         try:
             compte = (
                 CompteDepot.objects
                 .select_for_update()
                 .select_related("client")
-                .get(numero_compte=numero_compte)
+                .get(client__telephone=telephone)
             )
         except CompteDepot.DoesNotExist:
             return Response(
@@ -460,9 +475,6 @@ class RetraitView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        serializer = CompteDepotTransactionCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
         tx = effectuer_retrait(
             compte_id=compte.id,
             montant=serializer.validated_data["montant"],
@@ -475,8 +487,16 @@ class RetraitView(APIView):
 
         return Response({
             "message": "Retrait effectué avec succès.",
+            "client": {
+                "nom": compte.client.nom,
+                "prenom": compte.client.prenom,
+                "telephone": compte.client.telephone,
+            },
             "transaction": CompteDepotTransactionSerializer(tx).data,
-            "nouveau_solde": str(compte.solde),
+            "compte": {
+                "numero_compte": compte.numero_compte,
+                "nouveau_solde": str(compte.solde),
+            },
             "receipt_url": request.build_absolute_uri(
                 f"/api/compte-depot/transactions/{tx.id}/receipt/80mm/"
             ),
@@ -501,9 +521,9 @@ class GetSoldeAPIView(APIView):
         """,
         manual_parameters=[
             openapi.Parameter(
-                "numero_compte",
+                "telephone",
                 openapi.IN_QUERY,
-                description="Numéro du compte dépôt",
+                description="Numéro de téléphone du client lié au compte dépôt",
                 type=openapi.TYPE_STRING,
                 required=True
             )
@@ -519,11 +539,11 @@ class GetSoldeAPIView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        numero_compte = request.query_params.get("numero_compte")
+        telephone = request.query_params.get("telephone")
 
-        if not numero_compte:
+        if not telephone:
             return Response(
-                {"detail": "Le paramètre 'numero_compte' est requis."},
+                {"detail": "Le paramètre 'telephone' est requis."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -531,7 +551,7 @@ class GetSoldeAPIView(APIView):
             compte = (
                 CompteDepot.objects
                 .select_related("client")
-                .get(numero_compte=numero_compte)
+                .get(client__telephone=telephone)
             )
         except CompteDepot.DoesNotExist:
             return Response(
@@ -554,9 +574,16 @@ class GetSoldeAPIView(APIView):
             )
 
         return Response({
-            "numero_compte": compte.numero_compte,
-            "solde": compte.solde,
-            "created_at": compte.created_at,
+            "client": {
+                "nom": compte.client.nom,
+                "prenom": compte.client.prenom,
+                "telephone": compte.client.telephone,
+            },
+            "compte": {
+                "numero_compte": compte.numero_compte,
+                "solde": str(compte.solde),
+                "created_at": compte.created_at,
+            }
         }, status=status.HTTP_200_OK)
 
 # =========================================================

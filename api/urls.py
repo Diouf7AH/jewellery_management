@@ -224,14 +224,16 @@ urlpatterns = [
     
     # BANK
     # principal POS
-    path("create-or-deposit", compte_depot_views.CreateOrDepositCompteView.as_view()),
+    path("create-or-depot", compte_depot_views.CreateOrDepotCompteView.as_view()),
     # operations
-    path("depot/<str:numero_compte>", compte_depot_views.DepotView.as_view()),
-    path("retrait/<str:numero_compte>", compte_depot_views.RetraitView.as_view()),
+    # path("depot/<str:numero_compte>", compte_depot_views.DepotView.as_view()),
+    path("compte-depot/depot/", compte_depot_views.DepotView.as_view(), name="compte-depot-depot"),
+    path("compte-depot/retrait/", compte_depot_views.RetraitView.as_view(), name="compte-depot-retrait"),
+    # path("retrait/<str:numero_compte>", compte_depot_views.RetraitView.as_view()),
     # solde
     path("solde", compte_depot_views.GetSoldeAPIView.as_view()),
     # comptes
-    path("comptes", compte_depot_views.ListCompteDepotView.as_view()),
+    # path("comptes", compte_depot_views.ListCompteDepotView.as_view()),
     path("comptes/search", compte_depot_views.ListerTousComptesAPIView.as_view()),
     # transactions
     path("transactions", compte_depot_views.ListerToutesCompteDepotTransactionsAPIView.as_view()),

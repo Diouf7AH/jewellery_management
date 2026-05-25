@@ -59,27 +59,20 @@ class CompteDepotSerializer(serializers.ModelSerializer):
 # =========================
 # CREATE OR DEPOSIT INPUT
 # =========================
-class CreateOrDepositCompteSerializer(serializers.Serializer):
+class CreateOrDepotCompteSerializer(serializers.Serializer):
     client = ClientDepotSerializer()
-    montant = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+    montant = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2
+    )
 
     def validate_montant(self, value):
         if value is None or value <= 0:
-            raise serializers.ValidationError("Le montant doit être supérieur à 0.")
-        return value
+            raise serializers.ValidationError(
+                "Le montant doit être supérieur à 0."
+            )
 
-
-# =========================
-# CREATE TRANSACTION INPUT
-# =========================
-class CompteDepotTransactionCreateSerializer(serializers.Serializer):
-    montant = serializers.DecimalField(max_digits=12, decimal_places=2)
-    reference = serializers.CharField(required=False, allow_blank=True)
-    commentaire = serializers.CharField(required=False, allow_blank=True)
-
-    def validate_montant(self, value):
-        if value <= 0:
-            raise serializers.ValidationError("Le montant doit être supérieur à 0.")
         return value
 
 
@@ -120,3 +113,33 @@ class CompteDepotTransactionSerializer(serializers.ModelSerializer):
         
 
 
+# =========================
+# DEPOT / RETRAIT VIA TELEPHONE
+# =========================
+class CompteDepotTelephoneTransactionSerializer(serializers.Serializer):
+    telephone = serializers.CharField()
+    montant = serializers.DecimalField(max_digits=12, decimal_places=2)
+    reference = serializers.CharField(required=False, allow_blank=True)
+    commentaire = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_telephone(self, value):
+        value = str(value).strip()
+
+        if not value:
+            raise serializers.ValidationError("Le téléphone est obligatoire.")
+
+        if not value.isdigit():
+            raise serializers.ValidationError("Le téléphone doit contenir uniquement des chiffres.")
+
+        if len(value) < 9:
+            raise serializers.ValidationError("Le téléphone doit contenir au moins 9 chiffres.")
+
+        return value
+
+    def validate_montant(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError("Le montant doit être supérieur à 0.")
+
+        return value
+    
+    
