@@ -18,16 +18,65 @@ from sale.services.vendor_stock_service import (ensure_vendor_stock_available,
 from sale.utils import ZERO
 from store.models import MarquePurete, Produit
 
+# def upsert_client_for_payment(*, facture, client_data: dict):
+#     """
+#     Au paiement :
+#     - nom obligatoire
+#     - prenom obligatoire
+#     - telephone optionnel
+#     - met à jour le client lié à la vente si présent
+#     - sinon crée/récupère un client puis l'attache à la vente
+#     """
+#     if not facture.vente:
+#         raise ValidationError({"facture": "Aucune vente associée à cette facture."})
+
+#     nom = (client_data.get("nom") or "").strip()
+#     prenom = (client_data.get("prenom") or "").strip()
+#     telephone = (client_data.get("telephone") or "").strip()
+
+#     if not nom or not prenom:
+#         raise ValidationError({"client": "nom et prenom sont obligatoires au paiement."})
+
+#     vente = facture.vente
+#     client = getattr(vente, "client", None)
+
+#     if client:
+#         changed_fields = []
+
+#         if client.nom != nom:
+#             client.nom = nom
+#             changed_fields.append("nom")
+
+#         if client.prenom != prenom:
+#             client.prenom = prenom
+#             changed_fields.append("prenom")
+
+#         if telephone and client.telephone != telephone:
+#             client.telephone = telephone
+#             changed_fields.append("telephone")
+
+#         if changed_fields:
+#             client.save(update_fields=changed_fields)
+
+#         return client
+
+#     lookup = {"telephone": telephone} if telephone else {"nom": nom, "prenom": prenom}
+
+#     client, _ = Client.objects.get_or_create(
+#         defaults={
+#             "nom": nom,
+#             "prenom": prenom,
+#             "telephone": telephone or None,
+#         },
+#         **lookup,
+#     )
+
+#     vente.client = client
+#     vente.save(update_fields=["client"])
+#     return client
+
 
 def upsert_client_for_payment(*, facture, client_data: dict):
-    """
-    Au paiement :
-    - nom obligatoire
-    - prenom obligatoire
-    - telephone optionnel
-    - met à jour le client lié à la vente si présent
-    - sinon crée/récupère un client puis l'attache à la vente
-    """
     if not facture.vente:
         raise ValidationError({"facture": "Aucune vente associée à cette facture."})
 
@@ -41,7 +90,19 @@ def upsert_client_for_payment(*, facture, client_data: dict):
     vente = facture.vente
     client = getattr(vente, "client", None)
 
+    existing_by_phone = None
+    if telephone:
+        existing_by_phone = Client.objects.filter(telephone=telephone).first()
+
     if client:
+        if existing_by_phone and existing_by_phone.id != client.id:
+            raise ValidationError({
+                "telephone": (
+                    f"Ce téléphone est déjà utilisé par un autre client : "
+                    f"{existing_by_phone.full_name}"
+                )
+            })
+
         changed_fields = []
 
         if client.nom != nom:
@@ -61,21 +122,20 @@ def upsert_client_for_payment(*, facture, client_data: dict):
 
         return client
 
-    lookup = {"telephone": telephone} if telephone else {"nom": nom, "prenom": prenom}
+    if existing_by_phone:
+        vente.client = existing_by_phone
+        vente.save(update_fields=["client"])
+        return existing_by_phone
 
-    client, _ = Client.objects.get_or_create(
-        defaults={
-            "nom": nom,
-            "prenom": prenom,
-            "telephone": telephone or None,
-        },
-        **lookup,
+    client = Client.objects.create(
+        nom=nom,
+        prenom=prenom,
+        telephone=telephone or None,
     )
 
     vente.client = client
     vente.save(update_fields=["client"])
     return client
-
 
 # @transaction.atomic
 # def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Facture, int]:

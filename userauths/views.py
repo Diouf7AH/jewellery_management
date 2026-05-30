@@ -6,6 +6,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import authenticate, get_user_model
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -36,13 +37,11 @@ from .serializers import (ProfileSerializer, ProfileUpdateSerializer,
                           UserRegistrationSerializer)
 from .utils import generate_email_token, send_confirmation_email
 
+User = get_user_model()
 # versio angular
 # from userauths.tokens import generate_email_token, verify_email_token
 # Dans UserRegistrationView → tu appelles generate_email_token(user)
 # Dans EmailVerificationView → tu appelles verify_email_token(token)
-
-
-User = get_user_model()
 
 allowed_roles = ['admin', 'manager', 'vendeur']
 # Create your views here.
@@ -356,35 +355,94 @@ def resend_confirmation_submit(request):
     return redirect("resend-confirmation-form")
 
 
+# class UserLoginView(APIView):
+#     @swagger_auto_schema(
+#         operation_description="Login with email, username, or phone and password",
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=['user', 'password'],
+#             properties={
+#                 'user': openapi.Schema(type=openapi.TYPE_STRING, description='Email, username or phone'),
+#                 'password': openapi.Schema(type=openapi.TYPE_STRING, description='Password'),
+#             },
+#         ),
+#         responses={
+#             200: openapi.Response(
+#                 description="Login successful",
+#                 examples={
+#                     'application/json': {
+#                         'access': 'string',
+#                         'refresh': 'string',
+#                         'user_id': 1,
+#                         'email': 'user@example.com',
+#                         'username': 'username',
+#                         'role': 'vendeur'
+#                     }
+#                 },
+#             ),
+#             403: openapi.Response(
+#                 description="Email non vérifié",
+#                 examples={'application/json': {'message': "❌ Votre adresse email n’a pas encore été confirmée."}}
+#             ),
+#             401: "Identifiants invalides",
+#         },
+#     )
+#     def post(self, request, format=None):
+#         serializer = UserLoginSerializer(data=request.data)
+#         serializer.is_valid(raise_exception=True)
+
+#         user_input = serializer.validated_data.get('user')
+#         password = serializer.validated_data.get('password')
+
+#         user = authenticate(request, username=user_input, password=password)
+
+#         if user:
+#             if not user.is_email_verified:
+#                 return Response(
+#                     {"message": "❌ Votre adresse email n’a pas encore été confirmée."},
+#                     status=status.HTTP_403_FORBIDDEN
+#                 )
+#             if not user.is_active:
+#                 return Response(
+#                     {"message": "❌ Votre compte n'est pas active."},
+#                     status=status.HTTP_403_FORBIDDEN
+#                 )
+
+#             # ⏱️ Mise à jour de la date de dernière connexion
+#             user.last_login = timezone.now()
+#             user.save(update_fields=["last_login"])
+
+#             tokens = get_tokens_for_user(user)
+
+#             return Response({
+#                 'refresh': tokens['refresh'],
+#                 'access': tokens['access'],
+#                 'user_id': user.id,
+#                 'email': user.email,
+#                 'username': user.username,
+#                 'role': user.user_role.role if user.user_role else '',
+#                 'msg': 'Login successful ✅'
+#             }, status=status.HTTP_200_OK)
+
+#         return Response(
+#             {'errors': {'non_field_errors': ['❌ Identifiants invalides (email/téléphone/username ou mot de passe)']}},
+#             status=status.HTTP_401_UNAUTHORIZED
+#         )
+
 class UserLoginView(APIView):
     @swagger_auto_schema(
         operation_description="Login with email, username, or phone and password",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=['user', 'password'],
+            required=["user", "password"],
             properties={
-                'user': openapi.Schema(type=openapi.TYPE_STRING, description='Email, username or phone'),
-                'password': openapi.Schema(type=openapi.TYPE_STRING, description='Password'),
+                "user": openapi.Schema(type=openapi.TYPE_STRING, description="Email, username or phone"),
+                "password": openapi.Schema(type=openapi.TYPE_STRING, description="Password"),
             },
         ),
         responses={
-            200: openapi.Response(
-                description="Login successful",
-                examples={
-                    'application/json': {
-                        'access': 'string',
-                        'refresh': 'string',
-                        'user_id': 1,
-                        'email': 'user@example.com',
-                        'username': 'username',
-                        'role': 'vendeur'
-                    }
-                },
-            ),
-            403: openapi.Response(
-                description="Email non vérifié",
-                examples={'application/json': {'message': "❌ Votre adresse email n’a pas encore été confirmée."}}
-            ),
+            200: openapi.Response(description="Login successful"),
+            403: "Compte désactivé ou email non vérifié",
             401: "Identifiants invalides",
         },
     )
@@ -392,43 +450,60 @@ class UserLoginView(APIView):
         serializer = UserLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        user_input = serializer.validated_data.get('user')
-        password = serializer.validated_data.get('password')
+        user_input = serializer.validated_data.get("user", "").strip()
+        password = serializer.validated_data.get("password")
 
-        user = authenticate(request, username=user_input, password=password)
+        phone_input = user_input.replace(" ", "")
+        if phone_input.startswith("+"):
+            phone_input = phone_input[1:]
 
-        if user:
-            if not user.is_email_verified:
-                return Response(
-                    {"message": "❌ Votre adresse email n’a pas encore été confirmée."},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            if not user.is_active:
-                return Response(
-                    {"message": "❌ Votre compte n'est pas active."},
-                    status=status.HTTP_403_FORBIDDEN
-                )
+        user_obj = User.objects.filter(
+            Q(email__iexact=user_input) |
+            Q(username__iexact=user_input) |
+            Q(telephone=phone_input)
+        ).first()
 
-            # ⏱️ Mise à jour de la date de dernière connexion
-            user.last_login = timezone.now()
-            user.save(update_fields=["last_login"])
+        if not user_obj:
+            return Response(
+                {"message": "❌ Utilisateur introuvable."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
-            tokens = get_tokens_for_user(user)
+        if not user_obj.is_active:
+            return Response(
+                {"message": "❌ Votre compte a été désactivé. Veuillez contacter l'administrateur."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
-            return Response({
-                'refresh': tokens['refresh'],
-                'access': tokens['access'],
-                'user_id': user.id,
-                'email': user.email,
-                'username': user.username,
-                'role': user.user_role.role if user.user_role else '',
-                'msg': 'Login successful ✅'
-            }, status=status.HTTP_200_OK)
+        if not user_obj.is_email_verified:
+            return Response(
+                {"message": "❌ Votre adresse email n’a pas encore été confirmée."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
-        return Response(
-            {'errors': {'non_field_errors': ['❌ Identifiants invalides (email/téléphone/username ou mot de passe)']}},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        user = authenticate(request, username=user_obj.email, password=password)
+
+        if not user:
+            return Response(
+                {"errors": {"non_field_errors": ["❌ Mot de passe incorrect."]}},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        user.last_login = timezone.now()
+        user.save(update_fields=["last_login"])
+
+        tokens = get_tokens_for_user(user)
+
+        return Response({
+            "refresh": tokens["refresh"],
+            "access": tokens["access"],
+            "user_id": user.id,
+            "email": user.email,
+            "username": user.username,
+            "role": user.user_role.role if user.user_role else "",
+            "msg": "Login successful ✅"
+        }, status=status.HTTP_200_OK)
+
 
 class UserLogoutView(APIView):
     permission_classes = [IsAuthenticated]

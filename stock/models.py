@@ -13,7 +13,15 @@ class Stock(models.Model):
         null=True, blank=True,
         related_name="stocks_par_produitline",
     )
-
+    # stock_key = models.CharField(max_length=80, unique=True, editable=False, db_index=True)
+    # temporairement le champ
+    stock_key = models.CharField(
+    max_length=80,
+    unique=True,
+    null=True,
+    blank=True,
+    editable=False,
+    db_index=True,)
     # auto-calculé
     is_reserve = models.BooleanField(default=False, db_index=True, editable=False)
 
@@ -28,19 +36,9 @@ class Stock(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["produit_line"],
-                condition=Q(is_reserve=True),
-                name="uq_stock_one_reserve_per_pl",
-            ),
-            models.UniqueConstraint(
-                fields=["produit_line", "bijouterie"],
-                condition=Q(is_reserve=False),
-                name="uq_stock_pl_bijouterie_non_reserve",
-            ),
             models.CheckConstraint(
                 check=Q(is_reserve=True, bijouterie__isnull=True)
-                      | Q(is_reserve=False, bijouterie__isnull=False),
+                    | Q(is_reserve=False, bijouterie__isnull=False),
                 name="ck_stock_is_reserve_matches_bijouterie_null",
             ),
             models.CheckConstraint(
@@ -60,7 +58,8 @@ class Stock(models.Model):
 
     def save(self, *args, **kwargs):
         # recalcul avant validation
-        self.is_reserve = (self.bijouterie_id is None)
+        self.is_reserve = self.bijouterie_id is None
+        self.stock_key = f"PL:{self.produit_line_id}:RESERVE" if self.is_reserve else f"PL:{self.produit_line_id}:BIJ:{self.bijouterie_id}"
         self.full_clean()
         return super().save(*args, **kwargs)
 

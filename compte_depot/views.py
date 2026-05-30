@@ -22,6 +22,8 @@ from rest_framework.views import APIView
 from backend.renderers import UserRenderer
 from backend.utils.helpers import (resolve_bijouterie_for_user,
                                    user_can_access_bijouterie)
+from compte_depot.notifications import (send_compte_created_notification,
+                                        send_compte_depot_notification)
 
 from .models import ClientDepot, CompteDepot, CompteDepotTransaction
 from .pdf import generate_transaction_ticket_80mm_pdf
@@ -186,6 +188,12 @@ class CreateOrDepotCompteView(APIView):
                 reference="OUVERTURE_COMPTE_CLIENT_EXISTANT",
                 commentaire="Nouveau compte créé puis crédité pour un client existant."
             )
+            # Client existant sans compte
+            send_compte_created_notification(
+                compte,
+                montant
+            )
+            
             compte.refresh_from_db()
 
             return Response({
@@ -225,6 +233,8 @@ class CreateOrDepotCompteView(APIView):
             reference="OUVERTURE_NOUVEAU_COMPTE",
             commentaire="Nouveau client créé, compte ouvert et crédité."
         )
+        # Nouveau client + nouveau compte
+        send_compte_created_notification(compte, montant)
         compte.refresh_from_db()
 
         return Response({
@@ -388,6 +398,8 @@ class DepotView(APIView):
             reference=serializer.validated_data.get("reference"),
             commentaire=serializer.validated_data.get("commentaire"),
         )
+        
+        send_compte_depot_notification(tx)
 
         compte.refresh_from_db()
 
@@ -482,6 +494,8 @@ class RetraitView(APIView):
             reference=serializer.validated_data.get("reference"),
             commentaire=serializer.validated_data.get("commentaire"),
         )
+        
+        send_compte_depot_notification(tx)
 
         compte.refresh_from_db()
 
@@ -774,6 +788,8 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
 # =========================================================
 # EXPORT EXCEL TRANSACTIONS
 # =========================================================
+
+# historique mouvements
 class ExportCompteDepotTransactionsExcelAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -879,6 +895,106 @@ class ExportCompteDepotTransactionsExcelAPIView(APIView):
         return response
 
 
+# sauvegarde état des soldes actuels
+class ExportCompteDepotSoldesExcelAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_description="Exporter la sauvegarde des soldes actuels des comptes dépôt.",
+        tags=["compte dépôt"],
+    )
+    def get(self, request):
+        role = _user_role(request.user)
+
+        if role not in ["manager", "cashier"]:
+            return Response(
+                {"message": "Access Denied"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        comptes = CompteDepot.objects.select_related(
+            "client",
+            "client__bijouterie",
+            "created_by",
+        ).order_by("client__bijouterie__nom", "client__nom")
+
+        if role == "cashier":
+            cashier_profile = getattr(request.user, "staff_cashier_profile", None)
+            if not cashier_profile or not cashier_profile.bijouterie:
+                return Response({"detail": "Bijouterie caissier introuvable."}, status=403)
+
+            comptes = comptes.filter(client__bijouterie=cashier_profile.bijouterie)
+
+        if role == "manager":
+            manager_profile = getattr(request.user, "staff_manager_profile", None)
+            if not manager_profile:
+                return Response({"detail": "Profil manager introuvable."}, status=403)
+
+            comptes = comptes.filter(client__bijouterie__in=manager_profile.bijouteries.all())
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Soldes Comptes Depot"
+
+        headers = [
+            "Date sauvegarde",
+            "Bijouterie",
+            "Nom",
+            "Prénom",
+            "Téléphone",
+            "Numéro compte",
+            "Solde actuel",
+            "Date création compte",
+            "Créé par",
+        ]
+        ws.append(headers)
+
+        header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+        header_font = Font(bold=True, color="FFFFFF")
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+
+        now = timezone.localtime(timezone.now())
+
+        for compte in comptes:
+            client = compte.client
+            bijouterie = getattr(client, "bijouterie", None)
+
+            created_by = ""
+            if compte.created_by:
+                created_by = (
+                    getattr(compte.created_by, "email", None)
+                    or getattr(compte.created_by, "username", "")
+                    or str(compte.created_by)
+                )
+
+            ws.append([
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+                getattr(bijouterie, "nom", "") if bijouterie else "",
+                getattr(client, "nom", "") if client else "",
+                getattr(client, "prenom", "") if client else "",
+                getattr(client, "telephone", "") if client else "",
+                compte.numero_compte,
+                float(compte.solde),
+                timezone.localtime(compte.created_at).strftime("%Y-%m-%d %H:%M:%S") if compte.created_at else "",
+                created_by,
+            ])
+
+        for column_cells in ws.columns:
+            length = max(len(str(cell.value or "")) for cell in column_cells)
+            ws.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 45)
+
+        response = HttpResponse(
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        filename = f"sauvegarde_soldes_compte_depot_{now.strftime('%Y_%m_%d_%H%M%S')}.xlsx"
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+
+        wb.save(response)
+        return response
 # =========================================================
 # DASHBOARD COMPTE DEPOT
 # =========================================================

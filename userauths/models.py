@@ -97,7 +97,8 @@ class Role(models.Model):
 
 class User(AbstractUser):
     email = models.EmailField(max_length=254, unique=True)
-    username = models.CharField(max_length=30, unique=True, null=True, blank=True)
+    # username = models.CharField(max_length=30, unique=True, blank=True)
+    username = models.CharField(max_length=150,unique=True,null=True,blank=True,)
     telephone = models.CharField(max_length=20, unique=True, null=True, blank=True)
 
     user_role = models.ForeignKey(
@@ -201,18 +202,14 @@ class User(AbstractUser):
             self.telephone = None
 
         if self.username:
-            self.username = self.username.strip() or None
-        else:
-            self.username = None
+            self.username = self.username.strip()
 
     def save(self, *args, **kwargs):
         if self.email:
             self.email = self.email.strip().lower()
 
         if self.username:
-            self.username = self.username.strip() or None
-        else:
-            self.username = None
+            self.username = self.username.strip()
 
         if self.telephone:
             t = self.telephone.strip().replace(" ", "")
@@ -221,6 +218,9 @@ class User(AbstractUser):
             self.telephone = t
         else:
             self.telephone = None
+            
+        if self.password is None or self.password == "":
+            self.set_unusable_password()
 
         if self.is_superuser and self.user_role_id is None:
             admin_role, _ = Role.objects.get_or_create(role="admin")
@@ -278,7 +278,7 @@ class Profile(models.Model):
     )
     image = models.ImageField(
         upload_to=user_profile_image_upload_to,
-        default="default/default-user.jpg",
+        default="default/default-user.png",
         null=True,
         blank=True,
         validators=[validate_image_size],

@@ -148,7 +148,13 @@ def build_ticket_paiement_80mm_pdf(*, facture, paiement):
     draw_left(_line_lr("MONTANT PAYE", f"{money(montant_operation)} FCFA"), 9, True, True)
     draw_left(_line_lr("TOTAL FACTURE", f"{money(total_facture)} FCFA"), 8, True, True)
     draw_left(_line_lr("TOTAL PAYE", f"{money(total_paye)} FCFA"), 8, True, True)
-    draw_left(_line_lr("RESTE A PAYER", f"{money(reste)} FCFA"), 8, True, True)
+    if reste > 0:
+        draw_left(
+            _line_lr("RESTE A PAYER", f"{money(reste)} FCFA"),
+            8,
+            True,
+            True,
+        )
 
     draw_sep()
 

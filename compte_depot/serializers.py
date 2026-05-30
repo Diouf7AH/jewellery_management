@@ -119,8 +119,8 @@ class CompteDepotTransactionSerializer(serializers.ModelSerializer):
 class CompteDepotTelephoneTransactionSerializer(serializers.Serializer):
     telephone = serializers.CharField()
     montant = serializers.DecimalField(max_digits=12, decimal_places=2)
-    reference = serializers.CharField(required=False, allow_blank=True)
-    commentaire = serializers.CharField(required=False, allow_blank=True)
+    # reference = serializers.CharField(required=False, allow_blank=True)
+    # commentaire = serializers.CharField(required=False, allow_blank=True)
 
     def validate_telephone(self, value):
         value = str(value).strip()

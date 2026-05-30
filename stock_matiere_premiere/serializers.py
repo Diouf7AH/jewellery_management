@@ -8,6 +8,7 @@ from rest_framework import serializers
 
 from purchase.models import Fournisseur
 from sale.models import Client
+from store.models import Purete
 
 from .models import (AchatMatierePremiere, AchatMatierePremiereItem,
                      MatierePremiereStock, RachatClient, RachatClientItem,
@@ -45,20 +46,15 @@ class ClientRachatSerializer(serializers.Serializer):
 
 
 class RachatClientItemInputSerializer(serializers.Serializer):
-    description = serializers.CharField(max_length=255)
-    matiere = serializers.ChoiceField(
-        choices=MatierePremiereStock.MATIERE_CHOICES,
-        default=MatierePremiereStock.MATIERE_OR,
-    )
-    purete_id = serializers.IntegerField()
-    poids = serializers.DecimalField(
-        max_digits=14,
-        decimal_places=3,
-        min_value=Decimal("0.001"),
-    )
+    description = serializers.CharField()
+    matiere = serializers.CharField()
+    purete = serializers.SlugRelatedField(slug_field="purete",queryset=Purete.objects.all(),)
+    poids = serializers.DecimalField(max_digits=14,decimal_places=3,)
 
 
 class RachatClientCreateSerializer(serializers.Serializer):
+    # bijouterie_id = serializers.IntegerField(required=False)
+    bijouterie = serializers.CharField(required=False, allow_blank=True)
     client = ClientRachatSerializer()
     cni_client = serializers.CharField(
         required=False,
@@ -124,6 +120,9 @@ class RachatClientCreateSerializer(serializers.Serializer):
     @transaction.atomic
     def create(self, validated_data):
         bijouterie = self.context["bijouterie"]
+        
+        # champ utilisé seulement pour Swagger / input
+        validated_data.pop("bijouterie", None)
 
         client_data = validated_data.pop("client")
         items_data = validated_data.pop("items")
@@ -147,7 +146,7 @@ class RachatClientCreateSerializer(serializers.Serializer):
                 rachat=rachat,
                 description=item_data["description"],
                 matiere=item_data["matiere"],
-                purete_id=item_data["purete_id"],
+                purete=item_data["purete"],
                 poids=item_data["poids"],
             )
 
@@ -239,6 +238,7 @@ class AchatMatierePremiereCreateSerializer(serializers.Serializer):
         decimal_places=2,
         min_value=Decimal("0.01"),
     )
+    bijouterie_id = serializers.IntegerField(required=False)
     mode_paiement = serializers.CharField(default="especes")
     items = AchatMatierePremiereItemInputSerializer(many=True)
 

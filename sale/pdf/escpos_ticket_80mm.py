@@ -82,7 +82,8 @@ def build_escpos_recu_paiement_80mm(
     date_paiement=None,
     mode_paiement: str = "CASH",
     montant_paye=Decimal("0"),
-    reste_a_payer=Decimal("0"),
+    # reste_a_payer=Decimal("0"),
+    reste_a_payer=None,
 ) -> bytes:
     date_paiement = _normalize_datetime(date_paiement)
 
@@ -120,9 +121,17 @@ def build_escpos_recu_paiement_80mm(
     out += _txt(_fit(_money(montant_paye)))
     out += DOUBLE_OFF + BOLD_OFF
 
+    # out += ALIGN_LEFT
+    # out += _txt(LINE)
+    # out += _txt(_left_right("RESTE A PAYER", _money(reste_a_payer)))
+    # out += _txt(LINE)
+    
     out += ALIGN_LEFT
     out += _txt(LINE)
-    out += _txt(_left_right("RESTE A PAYER", _money(reste_a_payer)))
+
+    if reste_a_payer is not None:
+        out += _txt(_left_right("RESTE A PAYER", _money(reste_a_payer)))
+
     out += _txt(LINE)
 
     out += ALIGN_CENTER

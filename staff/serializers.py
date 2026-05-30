@@ -187,7 +187,6 @@ User = get_user_model()
 #         return email
 
 
-
 class CreateStaffUnifiedSerializer(serializers.Serializer):
     role = serializers.ChoiceField(
         choices=[
@@ -198,35 +197,57 @@ class CreateStaffUnifiedSerializer(serializers.Serializer):
     )
 
     email = serializers.EmailField()
-    password = serializers.CharField(required=False, allow_blank=True, write_only=True)
-
-    first_name = serializers.CharField(required=False, allow_blank=True)
-    last_name = serializers.CharField(required=False, allow_blank=True)
 
     bijouterie_nom = serializers.SlugRelatedField(
         queryset=Bijouterie.objects.all(),
         slug_field="nom",
-        help_text="Nom de la bijouterie"
+        required=False,
+        allow_null=True,
+        help_text="Nom de la bijouterie pour vendor/cashier",
+    )
+
+    bijouteries = serializers.PrimaryKeyRelatedField(
+        queryset=Bijouterie.objects.all(),
+        many=True,
+        required=False,
+        help_text="Liste des IDs des bijouteries pour manager",
     )
 
     verifie = serializers.BooleanField(required=False, default=True)
-    raison_desactivation = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def validate_email(self, value):
         return value.strip().lower()
 
     def validate(self, attrs):
+        role = attrs["role"]
         email = attrs["email"]
-        password = attrs.get("password")
+        verifie = attrs.get("verifie", True)
+        raison_desactivation = attrs.get("raison_desactivation")
 
-        user_exists = User.objects.filter(email__iexact=email).exists()
-        if not user_exists and not password:
+        if not User.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError({
-                "password": "Le mot de passe est obligatoire si l'utilisateur n'existe pas."
+                "email": (
+                    "Aucun utilisateur trouvé avec cet email. "
+                    "L'utilisateur doit d'abord créer son compte."
+                )
+            })
+
+        if verifie is False and not raison_desactivation:
+            raise serializers.ValidationError({
+                "raison_desactivation": "La raison de désactivation est obligatoire."
+            })
+
+        if role == ROLE_MANAGER and not attrs.get("bijouteries"):
+            raise serializers.ValidationError({
+                "bijouteries": "Le manager doit avoir au moins une bijouterie."
+            })
+
+        if role in [ROLE_VENDOR, ROLE_CASHIER] and not attrs.get("bijouterie_nom"):
+            raise serializers.ValidationError({
+                "bijouterie_nom": "La bijouterie est obligatoire pour vendor/cashier."
             })
 
         return attrs
-    
 
 
 class StaffCreatedResponseSerializer(serializers.Serializer):
@@ -235,7 +256,6 @@ class StaffCreatedResponseSerializer(serializers.Serializer):
     staff = serializers.DictField()
     user = serializers.DictField()
     
-
 
 class UpdateStaffUnifiedSerializer(serializers.Serializer):
     role = serializers.ChoiceField(
@@ -250,12 +270,21 @@ class UpdateStaffUnifiedSerializer(serializers.Serializer):
     first_name = serializers.CharField(required=False, allow_blank=True)
     last_name = serializers.CharField(required=False, allow_blank=True)
 
+    # Pour vendor/cashier
     bijouterie_nom = serializers.SlugRelatedField(
         queryset=Bijouterie.objects.all(),
         slug_field="nom",
         required=False,
         allow_null=True,
-        help_text="Nom de la bijouterie"
+        help_text="Nom de la bijouterie pour vendor/cashier"
+    )
+
+    # Pour manager
+    bijouteries = serializers.PrimaryKeyRelatedField(
+        queryset=Bijouterie.objects.all(),
+        many=True,
+        required=False,
+        help_text="Liste des IDs des bijouteries pour manager"
     )
 
     verifie = serializers.BooleanField(required=False)
@@ -268,13 +297,30 @@ class UpdateStaffUnifiedSerializer(serializers.Serializer):
     def validate_email(self, value):
         email = value.strip().lower()
         user_id = self.context.get("user_id")
-        qs = User.objects.filter(email=email)
+
+        qs = User.objects.filter(email__iexact=email)
         if user_id:
             qs = qs.exclude(id=user_id)
+
         if qs.exists():
             raise serializers.ValidationError("Cet email est déjà utilisé par un autre utilisateur.")
+
         return email
-    
+
+    def validate(self, attrs):
+        role = attrs.get("role")
+
+        if role == ROLE_MANAGER and attrs.get("bijouterie_nom"):
+            raise serializers.ValidationError({
+                "bijouterie_nom": "Utilisez 'bijouteries' pour modifier les bijouteries d'un manager."
+            })
+
+        if role in [ROLE_VENDOR, ROLE_CASHIER] and attrs.get("bijouteries"):
+            raise serializers.ValidationError({
+                "bijouteries": "Utilisez 'bijouterie_nom' pour vendor/cashier."
+            })
+
+        return attrs
 
 # List
 class StaffUnifiedListItemSerializer(serializers.Serializer):
@@ -286,8 +332,7 @@ class StaffUnifiedListItemSerializer(serializers.Serializer):
     last_name = serializers.CharField(allow_blank=True)
     verifie = serializers.BooleanField()
     raison_desactivation = serializers.CharField(allow_null=True, allow_blank=True)
-    bijouterie_id = serializers.IntegerField(allow_null=True)
-    bijouterie_nom = serializers.CharField(allow_null=True, allow_blank=True)
+    bijouteries = serializers.ListField()
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()
     

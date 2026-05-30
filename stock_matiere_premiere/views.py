@@ -5,11 +5,13 @@ from io import BytesIO
 from django.db import transaction
 from django.db.models import Count, F, Q, Sum
 from django.db.models.functions import Coalesce, ExtractMonth
-from django.http import FileResponse
+from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from openpyxl import Workbook
+from openpyxl.styles import Font
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -24,7 +26,7 @@ from stock_matiere_premiere.serializers import (
     RachatClientDetailSerializer, RaffinageCreateSerializer,
     ReverseAchatMatierePremiereSerializer, ReverseRachatClientSerializer,
     VenteMatierePremiereCreateSerializer, generate_ticket_number)
-from store.models import Purete
+from store.models import Bijouterie, Purete
 
 from .models import (AchatMatierePremiere, AchatMatierePremiereItem,
                      MatierePremiereMovement, MatierePremiereStock,
@@ -55,7 +57,6 @@ class RachatClientCreateView(APIView):
         💰 Le stock sera mis à jour uniquement lors du paiement caisse.
 
         👥 Rôles autorisés :
-        - Admin
         - Manager
         - Vendeur
         """,
@@ -72,34 +73,51 @@ class RachatClientCreateView(APIView):
         user = request.user
         role = get_role_name(user)
 
-        # 🔒 Permissions
-        if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
+        if role not in [ROLE_MANAGER, ROLE_VENDOR]:
             return Response(
-                {"detail": "Accès refusé."},
-                status=status.HTTP_403_FORBIDDEN
+                {"detail": "Accès refusé. Seul un manager ou un vendeur peut créer un rachat client."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        # 📍 Résolution bijouterie
-        try:
-            bijouterie = resolve_bijouterie_for_user(request.user)
-        except Exception:
-            return Response(
-                "BIJOUTERIE_NOT_FOUND",
-                "Aucune bijouterie associée à cet utilisateur.",
-                status.HTTP_400_BAD_REQUEST,
-            )
+        if role == ROLE_MANAGER:
+            manager_profile = getattr(user, "staff_manager_profile", None)
 
-        # 📥 Validation input
+            if not manager_profile:
+                return Response(
+                    {"code": "MANAGER_PROFILE_NOT_FOUND", "detail": "Profil manager introuvable."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            bijouterie_nom = request.data.get("bijouterie")
+
+            if not bijouterie_nom:
+                return Response(
+                    {"code": "BIJOUTERIE_REQUIRED", "detail": "Le nom de la bijouterie est obligatoire pour manager."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            bijouterie = manager_profile.bijouteries.filter(
+                nom__iexact=bijouterie_nom.strip()
+            ).first()
+
+            if not bijouterie:
+                return Response(
+                    {"code": "BIJOUTERIE_FORBIDDEN", "detail": "Ce manager n'a pas accès à cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        else:  # VENDEUR
+            bijouterie = resolve_bijouterie_for_user(user)
+        
+        
         serializer = RachatClientCreateSerializer(
             data=request.data,
-            context={"bijouterie": bijouterie}
+            context={"bijouterie": bijouterie},
         )
         serializer.is_valid(raise_exception=True)
 
-        # 💾 Création du rachat (SANS STOCK)
         rachat = serializer.save()
 
-        # 🔄 Recharge avec relations pour éviter les requêtes inutiles
         rachat = (
             RachatClient.objects
             .select_related("client", "bijouterie")
@@ -109,40 +127,62 @@ class RachatClientCreateView(APIView):
 
         data = RachatClientDetailSerializer(rachat).data
         data["ticket_url"] = request.build_absolute_uri(
-            f"/api/stock-matiere-premiere/rachats/{rachat.id}/ticket-58mm/"
+            f"/api/stock-matiere-premiere/rachats/{rachat.uuid}/ticket-58mm/"
         )
+        
 
         return Response(data, status=status.HTTP_201_CREATED)
-    
-
-
-
 
 
 class RachatClientTicket58mmPDFView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, rachat_id):
+    @swagger_auto_schema(
+        operation_summary="Télécharger le ticket PDF 58mm d'un rachat client",
+        operation_description="""
+        Génère le ticket PDF 58mm d'un rachat client.
+
+        Paramètre :
+        - uuid : UUID du rachat client
+
+        Retour :
+        - PDF 58mm prêt à imprimer
+        """,
+        responses={
+            200: openapi.Response(
+                description="Ticket PDF 58mm",
+                schema=openapi.Schema(type=openapi.TYPE_FILE),
+            ),
+            404: "Rachat client introuvable",
+        },
+        tags=["Rachat Client"],
+    )
+    def get(self, request, uuid):
         rachat = get_object_or_404(
-            RachatClient.objects.select_related("client", "bijouterie")
-            .prefetch_related("items__purete"),
-            id=rachat_id,
+            RachatClient.objects.select_related(
+                "client",
+                "bijouterie",
+            ).prefetch_related(
+                "items__purete",
+            ),
+            uuid=uuid,
         )
 
         buffer = BytesIO()
-        build_rachat_client_ticket_58mm(buffer, rachat)
-        buffer.seek(0)
 
-        filename = f"ticket_rachat_{rachat.numero_ticket}.pdf"
+        build_rachat_client_ticket_58mm(
+            buffer,
+            rachat,
+        )
+
+        buffer.seek(0)
 
         return FileResponse(
             buffer,
             as_attachment=False,
-            filename=filename,
+            filename=f"ticket_rachat_{rachat.numero_ticket}.pdf",
             content_type="application/pdf",
         )
-        
-
 
 
 class PayRachatClientTicketView(APIView):
@@ -239,7 +279,7 @@ class PayRachatClientTicketView(APIView):
 
         data = RachatClientDetailSerializer(rachat).data
         data["attestation_url"] = request.build_absolute_uri(
-            f"/api/stock-matiere-premiere/rachats/{rachat.id}/attestation/"
+            f"/api/stock-matiere-premiere/rachats/{rachat.uuid}/attestation/"
         )
 
         return Response(data, status=status.HTTP_200_OK)
@@ -249,32 +289,63 @@ class PayRachatClientTicketView(APIView):
 class RachatClientAttestationPDFView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, rachat_id):
+    @swagger_auto_schema(
+        operation_summary="Télécharger l'attestation de rachat client",
+        operation_description="""
+        Génère l'attestation PDF d'un rachat client.
+
+        Conditions :
+        - Le ticket doit être PAYÉ.
+        - L'attestation est générée après validation du paiement.
+
+        Paramètre :
+        - uuid : UUID du rachat client.
+        """,
+        responses={
+            200: openapi.Response(
+                description="Attestation PDF",
+                schema=openapi.Schema(type=openapi.TYPE_FILE),
+            ),
+            400: "Attestation indisponible tant que le ticket n'est pas payé",
+            404: "Rachat client introuvable",
+        },
+        tags=["Rachat Client"],
+    )
+    def get(self, request, uuid):
         rachat = get_object_or_404(
-            RachatClient.objects.select_related("client", "bijouterie", "paid_by")
-            .prefetch_related("items__purete"),
-            id=rachat_id,
+            RachatClient.objects.select_related(
+                "client",
+                "bijouterie",
+                "paid_by",
+            ).prefetch_related(
+                "items__purete",
+            ),
+            uuid=uuid,
         )
 
         if rachat.payment_status != RachatClient.PAYMENT_PAID:
             return Response(
-                {"detail": "La fiche d’attestation est disponible seulement après paiement."},
+                {
+                    "detail": "La fiche d’attestation est disponible seulement après paiement."
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         buffer = BytesIO()
-        build_attestation_rachat_client_pdf(buffer, rachat)
-        buffer.seek(0)
 
-        filename = f"attestation_rachat_{rachat.numero_ticket}.pdf"
+        build_attestation_rachat_client_pdf(
+            buffer,
+            rachat,
+        )
+
+        buffer.seek(0)
 
         return FileResponse(
             buffer,
             as_attachment=False,
-            filename=filename,
+            filename=f"attestation_rachat_{rachat.numero_ticket}.pdf",
             content_type="application/pdf",
         )
-
 
 class CancelRachatClientView(APIView):
     permission_classes = [IsAuthenticated]
@@ -301,10 +372,9 @@ class CancelRachatClientView(APIView):
         tags=["Rachat Client"],
     )
     @transaction.atomic
-    def post(self, request, rachat_id):
+    def post(self, request, uuid):
         role = get_role_name(request.user)
 
-        # 🔒 Permissions
         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
             return Response(
                 {"detail": "Accès refusé. Seul un admin ou un manager peut annuler ce rachat."},
@@ -318,34 +388,20 @@ class CancelRachatClientView(APIView):
             RachatClient.objects.select_for_update()
             .select_related("client", "bijouterie")
             .prefetch_related("items__purete"),
-            id=rachat_id,
+            uuid=uuid,
         )
 
-        # 🔁 Déjà annulé
         if rachat.status == RachatClient.STATUS_CANCELLED:
-            return Response(
-                {"detail": "Ce rachat est déjà annulé."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Ce rachat est déjà annulé."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 💰 Déjà payé → interdit
         if rachat.payment_status == RachatClient.PAYMENT_PAID:
-            return Response(
-                {"detail": "Impossible d'annuler un rachat déjà payé."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Impossible d'annuler un rachat déjà payé."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # ❌ Déjà annulé côté paiement
         if rachat.payment_status == RachatClient.PAYMENT_CANCELLED:
-            return Response(
-                {"detail": "Ce ticket est déjà annulé."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Ce ticket est déjà annulé."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 📝 Motif
         reason = serializer.validated_data.get("reason") or ""
 
-        # ✅ Annulation
         rachat.status = RachatClient.STATUS_CANCELLED
         rachat.payment_status = RachatClient.PAYMENT_CANCELLED
         rachat.cancelled_at = timezone.now()
@@ -364,7 +420,8 @@ class CancelRachatClientView(APIView):
             RachatClientDetailSerializer(rachat).data,
             status=status.HTTP_200_OK,
         )
-
+        
+        
 #annule rachat
 class ReverseRachatClientView(APIView):
     permission_classes = [IsAuthenticated]
@@ -393,7 +450,7 @@ class ReverseRachatClientView(APIView):
         tags=["Rachat Client"],
     )
     @transaction.atomic
-    def post(self, request, rachat_id):
+    def post(self, request, uuid):
         role = get_role_name(request.user)
 
         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
@@ -409,7 +466,7 @@ class ReverseRachatClientView(APIView):
             RachatClient.objects.select_for_update()
             .select_related("client", "bijouterie")
             .prefetch_related("items__purete", "movements"),
-            id=rachat_id,
+            uuid=uuid,
         )
 
         if rachat.status == RachatClient.STATUS_CANCELLED:
@@ -517,6 +574,88 @@ class ReverseRachatClientView(APIView):
 # ///////////////////f///////////////////////
     # fournisseur
 # ///////////////////f///////////////////////
+# class AchatMatierePremiereCreateView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Créer un achat matière première",
+#         operation_description="""
+#         Création d’un achat matière première fournisseur.
+
+#         ⚠️ IMPORTANT :
+#         - Paiement effectué immédiatement par le manager/admin
+#         - Stock matière première mis à jour immédiatement
+#         - Movement créé automatiquement
+#         - Aucun passage en caisse
+#         - Aucun ticket imprimé
+#         """,
+#         request_body=AchatMatierePremiereCreateSerializer,
+#         responses={201: AchatMatierePremiereDetailSerializer},
+#         tags=["Achat Matière Première"],
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         user = request.user
+#         role = get_role_name(user)
+
+#         # 🔒 Permissions
+#         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
+#             return Response(
+#                 {"detail": "Seul un admin ou manager peut créer un achat."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # 📍 Bijouterie
+#         bijouterie = resolve_bijouterie_for_user(user)
+
+#         serializer = AchatMatierePremiereCreateSerializer(
+#             data=request.data,
+#             context={"bijouterie": bijouterie},
+#         )
+#         serializer.is_valid(raise_exception=True)
+
+#         # 💾 Création achat
+#         achat = serializer.save()
+
+#         # 💰 Paiement direct
+#         achat.payment_status = AchatMatierePremiere.PAYMENT_PAID
+#         achat.paid_at = timezone.now()
+#         achat.paid_by = user
+#         achat.save(update_fields=["payment_status", "paid_at", "paid_by"])
+
+#         # 📦 STOCK + MOVEMENT
+#         for item in achat.items.select_for_update():
+#             stock, _ = MatierePremiereStock.objects.select_for_update().get_or_create(
+#                 bijouterie=achat.bijouterie,
+#                 matiere=item.matiere,
+#                 purete=item.purete,
+#                 defaults={"poids_total": 0},
+#             )
+
+#             # ➕ Ajouter au stock
+#             stock.poids_total = F("poids_total") + item.poids
+#             stock.save(update_fields=["poids_total", "updated_at"])
+#             stock.refresh_from_db()
+
+#             # 🧾 Movement
+#             movement = MatierePremiereMovement.objects.create(
+#                 stock=stock,
+#                 bijouterie=achat.bijouterie,
+#                 matiere=item.matiere,
+#                 purete=item.purete,
+#                 poids=item.poids,
+#                 source=MatierePremiereMovement.SOURCE_ACHAT_FOURNISSEUR,
+#                 achat=achat,
+#             )
+
+#             item.movement = movement
+#             item.save(update_fields=["movement"])
+
+#         return Response(
+#             AchatMatierePremiereDetailSerializer(achat).data,
+#             status=status.HTTP_201_CREATED,
+#         )
+        
 class AchatMatierePremiereCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -526,14 +665,21 @@ class AchatMatierePremiereCreateView(APIView):
         Création d’un achat matière première fournisseur.
 
         ⚠️ IMPORTANT :
-        - Paiement effectué immédiatement par le manager/admin
+        - ADMIN et MANAGER autorisés
+        - MANAGER → bijouterie automatique
+        - ADMIN → doit fournir bijouterie_id
+        - Paiement effectué immédiatement
         - Stock matière première mis à jour immédiatement
         - Movement créé automatiquement
         - Aucun passage en caisse
         - Aucun ticket imprimé
         """,
         request_body=AchatMatierePremiereCreateSerializer,
-        responses={201: AchatMatierePremiereDetailSerializer},
+        responses={
+            201: AchatMatierePremiereDetailSerializer,
+            400: "Erreur de validation",
+            403: "Accès refusé",
+        },
         tags=["Achat Matière Première"],
     )
     @transaction.atomic
@@ -548,36 +694,101 @@ class AchatMatierePremiereCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # 📍 Bijouterie
-        bijouterie = resolve_bijouterie_for_user(user)
+        # =========================
+        # 📍 BIJOUTERIE
+        # =========================
 
+        if role == ROLE_ADMIN:
+            bijouterie_id = request.data.get("bijouterie_id")
+
+            if not bijouterie_id:
+                return Response(
+                    {"detail": "bijouterie_id est obligatoire pour admin."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            bijouterie = get_object_or_404(Bijouterie, id=bijouterie_id)
+
+        elif role == ROLE_MANAGER:
+            manager_profile = getattr(user, "staff_manager_profile", None)
+
+            if not manager_profile:
+                return Response(
+                    {"detail": "Profil manager introuvable."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            bijouterie_nom = request.data.get("bijouterie_nom")
+
+            if not bijouterie_nom:
+                return Response(
+                    {"detail": "La bijouterie est obligatoire pour manager."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # bijouterie = manager_profile.bijouteries.filter(id=bijouterie_id).first()
+            bijouterie = manager_profile.bijouteries.filter(nom__iexact=bijouterie_nom.strip()).first()
+
+            if not bijouterie:
+                return Response(
+                    {"detail": "Ce manager n'a pas accès à cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # =========================
+        # 📥 VALIDATION
+        # =========================
         serializer = AchatMatierePremiereCreateSerializer(
             data=request.data,
             context={"bijouterie": bijouterie},
         )
+
         serializer.is_valid(raise_exception=True)
 
-        # 💾 Création achat
+        # =========================
+        # 💾 CRÉATION ACHAT
+        # =========================
         achat = serializer.save()
 
-        # 💰 Paiement direct
+        # =========================
+        # 💰 PAIEMENT DIRECT
+        # =========================
         achat.payment_status = AchatMatierePremiere.PAYMENT_PAID
         achat.paid_at = timezone.now()
         achat.paid_by = user
-        achat.save(update_fields=["payment_status", "paid_at", "paid_by"])
 
-        # 📦 STOCK + MOVEMENT
-        for item in achat.items.select_for_update():
+        achat.save(
+            update_fields=[
+                "payment_status",
+                "paid_at",
+                "paid_by",
+            ]
+        )
+
+        # =========================
+        # 📦 STOCK + MOVEMENTS
+        # =========================
+        for item in achat.items.select_for_update().all():
+
             stock, _ = MatierePremiereStock.objects.select_for_update().get_or_create(
                 bijouterie=achat.bijouterie,
                 matiere=item.matiere,
                 purete=item.purete,
-                defaults={"poids_total": 0},
+                defaults={
+                    "poids_total": Decimal("0.000")
+                },
             )
 
             # ➕ Ajouter au stock
             stock.poids_total = F("poids_total") + item.poids
-            stock.save(update_fields=["poids_total", "updated_at"])
+
+            stock.save(
+                update_fields=[
+                    "poids_total",
+                    "updated_at",
+                ]
+            )
+
             stock.refresh_from_db()
 
             # 🧾 Movement
@@ -591,6 +802,7 @@ class AchatMatierePremiereCreateView(APIView):
                 achat=achat,
             )
 
+            # 🔗 liaison movement
             item.movement = movement
             item.save(update_fields=["movement"])
 
@@ -598,8 +810,6 @@ class AchatMatierePremiereCreateView(APIView):
             AchatMatierePremiereDetailSerializer(achat).data,
             status=status.HTTP_201_CREATED,
         )
-        
-
 
 
 class AchatRachatMatierePremiereListView(APIView):
@@ -616,7 +826,7 @@ class AchatRachatMatierePremiereListView(APIView):
         - Vendeur non autorisé
         """,
         manual_parameters=[
-            openapi.Parameter("year",openapi.IN_QUERY,type=openapi.TYPE_INTEGER,description="Année à afficher. Par défaut : année en cours",),
+            openapi.Parameter("year", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Année à afficher. Par défaut : année en cours"),
             openapi.Parameter("type", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="achat ou rachat"),
             openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
             openapi.Parameter("status", openapi.IN_QUERY, type=openapi.TYPE_STRING),
@@ -625,7 +835,8 @@ class AchatRachatMatierePremiereListView(APIView):
             openapi.Parameter("end_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
         ],
         responses={200: "Liste achats/rachats matière première"},
-        tags=["Matière Première"],
+        tags=["Achat et Rachat Matière Première"],
+        
     )
     def get(self, request):
         user = request.user
@@ -646,7 +857,7 @@ class AchatRachatMatierePremiereListView(APIView):
         ).prefetch_related("items__purete")
 
         if role == ROLE_MANAGER:
-            manager_profile = getattr(user, "manager_profile", None)
+            manager_profile = getattr(user, "staff_manager_profile", None)
             if not manager_profile:
                 return Response(
                     {"detail": "Aucune bijouterie associée à ce manager."},
@@ -664,8 +875,13 @@ class AchatRachatMatierePremiereListView(APIView):
         year = request.query_params.get("year")
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
-        
-        # ✅ Par défaut : année en cours
+
+        if type_filter and type_filter not in ["achat", "rachat"]:
+            return Response(
+                {"detail": "Le paramètre type doit être 'achat' ou 'rachat'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if not start_date and not end_date:
             current_year = int(year) if year else timezone.now().year
             achats = achats.filter(created_at__year=current_year)
@@ -698,6 +914,7 @@ class AchatRachatMatierePremiereListView(APIView):
                 result.append({
                     "type": "achat",
                     "id": achat.id,
+                    "uuid": str(achat.uuid),
                     "numero_ticket": achat.numero_ticket,
                     "personne": str(achat.fournisseur),
                     "bijouterie": str(achat.bijouterie),
@@ -713,6 +930,7 @@ class AchatRachatMatierePremiereListView(APIView):
                 result.append({
                     "type": "rachat",
                     "id": rachat.id,
+                    "uuid": str(rachat.uuid),
                     "numero_ticket": rachat.numero_ticket,
                     "personne": str(rachat.client),
                     "bijouterie": str(rachat.bijouterie),
@@ -721,13 +939,12 @@ class AchatRachatMatierePremiereListView(APIView):
                     "payment_status": rachat.payment_status,
                     "status": rachat.status,
                     "created_at": rachat.created_at,
-                    })
+                })
 
         result = sorted(result, key=lambda x: x["created_at"], reverse=True)
 
         return Response(result, status=status.HTTP_200_OK)
-
-
+    
 
 class AchatRachatMatierePremiereDetailView(APIView):
     permission_classes = [IsAuthenticated]
@@ -755,9 +972,10 @@ class AchatRachatMatierePremiereDetailView(APIView):
             ),
         ],
         responses={200: "Détail achat/rachat matière première"},
-        tags=["Matière Première"],
+        tags=["Achat et Rachat Matière Première"],
+
     )
-    def get(self, request, pk):
+    def get(self, request, uuid):
         user = request.user
         role = get_role_name(user)
 
@@ -780,11 +998,11 @@ class AchatRachatMatierePremiereDetailView(APIView):
                 AchatMatierePremiere.objects.select_related(
                     "fournisseur", "bijouterie", "paid_by", "cancelled_by"
                 ).prefetch_related("items__purete"),
-                id=pk,
+                uuid=uuid,
             )
 
             if role == ROLE_MANAGER:
-                manager_profile = getattr(user, "manager_profile", None)
+                manager_profile = getattr(user, "staff_manager_profile", None)
 
                 if not manager_profile or not manager_profile.bijouteries.filter(id=obj.bijouterie_id).exists():
                     return Response(
@@ -801,11 +1019,11 @@ class AchatRachatMatierePremiereDetailView(APIView):
             RachatClient.objects.select_related(
                 "client", "bijouterie", "paid_by", "cancelled_by"
             ).prefetch_related("items__purete"),
-            id=pk,
+            uuid=uuid,
         )
 
         if role == ROLE_MANAGER:
-            manager_profile = getattr(user, "manager_profile", None)
+            manager_profile = getattr(user, "staff_manager_profile", None)
 
             if not manager_profile or not manager_profile.bijouteries.filter(id=obj.bijouterie_id).exists():
                 return Response(
@@ -817,7 +1035,7 @@ class AchatRachatMatierePremiereDetailView(APIView):
             RachatClientDetailSerializer(obj).data,
             status=status.HTTP_200_OK,
         )
-
+        
 
 class DashboardAchatRachatMatierePremiereView(APIView):
     permission_classes = [IsAuthenticated]
@@ -842,30 +1060,12 @@ class DashboardAchatRachatMatierePremiereView(APIView):
         - MANAGER voit seulement ses bijouteries
         """,
         manual_parameters=[
-            openapi.Parameter(
-                "bijouterie_id",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                required=False,
-                description="Filtrer par bijouterie",
-            ),
-            openapi.Parameter(
-                "start_date",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-                description="Date début YYYY-MM-DD",
-            ),
-            openapi.Parameter(
-                "end_date",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-                description="Date fin YYYY-MM-DD",
-            ),
+            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("start_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
+            openapi.Parameter("end_date", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
         ],
         responses={200: "Dashboard achats/rachats matière première"},
-        tags=["Dashboard Matière Première"],
+        tags=["Achat et Rachat Matière Première"],
     )
     def get(self, request):
         user = request.user
@@ -901,7 +1101,7 @@ class DashboardAchatRachatMatierePremiereView(APIView):
 
         # Scope manager
         if role == ROLE_MANAGER:
-            manager_profile = getattr(user, "manager_profile", None)
+            manager_profile = getattr(user, "staff_manager_profile", None)
 
             if not manager_profile:
                 return Response(
@@ -942,30 +1142,35 @@ class DashboardAchatRachatMatierePremiereView(APIView):
 
         current_year = timezone.now().year
 
-        achats_year = AchatMatierePremiere.objects.filter(
-            status=AchatMatierePremiere.STATUS_CONFIRMED,
-            payment_status=AchatMatierePremiere.PAYMENT_PAID,
-            created_at__year=current_year
-        )
+        achats_year = achats.filter(created_at__year=current_year)
+        rachats_year = rachats.filter(created_at__year=current_year)
 
-        rachats_year = RachatClient.objects.filter(
-            status=RachatClient.STATUS_CONFIRMED,
-            payment_status=RachatClient.PAYMENT_PAID,
-            created_at__year=current_year
-        )
-
-        achat_items_year = AchatMatierePremiereItem.objects.filter(
-            achat__status=AchatMatierePremiere.STATUS_CONFIRMED,
-            achat__payment_status=AchatMatierePremiere.PAYMENT_PAID,
+        achat_items_year = achat_items.filter(
             achat__created_at__year=current_year
         )
 
-        rachat_items_year = RachatClientItem.objects.filter(
-            rachat__status=RachatClient.STATUS_CONFIRMED,
-            rachat__payment_status=RachatClient.PAYMENT_PAID,
+        rachat_items_year = rachat_items.filter(
             rachat__created_at__year=current_year
         )
-        
+
+        achats_stats = achats.aggregate(
+            total_achats=Count("id"),
+            montant_total_achats=Coalesce(Sum("montant_total"), Decimal("0.00")),
+        )
+
+        rachats_stats = rachats.aggregate(
+            total_rachats=Count("id"),
+            montant_total_rachats=Coalesce(Sum("montant_total"), Decimal("0.00")),
+        )
+
+        poids_achats = achat_items.aggregate(
+            poids_total=Coalesce(Sum("poids"), Decimal("0.000"))
+        )["poids_total"]
+
+        poids_rachats = rachat_items.aggregate(
+            poids_total=Coalesce(Sum("poids"), Decimal("0.000"))
+        )["poids_total"]
+
         achats_year_stats = achats_year.aggregate(
             total_achats=Count("id"),
             montant_total=Coalesce(Sum("montant_total"), Decimal("0.00")),
@@ -1011,24 +1216,6 @@ class DashboardAchatRachatMatierePremiereView(APIView):
         ).annotate(
             poids_total=Coalesce(Sum("poids_total"), Decimal("0.000")),
         ).order_by("bijouterie__nom", "matiere", "purete__purete")
-        
-        achats_stats = achats.aggregate(
-            total_achats=Count("id"),
-            montant_total_achats=Coalesce(Sum("montant_total"), Decimal("0.00")),
-        )
-
-        rachats_stats = rachats.aggregate(
-            total_rachats=Count("id"),
-            montant_total_rachats=Coalesce(Sum("montant_total"), Decimal("0.00")),
-        )
-
-        poids_achats = achat_items.aggregate(
-            poids_total=Coalesce(Sum("poids"), Decimal("0.000"))
-        )["poids_total"]
-
-        poids_rachats = rachat_items.aggregate(
-            poids_total=Coalesce(Sum("poids"), Decimal("0.000"))
-        )["poids_total"]
 
         return Response({
             "resume": {
@@ -1040,7 +1227,6 @@ class DashboardAchatRachatMatierePremiereView(APIView):
                 "poids_total_rachats": poids_rachats,
                 "stock_total_actuel": stock_total,
             },
-
             "annee_en_cours": {
                 "annee": current_year,
                 "total_achats": achats_year_stats["total_achats"],
@@ -1050,14 +1236,10 @@ class DashboardAchatRachatMatierePremiereView(APIView):
                 "poids_total_achats": poids_achats_year,
                 "poids_total_rachats": poids_rachats_year,
             },
-
             "repartition_achats": list(repartition_achats),
             "repartition_rachats": list(repartition_rachats),
             "stock_actuel": list(stock_actuel),
-
         }, status=status.HTTP_200_OK)
-                
-
 
 
 class ReverseAchatMatierePremiereView(APIView):
@@ -1086,7 +1268,7 @@ class ReverseAchatMatierePremiereView(APIView):
         tags=["Achat Matière Première"],
     )
     @transaction.atomic
-    def post(self, request, achat_id):
+    def post(self, request, uuid):
         user = request.user
         role = get_role_name(user)
 
@@ -1103,7 +1285,7 @@ class ReverseAchatMatierePremiereView(APIView):
             AchatMatierePremiere.objects.select_for_update()
             .select_related("fournisseur", "bijouterie", "paid_by")
             .prefetch_related("items__purete"),
-            id=achat_id,
+            uuid=uuid,
         )
 
         if achat.status == AchatMatierePremiere.STATUS_CANCELLED:

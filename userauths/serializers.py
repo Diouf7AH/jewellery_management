@@ -125,9 +125,20 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     
 
 
+# class UserLoginSerializer(serializers.Serializer):
+#     user = serializers.CharField()  # peut être email, username ou telephone
+#     password = serializers.CharField()
+
 class UserLoginSerializer(serializers.Serializer):
-    user = serializers.CharField()  # peut être email, username ou telephone
-    password = serializers.CharField()
+    user = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+
+    def validate_user(self, value):
+        return value.strip()
+
+    def validate_password(self, value):
+        return value.strip()
+    
 
 
 # change password

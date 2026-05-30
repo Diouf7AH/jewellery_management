@@ -154,7 +154,8 @@ AUTH_PASSWORD_VALIDATORS = [
 
 SITE_URL = "https://www.rio-gold.com"
 
-LANGUAGE_CODE = 'en-us'
+# LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = "fr-fr"
 
 # TIME_ZONE = 'UTC'
 
@@ -296,6 +297,8 @@ EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
 # EMAIL_TOKEN_EXPIRATION = 24 * 60 * 60
 # EMAIL_TOKEN_EXPIRATION = 60
 
+# PDF facture a-5
+CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
 # --- Frontend / URLs (pour tes emails) ---
 FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='https://rio-gold.com')

@@ -1,3 +1,4 @@
+import uuid
 from decimal import Decimal
 
 from django.core.validators import MinValueValidator
@@ -11,6 +12,8 @@ from django.db.models import Q
 
 # Create your models here.
 class RachatClient(models.Model):
+    # uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False,db_index=True,)
+    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
     numero_ticket = models.CharField(max_length=50, unique=True, db_index=True)
 
     PAYMENT_PENDING = "pending"
@@ -109,6 +112,9 @@ class MatierePremiereStock(models.Model):
 # fournisseur
 
 class AchatMatierePremiere(models.Model):
+    # uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False,db_index=True,)
+    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
+    
     numero_ticket = models.CharField(max_length=50, unique=True, db_index=True)
 
     PAYMENT_PENDING = "pending"
@@ -252,6 +258,8 @@ class MatierePremiereMovement(models.Model):
 ###################################################################
 
 class Raffinage(models.Model):
+    # uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False,db_index=True,)
+    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
     numero_operation = models.CharField(max_length=50, unique=True)
     bijouterie = models.ForeignKey("store.Bijouterie", on_delete=models.PROTECT)
     matiere = models.CharField(max_length=30,choices=MatierePremiereStock.MATIERE_CHOICES,)
@@ -280,6 +288,8 @@ class StockRaffine(models.Model):
 
 
 class VenteMatierePremiere(models.Model):
+    # uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False,db_index=True,)
+    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
     SOURCE_AVANT_RAFFINAGE = "avant_raffinage"
     SOURCE_APRES_RAFFINAGE = "apres_raffinage"
 

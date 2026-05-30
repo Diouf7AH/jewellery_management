@@ -238,6 +238,7 @@ urlpatterns = [
     # transactions
     path("transactions", compte_depot_views.ListerToutesCompteDepotTransactionsAPIView.as_view()),
     path("transactions/export-excel", compte_depot_views.ExportCompteDepotTransactionsExcelAPIView.as_view()),
+    path("compte-depot/soldes/export-excel/",compte_depot_views.ExportCompteDepotSoldesExcelAPIView.as_view(),name="compte-depot-soldes-export-excel",),
     # dashboard
     path("dashboard", compte_depot_views.CompteDepotDashboardAPIView.as_view()),
     # reçu POS 80mm
@@ -271,15 +272,18 @@ urlpatterns = [
     # path("dashboard-matiere-premiere",stock_matiere_premiere_views.DashboardMatierePremiereView.as_view(),name="dashboard-matiere-premiere",),
     # ///
     path("rachats-clients/create/",stock_matiere_premiere_views.RachatClientCreateView.as_view(),name="rachat-client-create",),
-    path("rachats/<int:rachat_id>/ticket-58mm/",stock_matiere_premiere_views.RachatClientTicket58mmPDFView.as_view(),name="rachat-client-ticket-58mm",),
-    path( "rachats/<str:numero_ticket>/payer/",stock_matiere_premiere_views.PayRachatClientTicketView.as_view(),name="pay-rachat-client-ticket",),
-    path("rachats/<int:rachat_id>/attestation/",stock_matiere_premiere_views.RachatClientAttestationPDFView.as_view(),name="rachat-client-attestation",),
-    path("rachats/<int:rachat_id>/cancel/",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="cancel-rachat-client",),
+    path("rachats-clients/<uuid:uuid>/ticket-58mm/",stock_matiere_premiere_views.RachatClientTicket58mmPDFView.as_view(),name="rachat-client-ticket-58mm",),
+    path( "rachats-clients/<str:numero_ticket>/payer/",stock_matiere_premiere_views.PayRachatClientTicketView.as_view(),name="pay-rachat-client-ticket",),
+    path("rachats-clients/<uuid:uuid>/attestation/",stock_matiere_premiere_views.RachatClientAttestationPDFView.as_view(),name="rachat-client-attestation",),
+    path("rachats-clients/<uuid:uuid>/cancel/",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="cancel-rachat-client",),
+    path("rachats/<uuid:uuid>/reverse/",stock_matiere_premiere_views.ReverseRachatClientView.as_view(), name="reverse-rachat-client",),
+    path("achats-rachats-matiere-premiere/<uuid:uuid>/",stock_matiere_premiere_views.AchatRachatMatierePremiereDetailView.as_view(),name="achat-rachat-matiere-premiere-detail",),
+    path("achats-matiere-premiere/<uuid:uuid>/reverse/",stock_matiere_premiere_views.ReverseAchatMatierePremiereView.as_view(),name="reverse-achat-matiere-premiere",),
     # /////
     
-    # path("achats-fournisseurs/create",stock_matiere_premiere_views.AchatMatierePremiereCreateView.as_view(),name="achat-matiere-premiere-create",),
+    path("achats-fournisseurs/create",stock_matiere_premiere_views.AchatMatierePremiereCreateView.as_view(),name="achat-matiere-premiere-create",),
     # path("rachats-clients/<int:rachat_id>/fiche-pdf",stock_matiere_premiere_views.RachatClientFichePDFView.as_view(),name="rachat-client-fiche-pdf",),
-    path("rachats-clients/<int:rachat_id>/cancel/",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="rachat-client-cancel",),
+    # path("rachats-clients/<int:rachat_id>/cancel/",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="rachat-client-cancel",),
     # path("achats-matiere/<int:achat_id>/cancel",stock_matiere_premiere_views.CancelAchatMatierePremiereView.as_view(),name="achat-matiere-cancel",)
     path("achats-rachats-matiere-premiere/",stock_matiere_premiere_views.AchatRachatMatierePremiereListView.as_view(),name="achat-rachat-matiere-premiere-list",),
     path("dashboard/achats-rachats-matiere-premiere/",stock_matiere_premiere_views.DashboardAchatRachatMatierePremiereView.as_view(),name="dashboard-achats-rachats-matiere-premiere",),

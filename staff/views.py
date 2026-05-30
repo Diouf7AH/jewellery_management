@@ -621,7 +621,9 @@ class CreateStaffUnifiedView(APIView):
                 password=data.get("password"),
                 first_name=data.get("first_name", ""),
                 last_name=data.get("last_name", ""),
-                bijouterie=data["bijouterie_nom"],
+                telephone=data.get("telephone"),
+                bijouterie=data.get("bijouterie_nom"),
+                bijouteries=data.get("bijouteries", []),
                 verifie=data.get("verifie", True),
                 raison_desactivation=data.get("raison_desactivation"),
             )
@@ -637,7 +639,17 @@ class CreateStaffUnifiedView(APIView):
 
         staff = result.staff
         user = result.user
-        bj = getattr(staff, "bijouterie", None)
+
+        if result.staff_type == "manager":
+            bijouteries_data = [
+                {"id": b.id, "nom": b.nom}
+                for b in staff.bijouteries.all()
+            ]
+        else:
+            bj = getattr(staff, "bijouterie", None)
+            bijouteries_data = [
+                {"id": bj.id, "nom": bj.nom}
+            ] if bj else []
 
         return Response(
             {
@@ -647,10 +659,7 @@ class CreateStaffUnifiedView(APIView):
                     "id": staff.id,
                     "verifie": staff.verifie,
                     "raison_desactivation": staff.raison_desactivation,
-                    "bijouterie": {
-                        "id": bj.id,
-                        "nom": bj.nom,
-                    } if bj else None,
+                    "bijouteries": bijouteries_data,
                     "created_at": staff.created_at,
                     "updated_at": staff.updated_at,
                 },
@@ -659,12 +668,13 @@ class CreateStaffUnifiedView(APIView):
                     "email": user.email,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
+                    "telephone": user.telephone,
                     "role": getattr(getattr(user, "user_role", None), "role", None),
                 },
             },
             status=status.HTTP_201_CREATED,
         )
-        
+                
 
 
 class UpdateStaffUnifiedView(APIView):
@@ -801,6 +811,7 @@ class UpdateStaffUnifiedView(APIView):
                 first_name=data.get("first_name"),
                 last_name=data.get("last_name"),
                 bijouterie=data.get("bijouterie_nom"),
+                bijouteries=data.get("bijouteries", []),
                 verifie=data.get("verifie"),
                 raison_desactivation=data.get("raison_desactivation"),
             )

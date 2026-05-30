@@ -36,6 +36,8 @@ from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
                            get_role_name)
 from compte_depot.models import (ClientDepot, CompteDepot,
                                  CompteDepotTransaction)
+from compte_depot.notifications import send_compte_depot_facture_notification
+from compte_depot.services import effectuer_retrait
 from inventory.models import InventoryMovement
 from inventory.services import log_move
 from sale.models import (Client, Facture,  # adapte le chemin si besoin
@@ -203,7 +205,7 @@ class VenteProduitCreateView(APIView):
                         {"detail": "⛔ Vous ne pouvez pas créer une vente pour un vendeur hors de vos bijouteries."},
                         status=status.HTTP_403_FORBIDDEN,
                     )
-            
+
             payload["vendor_email"] = vendor_email
 
         try:
@@ -393,19 +395,7 @@ class VenteListAPIView(APIView):
         if role not in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
             return Response({"detail": "⛔ Accès refusé."}, status=403)
 
-        # qs = (
-        #     Vente.objects
-        #     .select_related("client", "vendor", "vendor__user", "bijouterie")
-        #     .prefetch_related(
-        #         "lignes",
-        #         "lignes__produit",
-        #         "lignes__vendor",
-        #         "lignes__vendor__user",
-        #     )
-        #     .filter(scope_bijouterie_q(user, field="bijouterie_id"))
-        #     .order_by("-created_at", "-id")
-        # )
-        
+
         qs = (
             Vente.objects
             .select_related(
@@ -718,6 +708,283 @@ class ListFacturesAPayerView(APIView):
         )
 
 
+# class PaiementFactureMultiModeView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Paiement facture multi-mode",
+#         operation_description="""
+#         Permet de payer une facture avec un ou plusieurs modes de paiement.
+
+#         Modes possibles :
+#         - cash
+#         - wave
+#         - orange_money
+#         - carte
+#         - depot
+
+#         Règles :
+#         - Le cumul des modes de paiement ne doit pas dépasser le reste à payer.
+#         - Si paiement partiel : statut facture = partiel.
+#         - Si paiement complet : statut facture = payé.
+#         - Si la facture est totalement payée, le stock vendeur est consommé.
+#         - Si la facture est totalement payée, le PDF officiel est généré.
+#         """,
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["numero_facture", "lignes"],
+#             properties={
+#                 "numero_facture": openapi.Schema(
+#                     type=openapi.TYPE_STRING,
+#                     example="FAC-20260512-0003",
+#                 ),
+#                 "client": openapi.Schema(
+#                     type=openapi.TYPE_OBJECT,
+#                     properties={
+#                         "nom": openapi.Schema(type=openapi.TYPE_STRING, example="Diop"),
+#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING, example="Awa"),
+#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
+#                     },
+#                 ),
+#                 "lignes": openapi.Schema(
+#                     type=openapi.TYPE_ARRAY,
+#                     items=openapi.Schema(
+#                         type=openapi.TYPE_OBJECT,
+#                         required=["mode", "montant"],
+#                         properties={
+#                             "mode": openapi.Schema(
+#                                 type=openapi.TYPE_STRING,
+#                                 example="cash",
+#                                 description="Code du mode de paiement : cash, wave, orange_money, carte, depot",
+#                             ),
+#                             "montant": openapi.Schema(
+#                                 type=openapi.TYPE_NUMBER,
+#                                 example=10000,
+#                             ),
+#                             "reference": openapi.Schema(
+#                                 type=openapi.TYPE_STRING,
+#                                 example="WAVE-123456",
+#                             ),
+#                         },
+#                     ),
+#                 ),
+#             },
+#         ),
+#         responses={
+#             201: openapi.Response(
+#                 description="Paiement effectué avec succès."
+#             ),
+#             400: "Erreur de validation.",
+#             403: "Accès refusé.",
+#             404: "Facture introuvable.",
+#         },
+#         tags=["Paiements"],
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         numero_facture = str(request.data.get("numero_facture") or "").strip()
+#         client_data = request.data.get("client") or {}
+#         lignes_data = request.data.get("lignes") or []
+
+#         if not numero_facture:
+#             return Response({"detail": "numero_facture requis."}, status=400)
+
+#         if not lignes_data:
+#             return Response({"detail": "lignes requises."}, status=400)
+
+#         facture = (
+#             Facture.objects
+#             .select_for_update()
+#             .select_related("vente", "vente__client", "bijouterie")
+#             .prefetch_related("paiements__lignes")
+#             .filter(numero_facture__iexact=numero_facture)
+#             .first()
+#         )
+
+#         if not facture:
+#             return Response(
+#                 {"detail": f"Facture introuvable avec le numéro : {numero_facture}"},
+#                 status=404,
+#             )
+
+#         try:
+#             validate_facture_payable(facture)
+#         except DjangoValidationError as e:
+#             return Response({"detail": getattr(e, "message", str(e))}, status=400)
+
+#         try:
+#             client = upsert_client_for_payment(
+#                 facture=facture,
+#                 client_data=client_data,
+#             )
+#         except DjangoValidationError as e:
+#             return Response({"detail": getattr(e, "message", str(e))}, status=400)
+
+#         total = Decimal("0.00")
+#         normalized_lignes = []
+
+#         for index, item in enumerate(lignes_data):
+#             mode = str(item.get("mode") or "").strip()
+#             reference = item.get("reference")
+
+#             if not mode:
+#                 return Response(
+#                     {"detail": f"Le mode de paiement est obligatoire à la ligne {index + 1}."},
+#                     status=400,
+#                 )
+
+#             try:
+#                 montant = Decimal(str(item.get("montant") or "0"))
+#             except (InvalidOperation, TypeError):
+#                 return Response(
+#                     {"detail": f"Montant invalide à la ligne {index + 1}."},
+#                     status=400,
+#                 )
+
+#             if montant <= 0:
+#                 return Response(
+#                     {"detail": f"Le montant doit être supérieur à 0 à la ligne {index + 1}."},
+#                     status=400,
+#                 )
+
+#             total += montant
+
+#             normalized_lignes.append({
+#                 "mode": mode,
+#                 "montant": montant,
+#                 "reference": reference,
+#             })
+
+#         if total > facture.reste_a_payer:
+#             return Response(
+#                 {
+#                     "detail": "Le cumul des modes de paiement ne doit pas dépasser le reste à payer.",
+#                     "reste_a_payer": str(facture.reste_a_payer),
+#                     "montant_recu": str(total),
+#                 },
+#                 status=400,
+#             )
+
+#         cashier = Cashier.objects.filter(user=request.user).first()
+
+#         paiement = Paiement.objects.create(
+#             facture=facture,
+#             created_by=request.user,
+#             cashier=cashier,
+#         )
+
+#         lignes_creees = []
+
+#         for item in normalized_lignes:
+#             mode_obj = ModePaiement.objects.filter(
+#                 code__iexact=item["mode"],
+#                 active=True,
+#             ).first()
+
+#             if not mode_obj:
+#                 transaction.set_rollback(True)
+#                 return Response(
+#                     {"detail": f"Mode de paiement invalide ou inactif : {item['mode']}"},
+#                     status=400,
+#                 )
+
+#             ligne = PaiementLigne.objects.create(
+#                 paiement=paiement,
+#                 mode_paiement=mode_obj,
+#                 montant_paye=item["montant"],
+#                 reference=item.get("reference"),
+#             )
+
+#             lignes_creees.append(ligne)
+
+#         Facture.recompute_facture_status(facture)
+#         facture.refresh_from_db()
+
+#         if facture.reste_a_payer <= Decimal("0.00") and facture.status != Facture.STAT_PAYE:
+#             facture.status = Facture.STAT_PAYE
+#             facture.save(update_fields=["status"])
+#             facture.refresh_from_db()
+
+#         if facture.type_facture == Facture.TYPE_PROFORMA:
+#             facture.type_facture = Facture.TYPE_FACTURE
+#             facture.save(update_fields=["type_facture"])
+
+#         audit = {
+#             "created": 0,
+#             "already": 0,
+#             "lines_done": 0,
+#         }
+
+#         if facture.status == Facture.STAT_PAYE and not facture.stock_consumed:
+#             try:
+#                 audit = confirm_sale_out_from_vendor(
+#                     facture=facture,
+#                     by_user=request.user,
+#                 )
+#                 facture.refresh_from_db()
+#             except DjangoValidationError as e:
+#                 transaction.set_rollback(True)
+#                 return Response({"detail": getattr(e, "message", str(e))}, status=400)
+
+#         facture_pdf_url = None
+
+#         if facture.status == Facture.STAT_PAYE:
+#             if not facture.facture_pdf:
+#                 facture.refresh_from_db()
+
+#                 if not facture.integrity_hash:
+#                     generate_facture_hash(facture)
+
+#                 if not facture.qr_code_image:
+#                     generate_facture_qr(facture)
+
+#                 facture_pdf_url = generate_facture_pdf(facture)
+
+#                 facture.is_locked = True
+#                 facture.locked_at = timezone.now()
+#                 facture.save(update_fields=["is_locked", "locked_at"])
+#             else:
+#                 try:
+#                     facture_pdf_url = facture.facture_pdf.url
+#                 except Exception:
+#                     facture_pdf_url = None
+
+#         return Response(
+#             {
+#                 "message": "Paiement effectué avec succès.",
+#                 "paiement_id": paiement.id,
+#                 "facture": {
+#                     "id": facture.id,
+#                     "numero_facture": facture.numero_facture,
+#                     "type_facture": facture.type_facture,
+#                     "status": facture.status,
+#                     "montant_total": str(facture.montant_total),
+#                     "total_paye": str(facture.total_paye),
+#                     "reste_a_payer": str(facture.reste_a_payer),
+#                 },
+#                 "client": {
+#                     "id": client.id if client else None,
+#                     "nom": getattr(client, "nom", None) if client else None,
+#                     "prenom": getattr(client, "prenom", None) if client else None,
+#                     "telephone": getattr(client, "telephone", None) if client else None,
+#                 },
+#                 "lignes": [
+#                     {
+#                         "id": ligne.id,
+#                         "mode_paiement": ligne.mode_paiement.code,
+#                         "montant_paye": str(ligne.montant_paye),
+#                         "reference": ligne.reference,
+#                     }
+#                     for ligne in lignes_creees
+#                 ],
+#                 "stock": audit,
+#                 "facture_pdf_url": facture_pdf_url,
+#             },
+#             status=201,
+#         )
+
+
+
 class PaiementFactureMultiModeView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -753,6 +1020,7 @@ class PaiementFactureMultiModeView(APIView):
                     properties={
                         "nom": openapi.Schema(type=openapi.TYPE_STRING, example="Diop"),
                         "prenom": openapi.Schema(type=openapi.TYPE_STRING, example="Awa"),
+                        # "numero_compte": openapi.Schema(type=openapi.TYPE_STRING, example="DEP-2026-00045", description="Obligatoire uniquement pour le mode depot"),
                         "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
                     },
                 ),
@@ -770,6 +1038,11 @@ class PaiementFactureMultiModeView(APIView):
                             "montant": openapi.Schema(
                                 type=openapi.TYPE_NUMBER,
                                 example=10000,
+                            ),
+                            "numero_compte": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                example="DEP-2026-00045",
+                                description="Obligatoire uniquement pour le mode depot",
                             ),
                             "reference": openapi.Schema(
                                 type=openapi.TYPE_STRING,
@@ -863,6 +1136,7 @@ class PaiementFactureMultiModeView(APIView):
                 "mode": mode,
                 "montant": montant,
                 "reference": reference,
+                "numero_compte": item.get("numero_compte"),
             })
 
         if total > facture.reste_a_payer:
@@ -898,24 +1172,78 @@ class PaiementFactureMultiModeView(APIView):
                     status=400,
                 )
 
-            ligne = PaiementLigne.objects.create(
-                paiement=paiement,
-                mode_paiement=mode_obj,
-                montant_paye=item["montant"],
-                reference=item.get("reference"),
-            )
+            # =========================
+            # MODE COMPTE DÉPÔT
+            # =========================
+            if item["mode"].lower() == "depot":
+                numero_compte = str(item.get("numero_compte") or "").strip()
+
+                if not numero_compte:
+                    transaction.set_rollback(True)
+                    return Response(
+                        {"detail": "Le numéro de compte dépôt est requis pour payer par compte dépôt."},
+                        status=400,
+                    )
+
+                compte = (
+                    CompteDepot.objects
+                    .select_for_update()
+                    .select_related("client")
+                    .filter(numero_compte__iexact=numero_compte)
+                    .first()
+                )
+
+                if not compte:
+                    transaction.set_rollback(True)
+                    return Response(
+                        {"detail": f"Aucun compte dépôt trouvé pour ce numéro de compte : {numero_compte}"},
+                        status=400,
+                    )
+
+                try:
+                    tx = effectuer_retrait(
+                        compte_id=compte.id,
+                        montant=item["montant"],
+                        user=request.user,
+                        reference=f"FACTURE-{facture.numero_facture}",
+                        commentaire=f"Paiement facture {facture.numero_facture}",
+                    )
+                except ValidationError as e:
+                    transaction.set_rollback(True)
+                    return Response(
+                        {"detail": e.detail if hasattr(e, "detail") else str(e)},
+                        status=400,
+                    )
+
+                send_compte_depot_facture_notification(tx)
+
+                ligne = PaiementLigne.objects.create(
+                    paiement=paiement,
+                    mode_paiement=mode_obj,
+                    montant_paye=item["montant"],
+                    reference=f"COMPTE_DEPOT-{numero_compte}",
+                    compte_depot=compte,
+                    transaction_depot=tx,
+                )
+
+            # =========================
+            # AUTRES MODES : CASH / WAVE / OM / CARTE
+            # =========================
+            else:
+                ligne = PaiementLigne.objects.create(
+                    paiement=paiement,
+                    mode_paiement=mode_obj,
+                    montant_paye=item["montant"],
+                    reference=item.get("reference"),
+                )
 
             lignes_creees.append(ligne)
 
+        
         Facture.recompute_facture_status(facture)
         facture.refresh_from_db()
-        
-        if facture.reste_a_payer <= Decimal("0.00") and facture.status != Facture.STAT_PAYE:
-            facture.status = Facture.STAT_PAYE
-            facture.save(update_fields=["status"])
-            facture.refresh_from_db()
 
-        if facture.type_facture == Facture.TYPE_PROFORMA:
+        if facture.type_facture == Facture.TYPE_PROFORMA and facture.status == Facture.STAT_PAYE:
             facture.type_facture = Facture.TYPE_FACTURE
             facture.save(update_fields=["type_facture"])
 
@@ -934,13 +1262,16 @@ class PaiementFactureMultiModeView(APIView):
                 facture.refresh_from_db()
             except DjangoValidationError as e:
                 transaction.set_rollback(True)
-                return Response({"detail": getattr(e, "message", str(e))}, status=400)
-
+                return Response(
+                    {"detail": getattr(e, "message", str(e))},
+                    status=400,
+                )
+        
+        
         facture_pdf_url = None
 
         if facture.status == Facture.STAT_PAYE:
             if not facture.facture_pdf:
-                facture.refresh_from_db()
 
                 if not facture.integrity_hash:
                     generate_facture_hash(facture)
@@ -977,6 +1308,10 @@ class PaiementFactureMultiModeView(APIView):
                     "nom": getattr(client, "nom", None) if client else None,
                     "prenom": getattr(client, "prenom", None) if client else None,
                     "telephone": getattr(client, "telephone", None) if client else None,
+                    # "numero_compte": (
+                    #     compte_depot.numero_compte
+                    #     if compte_depot else None
+                    # ),
                 },
                 "lignes": [
                     {
@@ -984,6 +1319,10 @@ class PaiementFactureMultiModeView(APIView):
                         "mode_paiement": ligne.mode_paiement.code,
                         "montant_paye": str(ligne.montant_paye),
                         "reference": ligne.reference,
+                        "numero_compte": (
+                            ligne.compte_depot.numero_compte
+                            if ligne.compte_depot_id else None
+                        ),
                     }
                     for ligne in lignes_creees
                 ],
@@ -992,6 +1331,8 @@ class PaiementFactureMultiModeView(APIView):
             },
             status=201,
         )
+
+
 # -------------------END PaiementFactureView-------------------
 
 
@@ -1026,7 +1367,7 @@ def _can_access_facture(user, facture: Facture) -> bool:
     return False
 
 
-        
+
 # class TicketProforma58mmView(APIView):
 #     permission_classes = [IsAuthenticated]
 
@@ -1082,11 +1423,11 @@ def _can_access_facture(user, facture: Facture) -> bool:
 #                 "Content-Disposition": f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
 #             }
 #         )
-        
+
 
 class TicketProforma58mmView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     @swagger_auto_schema(
         operation_summary="Télécharger le ticket PROFORMA 58mm pour POS",
         operation_description="""
@@ -1277,7 +1618,7 @@ class TicketProforma58mmView(APIView):
 #                 "Content-Disposition": f'inline; filename="ticket_paiement_{facture.numero_facture}.bin"'
 #             }
 #         )
-        
+
 
 
 class TicketPaiement80mmESCPosView(APIView):
@@ -1388,7 +1729,8 @@ class TicketPaiement80mmESCPosView(APIView):
             numero_facture=facture.numero_facture,
             date_paiement=paiement.date_paiement,
             montant_paye=montant_paye,
-            reste_a_payer=facture.reste_a_payer,
+            # reste_a_payer=facture.reste_a_payer,
+            reste_a_payer=None,
         )
 
         if request.query_params.get("debug") == "1":
@@ -1426,7 +1768,7 @@ class TicketPaiement80mmESCPosView(APIView):
 
 #         filename = f"facture_{facture.numero_facture}.pdf"
 #         return FileResponse(pdf_buffer, as_attachment=False, filename=filename)
-    
+
 
 class FactureA5PaysageView(APIView):
     permission_classes = [IsAuthenticated]
@@ -1542,10 +1884,9 @@ class FactureA5PaysageView(APIView):
             filename=filename,
             content_type="application/pdf",
         )
-        response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
-    
-    
+
+
 
 class ExportFacturesExcelView(APIView):
     permission_classes = [IsAuthenticated]
@@ -1558,7 +1899,7 @@ class ExportFacturesExcelView(APIView):
             "bijouterie",
         )
         return export_factures_excel(factures)
-    
+
 
 
 class ExportComptableView(APIView):
@@ -1575,8 +1916,8 @@ class ExportComptableView(APIView):
 
         wb.save(response)
         return response
-    
-    
+
+
 
 
 # class RecuPaiementPDFView(APIView):
@@ -1759,7 +2100,7 @@ def _resolve_product_for_sale_item(item):
 #         return Decimal(str(value if value not in [None, ""] else default))
 #     except (InvalidOperation, TypeError):
 #         raise ValueError("Decimal invalide")
-    
+
 
 def _recalculate_facture_from_vente(facture, vente, vendor):
     if facture:
@@ -2376,7 +2717,7 @@ Conditions :
             },
             status=status.HTTP_200_OK,
         )
-        
+
 
 
 
