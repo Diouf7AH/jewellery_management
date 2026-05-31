@@ -1279,7 +1279,15 @@ class PaiementFactureMultiModeView(APIView):
                 if not facture.qr_code_image:
                     generate_facture_qr(facture)
 
-                facture_pdf_url = generate_facture_pdf(facture)
+                generate_facture_pdf(facture)
+
+                facture.refresh_from_db()
+
+                facture_pdf_url = (
+                    request.build_absolute_uri(facture.facture_pdf.url)
+                    if facture.facture_pdf
+                    else None
+                )
 
                 facture.is_locked = True
                 facture.locked_at = timezone.now()
