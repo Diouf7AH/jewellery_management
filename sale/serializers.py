@@ -993,33 +993,24 @@ class StockAuditResponseSerializer(serializers.Serializer):
     lines_done = serializers.IntegerField(default=0)
     
 
+class VentePaiementResponseSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    numero_vente = serializers.CharField()
+    montant_total = serializers.DecimalField(max_digits=14, decimal_places=2)
+    
+    
 class PaiementFactureMultiModeResponseSerializer(serializers.Serializer):
     message = serializers.CharField()
-
     paiement_id = serializers.IntegerField()
 
+    vente = VentePaiementResponseSerializer(required=False, allow_null=True)
     facture = FacturePaiementResponseSerializer()
-
-    client = ClientPaiementResponseSerializer(
-        required=False,
-        allow_null=True,
-    )
-
-    lignes = PaiementLigneResponseSerializer(
-        many=True
-    )
-
+    client = ClientPaiementResponseSerializer(required=False, allow_null=True)
+    lignes = PaiementLigneResponseSerializer(many=True)
     stock = StockAuditResponseSerializer()
 
-    facture_pdf_url = serializers.URLField(
-        required=False,
-        allow_null=True,
-    )
-
-    facture_download_url = serializers.URLField(
-        required=False,
-        allow_null=True,
-    )
+    facture_pdf_url = serializers.URLField(required=False, allow_null=True)
+    facture_download_url = serializers.URLField(required=False, allow_null=True)
 
 # ==========================================================
 # CLIENT INPUT
