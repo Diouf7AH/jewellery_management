@@ -918,21 +918,108 @@ class PaiementLigneResponseSerializer(serializers.Serializer):
     reference = serializers.CharField(allow_null=True, required=False)
 
 
-class PaiementFactureMultiModeResponseSerializer(serializers.Serializer):
-    message = serializers.CharField()
-    paiement_id = serializers.IntegerField()
-    facture_id = serializers.IntegerField()
-    numero_facture = serializers.CharField()
-    type_facture = serializers.CharField()
-    montant_total_facture = serializers.DecimalField(max_digits=12, decimal_places=2)
-    montant_operation = serializers.DecimalField(max_digits=12, decimal_places=2)
-    total_paye = serializers.DecimalField(max_digits=12, decimal_places=2)
-    reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2)
-    status = serializers.CharField()
-    lignes = PaiementLigneResponseSerializer(many=True)
-    facture_pdf_url = serializers.URLField(required=False,allow_null=True,allow_blank=True,)
+# class PaiementFactureMultiModeResponseSerializer(serializers.Serializer):
+#     message = serializers.CharField()
+#     paiement_id = serializers.IntegerField()
+#     facture_id = serializers.IntegerField()
+#     numero_facture = serializers.CharField()
+#     type_facture = serializers.CharField()
+#     montant_total_facture = serializers.DecimalField(max_digits=12, decimal_places=2)
+#     montant_operation = serializers.DecimalField(max_digits=12, decimal_places=2)
+#     total_paye = serializers.DecimalField(max_digits=12, decimal_places=2)
+#     reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2)
+#     status = serializers.CharField()
+#     lignes = PaiementLigneResponseSerializer(many=True)
+#     facture_pdf_url = serializers.URLField(required=False,allow_null=True,allow_blank=True,)
     
 
+
+class FacturePaiementResponseSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    numero_facture = serializers.CharField()
+    type_facture = serializers.CharField()
+    status = serializers.CharField()
+
+    montant_total = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+    )
+
+    total_paye = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+    )
+
+    reste_a_payer = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+    )
+
+    facture_pdf_url = serializers.URLField(
+        required=False,
+        allow_null=True,
+    )
+
+    facture_download_url = serializers.URLField(
+        required=False,
+        allow_null=True,
+    )
+
+class ClientPaiementResponseSerializer(serializers.Serializer):
+    id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+    )
+
+    nom = serializers.CharField(
+        required=False,
+        allow_null=True,
+    )
+
+    prenom = serializers.CharField(
+        required=False,
+        allow_null=True,
+    )
+
+    telephone = serializers.CharField(
+        required=False,
+        allow_null=True,
+    )
+    
+
+class StockAuditResponseSerializer(serializers.Serializer):
+    created = serializers.IntegerField(default=0)
+    already = serializers.IntegerField(default=0)
+    lines_done = serializers.IntegerField(default=0)
+    
+
+class PaiementFactureMultiModeResponseSerializer(serializers.Serializer):
+    message = serializers.CharField()
+
+    paiement_id = serializers.IntegerField()
+
+    facture = FacturePaiementResponseSerializer()
+
+    client = ClientPaiementResponseSerializer(
+        required=False,
+        allow_null=True,
+    )
+
+    lignes = PaiementLigneResponseSerializer(
+        many=True
+    )
+
+    stock = StockAuditResponseSerializer()
+
+    facture_pdf_url = serializers.URLField(
+        required=False,
+        allow_null=True,
+    )
+
+    facture_download_url = serializers.URLField(
+        required=False,
+        allow_null=True,
+    )
 
 # ==========================================================
 # CLIENT INPUT
