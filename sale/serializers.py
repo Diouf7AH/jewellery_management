@@ -351,7 +351,8 @@ class VenteProduitInSerializer(serializers.Serializer):
     prix_vente_grammes = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
-        required=False
+        required=False,
+        allow_null=True,   # ← ajouter
     )
     remise = serializers.DecimalField(
         max_digits=5,
