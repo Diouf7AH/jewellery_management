@@ -955,16 +955,6 @@ class FacturePaiementResponseSerializer(serializers.Serializer):
         decimal_places=2,
     )
 
-    facture_pdf_url = serializers.URLField(
-        required=False,
-        allow_null=True,
-    )
-
-    facture_download_url = serializers.URLField(
-        required=False,
-        allow_null=True,
-    )
-
 class ClientPaiementResponseSerializer(serializers.Serializer):
     id = serializers.IntegerField(
         required=False,

@@ -1302,6 +1302,7 @@ class PaiementFactureMultiModeView(APIView):
                 facture.locked_at = timezone.now()
                 facture.save(update_fields=["is_locked", "locked_at"])
                 
+        
         facture_download_url = request.build_absolute_uri(
             reverse(
                 "facture-a5-paysage",
@@ -1315,6 +1316,18 @@ class PaiementFactureMultiModeView(APIView):
             {
                 "message": "Paiement effectué avec succès.",
                 "paiement_id": paiement.id,
+                "vente": {
+                    "id": facture.vente.id if facture.vente else None,
+                    "numero_vente": (
+                        facture.vente.numero_vente
+                        if facture.vente else None
+                    ),
+                    "montant_total": (
+                        str(facture.vente.montant_total)
+                        if facture.vente else "0.00"
+                    ),
+                },
+
                 "facture": {
                     "id": facture.id,
                     "numero_facture": facture.numero_facture,
@@ -1349,6 +1362,7 @@ class PaiementFactureMultiModeView(APIView):
                 ],
                 "stock": audit,
                 "facture_pdf_url": facture_pdf_url,
+                "facture_download_url": facture_download_url,
             },
             status=201,
         )

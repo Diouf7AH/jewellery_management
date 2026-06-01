@@ -502,13 +502,13 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
         prix_vente = data_item["prix_vente_grammes"]
 
         # fallback prix marque/pureté
-        if not prix_vente or prix_vente <= 0:
+        if prix_vente is None or prix_vente <= 0:
 
             prix_vente = tarifs.get(
                 (produit.marque_id, produit.purete_id)
             )
 
-            if not prix_vente or prix_vente <= 0:
+            if prix_vente is None or prix_vente <= 0:
                 raise ValidationError({
                     f"produit_{pid}": (
                         f"Tarif manquant pour {produit.nom}."
