@@ -660,7 +660,7 @@ class PaiementLigne(models.Model):
         max_length=255,
         null=True,
         blank=True,
-        help_text="Référence transaction Wave / OM / banque"
+        help_text="Référence transaction Wave / OM / banque / TPE"
     )
 
     compte_depot = models.ForeignKey(

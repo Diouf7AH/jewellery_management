@@ -108,11 +108,23 @@ class RachatClientCreateView(APIView):
 
         else:  # VENDEUR
             bijouterie = resolve_bijouterie_for_user(user)
+
+            if not bijouterie:
+                return Response(
+                    {
+                        "code": "BIJOUTERIE_NOT_FOUND",
+                        "detail": "Aucune bijouterie associée à ce vendeur.",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         
         
         serializer = RachatClientCreateSerializer(
             data=request.data,
-            context={"bijouterie": bijouterie},
+            context={
+                "bijouterie": bijouterie,
+                "request": request,
+            },
         )
         serializer.is_valid(raise_exception=True)
 
@@ -124,228 +136,17 @@ class RachatClientCreateView(APIView):
             .prefetch_related("items__purete")
             .get(id=rachat.id)
         )
+        
 
-        data = RachatClientDetailSerializer(rachat).data
-        data["ticket_url"] = request.build_absolute_uri(
-            f"/api/stock-matiere-premiere/rachats/{rachat.uuid}/ticket-58mm/"
+        return Response(
+            RachatClientDetailSerializer(
+                rachat,
+                context={"request": request}
+            ).data,
+            status=status.HTTP_201_CREATED,
         )
         
 
-        return Response(data, status=status.HTTP_201_CREATED)
-
-
-class RachatClientTicket58mmPDFView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Télécharger le ticket PDF 58mm d'un rachat client",
-        operation_description="""
-        Génère le ticket PDF 58mm d'un rachat client.
-
-        Paramètre :
-        - uuid : UUID du rachat client
-
-        Retour :
-        - PDF 58mm prêt à imprimer
-        """,
-        responses={
-            200: openapi.Response(
-                description="Ticket PDF 58mm",
-                schema=openapi.Schema(type=openapi.TYPE_FILE),
-            ),
-            404: "Rachat client introuvable",
-        },
-        tags=["Rachat Client"],
-    )
-    def get(self, request, uuid):
-        rachat = get_object_or_404(
-            RachatClient.objects.select_related(
-                "client",
-                "bijouterie",
-            ).prefetch_related(
-                "items__purete",
-            ),
-            uuid=uuid,
-        )
-
-        buffer = BytesIO()
-
-        build_rachat_client_ticket_58mm(
-            buffer,
-            rachat,
-        )
-
-        buffer.seek(0)
-
-        return FileResponse(
-            buffer,
-            as_attachment=False,
-            filename=f"ticket_rachat_{rachat.numero_ticket}.pdf",
-            content_type="application/pdf",
-        )
-
-
-class PayRachatClientTicketView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Payer un ticket de rachat client",
-        operation_description="""
-        Le caissier valide le paiement d'un ticket de rachat client.
-
-        Effets :
-        - Le ticket passe à PAYÉ
-        - Le stock matière première augmente
-        - Un mouvement est créé pour chaque ligne
-        - Une fiche d’attestation peut ensuite être imprimée
-        """,
-        manual_parameters=[
-            openapi.Parameter(
-                "numero_ticket",
-                openapi.IN_PATH,
-                description="Numéro du ticket de rachat client",
-                type=openapi.TYPE_STRING,
-                required=True,
-            )
-        ],
-        responses={200: RachatClientDetailSerializer},
-        tags=["Rachat Client"],
-    )
-    @transaction.atomic
-    def post(self, request, numero_ticket):
-        user = request.user
-        role = get_role_name(user)
-
-        if role not in [ROLE_CASHIER, ROLE_ADMIN, ROLE_MANAGER]:
-            return Response(
-                {"detail": "Seul le caissier, le manager ou l'admin peut payer ce ticket."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        rachat = get_object_or_404(
-            RachatClient.objects.select_for_update()
-            .select_related("client", "bijouterie")
-            .prefetch_related("items__purete"),
-            numero_ticket=numero_ticket,
-        )
-
-        if rachat.payment_status == RachatClient.PAYMENT_PAID:
-            return Response(
-                {"detail": "Ce ticket est déjà payé."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if rachat.payment_status == RachatClient.PAYMENT_CANCELLED:
-            return Response(
-                {"detail": "Ce ticket est annulé, paiement impossible."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if rachat.status == RachatClient.STATUS_CANCELLED:
-            return Response(
-                {"detail": "Ce rachat est annulé."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        for item in rachat.items.select_for_update().all():
-            stock, _ = MatierePremiereStock.objects.select_for_update().get_or_create(
-                bijouterie=rachat.bijouterie,
-                matiere=item.matiere,
-                purete=item.purete,
-                defaults={"poids_total": 0},
-            )
-
-            stock.poids_total = F("poids_total") + item.poids
-            stock.save(update_fields=["poids_total", "updated_at"])
-            stock.refresh_from_db()
-
-            movement = MatierePremiereMovement.objects.create(
-                stock=stock,
-                bijouterie=rachat.bijouterie,
-                matiere=item.matiere,
-                purete=item.purete,
-                poids=item.poids,
-                source=MatierePremiereMovement.SOURCE_RACHAT_CLIENT,
-                rachat=rachat,
-            )
-
-            item.movement = movement
-            item.save(update_fields=["movement"])
-
-        rachat.payment_status = RachatClient.PAYMENT_PAID
-        rachat.paid_at = timezone.now()
-        rachat.paid_by = user
-        rachat.save(update_fields=["payment_status", "paid_at", "paid_by"])
-
-        data = RachatClientDetailSerializer(rachat).data
-        data["attestation_url"] = request.build_absolute_uri(
-            f"/api/stock-matiere-premiere/rachats/{rachat.uuid}/attestation/"
-        )
-
-        return Response(data, status=status.HTTP_200_OK)
-    
-
-
-class RachatClientAttestationPDFView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Télécharger l'attestation de rachat client",
-        operation_description="""
-        Génère l'attestation PDF d'un rachat client.
-
-        Conditions :
-        - Le ticket doit être PAYÉ.
-        - L'attestation est générée après validation du paiement.
-
-        Paramètre :
-        - uuid : UUID du rachat client.
-        """,
-        responses={
-            200: openapi.Response(
-                description="Attestation PDF",
-                schema=openapi.Schema(type=openapi.TYPE_FILE),
-            ),
-            400: "Attestation indisponible tant que le ticket n'est pas payé",
-            404: "Rachat client introuvable",
-        },
-        tags=["Rachat Client"],
-    )
-    def get(self, request, uuid):
-        rachat = get_object_or_404(
-            RachatClient.objects.select_related(
-                "client",
-                "bijouterie",
-                "paid_by",
-            ).prefetch_related(
-                "items__purete",
-            ),
-            uuid=uuid,
-        )
-
-        if rachat.payment_status != RachatClient.PAYMENT_PAID:
-            return Response(
-                {
-                    "detail": "La fiche d’attestation est disponible seulement après paiement."
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        buffer = BytesIO()
-
-        build_attestation_rachat_client_pdf(
-            buffer,
-            rachat,
-        )
-
-        buffer.seek(0)
-
-        return FileResponse(
-            buffer,
-            as_attachment=False,
-            filename=f"attestation_rachat_{rachat.numero_ticket}.pdf",
-            content_type="application/pdf",
-        )
 
 class CancelRachatClientView(APIView):
     permission_classes = [IsAuthenticated]
@@ -391,14 +192,34 @@ class CancelRachatClientView(APIView):
             uuid=uuid,
         )
 
+        if role == ROLE_MANAGER:
+            manager_profile = getattr(request.user, "staff_manager_profile", None)
+
+            if not manager_profile or not manager_profile.bijouteries.filter(
+                id=rachat.bijouterie_id
+            ).exists():
+                return Response(
+                    {"detail": "Accès refusé pour cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         if rachat.status == RachatClient.STATUS_CANCELLED:
-            return Response({"detail": "Ce rachat est déjà annulé."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Ce rachat est déjà annulé."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if rachat.payment_status == RachatClient.PAYMENT_PAID:
-            return Response({"detail": "Impossible d'annuler un rachat déjà payé."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Impossible d'annuler un rachat déjà payé."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if rachat.payment_status == RachatClient.PAYMENT_CANCELLED:
-            return Response({"detail": "Ce ticket est déjà annulé."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Ce ticket est déjà annulé."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         reason = serializer.validated_data.get("reason") or ""
 
@@ -415,13 +236,262 @@ class CancelRachatClientView(APIView):
             "cancelled_by",
             "cancel_reason",
         ])
+        rachat.refresh_from_db()
 
         return Response(
-            RachatClientDetailSerializer(rachat).data,
+            RachatClientDetailSerializer(
+                rachat,
+                context={"request": request},
+            ).data,
             status=status.HTTP_200_OK,
         )
-        
-        
+
+
+class PaiementRachatClientView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Payer un ticket de rachat client",
+        operation_description="""
+        Le caissier valide le paiement d'un ticket de rachat client.
+
+        Effets :
+        - Le ticket passe à PAYÉ
+        - Le stock matière première augmente
+        - Un mouvement est créé pour chaque ligne
+        - Une fiche d’attestation peut ensuite être imprimée
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                "uuid",
+                openapi.IN_PATH,
+                description="UUID du ticket de rachat client",
+                type=openapi.TYPE_STRING,
+                required=True,
+            )
+        ],
+        responses={
+            200: RachatClientDetailSerializer,
+            400: "Paiement impossible",
+            403: "Accès refusé",
+            404: "Ticket introuvable",
+        },
+        tags=["Rachat Client"],
+    )
+    @transaction.atomic
+    def post(self, request, uuid):
+        user = request.user
+        role = get_role_name(user)
+
+        if role not in [ROLE_CASHIER, ROLE_ADMIN, ROLE_MANAGER]:
+            return Response(
+                {"detail": "Seul le caissier, le manager ou l'admin peut payer ce ticket."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        rachat = get_object_or_404(
+            RachatClient.objects.select_for_update()
+            .select_related("client", "bijouterie")
+            .prefetch_related("items__purete"),
+            uuid=uuid,
+        )
+
+        # Scope manager
+        if role == ROLE_MANAGER:
+            manager_profile = getattr(user, "staff_manager_profile", None)
+
+            if not manager_profile or not manager_profile.bijouteries.filter(
+                id=rachat.bijouterie_id
+            ).exists():
+                return Response(
+                    {"detail": "Accès refusé pour cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # Scope cashier
+        if role == ROLE_CASHIER:
+            cashier_profile = getattr(user, "staff_cashier_profile", None)
+
+            if not cashier_profile or cashier_profile.bijouterie_id != rachat.bijouterie_id:
+                return Response(
+                    {"detail": "Ce ticket n'appartient pas à la bijouterie du caissier."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        if rachat.payment_status == RachatClient.PAYMENT_PAID:
+            return Response(
+                {"detail": "Ce ticket est déjà payé."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if rachat.payment_status == RachatClient.PAYMENT_CANCELLED:
+            return Response(
+                {"detail": "Ce ticket est annulé, paiement impossible."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if rachat.status == RachatClient.STATUS_CANCELLED:
+            return Response(
+                {"detail": "Ce rachat est annulé."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        for item in rachat.items.select_for_update().all():
+            stock, _ = MatierePremiereStock.objects.select_for_update().get_or_create(
+                bijouterie=rachat.bijouterie,
+                matiere=item.matiere,
+                purete=item.purete,
+                defaults={"poids_total": Decimal("0.000")},
+            )
+
+            stock.poids_total = F("poids_total") + item.poids
+            stock.save(update_fields=["poids_total", "updated_at"])
+            stock.refresh_from_db()
+
+            movement = MatierePremiereMovement.objects.create(
+                stock=stock,
+                bijouterie=rachat.bijouterie,
+                matiere=item.matiere,
+                purete=item.purete,
+                poids=item.poids,
+                source=MatierePremiereMovement.SOURCE_RACHAT_CLIENT,
+                rachat=rachat,
+            )
+
+            item.movement = movement
+            item.save(update_fields=["movement"])
+
+        rachat.payment_status = RachatClient.PAYMENT_PAID
+        rachat.paid_at = timezone.now()
+        rachat.paid_by = user
+        rachat.save(update_fields=["payment_status", "paid_at", "paid_by"])
+
+        data = RachatClientDetailSerializer(
+            rachat,
+            context={"request": request},
+        ).data
+
+        return Response(
+            RachatClientDetailSerializer(
+                rachat,
+                context={"request": request},
+            ).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+
+class RachatClientTicket58mmPDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Télécharger le ticket PDF 58mm d'un rachat client",
+        operation_description="""
+        Génère le ticket PDF 58mm d'un rachat client.
+
+        Paramètre :
+        - uuid : UUID du rachat client
+
+        Retour :
+        - PDF 58mm prêt à imprimer
+        """,
+        responses={
+            200: openapi.Response(
+                description="Ticket PDF 58mm généré avec succès",
+            ),
+            404: "Rachat client introuvable",
+        },
+        produces=["application/pdf"],
+        tags=["Rachat Client"],
+    )
+    def get(self, request, uuid):
+        rachat = get_object_or_404(
+            RachatClient.objects.select_related(
+                "client",
+                "bijouterie",
+            ).prefetch_related(
+                "items__purete",
+            ),
+            uuid=uuid,
+        )
+
+        buffer = BytesIO()
+
+        build_rachat_client_ticket_58mm(
+            buffer,
+            rachat,
+        )
+
+        buffer.seek(0)
+
+        return FileResponse(
+            buffer,
+            as_attachment=False,
+            filename=f"ticket_rachat_{rachat.numero_ticket}.pdf",
+            content_type="application/pdf",
+        )
+
+
+class RachatClientAttestationPDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Télécharger l'attestation de rachat client",
+        operation_description="""
+        Génère l'attestation PDF d'un rachat client.
+
+        Conditions :
+        - Le ticket doit être PAYÉ.
+        - L'attestation est générée après validation du paiement.
+        """,
+        responses={
+            200: openapi.Response(
+                description="Attestation PDF générée avec succès",
+            ),
+            400: "Attestation indisponible tant que le ticket n'est pas payé",
+            404: "Rachat client introuvable",
+        },
+        produces=["application/pdf"],
+        tags=["Rachat Client"],
+    )
+    def get(self, request, uuid):
+        rachat = get_object_or_404(
+            RachatClient.objects.select_related(
+                "client",
+                "bijouterie",
+                "paid_by",
+            ).prefetch_related(
+                "items__purete",
+            ),
+            uuid=uuid,
+        )
+
+        if rachat.payment_status != RachatClient.PAYMENT_PAID:
+            return Response(
+                {
+                    "detail": "La fiche d’attestation est disponible seulement après paiement."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        buffer = BytesIO()
+
+        build_attestation_rachat_client_pdf(
+            buffer,
+            rachat,
+        )
+
+        buffer.seek(0)
+
+        return FileResponse(
+            buffer,
+            as_attachment=False,
+            filename=f"attestation_rachat_{rachat.numero_ticket}.pdf",
+            content_type="application/pdf",
+        )
+
+
+
 #annule rachat
 class ReverseRachatClientView(APIView):
     permission_classes = [IsAuthenticated]
@@ -440,6 +510,15 @@ class ReverseRachatClientView(APIView):
         - Un mouvement inverse est créé pour chaque ligne.
         - Cette action garde l'historique au lieu de supprimer l'opération.
         """,
+        manual_parameters=[
+            openapi.Parameter(
+                "uuid",
+                openapi.IN_PATH,
+                description="UUID du rachat client",
+                type=openapi.TYPE_STRING,
+                required=True,
+            )
+        ],
         request_body=ReverseRachatClientSerializer,
         responses={
             200: RachatClientDetailSerializer,
@@ -465,9 +544,20 @@ class ReverseRachatClientView(APIView):
         rachat = get_object_or_404(
             RachatClient.objects.select_for_update()
             .select_related("client", "bijouterie")
-            .prefetch_related("items__purete", "movements"),
+            .prefetch_related("items__purete"),
             uuid=uuid,
         )
+        
+        if role == ROLE_MANAGER:
+            manager_profile = getattr(request.user, "staff_manager_profile", None)
+
+            if not manager_profile or not manager_profile.bijouteries.filter(
+                id=rachat.bijouterie_id
+            ).exists():
+                return Response(
+                    {"detail": "Accès refusé pour cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         if rachat.status == RachatClient.STATUS_CANCELLED:
             return Response(
@@ -564,9 +654,13 @@ class ReverseRachatClientView(APIView):
             "cancelled_by",
             "cancel_reason",
         ])
+        rachat.refresh_from_db()
 
         return Response(
-            RachatClientDetailSerializer(rachat).data,
+            RachatClientDetailSerializer(
+                rachat,
+                context={"request": request},
+            ).data,
             status=status.HTTP_200_OK,
         )
     
@@ -1422,8 +1516,15 @@ class RaffinageCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        purete_avant = get_object_or_404(Purete, id=data["purete_avant_id"])
-        purete_apres = get_object_or_404(Purete, id=data["purete_apres_id"])
+        purete_avant = get_object_or_404(
+            Purete,
+            id=data["purete_avant_id"]
+        )
+
+        purete_apres = get_object_or_404(
+            Purete,
+            id=data["purete_apres_id"]
+        )
 
         stock_mp = MatierePremiereStock.objects.select_for_update().filter(bijouterie=bijouterie,
             matiere=data["matiere"],purete=purete_avant,).first()
@@ -1557,7 +1658,7 @@ class VenteMatierePremiereCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        purete = get_object_or_404(Purete, id=data["purete_id"])
+        purete = data["purete"]
 
         client = None
         if data.get("client_id"):

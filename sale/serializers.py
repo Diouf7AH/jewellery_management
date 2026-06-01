@@ -930,7 +930,7 @@ class PaiementFactureMultiModeResponseSerializer(serializers.Serializer):
     reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2)
     status = serializers.CharField()
     lignes = PaiementLigneResponseSerializer(many=True)
-    
+    facture_pdf_url = serializers.URLField(required=False,allow_null=True,allow_blank=True,)
     
 
 

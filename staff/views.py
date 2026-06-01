@@ -593,18 +593,81 @@ class CreateStaffUnifiedView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Créer un staff (manager, vendor, cashier) via une API unique",
-        operation_description=(
-            "Crée un staff à partir d'un utilisateur existant ou crée le user si nécessaire.\n\n"
-            "- admin   : peut créer manager, vendor, cashier\n"
-            "- manager : peut créer vendor, cashier\n"
-        ),
+        operation_summary="Créer un staff",
+        operation_description="""
+    Permet d'attribuer un rôle staff à un utilisateur existant.
+
+    Règles :
+
+    - L'utilisateur doit déjà avoir créé son compte.
+    - Admin peut créer :
+        - Manager
+        - Vendor
+        - Cashier
+    - Manager peut créer :
+        - Vendor
+        - Cashier
+    - Un utilisateur ne peut avoir qu'un seul profil staff.
+    - Manager → plusieurs bijouteries.
+    - Vendor/Cashier → une seule bijouterie.
+    """,
         request_body=CreateStaffUnifiedSerializer,
         responses={
-            201: openapi.Response("Staff créé"),
-            400: "Erreur de validation",
-            403: "Accès refusé",
-            409: "Conflit",
+            201: openapi.Response(
+                description="Staff créé avec succès",
+                examples={
+                    "application/json": {
+                        "message": "Staff créé avec succès",
+                        "staff_type": "vendor",
+                        "staff": {
+                            "id": 5,
+                            "verifie": True,
+                            "bijouteries": [
+                                {
+                                    "id": 1,
+                                    "nom": "RIO GOLD Dakar"
+                                }
+                            ],
+                            "created_at": "2026-05-30T20:00:00Z",
+                            "updated_at": "2026-05-30T20:00:00Z"
+                        },
+                        "user": {
+                            "id": 12,
+                            "email": "vendeur@riogold.com",
+                            "first_name": "Moussa",
+                            "last_name": "Fall",
+                            "telephone": "771234567",
+                            "role": "vendor"
+                        }
+                    }
+                }
+            ),
+            400: openapi.Response(
+                description="Erreur de validation",
+                examples={
+                    "application/json": {
+                        "email": [
+                            "Aucun utilisateur trouvé avec cet email. L'utilisateur doit d'abord créer son compte."
+                        ]
+                    }
+                }
+            ),
+            403: openapi.Response(
+                description="Accès refusé",
+                examples={
+                    "application/json": {
+                        "error": "Accès réservé aux rôles admin et manager."
+                    }
+                }
+            ),
+            409: openapi.Response(
+                description="Conflit",
+                examples={
+                    "application/json": {
+                        "error": "Cet utilisateur possède déjà un profil staff."
+                    }
+                }
+            ),
         },
         tags=["Staff"],
     )
@@ -618,14 +681,9 @@ class CreateStaffUnifiedView(APIView):
                 caller_user=request.user,
                 target_role=data["role"],
                 email=data["email"],
-                password=data.get("password"),
-                first_name=data.get("first_name", ""),
-                last_name=data.get("last_name", ""),
-                telephone=data.get("telephone"),
                 bijouterie=data.get("bijouterie_nom"),
                 bijouteries=data.get("bijouteries", []),
                 verifie=data.get("verifie", True),
-                raison_desactivation=data.get("raison_desactivation"),
             )
         except PermissionError as e:
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
@@ -658,7 +716,6 @@ class CreateStaffUnifiedView(APIView):
                 "staff": {
                     "id": staff.id,
                     "verifie": staff.verifie,
-                    "raison_desactivation": staff.raison_desactivation,
                     "bijouteries": bijouteries_data,
                     "created_at": staff.created_at,
                     "updated_at": staff.updated_at,
@@ -669,7 +726,7 @@ class CreateStaffUnifiedView(APIView):
                     "first_name": user.first_name,
                     "last_name": user.last_name,
                     "telephone": user.telephone,
-                    "role": getattr(getattr(user, "user_role", None), "role", None),
+                    "role": result.staff_type,
                 },
             },
             status=status.HTTP_201_CREATED,

@@ -31,7 +31,7 @@ def get_default_purete():
 
 MATIERE = (
     ("or", "Or"),
-    ("ar", "Argent"),
+    ("argent", "Argent"),
     ("mixte", "Mixte")
 )
 

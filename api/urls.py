@@ -272,10 +272,10 @@ urlpatterns = [
     # path("dashboard-matiere-premiere",stock_matiere_premiere_views.DashboardMatierePremiereView.as_view(),name="dashboard-matiere-premiere",),
     # ///
     path("rachats-clients/create/",stock_matiere_premiere_views.RachatClientCreateView.as_view(),name="rachat-client-create",),
-    path("rachats-clients/<uuid:uuid>/ticket-58mm/",stock_matiere_premiere_views.RachatClientTicket58mmPDFView.as_view(),name="rachat-client-ticket-58mm",),
-    path( "rachats-clients/<str:numero_ticket>/payer/",stock_matiere_premiere_views.PayRachatClientTicketView.as_view(),name="pay-rachat-client-ticket",),
-    path("rachats-clients/<uuid:uuid>/attestation/",stock_matiere_premiere_views.RachatClientAttestationPDFView.as_view(),name="rachat-client-attestation",),
     path("rachats-clients/<uuid:uuid>/cancel/",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="cancel-rachat-client",),
+    path("rachats-clients/<uuid:uuid>/paiement/",stock_matiere_premiere_views.PaiementRachatClientView.as_view(),name="rachat-client-paiement",),
+    path("rachats-clients/<uuid:uuid>/ticket-58mm/",stock_matiere_premiere_views.RachatClientTicket58mmPDFView.as_view(),name="rachat-client-ticket-58mm",),
+    path("rachats-clients/<uuid:uuid>/attestation/",stock_matiere_premiere_views.RachatClientAttestationPDFView.as_view(),name="rachat-client-attestation",),
     path("rachats/<uuid:uuid>/reverse/",stock_matiere_premiere_views.ReverseRachatClientView.as_view(), name="reverse-rachat-client",),
     path("achats-rachats-matiere-premiere/<uuid:uuid>/",stock_matiere_premiere_views.AchatRachatMatierePremiereDetailView.as_view(),name="achat-rachat-matiere-premiere-detail",),
     path("achats-matiere-premiere/<uuid:uuid>/reverse/",stock_matiere_premiere_views.ReverseAchatMatierePremiereView.as_view(),name="reverse-achat-matiere-premiere",),

@@ -231,3 +231,81 @@ apres_raffinage | 5g  | 300000
 
 6. Alertes
 Or | 18K | 3.000g
+
+
+
+Cancel ou Annulation
+Reverse
+Dans ton flux métier de rachat client, l'ordre recommandé est :
+1. Annulation (CancelRachatClient)
+Avant paiement uniquement ✅
+Création ticket
+       ↓
+En attente paiement
+       ↓
+Annulation possible
+Effets :
+- status = CANCELLED
+- payment_status = CANCELLED
+- aucun stock modifié
+- aucun mouvement créé
+2. Paiement (PayRachatClientTicket)
+
+Après validation caisse ✅
+Création ticket
+       ↓
+Paiement
+       ↓
+Création stock
+Création mouvements
+Effets :
+- payment_status = PAID
+- stock matière +
+- mouvement SOURCE_RACHAT_CLIENT
+3. Reverse (ReverseRachatClient)
+Après paiement uniquement ✅
+Création ticket
+       ↓
+Paiement
+       ↓
+Reverse
+Effets :
+- retrait du stock créé
+- mouvement SOURCE_RACHAT_CLIENT_CANCEL
+- payment_status = CANCELLED
+- historique conservé
+Résumé
+1. CreateRachatClient
+2. CancelRachatClient      ← AVANT paiement
+3. PayRachatClientTicket
+4. ReverseRachatClient     ← APRÈS paiement
+5. Attestation PDF
+Donc dans tes URLs et Swagger, je mettrais :
+1. Create
+2. Cancel
+3. Pay
+4. Reverse
+5. Ticket PDF
+6. Attestation PDF
+Car Cancel est l'action normale avant paiement, tandis que Reverse est une opération exceptionnelle de correction après paiement.
+
+
+--- RachatClientCreate ---
+Manager → choisit la bijouterie par nom
+Vendeur → bijouterie automatique
+Stock → non modifié
+Movement → non créé
+Ticket PDF → via uuid
+
+
+--------------------------------
+✓ ADMIN
+✓ MANAGER (uniquement ses bijouteries)
+✓ UUID
+✓ Vérification paiement
+✓ Limite 48h
+✓ Vérification stock
+✓ Mouvement inverse
+✓ Historique conservé
+✓ Motif obligatoire
+✓ Audit (cancelled_by, cancelled_at, cancel_reason)

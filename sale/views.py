@@ -20,6 +20,7 @@ from drf_yasg.utils import swagger_auto_schema
 from openpyxl import Workbook
 from openpyxl.styles import Font, numbers
 from rest_framework import permissions, status
+from rest_framework.exceptions import APIException
 from rest_framework.exceptions import ValidationError
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -1271,6 +1272,7 @@ class PaiementFactureMultiModeView(APIView):
         facture_pdf_url = None
 
         if facture.status == Facture.STAT_PAYE:
+
             if not facture.facture_pdf:
 
                 if not facture.integrity_hash:
@@ -1282,21 +1284,22 @@ class PaiementFactureMultiModeView(APIView):
                 generate_facture_pdf(facture)
 
                 facture.refresh_from_db()
+                if not facture.facture_pdf:
+                    raise APIException(
+                        "Erreur lors de la génération du PDF de la facture."
+                    )
 
-                facture_pdf_url = (
-                    request.build_absolute_uri(facture.facture_pdf.url)
-                    if facture.facture_pdf
-                    else None
+            try:
+                facture_pdf_url = request.build_absolute_uri(
+                    facture.facture_pdf.url
                 )
+            except Exception:
+                facture_pdf_url = None
 
+            if not facture.is_locked:
                 facture.is_locked = True
                 facture.locked_at = timezone.now()
                 facture.save(update_fields=["is_locked", "locked_at"])
-            else:
-                try:
-                    facture_pdf_url = facture.facture_pdf.url
-                except Exception:
-                    facture_pdf_url = None
 
         return Response(
             {
