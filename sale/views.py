@@ -14,6 +14,7 @@ from django.db import transaction
 from django.db.models import Count, Exists, F, OuterRef, Q, Sum
 from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
@@ -1300,6 +1301,15 @@ class PaiementFactureMultiModeView(APIView):
                 facture.is_locked = True
                 facture.locked_at = timezone.now()
                 facture.save(update_fields=["is_locked", "locked_at"])
+                
+        facture_download_url = request.build_absolute_uri(
+            reverse(
+                "facture-a5-paysage",
+                kwargs={
+                    "numero_facture": facture.numero_facture
+                }
+            )
+        )
 
         return Response(
             {
