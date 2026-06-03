@@ -294,7 +294,7 @@ class MarquePuretePrixHistory(models.Model):
         related_name="changements_prix_marque_purete",
     )
 
-    changed_at = models.DateTimeField(auto_now_add=True)
+    date_modification = models.DateTimeField(auto_now_add=True)
 
     source = models.CharField(
         max_length=30,
@@ -306,10 +306,10 @@ class MarquePuretePrixHistory(models.Model):
     note = models.CharField(max_length=255, blank=True, null=True)
 
     class Meta:
-        ordering = ["-changed_at", "-id"]
+        ordering = ["-date_modification", "-id"]
         indexes = [
-            models.Index(fields=["changed_at"]),
-            models.Index(fields=["marque_purete", "changed_at"]),
+            models.Index(fields=["date_modification"]),
+            models.Index(fields=["marque_purete", "date_modification"]),
             models.Index(fields=["marque", "purete"]),
             models.Index(fields=["bijouterie"]),
             models.Index(fields=["source"]),
@@ -324,139 +324,8 @@ class MarquePuretePrixHistory(models.Model):
         return (
             f"{self.marque} / {self.purete} : "
             f"{self.ancien_prix} -> {self.nouveau_prix} "
-            f"({self.changed_at:%d/%m/%Y %H:%M})"
+            f"({self.date_modification:%d/%m/%Y %H:%M})"
         )
-        
-    
-# # Model model
-# class Model(models.Model):
-#     nom = models.CharField(max_length=255)
-#     type = models.ForeignKey(Type, on_delete=models.SET_NULL, null=True, blank=True, related_name="type_model")
-#     description = models.TextField(blank=True)
-
-# def generate_sku(length=7):
-#     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
-
-# Model for Produits
-# class Produit(models.Model):
-#     # bijouterie = models.ForeignKey(Bijouterie, on_delete=models.CASCADE, null=True, blank=True, related_name="bijouterie_produit")
-#     nom = models.CharField(max_length=100, blank=True, default="")
-#     image = models.ImageField(upload_to='produits/', blank=True, null=True)
-#     description = models.TextField(null=True, blank=True)
-#     qr_code = models.ImageField(upload_to='qr_codes/', null=True, blank=True)
-    
-#     categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="categorie_produit")
-#     purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="purete_produit", default=get_default_purete)
-#     marque = models.ForeignKey(Marque, on_delete=models.SET_NULL, null=True, blank=True, related_name="marque_produit")
-#     matiere = models.CharField(choices=MATIERE, max_length=50, default="or", null=True, blank=True)
-#     modele = models.ForeignKey(Modele, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_produit")
-
-#     poids = models.DecimalField(default=0.00, decimal_places=2, max_digits=12) 
-#     taille = models.DecimalField(blank=True, null=True, default=0.00, decimal_places=2, max_digits=12)
-#     genre = models.CharField(choices=GENRE, default="F", max_length=10, blank=True, null=True)
-#     status = models.CharField(choices=STATUS, max_length=10, default="publié", null=True, blank=True)
-#     etat = models.CharField(choices=ETAT, max_length=10, default="N", null=True, blank=True)
-    
-#     sku = models.SlugField(unique=True, max_length=100, null=True, blank=True)
-#     slug = models.SlugField(max_length=100, unique=True, blank=True, null=True)
-
-#     date_ajout = models.DateTimeField(auto_now_add=True) 
-#     date_modification = models.DateTimeField(auto_now=True) 
-    
-#     def skuGet(self):
-#         champs = [self.categorie, self.modele, self.marque, self.poids, self.taille, self.purete, self.etat]
-#         if not all(champs):
-#             return None  # <-- éviter l'erreur fatale
-
-#         return (
-#             f"{self.categorie.nom[:4].upper()}-"
-#             f"{self.modele.modele[:4].upper()}-"
-#             f"{self.etat}-"
-#             f"{self.purete.purete}-"
-#             f"{self.marque.marque[:3].upper()}-"
-#             f"P{self.poids}-T{self.taille}"
-#         )
-    
-#     @staticmethod
-#     def generate_qr_code_image(content):
-#         qr = qrcode.QRCode(version=1, box_size=10, border=4)
-#         qr.add_data(content)
-#         qr.make(fit=True)
-
-#         img = qr.make_image(fill='black', back_color='white')
-#         buffer = BytesIO()
-        
-#         # Nettoyer le nom du fichier
-#         safe_name = slugify(content)[:50] if content else uuid.uuid4().hex[:10]
-#         img.save(buffer, format='PNG')
-#         buffer.seek(0)
-#         return File(buffer, name=f'qr_{safe_name}.png')
-    
-#     def regenerate_qr_code(self):
-#         try:
-#             qr_content = self.produit_url
-#             qr_file = self.generate_qr_code_image(qr_content)
-#             self.qr_code.save(qr_file.name, qr_file, save=True)
-#             return True
-#         except Exception as e:
-#             print(f"[QR ERROR] {e}")
-#             return False
-
-#     def save(self, *args, **kwargs):
-#         self.full_clean()  # 🔁 Appelle clean() et valide les champs
-#         is_new = self.pk is None
-#         generer_qr = False
-
-#         if not self.nom and self.categorie and self.modele and self.marque:
-#             self.nom = f'{self.categorie} {self.modele} {self.marque}'
-
-#         if not self.slug:
-#             base_slug = slugify(self.nom or "produit")
-#             self.slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
-#             generer_qr = True  # 🔄 Générer QR uniquement si nouveau slug
-
-#         if not self.sku:
-#             sku = self.skuGet()
-#             if sku:
-#                 self.sku = sku
-
-#         super().save(*args, **kwargs)
-
-#         if not self.qr_code and generer_qr:
-#             try:
-#                 qr_content = self.produit_url
-#                 qr_file = self.generate_qr_code_image(qr_content)
-#                 self.qr_code.save(qr_file.name, qr_file, save=False)
-#                 super().save(update_fields=["qr_code"])  # ✅ évite double save complet
-#             except Exception as e:
-#                 print(f"[QR ERROR] {e}")
-                
-#     @property
-#     def produit_url(self):
-#         base_url = getattr(settings, 'SITE_URL', 'https://www.rio-gold.com')
-#         return f"{base_url}/produit/{self.slug}" if self.slug else None
-    
-#     def clean(self):
-#         if self.poids < 0:
-#             raise ValidationError("Le poids ne peut pas être négatif.")
-#         if self.taille is not None and self.taille < 0:
-#             raise ValidationError("La taille ne peut pas être négative.")
-    
-    
-#     # Achiffage admin.py
-#     def qr_code_url(self):
-#         if self.qr_code:
-#             return self.qr_code.url
-#         return "Aucun QR code"
-
-#     qr_code_url.short_description = "QR Code"
-    
-#     def __str__(self):
-#         return f'{self.sku}'
-    
-#     class Meta:
-#         ordering = ['-id']
-#         verbose_name_plural = "Produits"
 
 
 class Produit(models.Model):

@@ -340,43 +340,42 @@ class ClientInSerializer(serializers.Serializer):
 #                     field: "Ne peut pas être négatif."
 #                 })
 #         return attrs
-
-
 class VenteProduitInSerializer(serializers.Serializer):
     produit_id = serializers.IntegerField(min_value=1, required=False)
     sku = serializers.CharField(required=False, allow_blank=True)
     qr = serializers.CharField(required=False, allow_blank=True)
 
     quantite = serializers.IntegerField(min_value=1)
+
     prix_vente_grammes = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
         required=False,
-        allow_null=True,   # ← ajouter
+        allow_null=True,
+        default=None,
     )
+
     remise = serializers.DecimalField(
-        max_digits=5,
+        max_digits=12,
         decimal_places=2,
         required=False,
-        default=0
+        allow_null=True,
+        default=Decimal("0.00"),
     )
+
     autres = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
         required=False,
-        default=0
+        allow_null=True,
+        default=Decimal("0.00"),
     )
 
     def validate(self, attrs):
-        produit_id = attrs.get("produit_id")
-        sku = attrs.get("sku")
-        qr = attrs.get("qr")
-
-        if not produit_id and not sku and not qr:
+        if not attrs.get("produit_id") and not attrs.get("sku") and not attrs.get("qr"):
             raise serializers.ValidationError(
                 "Vous devez fournir produit_id, sku ou qr."
             )
-
         return attrs
 
 # class VenteCreateInSerializer(serializers.Serializer):

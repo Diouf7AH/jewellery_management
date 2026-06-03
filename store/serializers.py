@@ -301,7 +301,30 @@ class ProduitSerializer(serializers.ModelSerializer):
         elif obj.qr_code:
             return obj.qr_code.url
         return None
+    
+    def validate(self, attrs):
+        marque = attrs.get("marque") or getattr(self.instance, "marque", None)
+        purete = attrs.get("purete") or getattr(self.instance, "purete", None)
 
+        if marque and purete:
+            exists = MarquePurete.objects.filter(
+                marque=marque,
+                purete=purete,
+                prix__gt=0,
+            ).exists()
+
+            if not exists:
+                raise serializers.ValidationError({
+                    "tarif": {
+                        "marque_id": marque.id,
+                        "marque": marque.marque,
+                        "purete_id": purete.id,
+                        "purete": purete.purete,
+                        "message": "Aucun tarif Marque–Pureté trouvé pour cette combinaison."
+                    }
+                })
+
+        return attrs
 
 
 
@@ -450,7 +473,7 @@ class MarquePuretePrixHistorySerializer(serializers.ModelSerializer):
             "nouveau_prix",
             "changed_by",
             "changed_by_username",
-            "changed_at",
+            "date_modification",
             "source",
             "note",
         ]

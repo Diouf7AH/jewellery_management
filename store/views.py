@@ -1395,218 +1395,6 @@ class ProduitListAPIView(APIView):
         return Response(serializer.data)
 
 
-# class ProduitCreateAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-#     parser_classes = [MultiPartParser, FormParser]
-
-#     @swagger_auto_schema(
-#     operation_summary="Créer un produit avec images (formulaire) le nom du produit est gere par le backend",
-#     manual_parameters=[
-#         # openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#         openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
-#         # openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, description="F: Femme, H: Homme ou E: Enfant", default='F'),
-#         openapi.Parameter(
-#             'genre', openapi.IN_FORM,
-#             type=openapi.TYPE_STRING,
-#             enum=['F', 'H', 'E'],
-#             description="F: Femme, H: Homme, E: Enfent",
-#             default='F'
-#         ),
-#         openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#         openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#         openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#         # openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER, description="purete ID 1 = 21 OU ID 2 = 18", default='2'),
-#         openapi.Parameter(
-#             'purete', openapi.IN_FORM,
-#             type=openapi.TYPE_STRING,
-#             enum=['21K', '18K'],
-#             description="Choisir entre 21 ou 18 carats",
-#             default='18K'
-#         ),
-#         # openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, description="or, ar(argent) ou mixte", default='or'),
-#         openapi.Parameter(
-#             'matiere', openapi.IN_FORM,
-#             type=openapi.TYPE_STRING,
-#             enum=['or', 'argent', 'mixte'],
-#             description="Matière du produit",
-#             default='or'
-#         ),
-#         openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
-#         openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#         # openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Statut du produit: publié, desactive ...", default='publié'),
-#         openapi.Parameter(
-#             'status', openapi.IN_FORM,
-#             type=openapi.TYPE_STRING,
-#             enum=['publié', 'désactivé', 'brouillon'],
-#             description="Statut du produit",
-#             default='publié'
-#         ),
-#         # openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, description="État du produit N:neuf ou R:retour", default='N'),
-#         openapi.Parameter(
-#             'etat', openapi.IN_FORM,
-#             type=openapi.TYPE_STRING,
-#             enum=['N', 'R'],  # N = Neuf, R = Retour par exemple
-#             description="État du produit N:Neuf ou R:Retour",
-#             default='N'
-#         ),
-#         openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Plusieurs fichiers", required=False, multiple=True),
-#     ],
-#     responses={
-#         201: openapi.Response(
-#             description="Produit créé avec succès",
-#             schema=ProduitSerializer(),
-#             examples={
-#                 "application/json": {
-#                     "id": 1,
-#                     "nom": "Bague Alliance local",
-#                     "categorie": "Bagues",
-#                     "marque": "Cartier",
-#                     "modele": "Classique",
-#                     "purete": "21",
-#                     "matiere": "or",
-#                     "genre": "F",
-#                     "poids": "15.25",
-#                     "taille": "56.00",
-#                     "status": "publié",
-#                     "etat": "N",
-#                     "qr_code": "/media/qr_codes/BAGU-CASS-N-21-CAR-P15.25-T56.00.png",
-#                     "date_ajout": "2025-04-29T10:00:00Z"
-#                 }
-#             }
-#         ),
-#         400: openapi.Response(description="Erreur de validation")
-#     }
-# )
-    
-#     @transaction.atomic
-#     def post(self, request, *args, **kwargs):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        
-        
-#         try:
-#             produit_data = {
-#                 # 'nom': request.data.get('nom'),
-#                 'image': request.data.get('image'),
-#                 'genre': request.data.get('genre'),
-#                 'categorie': request.data.get('categorie'),
-#                 'marque': request.data.get('marque'),
-#                 'modele': request.data.get('modele'),
-#                 'purete': request.data.get('purete'),
-#                 'matiere': request.data.get('matiere'),
-#                 'poids': request.data.get('poids'),
-#                 'taille': request.data.get('taille'),
-#                 'status': request.data.get('status'),
-#                 'etat': request.data.get('etat'),
-#             }
-
-#             produit_serializer = ProduitSerializer(data=produit_data)
-#             if not produit_serializer.is_valid():
-#                 return Response(produit_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#             produit = produit_serializer.save()
-
-#             for image_file in request.FILES.getlist('gallery'):
-#                 Gallery.objects.create(produit=produit, image=image_file)
-
-#             return Response(produit_serializer.data, status=status.HTTP_201_CREATED)
-
-#         except Exception as e:
-#             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# class ProduitCreateAPIView(APIView):
-#     parser_classes = [MultiPartParser, FormParser]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Créer un produit avec images et QR code",
-#         manual_parameters=[
-#             # openapi.Parameter('nom', openapi.IN_FORM, type=openapi.TYPE_STRING),
-#             openapi.Parameter('image', openapi.IN_FORM, type=openapi.TYPE_FILE),
-#             openapi.Parameter('genre', openapi.IN_FORM, type=openapi.TYPE_STRING, description="F: Femme, H: Homme ou E: Enfant", default='F', enum=['F', 'H', 'E']),            
-#             openapi.Parameter('categorie', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
-#             openapi.Parameter('marque', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
-#             openapi.Parameter('modele', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
-#             openapi.Parameter('purete', openapi.IN_FORM, type=openapi.TYPE_INTEGER),
-#             openapi.Parameter('matiere', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Matière du produit", default='or', enum=['or', 'argent', 'mixte']),
-#             openapi.Parameter('poids', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
-#             openapi.Parameter('taille', openapi.IN_FORM, type=openapi.TYPE_NUMBER),
-#             openapi.Parameter('status', openapi.IN_FORM, type=openapi.TYPE_STRING, description="Statut du produit", default='publié', enum=['publié', 'désactivé', 'rejetée']),
-#             openapi.Parameter('etat', openapi.IN_FORM, type=openapi.TYPE_STRING, description="État du produit N:Neuf ou R:Retour", default='N', enum=['N', 'R']),
-            
-# #             default='N'
-#             openapi.Parameter('gallery', openapi.IN_FORM, type=openapi.TYPE_FILE, description="Fichiers galerie", required=False, multiple=True),
-#         ],
-#         responses={
-#             201: openapi.Response("Produit créé", ProduitSerializer),
-#             400: "Erreur de validation"
-#         }
-#     )
-#     @transaction.atomic
-    
-#     def post(self, request):
-#     # def post(self, request, *args, **kwargs):
-#         user = request.user
-#         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-#             return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-#         # ✅ Champs requis
-#         required_fields = ['categorie', 'marque', 'modele', 'purete', 'poids', 'taille', 'etat']
-#         missing = [field for field in required_fields if not request.data.get(field)]
-#         if missing:
-#             return Response(
-#                 {"error": f"Champs requis manquants : {', '.join(missing)}"},
-#                 status=status.HTTP_400_BAD_REQUEST
-#             )
-
-#         try:
-#             # ✅ Vérifie les clés étrangères
-#             try:
-#                 categorie = Categorie.objects.get(id=request.data.get('categorie'))
-#                 marque = Marque.objects.get(id=request.data.get('marque'))
-#                 modele = Modele.objects.get(id=request.data.get('modele'))
-#                 purete = Purete.objects.get(id=request.data.get('purete'))
-#             except (Categorie.DoesNotExist, Marque.DoesNotExist, Modele.DoesNotExist, Purete.DoesNotExist) as e:
-#                 return Response({"error": str(e)}, status=404)
-
-#             # ✅ Création du produit
-#             produit = Produit.objects.create(
-#                 # nom=request.data.get('nom', ''),
-#                 image=request.data.get('image'),
-#                 description=request.data.get('description'),
-#                 genre=request.data.get('genre', 'F'),
-#                 matiere=request.data.get('matiere', 'or'),
-#                 poids=request.data.get('poids'),
-#                 taille=request.data.get('taille'),
-#                 status=request.data.get('status', 'publié'),
-#                 etat=request.data.get('etat', 'N'),
-#                 categorie=categorie,
-#                 marque=marque,
-#                 modele=modele,
-#                 purete=purete,
-#             )
-
-#             # ✅ Galerie (facultative)
-#             for image_file in request.FILES.getlist('gallery'):
-#                 Gallery.objects.create(produit=produit, image=image_file)
-
-#             # 🔁 Force une mise à jour pour déclencher le QR code si nécessaire
-#             produit.save()  # Appelle de nouveau le save() pour générer qr_code
-
-#             # ✅ Recharge le produit pour inclure qr_code généré après save()
-#             produit.refresh_from_db()
-            
-#             # ✅ Retour enrichi
-#             serializer = ProduitSerializer(produit, context={'request': request})
-#             return Response(serializer.data, status=201)
-
-#         except Exception as e:
-#             return Response({'error': str(e)}, status=500)
-
-
 
 class ProduitCreateAPIView(APIView):
     parser_classes = [MultiPartParser, FormParser]
@@ -1687,94 +1475,6 @@ class ProduitDetailSlugView(APIView):
         except Produit.DoesNotExist:
             return Response({"error": "Produit non trouvé."}, status=status.HTTP_404_NOT_FOUND)
 
-
-
-
-# class ProduitCreateAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-    
-#     @swagger_auto_schema(
-#         operation_description="Créer un produit avec sa galerie d’images.",
-#         request_body=ProduitSerializer,
-#         responses={
-#             status.HTTP_201_CREATED: openapi.Response('User created successfully', ProduitSerializer),
-#             status.HTTP_400_BAD_REQUEST: openapi.Response('Bad Request')
-#         }
-#     )
-#     @transaction.atomic
-#     def post(self, request, *args, **kwargs):
-#         try:
-#             # 1. Désérialisation des données produit
-#             produit_data = {
-#                 'nom': request.data.get('nom'),
-#                 'image': request.data.get('image'),
-#                 'genre': request.data.get('genre'),
-#                 'categorie': request.data.get('categorie'),
-#                 'marque': request.data.get('marque'),
-#                 'modele': request.data.get('modele'),
-#                 'purete': request.data.get('purete'),
-#                 'matiere': request.data.get('matiere'),
-#                 'poids': request.data.get('poids'),
-#                 'taille': request.data.get('taille'),
-#                 'status': request.data.get('status'),
-#             }
-#             produit_serializer = ProduitSerializer(data=produit_data)
-#             if not produit_serializer.is_valid():
-#                 return Response(produit_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-#             produit = produit_serializer.save()
-#             # 2. Désérialisation des fichiers image
-#             images = request.FILES.getlist('gallery')  # récupère tous les fichiers avec le champ "gallery"
-#             for image_file in images:
-#                 Gallery.objects.create(produit=produit, image=image_file)
-#             # return Response({
-#             #     'message': 'Produit et galerie créés avec succès',
-#             #     'produit_id': produit.id
-#             # }, status=status.HTTP_201_CREATED)
-#             return Response(produit_serializer.data, status=status.HTTP_201_CREATED)
-#         except Exception as e:
-#             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-    
-    
-    # def post(self, request):
-    #     if request.user.user_role is not None and request.user.user_role.role != 'admin' and request.user.user_role.role != 'manager':
-    #         return Response({"message": "Access Denied"})
-    #     # if request.user.is_authenticated and request.user.user_role and not request.user.user_role.role == 'admin' and not request.user.user_role.role == 'manager' and not request.user.user_role.role == 'seller':
-    #     #     return Response({"message": "Access Denied"})
-    #     serializer = ProduitSerializer(data=request.data)
-    #     if serializer.is_valid():
-    #         produit = serializer.save()
-    #         # produit.save()
-    #         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    #     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-    # @transaction.atomic
-    # def post(self, request, *args, **kwargs):
-    #     # First, deserialize the input data for the produit and stock
-    #     produit_data = request.data.get('produit')
-    #     stock_data = request.data.get('stock')
-
-    #     # Validate and create the produit
-    #     produit_serializer = ProduitSerializer(data=produit_data)
-    #     if produit_serializer.is_valid():
-    #         produit = produit_serializer.save()  # This will save the produit to the database
-    #     else:
-    #         return Response(produit_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    #     # Validate and create the stock
-    #     stock_data['produit'] = produit.id  # Associate the stock with the created produit
-    #     stock_serializer = StockSerializer(data=stock_data)
-    #     if stock_serializer.is_valid():
-    #         stock_serializer.save()  # This will save the stock to the database
-    #     else:
-    #         return Response(stock_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    #     return Response({
-    #         'produit': produit_serializer.data,
-    #         'stock': stock_serializer.data
-    #     }, status=status.HTTP_201_CREATED)
 
 
 class ProduitGetOneAPIView(APIView):
@@ -1920,71 +1620,6 @@ class QRCodeView(APIView):
         
 
 
-# class ProduitQRCodeView(APIView):
-#     def get(self, request, pk):
-#         produit = get_object_or_404(Produit, pk=pk)
-#         data = f"Produit: {produit.name}\nDescription: {produit.description}"
-        
-#         qr = qrcode.make(data)
-#         buffer = BytesIO()
-#         qr.save(buffer, format="PNG")
-#         buffer.seek(0)
-
-#         return HttpResponse(buffer, content_type="image/png")
-
-
-# #list qr_code in excel
-# class ExportQRCodeExcelAPIView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         responses={200: openapi.Response('response description', ProduitSerializer)},
-#         )
-#     def get(self, request):
-#         wb = Workbook()
-#         ws = wb.active
-#         ws.title = "QR Codes Produits"
-
-#         # En-têtes
-#         ws.append(["Nom du produit", "QR Code"])
-
-#         produits = Produit.objects.all()
-#         row = 2
-
-#         for produit in produits:
-#             # Générer le QR code
-#             data = f"Produit ID: {produit.id}, Nom: {produit.nom}"
-#             qr = qrcode.make(data)
-
-#             # Sauvegarde temporaire de l’image
-#             buffer = BytesIO()
-#             qr.save(buffer, format="PNG")
-#             buffer.seek(0)
-
-#             # Créer image PIL compatible openpyxl
-#             img = XLImage(buffer)
-#             img.width = 50
-#             img.height = 50
-
-#             # Insérer le nom et l’image QR code
-#             ws.cell(row=row, column=1, value=produit.nom)
-#             cell = f'B{row}'
-#             ws.add_image(img, cell)
-
-#             row += 1
-
-#         # Export Excel dans un buffer
-#         response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-#         response['Content-Disposition'] = 'attachment; filename="qr_codes_produits.xlsx"'
-
-#         excel_buffer = BytesIO()
-#         wb.save(excel_buffer)
-#         response.write(excel_buffer.getvalue())
-
-#         return response
-
-
 class ExportOneQRCodeExcelAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
@@ -2033,27 +1668,6 @@ class ExportOneQRCodeExcelAPIView(APIView):
         return response
 
 
-
-# class GetGalleryByProduitAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les images de la galerie d’un produit",
-#         manual_parameters=[
-#             openapi.Parameter('produit_id', openapi.IN_QUERY, description="ID du produit", type=openapi.TYPE_INTEGER)
-#         ],
-#         responses={200: GallerySerializer(many=True)}
-#     )
-#     def get(self, request):
-#         produit_id = request.GET.get('produit_id')
-#         if not produit_id:
-#             return Response({"error": "produit_id requis"}, status=400)
-
-#         galleries = Gallery.objects.filter(produit_id=produit_id)
-#         serializer = GallerySerializer(galleries, many=True)
-#         return Response(serializer.data)
-
-
 class ProduitRecentListAPIView(APIView):
     # permission_classes = [IsAuthenticated]
 
@@ -2075,13 +1689,13 @@ class MarquePuretePriceCompareDatesView(APIView):
         qs = MarquePuretePrixHistory.objects.filter(
             marque__marque__iexact=marque.strip(),
             purete__purete__iexact=str(purete).strip(),
-            changed_at__lte=dt,
+            date_modification__lte=dt,
         )
 
         if bijouterie_id:
             qs = qs.filter(bijouterie_id=bijouterie_id)
 
-        obj = qs.order_by("-changed_at", "-id").first()
+        obj = qs.order_by("-date_modification", "-id").first()
         return obj.nouveau_prix if obj else None
 
     @swagger_auto_schema(
@@ -2178,148 +1792,6 @@ Utilisation typique :
     
     
 
-
-# class CommercialSettingsUpdateView(APIView):
-#     permission_classes = [IsAuthenticated, IsAdminOrManager]
-
-#     @swagger_auto_schema(
-#         operation_id="updateCommercialSettings",
-#         operation_summary="Mettre à jour la TVA et les prix par marque/pureté",
-#         operation_description="""
-# Permet à l’admin ou au manager de :
-
-# - activer ou désactiver la TVA d’une bijouterie
-# - modifier le taux de TVA
-# - mettre à jour le prix journalier d’un ou plusieurs couples marque/pureté
-# - créer automatiquement un historique des changements de prix
-#         """,
-#         request_body=CommercialSettingsSerializer,
-#         responses={
-#             200: openapi.Response(
-#                 description="Paramétrage commercial mis à jour avec succès."
-#             ),
-#             400: openapi.Response(
-#                 description="Erreur de validation ou couple marque/pureté introuvable."
-#             ),
-#             403: openapi.Response(description="Accès refusé."),
-#             404: openapi.Response(description="Bijouterie introuvable."),
-#         },
-#         tags=["Paramétrage commercial"],
-#     )
-#     @transaction.atomic
-#     def patch(self, request, *args, **kwargs):
-#         serializer = CommercialSettingsSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-#         data = serializer.validated_data
-
-#         try:
-#             bijouterie = Bijouterie.objects.select_for_update().get(pk=data["bijouterie_id"])
-#         except Bijouterie.DoesNotExist:
-#             return Response(
-#                 {"detail": "Bijouterie introuvable."},
-#                 status=status.HTTP_404_NOT_FOUND,
-#             )
-
-#         # manager -> seulement ses bijouteries
-#         role = get_role_name(request.user)
-#         if role == "manager":
-#             manager = getattr(request.user, "staff_manager_profile", None)
-#             if not manager or not manager.bijouteries.filter(pk=bijouterie.pk).exists():
-#                 return Response(
-#                     {"detail": "Vous ne pouvez pas modifier cette bijouterie."},
-#                     status=status.HTTP_403_FORBIDDEN,
-#                 )
-
-#         updated_prices = []
-
-#         # -------------------------
-#         # TVA
-#         # -------------------------
-#         if "appliquer_tva" in data:
-#             bijouterie.appliquer_tva = data["appliquer_tva"]
-
-#         if "taux_tva" in data and data["taux_tva"] is not None:
-#             bijouterie.taux_tva = data["taux_tva"]
-
-#         if "appliquer_tva" in data or "taux_tva" in data:
-#             update_fields = []
-#             if "appliquer_tva" in data:
-#                 update_fields.append("appliquer_tva")
-#             if "taux_tva" in data and data["taux_tva"] is not None:
-#                 update_fields.append("taux_tva")
-#             if hasattr(bijouterie, "updated_at"):
-#                 update_fields.append("updated_at")
-
-#             bijouterie.save(update_fields=update_fields)
-
-#         # -------------------------
-#         # PRIX MARQUE / PURETE
-#         # -------------------------
-#         for item in data.get("prix_marque_purete", []):
-#             obj = (
-#                 MarquePurete.objects
-#                 .select_for_update()
-#                 .select_related("marque", "purete")
-#                 .filter(
-#                     marque__marque__iexact=item["marque"].strip(),
-#                     purete__purete__iexact=str(item["purete"]).strip(),
-#                 )
-#                 .first()
-#             )
-
-#             if not obj:
-#                 return Response(
-#                     {
-#                         "detail": (
-#                             f"Aucune correspondance trouvée pour "
-#                             f"marque='{item['marque']}' et purete='{item['purete']}'."
-#                         )
-#                     },
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-
-#             old_price = Decimal(str(obj.prix or "0.00"))
-
-#             try:
-#                 obj, history = update_marque_purete_price(
-#                     obj=obj,
-#                     new_price=item["prix"],
-#                     user=request.user,
-#                     bijouterie=bijouterie,
-#                     source="api",
-#                     note="Mise à jour via paramétrage commercial",
-#                 )
-#             except ValueError as e:
-#                 return Response(
-#                     {"detail": str(e)},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-
-#             updated_prices.append({
-#                 "id": obj.id,
-#                 "marque": getattr(obj.marque, "marque", None),
-#                 "purete": getattr(obj.purete, "purete", None),
-#                 "ancien_prix": str(old_price),
-#                 "nouveau_prix": str(obj.prix),
-#                 "history_id": history.id if history else None,
-#                 "changed": history is not None,
-#             })
-
-#         return Response(
-#             {
-#                 "message": "Paramétrage commercial mis à jour avec succès.",
-#                 "bijouterie": {
-#                     "id": bijouterie.id,
-#                     "nom": bijouterie.nom,
-#                     "appliquer_tva": bijouterie.appliquer_tva,
-#                     "taux_tva": str(bijouterie.taux_tva),
-#                 },
-#                 "prix_updates_count": len(updated_prices),
-#                 "prix_updates": updated_prices,
-#             },
-#             status=status.HTTP_200_OK,
-#         )
-        
 
 
 class MarquePuretePriceEvolutionView(APIView):
@@ -2439,11 +1911,11 @@ Paramètres :
                 )
             qs = qs.filter(bijouterie_id=bijouterie_id)
 
-        qs = qs.order_by("changed_at", "id")
+        qs = qs.order_by("date_modification", "id")
 
         points = [
             {
-                "date": obj.changed_at.isoformat() if obj.changed_at else None,
+                "date": obj.date_modification.isoformat() if obj.date_modification else None,
                 "prix": str(obj.nouveau_prix),
             }
             for obj in qs
@@ -2562,10 +2034,10 @@ Permet de savoir :
         date_to = self.request.query_params.get("date_to")
 
         if date_from:
-            qs = qs.filter(changed_at__date__gte=date_from)
+            qs = qs.filter(date_modification__date__gte=date_from)
 
         if date_to:
-            qs = qs.filter(changed_at__date__lte=date_to)
+            qs = qs.filter(date_modification__date__lte=date_to)
 
         # sécurité manager -> seulement ses bijouteries
         user = self.request.user
@@ -2705,10 +2177,10 @@ Cette vue est utile pour :
             qs = qs.filter(bijouterie_id=bijouterie)
 
         if date_from:
-            qs = qs.filter(changed_at__date__gte=date_from)
+            qs = qs.filter(date_modification__date__gte=date_from)
 
         if date_to:
-            qs = qs.filter(changed_at__date__lte=date_to)
+            qs = qs.filter(date_modification__date__lte=date_to)
 
         # sécurité manager -> seulement ses bijouteries
         user = request.user
@@ -2717,11 +2189,11 @@ Cette vue est utile pour :
             if manager.bijouteries.exists():
                 qs = qs.filter(bijouterie__in=manager.bijouteries.all())
 
-        qs = qs.order_by("changed_at", "id")
+        qs = qs.order_by("date_modification", "id")
 
         results = [
             {
-                "date": obj.changed_at,
+                "date": obj.date_modification,
                 "prix": obj.nouveau_prix,
                 "marque": getattr(obj.marque, "marque", None),
                 "purete": getattr(obj.purete, "purete", None),
@@ -2881,13 +2353,13 @@ class MarquePuretePriceCompareDatesView(APIView):
         qs = MarquePuretePrixHistory.objects.filter(
             marque__marque__iexact=marque.strip(),
             purete__purete__iexact=str(purete).strip(),
-            changed_at__lte=dt,
+            date_modification__lte=dt,
         )
 
         if bijouterie_id:
             qs = qs.filter(bijouterie_id=bijouterie_id)
 
-        obj = qs.order_by("-changed_at", "-id").first()
+        obj = qs.order_by("-date_modification", "-id").first()
         return obj.nouveau_prix if obj else None
 
     @swagger_auto_schema(

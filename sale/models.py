@@ -219,29 +219,17 @@ class VenteProduit(models.Model):
     
     def _resolve_unit_price(self):
         """
-        Prix de vente par gramme.
-
-        Priorité :
-        1. prix_vente_grammes saisi dans la vente
-        2. prix de la marque du produit
+        Le prix est déjà résolu par create_sale_one_vendor().
         """
 
-        if self.prix_vente_grammes and Decimal(str(self.prix_vente_grammes)) > 0:
-            return Decimal(str(self.prix_vente_grammes))
+        prix = Decimal(str(self.prix_vente_grammes or ZERO))
 
-        produit = self.produit
-
-        try:
-            prix = produit.marque.prix
-        except Exception:
-            prix = None
-
-        if prix is None:
+        if prix <= ZERO:
             raise ValidationError({
-                "prix_vente_grammes": f"Aucun prix disponible pour le produit {produit.nom}."
+                "prix_vente_grammes": "Prix de vente obligatoire."
             })
 
-        return Decimal(str(prix))
+        return prix
 
 
     def _get_product_weight(self):
