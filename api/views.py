@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from datetime import time as dtime
 from datetime import timedelta
+from datetime import timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -338,9 +338,9 @@ class ManagerDashboardAPIView(APIView):
         ]
 
         trunc_map = {
-            "day": TruncDay("date_creation"),
-            "week": TruncWeek("date_creation"),
-            "month": TruncMonth("date_creation"),
+            "day": TruncDay("date_creation", tzinfo=dt_timezone.utc),
+            "week": TruncWeek("date_creation", tzinfo=dt_timezone.utc),
+            "month": TruncMonth("date_creation", tzinfo=dt_timezone.utc),
         }
 
         sales_over_time_qs = (
@@ -408,7 +408,7 @@ class ManagerDashboardAPIView(APIView):
         sales_by_year_qs = (
             factures_3years_qs
             .filter(status=Facture.STAT_PAYE)
-            .annotate(year=ExtractYear("date_creation"))
+            .annotate(year=ExtractYear("date_creation", tzinfo=dt_timezone.utc))
             .values("year")
             .annotate(
                 ventes_count=Count("id"),
