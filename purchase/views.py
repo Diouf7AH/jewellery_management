@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, ExtractYear
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_yasg import openapi
@@ -133,10 +133,38 @@ from .serializers import (AchatDetailSerializer, AchatSerializer,
 #             "repartition_produits": repartition_produits,
 #         })
 
-
 class AchatDashboardView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary="Dashboard des achats sur les 3 dernières années",
+        operation_description=(
+            "Retourne les statistiques globales des achats sur les 3 dernières années : "
+            "total achats, montant total, lots, quantités, poids, top fournisseurs, "
+            "répartition produits et statistiques par année."
+        ),
+        tags=["Achats - Dashboard"],
+        responses={
+            200: openapi.Response(
+                description="Dashboard achats récupéré avec succès",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "periode": openapi.Schema(type=openapi.TYPE_OBJECT),
+                        "total_achats": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "montant_total": openapi.Schema(type=openapi.TYPE_STRING),
+                        "total_lots": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "total_quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
+                        "total_poids": openapi.Schema(type=openapi.TYPE_STRING),
+                        "achats_par_annee": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
+                        "top_fournisseurs": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
+                        "repartition_produits": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
+                    },
+                ),
+            ),
+            403: "Accès refusé.",
+        },
+    )
     def get(self, request):
         role = get_role_name(request.user)
 
@@ -181,6 +209,26 @@ class AchatDashboardView(APIView):
         total_poids = lignes.aggregate(
             total=Coalesce(Sum("poids_ligne"), Decimal("0.00"))
         )["total"]
+
+        achats_par_annee_qs = (
+            achats
+            .annotate(annee=ExtractYear("created_at"))
+            .values("annee")
+            .annotate(
+                total_achats=Count("id"),
+                montant_total=Coalesce(Sum("montant_total_ht"), Decimal("0.00")),
+            )
+            .order_by("annee")
+        )
+
+        achats_par_annee = [
+            {
+                "annee": a["annee"],
+                "total_achats": a["total_achats"],
+                "montant_total": a["montant_total"],
+            }
+            for a in achats_par_annee_qs
+        ]
 
         top_fournisseurs_qs = (
             achats.values("fournisseur__nom", "fournisseur__prenom")
@@ -229,10 +277,10 @@ class AchatDashboardView(APIView):
             "total_lots": total_lots,
             "total_quantite": total_quantite,
             "total_poids": total_poids,
+            "achats_par_annee": achats_par_annee,
             "top_fournisseurs": top_fournisseurs,
             "repartition_produits": repartition_produits,
         })
-
 
 class FournisseurGetView(APIView):
     renderer_classes = [UserRenderer]

@@ -8,6 +8,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from backend.permissions import (ROLE_MANAGER, ROLE_VENDOR, IsAdminOrManager,
+                                 IsAdminOrManagerOrVendor, get_role_name)
 from e_commerce.models import (CommandeEcommerce, EcommerceBanner,
                                LivraisonEcommerce, PaiementEcommerce)
 from e_commerce.selectors.products import get_ecommerce_products
@@ -436,7 +438,7 @@ class EcommerceInvoiceView(APIView):
 
 
 class EcommerceDashboardView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAdminOrManager]
 
     @swagger_auto_schema(
         operation_summary="Dashboard e-commerce",

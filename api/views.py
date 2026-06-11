@@ -13,6 +13,7 @@ from django.db.models import (Case, Count, DecimalField, ExpressionWrapper, F,
 from django.db.models.functions import (Coalesce, TruncDay, TruncMonth,
                                         TruncWeek)
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
@@ -23,10 +24,12 @@ from rest_framework.views import APIView
 from backend.permissions import IsAdminOrManager
 from backend.query_scopes import scope_bijouterie_q
 from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
-from sale.models import Facture, Paiement, Vente, VenteProduit
+from sale.models import Facture, Paiement, PaiementLigne, Vente, VenteProduit
 from stock.models import Stock, VendorStock
 from store.models import Bijouterie, MarquePurete
 from store.services.price_history_service import update_marque_purete_price
+from userauths.permissions import (ROLE_ADMIN, ROLE_MANAGER, IsAdminOrManager,
+                                   get_role_name)
 
 from .serializers import CommercialSettingsSerializer
 
@@ -46,88 +49,125 @@ def _aware_range(date_from, date_to, tz):
     return start_dt, end_dt
 
 
+def _parse_date(value):
+    if not value:
+        return None
+    return parse_date(value)
+
+
+def _aware_range(date_from, date_to, tz):
+    start_dt = timezone.make_aware(
+        timezone.datetime.combine(date_from, timezone.datetime.min.time()),
+        tz,
+    )
+    end_dt = timezone.make_aware(
+        timezone.datetime.combine(date_to + timedelta(days=1), timezone.datetime.min.time()),
+        tz,
+    )
+    return start_dt, end_dt
+
+
+def scope_bijouterie_q(user, field="bijouterie_id"):
+    """
+    Scope admin / manager.
+
+    Admin:
+        - voit tout
+
+    Manager:
+        - voit uniquement ses bijouteries ManyToMany
+        - adapte ici si ton Manager a seulement une bijouterie simple.
+    """
+
+    role = get_role_name(user)
+
+    if role == ROLE_ADMIN:
+        return Q()
+
+    if role == ROLE_MANAGER:
+        manager_profile = getattr(user, "manager", None)
+
+        if not manager_profile:
+            return Q(pk__isnull=True)
+
+        if hasattr(manager_profile, "bijouteries"):
+            ids = list(manager_profile.bijouteries.values_list("id", flat=True))
+            return Q(**{f"{field}__in": ids})
+
+        if hasattr(manager_profile, "bijouterie") and manager_profile.bijouterie_id:
+            return Q(**{field: manager_profile.bijouterie_id})
+
+        return Q(pk__isnull=True)
+
+    return Q(pk__isnull=True)
+
+
 class ManagerDashboardAPIView(APIView):
     """
     Dashboard manager/admin:
     - ventes
-    - paiements / cash
+    - paiements
     - stock
     - top produits
-    - série temporelle
+    - courbe temporelle
     """
+
     permission_classes = [IsAuthenticated, IsAdminOrManager]
 
     @swagger_auto_schema(
         operation_id="managerDashboard",
-        operation_summary="Dashboard manager complet (ventes + stock + top produits + cash)",
+        operation_summary="Dashboard manager complet",
         operation_description=(
-            "Retourne un dashboard global pour **admin** ou **manager**.\n\n"
-            "### Scopes\n"
-            "- **admin** : toutes les bijouteries, ou une bijouterie précise via `bijouterie_id`\n"
-            "- **manager** : limité automatiquement à ses bijouteries (**ManyToMany**)\n\n"
-            "### Période\n"
-            "- par défaut : les 30 derniers jours\n"
-            "- sinon : `date_from=YYYY-MM-DD&date_to=YYYY-MM-DD`\n\n"
-            "### group_by\n"
-            "- `day` (défaut)\n"
-            "- `week`\n"
-            "- `month`\n"
+            "Retourne un dashboard complet pour admin ou manager.\n\n"
+            "- Admin : toutes les bijouteries ou filtre par `bijouterie_id`\n"
+            "- Manager : limité automatiquement à ses bijouteries\n\n"
+            "Période par défaut : les 30 derniers jours."
         ),
         manual_parameters=[
             openapi.Parameter(
-                "date_from", openapi.IN_QUERY,
+                "date_from",
+                openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
                 format="date",
                 required=False,
-                description="Date début (YYYY-MM-DD). Défaut = 30 jours avant aujourd’hui.",
+                description="Date début YYYY-MM-DD",
             ),
             openapi.Parameter(
-                "date_to", openapi.IN_QUERY,
+                "date_to",
+                openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
                 format="date",
                 required=False,
-                description="Date fin (YYYY-MM-DD). Défaut = aujourd’hui.",
+                description="Date fin YYYY-MM-DD",
             ),
             openapi.Parameter(
-                "group_by", openapi.IN_QUERY,
+                "group_by",
+                openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
-                required=False,
                 enum=["day", "week", "month"],
                 default="day",
-                description="Agrégation de la courbe d’évolution.",
+                required=False,
+                description="Agrégation: day, week ou month",
             ),
             openapi.Parameter(
-                "bijouterie_id", openapi.IN_QUERY,
+                "bijouterie_id",
+                openapi.IN_QUERY,
                 type=openapi.TYPE_INTEGER,
                 required=False,
-                description="Admin seulement: filtrer une bijouterie précise.",
+                description="Admin seulement : filtrer une bijouterie précise",
             ),
             openapi.Parameter(
-                "vendor_id", openapi.IN_QUERY,
+                "vendor_id",
+                openapi.IN_QUERY,
                 type=openapi.TYPE_INTEGER,
                 required=False,
-                description="Optionnel: filtrer sur un vendeur précis.",
+                description="Filtrer par vendeur",
             ),
         ],
         responses={
-            200: openapi.Response(
-                description="Dashboard manager",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "period": openapi.Schema(type=openapi.TYPE_OBJECT),
-                        "scope": openapi.Schema(type=openapi.TYPE_OBJECT),
-                        "kpis": openapi.Schema(type=openapi.TYPE_OBJECT),
-                        "payments_by_mode": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
-                        "sales_over_time": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
-                        "top_products": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
-                        "stock_summary": openapi.Schema(type=openapi.TYPE_OBJECT),
-                        "stock_by_product": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
-                    },
-                ),
-            ),
-            400: openapi.Response(description="Paramètres invalides"),
-            403: openapi.Response(description="Accès refusé"),
+            200: openapi.Response("Dashboard manager"),
+            400: openapi.Response("Paramètres invalides"),
+            403: openapi.Response("Accès refusé"),
         },
         tags=["Dashboard"],
     )
@@ -137,11 +177,14 @@ class ManagerDashboardAPIView(APIView):
         tz = timezone.get_current_timezone()
 
         if role not in {ROLE_ADMIN, ROLE_MANAGER}:
-            return Response({"detail": "Accès refusé."}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"detail": "Accès refusé."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-        # ---------------------------------------------------
-        # 1) Période
-        # ---------------------------------------------------
+        # =========================
+        # 1. Période
+        # =========================
         date_from_raw = (request.query_params.get("date_from") or "").strip()
         date_to_raw = (request.query_params.get("date_to") or "").strip()
 
@@ -154,6 +197,7 @@ class ManagerDashboardAPIView(APIView):
 
             if date_from and not date_to:
                 date_to = date_from
+
             if date_to and not date_from:
                 date_from = date_to
 
@@ -165,37 +209,44 @@ class ManagerDashboardAPIView(APIView):
 
             if date_from > date_to:
                 return Response(
-                    {"detail": "date_from doit être <= date_to."},
+                    {"detail": "date_from doit être inférieur ou égal à date_to."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
         start_dt, end_dt = _aware_range(date_from, date_to, tz)
 
         group_by = (request.query_params.get("group_by") or "day").strip().lower()
+
         if group_by not in {"day", "week", "month"}:
             return Response(
-                {"detail": "group_by invalide. Choisir parmi day, week, month."},
+                {"detail": "group_by invalide. Choisir day, week ou month."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ---------------------------------------------------
-        # 2) Scope bijouterie
-        # ---------------------------------------------------
+        # =========================
+        # 2. Scopes
+        # =========================
         vente_scope_q = scope_bijouterie_q(user, field="bijouterie_id")
         facture_scope_q = scope_bijouterie_q(user, field="bijouterie_id")
         stock_scope_q = scope_bijouterie_q(user, field="bijouterie_id")
         vendor_stock_scope_q = scope_bijouterie_q(user, field="bijouterie_id")
 
-        # admin peut filtrer une bijouterie précise
         bijouterie_id = request.query_params.get("bijouterie_id")
+
         if bijouterie_id:
             try:
                 bijouterie_id = int(bijouterie_id)
             except ValueError:
-                return Response({"detail": "bijouterie_id doit être un entier."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": "bijouterie_id doit être un entier."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             if role != ROLE_ADMIN:
-                return Response({"detail": "bijouterie_id est réservé à l’admin."}, status=status.HTTP_403_FORBIDDEN)
+                return Response(
+                    {"detail": "bijouterie_id est réservé à l’admin."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
             vente_scope_q &= Q(bijouterie_id=bijouterie_id)
             facture_scope_q &= Q(bijouterie_id=bijouterie_id)
@@ -204,15 +255,19 @@ class ManagerDashboardAPIView(APIView):
 
         vendor_id = request.query_params.get("vendor_id")
         vendor_id_int = None
+
         if vendor_id:
             try:
                 vendor_id_int = int(vendor_id)
             except ValueError:
-                return Response({"detail": "vendor_id doit être un entier."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": "vendor_id doit être un entier."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        # ---------------------------------------------------
-        # 3) Querysets de base
-        # ---------------------------------------------------
+        # =========================
+        # 3. Querysets
+        # =========================
         ventes_qs = (
             Vente.objects
             .select_related("bijouterie", "client", "vendor")
@@ -234,40 +289,72 @@ class ManagerDashboardAPIView(APIView):
             .filter(date_paiement__gte=start_dt, date_paiement__lt=end_dt)
         )
 
+        paiement_lignes_qs = (
+            PaiementLigne.objects
+            .select_related("paiement", "paiement__facture", "mode_paiement")
+            .filter(paiement__in=paiements_qs)
+        )
+
         lignes_qs = (
             VenteProduit.objects
             .select_related("vente", "vente__bijouterie", "produit", "vendor")
-            .filter(vente__bijouterie_id__in=ventes_qs.values("bijouterie_id"))
-            .filter(vente__created_at__gte=start_dt, vente__created_at__lt=end_dt)
+            .filter(vente__in=ventes_qs)
         )
 
         if vendor_id_int:
             ventes_qs = ventes_qs.filter(vendor_id=vendor_id_int)
             lignes_qs = lignes_qs.filter(vendor_id=vendor_id_int)
-            factures_qs = factures_qs.filter(vente__produits__vendor_id=vendor_id_int).distinct()
-            paiements_qs = paiements_qs.filter(facture__vente__produits__vendor_id=vendor_id_int).distinct()
+            factures_qs = factures_qs.filter(vente__vendor_id=vendor_id_int)
+            paiements_qs = paiements_qs.filter(facture__vente__vendor_id=vendor_id_int)
+            paiement_lignes_qs = paiement_lignes_qs.filter(
+                paiement__facture__vente__vendor_id=vendor_id_int
+            )
 
-        # ---------------------------------------------------
-        # 4) KPIs ventes / cash
-        # ---------------------------------------------------
+        # =========================
+        # 4. KPI ventes / paiements
+        # =========================
         ventes_count = ventes_qs.distinct().count()
 
         ventes_amount = (
-            factures_qs.filter(status=Facture.STAT_PAYE)
-            .aggregate(total=Coalesce(Sum("montant_total"), Decimal("0.00")))
+            factures_qs
+            .filter(status=Facture.STAT_PAYE)
+            .aggregate(
+                total=Coalesce(
+                    Sum("montant_total"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )
             .get("total") or Decimal("0.00")
         )
 
         cash_total = (
-            paiements_qs.aggregate(total=Coalesce(Sum("montant_paye"), Decimal("0.00"))).get("total")
-            or Decimal("0.00")
+            paiement_lignes_qs
+            .aggregate(
+                total=Coalesce(
+                    Sum("montant_paye"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )
+            .get("total") or Decimal("0.00")
         )
 
         unpaid_total = (
             Facture.objects
             .filter(facture_scope_q)
-            .filter(status=Facture.STAT_NON_PAYE)
-            .aggregate(total=Coalesce(Sum("montant_total"), Decimal("0.00")))
+            .filter(
+                status=Facture.STAT_NON_PAYE,
+                date_creation__gte=start_dt,
+                date_creation__lt=end_dt,
+            )
+            .aggregate(
+                total=Coalesce(
+                    Sum("montant_total"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            )
             .get("total") or Decimal("0.00")
         )
 
@@ -276,33 +363,42 @@ class ManagerDashboardAPIView(APIView):
             avg_ticket = (ventes_amount / Decimal(ventes_count)).quantize(Decimal("0.01"))
 
         total_qty_sold = (
-            lignes_qs.aggregate(total=Coalesce(Sum("quantite"), 0)).get("total") or 0
+            lignes_qs
+            .aggregate(total=Coalesce(Sum("quantite"), 0))
+            .get("total") or 0
         )
 
-        # ---------------------------------------------------
-        # 5) Paiements par mode
-        # ---------------------------------------------------
-        payments_by_mode = list(
-            paiements_qs.values("mode_paiement")
+        # =========================
+        # 5. Paiements par mode
+        # =========================
+        payments_by_mode_qs = (
+            paiement_lignes_qs
+            .values("mode_paiement__id", "mode_paiement__nom", "mode_paiement__code")
             .annotate(
-                total=Coalesce(Sum("montant_paye"), Decimal("0.00")),
+                total=Coalesce(
+                    Sum("montant_paye"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
                 count=Count("id"),
             )
-            .order_by("mode_paiement")
+            .order_by("mode_paiement__nom")
         )
 
         payments_by_mode = [
             {
-                "mode_paiement": row["mode_paiement"],
+                "mode_paiement_id": row["mode_paiement__id"],
+                "mode_paiement": row["mode_paiement__nom"],
+                "code": row["mode_paiement__code"],
                 "count": int(row["count"] or 0),
                 "total": float(row["total"] or 0),
             }
-            for row in payments_by_mode
+            for row in payments_by_mode_qs
         ]
 
-        # ---------------------------------------------------
-        # 6) Courbe d’évolution ventes
-        # ---------------------------------------------------
+        # =========================
+        # 6. Courbe ventes
+        # =========================
         trunc_map = {
             "day": TruncDay("date_creation"),
             "week": TruncWeek("date_creation"),
@@ -310,12 +406,17 @@ class ManagerDashboardAPIView(APIView):
         }
 
         sales_over_time_qs = (
-            factures_qs.filter(status=Facture.STAT_PAYE)
+            factures_qs
+            .filter(status=Facture.STAT_PAYE)
             .annotate(period=trunc_map[group_by])
             .values("period")
             .annotate(
                 ventes_count=Count("id"),
-                total=Coalesce(Sum("montant_total"), Decimal("0.00")),
+                total=Coalesce(
+                    Sum("montant_total"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
             )
             .order_by("period")
         )
@@ -329,36 +430,60 @@ class ManagerDashboardAPIView(APIView):
             for row in sales_over_time_qs
         ]
 
-        # ---------------------------------------------------
-        # 7) Top produits
-        # ---------------------------------------------------
+        # =========================
+        # 7. Top produits
+        # =========================
         top_products_qs = (
-            lignes_qs.values("produit_id", "produit__nom", "produit__slug")
+            lignes_qs
+            .values(
+                "produit_id",
+                "produit__slug",
+                "produit__sku",
+                "produit__marque__nom",
+                "produit__modele__nom",
+                "produit__purete__nom",
+            )
             .annotate(
                 quantite=Coalesce(Sum("quantite"), 0),
-                total_ht=Coalesce(Sum("sous_total_prix_vente_ht"), Decimal("0.00")),
-                total_ttc=Coalesce(Sum("prix_ttc"), Decimal("0.00")),
+                total_ttc=Coalesce(
+                    Sum("montant_total"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
                 ventes_distinctes=Count("vente_id", distinct=True),
             )
             .order_by("-total_ttc", "-quantite")[:10]
         )
 
-        top_products = [
-            {
-                "produit_id": row["produit_id"],
-                "produit": row["produit__nom"] or "Produit supprimé",
-                "slug": row["produit__slug"],
-                "quantite": int(row["quantite"] or 0),
-                "total_ht": float(row["total_ht"] or 0),
-                "total_ttc": float(row["total_ttc"] or 0),
-                "ventes_distinctes": int(row["ventes_distinctes"] or 0),
-            }
-            for row in top_products_qs
-        ]
+        top_products = []
 
-        # ---------------------------------------------------
-        # 8) Résumé stock boutique
-        # ---------------------------------------------------
+        for row in top_products_qs:
+            produit_nom = " ".join(
+                filter(
+                    None,
+                    [
+                        row.get("produit__marque__nom"),
+                        row.get("produit__modele__nom"),
+                        row.get("produit__purete__nom"),
+                    ],
+                )
+            )
+
+            top_products.append(
+                {
+                    "produit_id": row["produit_id"],
+                    "produit": produit_nom or row.get("produit__sku") or "Produit",
+                    "slug": row.get("produit__slug"),
+                    "sku": row.get("produit__sku"),
+                    "quantite": int(row["quantite"] or 0),
+                    "total_ttc": float(row["total_ttc"] or 0),
+                    "ventes_distinctes": int(row["ventes_distinctes"] or 0),
+                }
+            )
+
+        # =========================
+        # 8. Stock boutique
+        # =========================
         stock_qs = (
             Stock.objects
             .select_related("bijouterie", "produit_line", "produit_line__produit")
@@ -366,52 +491,85 @@ class ManagerDashboardAPIView(APIView):
         )
 
         stock_summary = stock_qs.aggregate(
-            total_en_stock=Coalesce(Sum("en_stock"), 0),
+            total_alloue=Coalesce(Sum("quantite_allouee"), 0),
             total_disponible=Coalesce(Sum("quantite_disponible"), 0),
             lignes_stock=Count("id"),
         )
 
-        reserve_qs = Stock.objects.filter(is_reserve=True, bijouterie__isnull=True)
-        reserve_total = reserve_qs.aggregate(total=Coalesce(Sum("en_stock"), 0)).get("total") or 0
+        reserve_qs = Stock.objects.filter(
+            bijouterie__isnull=True
+        )
+
+        reserve_total = (
+            reserve_qs
+            .aggregate(total=Coalesce(Sum("quantite_disponible"), 0))
+            .get("total") or 0
+        )
 
         vendor_stock_qs = (
             VendorStock.objects
-            .select_related("vendor", "vendor__user", "produit_line", "produit_line__produit")
+            .select_related("vendor", "produit_line", "produit_line__produit")
             .filter(vendor_stock_scope_q)
             .annotate(
                 disponible=ExpressionWrapper(
-                    Coalesce(F("quantite_allouee"), Value(0)) - Coalesce(F("quantite_vendue"), Value(0)),
+                    Coalesce(F("quantite_allouee"), Value(0))
+                    - Coalesce(F("quantite_vendue"), Value(0)),
                     output_field=IntegerField(),
                 )
             )
         )
 
         vendor_available_total = (
-            vendor_stock_qs.aggregate(total=Coalesce(Sum("disponible"), 0)).get("total") or 0
+            vendor_stock_qs
+            .aggregate(total=Coalesce(Sum("disponible"), 0))
+            .get("total") or 0
         )
 
         stock_by_product_qs = (
-            stock_qs.values("produit_line__produit_id", "produit_line__produit__nom")
+            stock_qs
+            .values(
+                "produit_line__produit_id",
+                "produit_line__produit__slug",
+                "produit_line__produit__sku",
+                "produit_line__produit__marque__nom",
+                "produit_line__produit__modele__nom",
+                "produit_line__produit__purete__nom",
+            )
             .annotate(
-                total_en_stock=Coalesce(Sum("en_stock"), 0),
+                total_alloue=Coalesce(Sum("quantite_allouee"), 0),
                 total_disponible=Coalesce(Sum("quantite_disponible"), 0),
             )
-            .order_by("-total_en_stock", "produit_line__produit__nom")[:10]
+            .order_by("-total_disponible")[:10]
         )
 
-        stock_by_product = [
-            {
-                "produit_id": row["produit_line__produit_id"],
-                "produit": row["produit_line__produit__nom"],
-                "en_stock": int(row["total_en_stock"] or 0),
-                "quantite_disponible": int(row["total_disponible"] or 0),
-            }
-            for row in stock_by_product_qs
-        ]
+        stock_by_product = []
 
-        # ---------------------------------------------------
-        # 9) Réponse finale
-        # ---------------------------------------------------
+        for row in stock_by_product_qs:
+            produit_nom = " ".join(
+                filter(
+                    None,
+                    [
+                        row.get("produit_line__produit__marque__nom"),
+                        row.get("produit_line__produit__modele__nom"),
+                        row.get("produit_line__produit__purete__nom"),
+                    ],
+                )
+            )
+
+            stock_by_product.append(
+                {
+                    "produit_id": row["produit_line__produit_id"],
+                    "produit": produit_nom or row.get("produit_line__produit__sku") or "Produit",
+                    "slug": row.get("produit_line__produit__slug"),
+                    "sku": row.get("produit_line__produit__sku"),
+                    "quantite_allouee": int(row["total_alloue"] or 0),
+                    "quantite_disponible": int(row["total_disponible"] or 0),
+                }
+            )
+
+        # =========================
+        # 9. Réponse
+        # =========================
         return Response(
             {
                 "period": {
@@ -437,7 +595,7 @@ class ManagerDashboardAPIView(APIView):
                 "top_products": top_products,
                 "stock_summary": {
                     "lignes_stock": int(stock_summary.get("lignes_stock") or 0),
-                    "total_en_stock": int(stock_summary.get("total_en_stock") or 0),
+                    "total_alloue": int(stock_summary.get("total_alloue") or 0),
                     "total_disponible": int(stock_summary.get("total_disponible") or 0),
                     "reserve_total": int(reserve_total or 0),
                     "vendor_available_total": int(vendor_available_total or 0),
@@ -446,7 +604,6 @@ class ManagerDashboardAPIView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-        
 
 
 class CommercialSettingsUpdateView(APIView):
