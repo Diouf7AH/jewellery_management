@@ -33,6 +33,106 @@ from .serializers import (AchatDetailSerializer, AchatSerializer,
                           FournisseurSerializer, LotDisplaySerializer,
                           LotListSerializer, ProduitLineMiniSerializer)
 
+# class AchatDashboardView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request):
+#         role = get_role_name(request.user)
+
+#         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
+#             return Response({"detail": "Accès refusé."}, status=403)
+
+#         # 3 dernières années : année courante + 2 années précédentes
+#         current_year = timezone.now().year
+#         start_year = current_year - 2
+
+#         start_date = timezone.datetime(
+#             start_year, 1, 1,
+#             tzinfo=timezone.get_current_timezone()
+#         )
+
+#         achats = Achat.objects.filter(created_at__gte=start_date)
+
+#         lots = Lot.objects.filter(achat__created_at__gte=start_date)
+
+#         lignes = ProduitLine.objects.select_related("produit", "lot__achat").filter(
+#             lot__achat__created_at__gte=start_date
+#         )
+
+#         lignes = lignes.annotate(
+#             poids_ligne=ExpressionWrapper(
+#                 F("quantite") * Coalesce(F("produit__poids"), Decimal("0.00")),
+#                 output_field=DecimalField(max_digits=18, decimal_places=3)
+#             )
+#         )
+
+#         total_achats = achats.count()
+
+#         montant_total = achats.aggregate(
+#             total=Coalesce(Sum("montant_total_ht"), Decimal("0.00"))
+#         )["total"]
+
+#         total_lots = lots.count()
+
+#         total_poids = lignes.aggregate(
+#             total=Coalesce(Sum("poids_ligne"), Decimal("0.00"))
+#         )["total"]
+
+#         total_poids = lignes.aggregate(
+#             total=Coalesce(Sum("poids_ligne"), Decimal("0.00"))
+#         )["total"]
+
+#         top_fournisseurs_qs = (
+#             achats.values("fournisseur__nom", "fournisseur__prenom")
+#             .annotate(
+#                 total_achats=Count("id"),
+#                 montant_total=Coalesce(Sum("montant_total_ht"), Decimal("0.00")),
+#             )
+#             .order_by("-montant_total")[:5]
+#         )
+
+#         top_fournisseurs = [
+#             {
+#                 "fournisseur": f"{(f['fournisseur__prenom'] or '')} {(f['fournisseur__nom'] or '')}".strip() or "N/A",
+#                 "total_achats": f["total_achats"],
+#                 "montant_total": f["montant_total"],
+#             }
+#             for f in top_fournisseurs_qs
+#         ]
+
+#         produits_qs = (
+#             lignes.values("produit__nom")
+#             .annotate(
+#                 quantite=Coalesce(Sum("quantite"), 0),
+#                 poids_total=Coalesce(Sum("poids_ligne"), Decimal("0.00")),
+#             )
+#             .order_by("-quantite")[:5]
+#         )
+
+#         repartition_produits = [
+#             {
+#                 "produit": p["produit__nom"] or "N/A",
+#                 "quantite": p["quantite"],
+#                 "poids_total": p["poids_total"],
+#             }
+#             for p in produits_qs
+#         ]
+
+#         return Response({
+#             "periode": {
+#                 "start_year": start_year,
+#                 "end_year": current_year,
+#                 "label": f"{start_year}-{current_year}",
+#             },
+#             "total_achats": total_achats,
+#             "montant_total": montant_total,
+#             "total_lots": total_lots,
+#             "total_quantite": total_quantite,
+#             "total_poids": total_poids,
+#             "top_fournisseurs": top_fournisseurs,
+#             "repartition_produits": repartition_produits,
+#         })
+
 
 class AchatDashboardView(APIView):
     permission_classes = [IsAuthenticated]
@@ -43,7 +143,6 @@ class AchatDashboardView(APIView):
         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
             return Response({"detail": "Accès refusé."}, status=403)
 
-        # 3 dernières années : année courante + 2 années précédentes
         current_year = timezone.now().year
         start_year = current_year - 2
 
@@ -53,16 +152,18 @@ class AchatDashboardView(APIView):
         )
 
         achats = Achat.objects.filter(created_at__gte=start_date)
-
         lots = Lot.objects.filter(achat__created_at__gte=start_date)
 
-        lignes = ProduitLine.objects.select_related("produit", "lot__achat").filter(
-            lot__achat__created_at__gte=start_date
-        )
-
-        poids_expr = ExpressionWrapper(
-            F("quantite") * Coalesce(F("produit__poids"), Decimal("0.00")),
-            output_field=DecimalField(max_digits=18, decimal_places=3)
+        lignes = (
+            ProduitLine.objects
+            .select_related("produit", "lot__achat")
+            .filter(lot__achat__created_at__gte=start_date)
+            .annotate(
+                poids_ligne=ExpressionWrapper(
+                    F("quantite") * Coalesce(F("produit__poids"), Decimal("0.00")),
+                    output_field=DecimalField(max_digits=18, decimal_places=3)
+                )
+            )
         )
 
         total_achats = achats.count()
@@ -78,7 +179,7 @@ class AchatDashboardView(APIView):
         )["total"]
 
         total_poids = lignes.aggregate(
-            total=Coalesce(Sum(poids_expr), Decimal("0.00"))
+            total=Coalesce(Sum("poids_ligne"), Decimal("0.00"))
         )["total"]
 
         top_fournisseurs_qs = (
@@ -103,7 +204,7 @@ class AchatDashboardView(APIView):
             lignes.values("produit__nom")
             .annotate(
                 quantite=Coalesce(Sum("quantite"), 0),
-                poids_total=Coalesce(Sum(poids_expr), Decimal("0.00")),
+                poids_total=Coalesce(Sum("poids_ligne"), Decimal("0.00")),
             )
             .order_by("-quantite")[:5]
         )
