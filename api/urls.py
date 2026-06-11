@@ -55,8 +55,8 @@ urlpatterns = [
     path('validate-token',userauths_views.ValidateTokenView.as_view(),name="validate_token"),
     
     # API Endpoints
-    path("dashboard/manager", api_views.ManagerDashboardAPIView.as_view(), name="manager-dashboard"),
-    path("settings/commercial", api_views.CommercialSettingsUpdateView.as_view(),name="commercial-settings-update",),
+    path("dashboard/manager/", api_views.ManagerDashboardAPIView.as_view(), name="manager-dashboard"),
+    path("settings/commercial/", api_views.CommercialSettingsUpdateView.as_view(),name="commercial-settings-update",),
     
     # STORE
     

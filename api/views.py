@@ -10,8 +10,8 @@ from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.db.models import (Case, Count, DecimalField, ExpressionWrapper, F,
                               IntegerField, Q, Sum, Value, When)
-from django.db.models.functions import (Coalesce, TruncDay, TruncMonth,
-                                        TruncWeek)
+from django.db.models.functions import (Coalesce, ExtractYear, TruncDay,
+                                        TruncMonth, TruncWeek)
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from drf_yasg import openapi
@@ -28,25 +28,8 @@ from sale.models import Facture, Paiement, PaiementLigne, Vente, VenteProduit
 from stock.models import Stock, VendorStock
 from store.models import Bijouterie, MarquePurete
 from store.services.price_history_service import update_marque_purete_price
-from userauths.permissions import (ROLE_ADMIN, ROLE_MANAGER, IsAdminOrManager,
-                                   get_role_name)
 
 from .serializers import CommercialSettingsSerializer
-
-
-def _parse_date(v: str | None):
-    if not v:
-        return None
-    try:
-        return datetime.strptime(v, "%Y-%m-%d").date()
-    except Exception:
-        return None
-
-
-def _aware_range(date_from, date_to, tz):
-    start_dt = timezone.make_aware(datetime.combine(date_from, dtime.min), tz)
-    end_dt = timezone.make_aware(datetime.combine(date_to + timedelta(days=1), dtime.min), tz)
-    return start_dt, end_dt
 
 
 def _parse_date(value):
@@ -60,68 +43,30 @@ def _aware_range(date_from, date_to, tz):
         timezone.datetime.combine(date_from, timezone.datetime.min.time()),
         tz,
     )
+
     end_dt = timezone.make_aware(
-        timezone.datetime.combine(date_to + timedelta(days=1), timezone.datetime.min.time()),
+        timezone.datetime.combine(
+            date_to + timedelta(days=1),
+            timezone.datetime.min.time(),
+        ),
         tz,
     )
+
     return start_dt, end_dt
 
 
-def scope_bijouterie_q(user, field="bijouterie_id"):
-    """
-    Scope admin / manager.
-
-    Admin:
-        - voit tout
-
-    Manager:
-        - voit uniquement ses bijouteries ManyToMany
-        - adapte ici si ton Manager a seulement une bijouterie simple.
-    """
-
-    role = get_role_name(user)
-
-    if role == ROLE_ADMIN:
-        return Q()
-
-    if role == ROLE_MANAGER:
-        manager_profile = getattr(user, "manager", None)
-
-        if not manager_profile:
-            return Q(pk__isnull=True)
-
-        if hasattr(manager_profile, "bijouteries"):
-            ids = list(manager_profile.bijouteries.values_list("id", flat=True))
-            return Q(**{f"{field}__in": ids})
-
-        if hasattr(manager_profile, "bijouterie") and manager_profile.bijouterie_id:
-            return Q(**{field: manager_profile.bijouterie_id})
-
-        return Q(pk__isnull=True)
-
-    return Q(pk__isnull=True)
-
-
 class ManagerDashboardAPIView(APIView):
-    """
-    Dashboard manager/admin:
-    - ventes
-    - paiements
-    - stock
-    - top produits
-    - courbe temporelle
-    """
-
     permission_classes = [IsAuthenticated, IsAdminOrManager]
 
     @swagger_auto_schema(
         operation_id="managerDashboard",
         operation_summary="Dashboard manager complet",
         operation_description=(
-            "Retourne un dashboard complet pour admin ou manager.\n\n"
-            "- Admin : toutes les bijouteries ou filtre par `bijouterie_id`\n"
-            "- Manager : limité automatiquement à ses bijouteries\n\n"
-            "Période par défaut : les 30 derniers jours."
+            "Dashboard complet pour admin ou manager.\n\n"
+            "- Admin : toutes les bijouteries ou filtre `bijouterie_id`\n"
+            "- Manager : uniquement ses bijouteries\n"
+            "- Période par défaut : 30 derniers jours\n"
+            "- Inclut aussi un résumé des 3 dernières années"
         ),
         manual_parameters=[
             openapi.Parameter(
@@ -182,9 +127,6 @@ class ManagerDashboardAPIView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # =========================
-        # 1. Période
-        # =========================
         date_from_raw = (request.query_params.get("date_from") or "").strip()
         date_to_raw = (request.query_params.get("date_to") or "").strip()
 
@@ -223,9 +165,6 @@ class ManagerDashboardAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # =========================
-        # 2. Scopes
-        # =========================
         vente_scope_q = scope_bijouterie_q(user, field="bijouterie_id")
         facture_scope_q = scope_bijouterie_q(user, field="bijouterie_id")
         stock_scope_q = scope_bijouterie_q(user, field="bijouterie_id")
@@ -265,28 +204,34 @@ class ManagerDashboardAPIView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # =========================
-        # 3. Querysets
-        # =========================
         ventes_qs = (
             Vente.objects
             .select_related("bijouterie", "client", "vendor")
-            .filter(vente_scope_q)
-            .filter(created_at__gte=start_dt, created_at__lt=end_dt)
+            .filter(
+                vente_scope_q,
+                created_at__gte=start_dt,
+                created_at__lt=end_dt,
+            )
         )
 
         factures_qs = (
             Facture.objects
             .select_related("bijouterie", "vente")
-            .filter(facture_scope_q)
-            .filter(date_creation__gte=start_dt, date_creation__lt=end_dt)
+            .filter(
+                facture_scope_q,
+                date_creation__gte=start_dt,
+                date_creation__lt=end_dt,
+            )
         )
 
         paiements_qs = (
             Paiement.objects
             .select_related("facture", "facture__bijouterie", "cashier", "created_by")
-            .filter(facture__bijouterie_id__in=factures_qs.values("bijouterie_id"))
-            .filter(date_paiement__gte=start_dt, date_paiement__lt=end_dt)
+            .filter(
+                facture__in=factures_qs,
+                date_paiement__gte=start_dt,
+                date_paiement__lt=end_dt,
+            )
         )
 
         paiement_lignes_qs = (
@@ -310,9 +255,6 @@ class ManagerDashboardAPIView(APIView):
                 paiement__facture__vente__vendor_id=vendor_id_int
             )
 
-        # =========================
-        # 4. KPI ventes / paiements
-        # =========================
         ventes_count = ventes_qs.distinct().count()
 
         ventes_amount = (
@@ -324,8 +266,7 @@ class ManagerDashboardAPIView(APIView):
                     Decimal("0.00"),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 )
-            )
-            .get("total") or Decimal("0.00")
+            )["total"] or Decimal("0.00")
         )
 
         cash_total = (
@@ -336,14 +277,13 @@ class ManagerDashboardAPIView(APIView):
                     Decimal("0.00"),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 )
-            )
-            .get("total") or Decimal("0.00")
+            )["total"] or Decimal("0.00")
         )
 
         unpaid_total = (
             Facture.objects
-            .filter(facture_scope_q)
             .filter(
+                facture_scope_q,
                 status=Facture.STAT_NON_PAYE,
                 date_creation__gte=start_dt,
                 date_creation__lt=end_dt,
@@ -354,26 +294,27 @@ class ManagerDashboardAPIView(APIView):
                     Decimal("0.00"),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 )
-            )
-            .get("total") or Decimal("0.00")
+            )["total"] or Decimal("0.00")
         )
 
         avg_ticket = Decimal("0.00")
         if ventes_count > 0:
-            avg_ticket = (ventes_amount / Decimal(ventes_count)).quantize(Decimal("0.01"))
+            avg_ticket = (
+                ventes_amount / Decimal(ventes_count)
+            ).quantize(Decimal("0.01"))
 
         total_qty_sold = (
             lignes_qs
-            .aggregate(total=Coalesce(Sum("quantite"), 0))
-            .get("total") or 0
+            .aggregate(total=Coalesce(Sum("quantite"), 0))["total"] or 0
         )
 
-        # =========================
-        # 5. Paiements par mode
-        # =========================
         payments_by_mode_qs = (
             paiement_lignes_qs
-            .values("mode_paiement__id", "mode_paiement__nom", "mode_paiement__code")
+            .values(
+                "mode_paiement__id",
+                "mode_paiement__nom",
+                "mode_paiement__code",
+            )
             .annotate(
                 total=Coalesce(
                     Sum("montant_paye"),
@@ -396,9 +337,6 @@ class ManagerDashboardAPIView(APIView):
             for row in payments_by_mode_qs
         ]
 
-        # =========================
-        # 6. Courbe ventes
-        # =========================
         trunc_map = {
             "day": TruncDay("date_creation"),
             "week": TruncWeek("date_creation"),
@@ -431,8 +369,67 @@ class ManagerDashboardAPIView(APIView):
         ]
 
         # =========================
-        # 7. Top produits
+        # 3 dernières années
         # =========================
+        current_year = timezone.localdate().year
+        start_year = current_year - 2
+
+        three_years_start = timezone.make_aware(
+            timezone.datetime(start_year, 1, 1),
+            tz,
+        )
+
+        factures_3years_qs = (
+            Facture.objects
+            .filter(facture_scope_q)
+            .filter(
+                date_creation__gte=three_years_start,
+                date_creation__lt=end_dt,
+            )
+        )
+
+        ventes_3years_qs = (
+            Vente.objects
+            .filter(vente_scope_q)
+            .filter(
+                created_at__gte=three_years_start,
+                created_at__lt=end_dt,
+            )
+        )
+
+        if vendor_id_int:
+            factures_3years_qs = factures_3years_qs.filter(
+                vente__vendor_id=vendor_id_int
+            )
+            ventes_3years_qs = ventes_3years_qs.filter(
+                vendor_id=vendor_id_int
+            )
+
+        sales_by_year_qs = (
+            factures_3years_qs
+            .filter(status=Facture.STAT_PAYE)
+            .annotate(year=ExtractYear("date_creation"))
+            .values("year")
+            .annotate(
+                ventes_count=Count("id"),
+                total=Coalesce(
+                    Sum("montant_total"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                ),
+            )
+            .order_by("year")
+        )
+
+        sales_by_year = [
+            {
+                "year": row["year"],
+                "ventes_count": int(row["ventes_count"] or 0),
+                "total": float(row["total"] or 0),
+            }
+            for row in sales_by_year_qs
+        ]
+
         top_products_qs = (
             lignes_qs
             .values(
@@ -481,9 +478,6 @@ class ManagerDashboardAPIView(APIView):
                 }
             )
 
-        # =========================
-        # 8. Stock boutique
-        # =========================
         stock_qs = (
             Stock.objects
             .select_related("bijouterie", "produit_line", "produit_line__produit")
@@ -496,14 +490,15 @@ class ManagerDashboardAPIView(APIView):
             lignes_stock=Count("id"),
         )
 
-        reserve_qs = Stock.objects.filter(
-            bijouterie__isnull=True
-        )
-
         reserve_total = (
-            reserve_qs
-            .aggregate(total=Coalesce(Sum("quantite_disponible"), 0))
-            .get("total") or 0
+            Stock.objects
+            .filter(
+                stock_scope_q,
+                bijouterie__isnull=True,
+            )
+            .aggregate(
+                total=Coalesce(Sum("quantite_disponible"), 0)
+            )["total"] or 0
         )
 
         vendor_stock_qs = (
@@ -514,15 +509,14 @@ class ManagerDashboardAPIView(APIView):
                 disponible=ExpressionWrapper(
                     Coalesce(F("quantite_allouee"), Value(0))
                     - Coalesce(F("quantite_vendue"), Value(0)),
-                    output_field=IntegerField(),
+                    output_field=DecimalField(max_digits=18, decimal_places=3),
                 )
             )
         )
 
         vendor_available_total = (
             vendor_stock_qs
-            .aggregate(total=Coalesce(Sum("disponible"), 0))
-            .get("total") or 0
+            .aggregate(total=Coalesce(Sum("disponible"), 0))["total"] or 0
         )
 
         stock_by_product_qs = (
@@ -562,20 +556,18 @@ class ManagerDashboardAPIView(APIView):
                     "produit": produit_nom or row.get("produit_line__produit__sku") or "Produit",
                     "slug": row.get("produit_line__produit__slug"),
                     "sku": row.get("produit_line__produit__sku"),
-                    "quantite_allouee": int(row["total_alloue"] or 0),
-                    "quantite_disponible": int(row["total_disponible"] or 0),
+                    "quantite_allouee": float(row["total_alloue"] or 0),
+                    "quantite_disponible": float(row["total_disponible"] or 0),
                 }
             )
 
-        # =========================
-        # 9. Réponse
-        # =========================
         return Response(
             {
                 "period": {
                     "date_from": date_from.isoformat(),
                     "date_to": date_to.isoformat(),
                     "group_by": group_by,
+                    "default": "30 derniers jours",
                 },
                 "scope": {
                     "role": role,
@@ -592,19 +584,27 @@ class ManagerDashboardAPIView(APIView):
                 },
                 "payments_by_mode": payments_by_mode,
                 "sales_over_time": sales_over_time,
+                "three_years": {
+                    "start_year": start_year,
+                    "end_year": current_year,
+                    "ventes_count": ventes_3years_qs.count(),
+                    "sales_by_year": sales_by_year,
+                },
                 "top_products": top_products,
                 "stock_summary": {
-                    "lignes_stock": int(stock_summary.get("lignes_stock") or 0),
-                    "total_alloue": int(stock_summary.get("total_alloue") or 0),
-                    "total_disponible": int(stock_summary.get("total_disponible") or 0),
-                    "reserve_total": int(reserve_total or 0),
-                    "vendor_available_total": int(vendor_available_total or 0),
+                    "lignes_stock": int(stock_summary["lignes_stock"] or 0),
+                    "total_alloue": float(stock_summary["total_alloue"] or 0),
+                    "total_disponible": float(stock_summary["total_disponible"] or 0),
+                    "reserve_total": float(reserve_total or 0),
+                    "vendor_available_total": float(vendor_available_total or 0),
                 },
                 "stock_by_product": stock_by_product,
             },
             status=status.HTTP_200_OK,
         )
-
+        
+        
+        
 
 class CommercialSettingsUpdateView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrManager]
