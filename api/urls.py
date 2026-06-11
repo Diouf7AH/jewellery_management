@@ -2,6 +2,7 @@ from django.urls import include, path
 
 from api import views as api_views
 from compte_depot import views as compte_depot_views
+from e_commerce import views as e_commerce_views
 from finance import views as finance_views
 from inventory import views as inv_views
 from order import views as order_views
@@ -296,4 +297,17 @@ urlpatterns = [
     path("depenses/<int:depense_id>/cancel/", finance_views.CancelDepenseView.as_view()),
     path("depenses/dashboard/", finance_views.DepenseDashboardView.as_view()),
     path("depenses/export-excel/", finance_views.ExportDepensesExcelView.as_view()),
+    
+    
+    path("products/", e_commerce_views.EcommerceProductListView.as_view(),name="ecommerce-products",),
+    path("products/<uuid:uuid>/", e_commerce_views.EcommerceProductDetailView.as_view(),name="ecommerce-product-detail",),
+    path("orders/create/", e_commerce_views.CommandeEcommerceCreateView.as_view(),name="ecommerce-order-create",),
+    path("payments/webhook/",e_commerce_views.PaymentWebhookView.as_view(),name="ecommerce-payment-webhook",),
+    path("payments/initiate/",e_commerce_views.PaymentInitiateView.as_view(),name="ecommerce-payment-initiate",),
+    path("orders/<uuid:uuid>/invoice/",e_commerce_views.EcommerceInvoiceView.as_view(),name="ecommerce-invoice",),
+    path("dashboard/",e_commerce_views.EcommerceDashboardView.as_view(),name="ecommerce-dashboard",),
+    path("orders/",e_commerce_views.EcommerceOrderListView.as_view(),name="ecommerce-order-list",),
+    path("orders/<uuid:uuid>/livraison/",e_commerce_views.EcommerceLivraisonDetailView.as_view(),name="ecommerce-livraison-detail",),
+    path("orders/<uuid:uuid>/livraison/update/",e_commerce_views.LivraisonEcommerceUpdateView.as_view(),name="ecommerce-livraison-update",),
+    path("banners/<uuid:uuid>/",e_commerce_views.EcommerceBannerDetailView.as_view(),name="ecommerce-banner-detail",)
 ]

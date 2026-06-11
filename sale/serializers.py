@@ -378,69 +378,6 @@ class VenteProduitInSerializer(serializers.Serializer):
             )
         return attrs
 
-# class VenteCreateInSerializer(serializers.Serializer):
-#     """
-#     - vendor  : vendor_email non utilisé
-#     - manager/admin: vendor_email requis
-#     """
-#     vendor_email = serializers.EmailField(required=False)
-#     client = ClientOptionalInSerializer(required=False)
-#     produits = VenteProduitInSerializer(many=True)
-
-#     class Meta:
-#         ref_name = "VenteCreateIn"
-
-#     def validate(self, attrs):
-#         request = self.context.get("request")
-#         role = ""
-#         if request and request.user and request.user.is_authenticated:
-#             from backend.roles import get_role_name
-#             role = (get_role_name(request.user) or "").lower().strip()
-
-#         if role in {"admin", "manager"} and not attrs.get("vendor_email"):
-#             raise serializers.ValidationError({"vendor_email": "vendor_email est requis pour manager/admin."})
-
-#         if not attrs.get("produits"):
-#             raise serializers.ValidationError({"produits": "Au moins un produit est requis."})
-
-#         return attrs
-
-
-# class VenteCreateInSerializer(serializers.Serializer):
-#     """
-#     - vendor : vendor_email non utilisé
-#     - manager/admin : vendor_email requis
-#     """
-#     vendor_email = serializers.EmailField(required=False)
-#     client = ClientOptionalInSerializer(required=False)
-#     produits = VenteProduitInSerializer(many=True)
-#     produit_id = serializers.IntegerField(required=False)
-#     sku = serializers.CharField(required=False, allow_blank=True)
-#     qr = serializers.CharField(required=False, allow_blank=True)
-    
-#     class Meta:
-#         ref_name = "VenteCreateIn"
-
-#     def validate(self, attrs):
-#         request = self.context.get("request")
-#         role = ""
-
-#         if request and request.user and request.user.is_authenticated:
-#             from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
-#             role = (get_role_name(request.user) or "").lower().strip()
-
-#         if role in {ROLE_ADMIN, ROLE_MANAGER} and not attrs.get("vendor_email"):
-#             raise serializers.ValidationError({
-#                 "vendor_email": "vendor_email est requis pour manager/admin."
-#             })
-
-#         if not attrs.get("produits"):
-#             raise serializers.ValidationError({
-#                 "produits": "Au moins un produit est requis."
-#             })
-
-#         return attrs
-
 
 class VenteCreateInSerializer(serializers.Serializer):
     """
@@ -476,6 +413,7 @@ class VenteCreateInSerializer(serializers.Serializer):
 
 
 class FactureSerializer(serializers.ModelSerializer):
+    uuid = serializers.UUIDField()
     total_paye = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -499,6 +437,7 @@ class FactureSerializer(serializers.ModelSerializer):
         model = Facture
         fields = [
             "vente",
+            "uuid",
             "numero_facture",
             "montant_ht",
             "taux_tva",
@@ -547,6 +486,7 @@ class FactureSerializer(serializers.ModelSerializer):
 
 
 class FactureListSerializer(serializers.ModelSerializer):
+    uuid = serializers.UUIDField()
     date_creation = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S", read_only=True)
 
     total_paye = serializers.SerializerMethodField()
@@ -559,6 +499,7 @@ class FactureListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Facture
         fields = [
+            "uuid",
             "vente",
             "numero_facture",
             "montant_ht",
@@ -602,11 +543,13 @@ class FactureListSerializer(serializers.ModelSerializer):
 
 
 class FactureDetailSerializer(FactureSerializer):
+    uuid = serializers.UUIDField()
     produits = serializers.SerializerMethodField()
 
     class Meta:
         model = Facture
         fields = [
+            "uuid",
             "vente",
             "numero_facture",
             "montant_ht",
@@ -630,36 +573,17 @@ class FactureDetailSerializer(FactureSerializer):
 
 
 
-
-# ---------------------------------------------------
-# Vente list
-# ---------------------------------------------------
-# class VenteListSerializer(serializers.ModelSerializer):
-#     client = serializers.SerializerMethodField()
-#     produits = VenteProduitSerializer(source="lignes", many=True, read_only=True)
-
-#     class Meta:
-#         model = Vente
-#         fields = ["id", "produits", "numero_vente", "created_at", "montant_total", "client"]
-#         ref_name = "VenteList_V2"
-
-#     def get_client(self, obj):
-#         c = getattr(obj, "client", None)
-#         return {
-#             "prenom": c.prenom,
-#             "nom": c.nom,
-#             "telephone": c.telephone,
-#         } if c else None
-
 class VenteListSerializer(serializers.ModelSerializer):
     client = serializers.SerializerMethodField()
     produits = VenteProduitSerializer(source="lignes", many=True, read_only=True)
     facture = serializers.SerializerMethodField()
+    uuid = serializers.UUIDField(read_only=True)
 
     class Meta:
         model = Vente
         fields = [
             "id",
+            "uuid",
             "numero_vente",
             "created_at",
             "montant_total",
@@ -711,7 +635,7 @@ class VenteDetailSerializer(serializers.ModelSerializer):
         model = Vente
         ref_name = "VenteDetailOut_V2"
         fields = [
-            "id", "client", "produits", "vente", "facture", "bijouterie",
+            "id", "uuid", "client", "produits", "vente", "facture", "bijouterie",
             "montant_total", "total_autres", "total_ttc",
             "total_remise", "total_ht", "totaux",
         ]
@@ -836,6 +760,23 @@ class PaiementModeItemSerializer(serializers.Serializer):
     mode_paiement = serializers.CharField()
     montant_paye = serializers.DecimalField(max_digits=10, decimal_places=2)
     reference = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    provider_reference = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True
+    )
+
+    banque = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True
+    )
+
+    numero_carte_masque = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True
+    )
 
     def validate_montant_paye(self, value):
         if value <= 0:
@@ -890,6 +831,9 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                 "mode_obj": mode,
                 "montant_paye": montant_paye,
                 "reference": item.get("reference"),
+                "provider_reference": item.get("provider_reference"),
+                "banque": item.get("banque"),
+                "numero_carte_masque": item.get("numero_carte_masque"),
             })
 
         if total <= Decimal("0.00"):
@@ -936,6 +880,7 @@ class PaiementLigneResponseSerializer(serializers.Serializer):
 
 class FacturePaiementResponseSerializer(serializers.Serializer):
     id = serializers.IntegerField()
+    uuid = serializers.UUIDField()
     numero_facture = serializers.CharField()
     type_facture = serializers.CharField()
     status = serializers.CharField()
@@ -985,6 +930,7 @@ class StockAuditResponseSerializer(serializers.Serializer):
 
 class VentePaiementResponseSerializer(serializers.Serializer):
     id = serializers.IntegerField()
+    uuid = serializers.UUIDField()
     numero_vente = serializers.CharField()
     montant_total = serializers.DecimalField(max_digits=14, decimal_places=2)
     

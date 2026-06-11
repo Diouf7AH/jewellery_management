@@ -286,7 +286,7 @@ class MarquePuretePrixHistory(models.Model):
     ancien_prix = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     nouveau_prix = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
 
-    changed_by = models.ForeignKey(
+    modifier_par = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
@@ -313,7 +313,7 @@ class MarquePuretePrixHistory(models.Model):
             models.Index(fields=["marque", "purete"]),
             models.Index(fields=["bijouterie"]),
             models.Index(fields=["source"]),
-            models.Index(fields=["changed_by"]),
+            models.Index(fields=["modifier_par"]),
         ]
         constraints = [
             CheckConstraint(check=Q(ancien_prix__gte=0), name="mph_ancien_prix_gte_0"),
@@ -329,6 +329,8 @@ class MarquePuretePrixHistory(models.Model):
 
 
 class Produit(models.Model):
+    # uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
     nom = models.CharField(max_length=100, blank=True, default="")
     image = models.ImageField(upload_to="produits/", blank=True, null=True)
     description = models.TextField(null=True, blank=True)

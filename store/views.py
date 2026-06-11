@@ -782,11 +782,13 @@ class CreateMarquePureteView(APIView):
                     old_price = mp.prix
 
                     MarquePuretePrixHistory.objects.create(
+                        marque_purete=mp,
                         marque=marque,
                         purete=mp.purete,
                         ancien_prix=old_price,
                         nouveau_prix=new_price,
                         modifier_par=user,
+                        source=MarquePuretePrixHistory.SOURCE_API,
                     )
 
                     mp.prix = new_price
@@ -933,13 +935,14 @@ class MarqueUpdateAPIView(APIView):
 
                 if old_price != new_price:
                     MarquePuretePrixHistory.objects.create(
-                        marque=marque,
-                        purete=mp.purete,
-                        ancien_prix=old_price,
-                        nouveau_prix=new_price,
-                        modifier_par=user,
-                    )
-
+                    marque_purete=mp,
+                    marque=marque,
+                    purete=mp.purete,
+                    ancien_prix=old_price,
+                    nouveau_prix=new_price,
+                    modifier_par=user,
+                    source=MarquePuretePrixHistory.SOURCE_API,
+                )
                     mp.prix = new_price
                     mp.save(update_fields=["prix", "date_modification"])
 
@@ -1055,9 +1058,16 @@ class MarquePureteHistoryListView(APIView):
         limit = request.query_params.get("limit")
         offset = request.query_params.get("offset")
 
-        qs = (MarquePuretePrixHistory.objects
-              .select_related("marque", "purete", "modifier_par")
-              .order_by("-date_modification"))
+        qs = (
+            MarquePuretePrixHistory.objects
+            .select_related(
+                "marque_purete",
+                "marque",
+                "purete",
+                "modifier_par",
+            )
+            .order_by("-date_modification", "-id")
+        )
 
         if marque_id:
             qs = qs.filter(marque_id=marque_id)

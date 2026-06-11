@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+import uuid
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.apps import apps
@@ -68,8 +69,22 @@ class Client(models.Model):
 # =========================
 
 class Vente(models.Model):
-    numero_vente = models.CharField(max_length=30, unique=True, editable=False, blank=True, null=True)
+    # uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False,db_index=True,)
+    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
+    SOURCE_MAGASIN = "magasin"
+    SOURCE_ECOMMERCE = "ecommerce"
+    SOURCE_WHATSAPP = "whatsapp"
+    SOURCE_FACEBOOK = "facebook"
 
+    SOURCE_CHOICES = [
+        (SOURCE_MAGASIN, "Magasin"),
+        (SOURCE_ECOMMERCE, "E-commerce"),
+        (SOURCE_WHATSAPP, "WhatsApp"),
+        (SOURCE_FACEBOOK, "Facebook"),
+    ]
+    
+    source_vente = models.CharField(max_length=20,choices=SOURCE_CHOICES,default=SOURCE_MAGASIN,db_index=True)
+    numero_vente = models.CharField(max_length=30, unique=True, editable=False, blank=True, null=True)
     client = models.ForeignKey("sale.Client", on_delete=models.SET_NULL, null=True, blank=True, related_name="ventes")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -304,6 +319,8 @@ class Facture(models.Model):
         (TYPE_FINALE, "Facture finale"),
     )
 
+    # uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
     numero_facture = models.CharField(max_length=32, editable=False)
 
     vente = models.OneToOneField(
@@ -667,6 +684,39 @@ class PaiementLigne(models.Model):
         related_name="lignes_paiement"
     )
 
+    reference = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Référence transaction Wave / OM / banque / TPE"
+    )
+
+    provider_reference = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text="Référence retournée par Stripe, PayDunya, CinetPay, banque ou TPE"
+    )
+
+    checkout_url = models.URLField(
+        blank=True,
+        null=True,
+        help_text="Lien de paiement en ligne si applicable"
+    )
+
+    payment_token = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Token de paiement externe"
+    )
+
+    callback_received = models.BooleanField(
+        default=False,
+        help_text="Indique si le callback/webhook du fournisseur a été reçu"
+    )
+    
     class Meta:
         ordering = ["id"]
 

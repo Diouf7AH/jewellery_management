@@ -1,0 +1,140 @@
+Structure que je te recommande
+e_commerce/
+│
+├── models.py
+├── serializers.py
+├── views.py
+├── urls.py
+├── admin.py
+│
+├── services/
+│   ├── create_order.py
+│   ├── payment.py
+│   ├── stock.py
+│   └── webhook.py
+│
+├── selectors/
+│   └── products.py
+│
+├── tasks.py
+│
+└── migrations/
+
+Ce que je créerais dans l'ordre
+Phase 1
+✅ CommandeEcommerce
+✅ CommandeEcommerceLigne
+✅ PaiementEcommerce
+Phase 2
+✅ Liste des produits e-commerce
+✅ Détail produit
+✅ Création commande
+Phase 3
+✅ Wave
+✅ Orange Money
+✅ Carte bancaire
+Phase 4
+✅ Webhook paiement
+✅ Création automatique Vente
+✅ Création automatique Facture
+✅ Consommation Stock bijouterie
+✅ InventoryMovement SALE_OUT
+
+e_commerce/services/
+├── stock.py      # consommation stock bijouterie + SALE_OUT
+└── webhook.py    # confirmation paiement + création Vente/Facture
+
+
+Ordre exact à respecter
+Webhook reçu
+↓
+Vérifier paiement
+↓
+Créer Vente
+↓
+Créer Facture
+↓
+Créer Paiement ERP
+↓
+Consommer Stock bijouterie
+↓
+Créer InventoryMovement SALE_OUT
+↓
+Commande = paid
+
+Bijouterie Dakar
+    ↓
+Vendor système : E-COMMERCE Dakar
+    ↓
+Commande e-commerce
+    ↓
+Vente vendor=E-COMMERCE Dakar
+    ↓
+InventoryMovement SALE_OUT vendor=E-COMMERCE Dakar
+
+CommandeEcommerce payée
+↓
+Créer Vente avec vendor=E-COMMERCE
+↓
+Créer VenteProduit
+↓
+Créer Facture payée
+↓
+Créer Paiement + PaiementLigne
+↓
+Consommer Stock bijouterie
+↓
+Créer InventoryMovement SALE_OUT
+
+
+1. PaymentWebhookView
+2. PaymentInitiateView
+3. URLs paiements
+4. Tests complets
+5. PDF facture
+6. Notifications
+
+Après le PDF
+
+La suite logique est :
+
+Phase 6
+✅ PDF facture
+
+Phase 7
+✅ Email automatique
+
+Phase 8
+✅ WhatsApp automatique
+
+Phase 9
+✅ Dashboard e-commerce
+    - commandes
+    - paiements
+    - ventes
+    - top produits
+
+
+les étapes du e-commerce :
+
+✅ Produits
+✅ Détail produit
+✅ Commande
+✅ Paiement
+✅ Webhook
+✅ Vente
+✅ Facture
+✅ Stock
+✅ InventoryMovement
+✅ PDF Facture
+✅ Dashboard
+
+1. Historique des commandes client
+2. Suivi commande
+3. Dashboard Admin E-commerce
+4. Gestion des promotions
+5. Wishlist (favoris)
+6. Avis produits
+7. Livraison
+8. Notifications WhatsApp
+9. Application mobile

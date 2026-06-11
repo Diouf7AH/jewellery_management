@@ -1050,6 +1050,20 @@ class PaiementFactureMultiModeView(APIView):
                                 type=openapi.TYPE_STRING,
                                 example="WAVE-123456",
                             ),
+                            "banque": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                example="CBAO",
+                            ),
+
+                            "numero_carte_masque": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                example="**** **** **** 4589",
+                            ),
+
+                            "provider_reference": openapi.Schema(
+                                type=openapi.TYPE_STRING,
+                                example="AUTH-458796",
+                            ),
                         },
                     ),
                 ),
@@ -1139,6 +1153,10 @@ class PaiementFactureMultiModeView(APIView):
                 "montant": montant,
                 "reference": reference,
                 "numero_compte": item.get("numero_compte"),
+
+                "banque": item.get("banque"),
+                "numero_carte_masque": item.get("numero_carte_masque"),
+                "provider_reference": item.get("provider_reference"),
             })
 
         if total > facture.reste_a_payer:
@@ -1237,6 +1255,10 @@ class PaiementFactureMultiModeView(APIView):
                     mode_paiement=mode_obj,
                     montant_paye=item["montant"],
                     reference=item.get("reference"),
+
+                    banque=item.get("banque"),
+                    numero_carte_masque=item.get("numero_carte_masque"),
+                    provider_reference=item.get("provider_reference"),
                 )
 
             lignes_creees.append(ligne)
@@ -1401,63 +1423,6 @@ def _can_access_facture(user, facture: Facture) -> bool:
 
     return False
 
-
-
-# class TicketProforma58mmView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def get(self, request, numero_facture: str):
-#         facture = get_object_or_404(
-#             Facture.objects.select_related(
-#                 "vente",
-#                 "bijouterie",
-#                 "vente__client",
-#             ),
-#             numero_facture__iexact=numero_facture,
-#         )
-
-#         if not _can_access_facture(request.user, facture):
-#             return Response(
-#                 {"detail": "⛔ Accès refusé à cette facture."},
-#                 status=status.HTTP_403_FORBIDDEN,
-#             )
-
-#         if not facture.vente_id:
-#             return Response(
-#                 {"detail": "Aucune vente associée à cette facture."},
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
-
-#         bijouterie = facture.bijouterie
-
-#         shop_name = getattr(bijouterie, "nom", None) or "BIJOUTERIE RIO-GOLD"
-
-#         shop_phone = (
-#             getattr(bijouterie, "telephone_portable_1", None)
-#             or getattr(bijouterie, "telephone_portable_2", None)
-#             or getattr(bijouterie, "telephone_fix", None)
-#             or ""
-#         )
-
-#         date_txt = facture.date_creation.strftime("%d/%m/%Y %H:%M")
-
-#         escpos_bytes = build_escpos_ticket_proforma_58mm(
-#             shop_name=shop_name,
-#             shop_phone=shop_phone,
-#             numero_facture=facture.numero_facture,
-#             date_txt=date_txt,
-#             montant_a_payer=facture.reste_a_payer,
-#             statut_txt=facture.get_status_display() if hasattr(facture, "get_status_display") else facture.status,
-#             note="Ticket PROFORMA - à régler en caisse",
-#         )
-
-#         return HttpResponse(
-#             escpos_bytes,
-#             content_type="application/octet-stream",
-#             headers={
-#                 "Content-Disposition": f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
-#             }
-#         )
 
 
 class TicketProforma58mmView(APIView):

@@ -1,3 +1,4 @@
+# sale/signals.py
 from decimal import Decimal
 
 from django.apps import apps
@@ -13,64 +14,57 @@ def create_default_mode_paiement(sender, **kwargs):
     if sender.name != "sale":
         return
 
-    ModePaiement.objects.get_or_create(
-        code="cash",
-        defaults={
+    modes = [
+        {
+            "code": "cash",
             "nom": "Cash",
-            "actif": True,
+            "active": True,
             "ordre_affichage": 1,
             "necessite_reference": False,
             "est_mode_depot": False,
-        }
-    )
-
-    ModePaiement.objects.get_or_create(
-        code="wave",
-        defaults={
+        },
+        {
+            "code": "wave",
             "nom": "Wave",
-            "actif": True,
+            "active": True,
             "ordre_affichage": 2,
             "necessite_reference": True,
             "est_mode_depot": False,
-        }
-    )
-
-    ModePaiement.objects.get_or_create(
-        code="orange_money",
-        defaults={
+        },
+        {
+            "code": "orange_money",
             "nom": "Orange Money",
-            "actif": True,
+            "active": True,
             "ordre_affichage": 3,
             "necessite_reference": True,
             "est_mode_depot": False,
-        }
-    )
-
-    ModePaiement.objects.get_or_create(
-        code="depot",
-        defaults={
+        },
+        {
+            "code": "depot",
             "nom": "Compte dépôt",
-            "actif": True,
+            "active": True,
             "ordre_affichage": 4,
             "necessite_reference": False,
             "est_mode_depot": True,
-        }
-    )
+        },
+        {
+            "code": "tpe",
+            "nom": "TPE",
+            "active": True,
+            "ordre_affichage": 5,
+            "necessite_reference": True,
+            "est_mode_depot": False,
+            "description": "Paiement par terminal bancaire",
+        },
+    ]
 
-# # mettre à jour le statut de la facture automatiquement
-# @receiver(post_save, sender=Paiement)
-# def update_facture_status(sender, instance, created, **kwargs):
-#     if not created:
-#         return
-#     f = instance.facture
-#     total = getattr(f, "montant_total", None)
-#     if total is None:
-#         return
-#     total_paye = f.paiements.aggregate(t=Sum("montant_paye"))["t"] or Decimal("0.00")
-#     if total_paye >= total and getattr(Facture, "STAT_PAYE", None):
-#         f.status = Facture.STAT_PAYE
-#         f.save(update_fields=["status"])
-
+    for mode in modes:
+        code = mode.pop("code")
+        ModePaiement.objects.update_or_create(
+            code=code,
+            defaults=mode,
+        )
+    
 
 
 # mettre à jour le statut de la facture automatiquement

@@ -147,3 +147,30 @@ fraude
 changement des montants
 modification TVA
 modification produits après impression PDF
+
+
+5. Exemple de paiement TPE
+{
+  "numero_facture": "FAC-20260604-0001",
+  "client": {
+    "nom": "Diouf",
+    "prenom": "AH",
+    "telephone": "771234567"
+  },
+  "lignes": [
+    {
+      "mode": "carte_bancaire",
+      "montant": 250000,
+      "reference": "TPE-458796",
+      "provider_reference": "AUTH-458796",
+      "banque": "CBAO",
+      "numero_carte_masque": "**** **** **** 4589"
+    }
+  ]
+}
+
+
+Cependant, pour un ERP de bijouterie physique, le plus simple est souvent de ne stocker que :
+reference
+car le ticket TPE contient déjà toutes les informations nécessaires. Les champs banque, 
+numero_carte_masque et provider_reference sont des améliorations utiles mais non obligatoires.

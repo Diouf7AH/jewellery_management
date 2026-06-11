@@ -456,7 +456,7 @@ class MarquePuretePrixHistorySerializer(serializers.ModelSerializer):
     marque_nom = serializers.CharField(source="marque.marque", read_only=True)
     purete_nom = serializers.CharField(source="purete.purete", read_only=True)
     bijouterie_nom = serializers.CharField(source="bijouterie.nom", read_only=True)
-    changed_by_username = serializers.CharField(source="changed_by.username", read_only=True)
+    modifier_par_username = serializers.CharField(source="modifier_par.username", read_only=True)
 
     class Meta:
         model = MarquePuretePrixHistory
@@ -471,8 +471,8 @@ class MarquePuretePrixHistorySerializer(serializers.ModelSerializer):
             "bijouterie_nom",
             "ancien_prix",
             "nouveau_prix",
-            "changed_by",
-            "changed_by_username",
+            "modifier_par",
+            "modifier_par_username",
             "date_modification",
             "source",
             "note",

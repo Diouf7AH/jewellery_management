@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     'inventory',
     # 'sale',
     'sale.apps.SaleConfig',
+    'e_commerce',
     'api',
     'vendor',
     'person',
