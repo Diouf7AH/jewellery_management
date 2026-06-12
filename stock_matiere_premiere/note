@@ -1,0 +1,311 @@
+pour un rachat ou in achat de matier premiere on ne fait de updat on annul et recree
+
+Exemple payload
+Pour vendor et manager, tu peux ne pas envoyer bijouterie_id. Pour admin, il est obligatoire.
+Si téléphone existe → récupérer le client
+Sinon → créer le client avec nom + prénom + téléphone
+
+{
+  "bijouterie_id": 1,
+  "nom": "Ndiaye",
+  "prenom": "Awa",
+  "telephone": "770000000",
+  "montant_total": "150000",
+  "mode_paiement": "especes",
+  "adresse_vendeur": "Dakar",
+  "piece_identite": "CNI123456789",
+  "items": [
+    {
+      "description": "Bague cassée",
+      "matiere": "or",
+      "purete_id": 2,
+      "poids": "4.000"
+    },
+    {
+      "description": "Chaîne ancienne",
+      "matiere": "or",
+      "purete_id": 3,
+      "poids": "6.000"
+    }
+  ]
+}
+
+
+
+fournisseur
+{
+  "fournisseur": {
+    "nom": "Diallo",
+    "prenom": "Mamadou",
+    "telephone": "780000000"
+  },
+  "montant_total": "300000",
+  "mode_paiement": "especes",
+  "items": [
+    {
+      "description": "Lingot",
+      "matiere": "or",
+      "purete_id": 2,
+      "poids": "10.000"
+    },
+    {
+      "description": "Or brut",
+      "matiere": "or",
+      "purete_id": 3,
+      "poids": "5.000"
+    }
+  ]
+}
+
+
+path(
+        "dashboard-matiere-premiere/",
+        DashboardMatierePremiereView.as_view(),
+        name="dashboard-matiere-premiere",
+    ),
+
+GET /api/stock-matiere-premiere/dashboard-matiere-premiere
+Avec filtre :
+GET /api/stock-matiere-premiere/dashboard-matiere-premiere/?start_date=2026-01-01&end_date=2026-12-31
+Pour admin :
+GET /api/stock-matiere-premiere/dashboard-matiere-premiere/?bijouterie_id=1
+
+#####################
+GET /achats-rachats-matiere-premiere/
+→ affiche année en cours
+
+GET /achats-rachats-matiere-premiere/?year=2025
+→ affiche 2025
+
+GET /achats-rachats-matiere-premiere/?start_date=2026-01-01&end_date=2026-03-31
+→ affiche période précise
+
+#######################
+GET /achats-rachats-matiere-premiere/5/?type=achat
+GET /achats-rachats-matiere-premiere/5/?type=rachat
+
+
+###################################
+cycle de vie de la matière première
+architecture :
+
+RachatClient / AchatMatierePremiere
+        ↓
+Stock Matière Première
+        ↓
+Décision / Transformation
+1. Après rachat client
+Rachat client payé
+↓
+Stock matière première
+↓
+3 destinations possibles
+Destination 1 : Remise en vente
+Stock matière première
+↓
+Créer Produit vendable
+↓
+Stock vente
+
+Exemple : une bague rachetée peut redevenir un produit en boutique.
+
+Destination 2 : Vente comme matière
+Stock matière première
+↓
+Vente au poids
+↓
+Sortie stock matière première
+
+Exemple : vendre 10g d’or 18K.
+
+Destination 3 : Raffinage
+Stock matière première
+↓
+Sortie raffinage
+↓
+Traitement
+↓
+Stock raffiné
+2. Après achat matière première
+Achat fournisseur
+↓
+Stock matière première
+
+Puis :
+
+- envoyé au raffinage
+- vendu au poids
+3. Après raffinage
+Stock raffiné
+↓
+2 destinations
+Utilisé pour commande client
+Stock raffiné
+↓
+Commande client / fabrication
+↓
+Sortie stock raffiné
+Vendu au poids
+Stock raffiné
+↓
+Vente au poids
+↓
+Sortie stock raffiné
+###################################
+
+
+###################################
+stock
+✔ 1 seul stock matière première
+✔ plusieurs entrées (rachat / achat)
+✔ plusieurs sorties (raffinage / vente / transformation)
+✔ traçabilité via Movement
+
+- Raffinage ✔ 
+- Vente matière ✔
+- Dashboard ✔
+- Historique complet ✔
+
+- dashboard vente matière
+- total vendu par période
+- stock faible alerte
+- historique client matière
+#########################
+Vente 
+1. Vente matière première avant raffinage
+   → retire du MatierePremiereStock
+2. Vente matière après raffinage
+   → retire du StockRaffine
+Vente avant raffinage = sortie MatierePremiereStock
+Vente après raffinage = sortie StockRaffine
+
+
+👉 traçabilité complète (origine matière)
+👉 coût moyen pondéré
+👉 marge sur vente matière
+
+
+
+##############################"
+UTILISATION
+/api/dashboard/matiere-premiere/
+→ année actuelle
+/api/dashboard/matiere-premiere/?year=2024
+→ année spécifique
+/api/dashboard/matiere-premiere/?bijouterie_id=1
+→ filtré bijouterie
+/api/dashboard/matiere-premiere/?year=2024&bijouterie_id=1
+→ filtre complet
+
+✔ /export/ → année actuelle
+✔ /export/?mode=multi → 3 ans
+✔ /export/?year=2024 → année spécifique
+✔ /export/?bijouterie_id=1 → filtré
+✔ /export/?year=2024&bijouterie_id=1 → combinaison complète
+
+Sheet: 2026
+
+1. Résumé
+Stock brut total : 120.500
+Stock raffiné total : 80.000
+Total achats : 15
+Total rachats : 20
+Total ventes : 10
+
+2. Stock brut
+Or | 18K | 50.000
+Argent | 925 | 70.500
+
+3. Mouvements
+rachat_client | 30.000
+vente_poids   | 20.000
+
+4. Raffinage
+Entrée : 40.000
+Sortie : 38.000
+Perte  : 2.000
+
+5. Vente
+avant_raffinage | 10g | 500000
+apres_raffinage | 5g  | 300000
+
+6. Alertes
+Or | 18K | 3.000g
+
+
+
+Cancel ou Annulation
+Reverse
+Dans ton flux métier de rachat client, l'ordre recommandé est :
+1. Annulation (CancelRachatClient)
+Avant paiement uniquement ✅
+Création ticket
+       ↓
+En attente paiement
+       ↓
+Annulation possible
+Effets :
+- status = CANCELLED
+- payment_status = CANCELLED
+- aucun stock modifié
+- aucun mouvement créé
+2. Paiement (PayRachatClientTicket)
+
+Après validation caisse ✅
+Création ticket
+       ↓
+Paiement
+       ↓
+Création stock
+Création mouvements
+Effets :
+- payment_status = PAID
+- stock matière +
+- mouvement SOURCE_RACHAT_CLIENT
+3. Reverse (ReverseRachatClient)
+Après paiement uniquement ✅
+Création ticket
+       ↓
+Paiement
+       ↓
+Reverse
+Effets :
+- retrait du stock créé
+- mouvement SOURCE_RACHAT_CLIENT_CANCEL
+- payment_status = CANCELLED
+- historique conservé
+Résumé
+1. CreateRachatClient
+2. CancelRachatClient      ← AVANT paiement
+3. PayRachatClientTicket
+4. ReverseRachatClient     ← APRÈS paiement
+5. Attestation PDF
+Donc dans tes URLs et Swagger, je mettrais :
+1. Create
+2. Cancel
+3. Pay
+4. Reverse
+5. Ticket PDF
+6. Attestation PDF
+Car Cancel est l'action normale avant paiement, tandis que Reverse est une opération exceptionnelle de correction après paiement.
+
+
+--- RachatClientCreate ---
+Manager → choisit la bijouterie par nom
+Vendeur → bijouterie automatique
+Stock → non modifié
+Movement → non créé
+Ticket PDF → via uuid
+
+
+--------------------------------
+✓ ADMIN
+✓ MANAGER (uniquement ses bijouteries)
+✓ UUID
+✓ Vérification paiement
+✓ Limite 48h
+✓ Vérification stock
+✓ Mouvement inverse
+✓ Historique conservé
+✓ Motif obligatoire
+✓ Audit (cancelled_by, cancelled_at, cancel_reason)

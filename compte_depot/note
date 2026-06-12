@@ -1,0 +1,9 @@
+Voici la version finale complète de CreateOrDepositCompteView, adaptée à ta règle métier :
+
+si client + compte existent → dépôt
+si client existe sans compte → création compte + dépôt
+si client n’existe pas → création client + compte + dépôt
+messages frontend clairs
+operation_type
+receipt_url
+

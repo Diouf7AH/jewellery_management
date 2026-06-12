@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Reçu Ticket 80mm</title>
+    <style>
+        @page {
+            size: 80mm auto;
+            margin: 3mm 3mm 4mm 3mm;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: "Courier New", monospace;
+            font-size: 11px;
+            color: #000;
+            background: #fff;
+        }
+
+        .ticket {
+            width: 100%;
+        }
+
+        .center {
+            text-align: center;
+        }
+
+        .left {
+            text-align: left;
+        }
+
+        .right {
+            text-align: right;
+        }
+
+        .bold {
+            font-weight: bold;
+        }
+
+        .big {
+            font-size: 13px;
+            font-weight: bold;
+        }
+
+        .logo-box {
+            text-align: center;
+            margin-bottom: 4px;
+        }
+
+        .logo-box img {
+            max-width: 58px;
+            max-height: 58px;
+            object-fit: contain;
+        }
+
+        .shop-name {
+            font-size: 14px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-bottom: 2px;
+        }
+
+        .meta {
+            font-size: 10px;
+            line-height: 1.35;
+        }
+
+        .separator {
+            margin: 6px 0;
+            border-top: 1px dashed #000;
+            width: 100%;
+        }
+
+        .title {
+            text-align: center;
+            font-size: 13px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin: 4px 0;
+        }
+
+        .info-row,
+        .amount-row {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
+        }
+
+        .info-label,
+        .amount-label {
+            display: table-cell;
+            width: 46%;
+            vertical-align: top;
+        }
+
+        .info-value,
+        .amount-value {
+            display: table-cell;
+            width: 54%;
+            text-align: right;
+            vertical-align: top;
+            word-break: break-word;
+        }
+
+        .amount-row {
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .section {
+            margin-top: 4px;
+        }
+
+        .section-title {
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .boxed {
+            border: 1px solid #000;
+            padding: 5px;
+            margin-top: 4px;
+        }
+
+        .footer {
+            margin-top: 8px;
+            text-align: center;
+            font-size: 10px;
+            line-height: 1.4;
+        }
+
+        .small {
+            font-size: 9px;
+        }
+    </style>
+</head>
+<body>
+    <div class="ticket">
+
+        <div class="logo-box">
+            {% if bijouterie and bijouterie.logo %}
+                <img src="{{ bijouterie.logo.url }}" alt="Logo">
+            {% elif bijouterie and bijouterie.logo_principal %}
+                <img src="{{ bijouterie.logo_principal.url }}" alt="Logo">
+            {% endif %}
+        </div>
+
+        <div class="center shop-name">
+            {% if bijouterie %}
+                {{ bijouterie.nom }}
+            {% else %}
+                BIJOUTERIE
+            {% endif %}
+        </div>
+
+        <div class="center meta">
+            {% if bijouterie and bijouterie.telephone %}
+                {{ bijouterie.telephone }}<br>
+            {% elif bijouterie and bijouterie.contact %}
+                {{ bijouterie.contact }}<br>
+            {% endif %}
+
+            {% if bijouterie and bijouterie.adresse %}
+                {{ bijouterie.adresse }}
+            {% endif %}
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="title">
+            REÇU {{ transaction.get_type_transaction_display|upper }}
+        </div>
+
+        <div class="center meta">
+            Ticket N°: {{ transaction.id }}<br>
+            Date: {{ transaction.date_transaction|date:"d/m/Y H:i" }}
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="section">
+            <div class="section-title">Client</div>
+
+            <div class="info-row">
+                <div class="info-label">Nom</div>
+                <div class="info-value">
+                    {% if client %}
+                        {{ client.nom|default:"" }} {{ client.prenom|default:"" }}
+                    {% else %}
+                        -
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="info-row">
+                <div class="info-label">Téléphone</div>
+                <div class="info-value">
+                    {% if client %}
+                        {{ client.telephone|default:"-" }}
+                    {% else %}
+                        -
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="info-row">
+                <div class="info-label">Compte</div>
+                <div class="info-value">{{ compte.numero_compte }}</div>
+            </div>
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="section">
+            <div class="section-title">Transaction</div>
+
+            <div class="amount-row">
+                <div class="amount-label">Montant</div>
+                <div class="amount-value">{{ transaction.montant }} FCFA</div>
+            </div>
+
+            <div class="info-row">
+                <div class="info-label">Solde avant</div>
+                <div class="info-value">{{ transaction.solde_avant }} FCFA</div>
+            </div>
+
+            <div class="info-row">
+                <div class="info-label">Solde après</div>
+                <div class="info-value">{{ transaction.solde_apres }} FCFA</div>
+            </div>
+
+            <div class="info-row">
+                <div class="info-label">Statut</div>
+                <div class="info-value">{{ transaction.get_statut_display }}</div>
+            </div>
+
+            <div class="info-row">
+                <div class="info-label">Référence</div>
+                <div class="info-value">{{ transaction.reference|default:"-" }}</div>
+            </div>
+        </div>
+
+        {% if transaction.commentaire %}
+        <div class="section">
+            <div class="boxed">
+                <div class="bold">Commentaire</div>
+                <div>{{ transaction.commentaire }}</div>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="separator"></div>
+
+        <div class="section">
+            <div class="info-row">
+                <div class="info-label">Agent</div>
+                <div class="info-value">
+                    {% if transaction.user %}
+                        {{ transaction.user.email|default:transaction.user.username }}
+                    {% else %}
+                        -
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="footer">
+            Merci pour votre confiance<br>
+            <span class="small">Reçu généré automatiquement</span>
+        </div>
+    </div>
+</body>
+</html>
+

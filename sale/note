@@ -1,0 +1,176 @@
+✅ Le champ reference
+
+Le champ reference dans PaiementLigne sert pour :
+
+Moyen	            Référence
+Wave	            TXN458745
+Orange Money	    OM-774848
+Carte	            BANK-98484
+Cash	            vide
+
+{
+  "numero_facture": "FAC-20260309-0001",
+  "lignes": [
+    {
+      "mode_paiement": "cash",
+      "montant": 20000
+    },
+    {
+      "mode_paiement": "wave",
+      "montant": 15000,
+      "reference": "WAVE-4455"
+    },
+    {
+      "mode_paiement": "depot",
+      "montant": 10000
+    }
+  ]
+}
+
+Mon avis honnête
+Pour ton ERP, la meilleure stratégie est :
+
+QR code : oui, tout de suite
+hash d’intégrité : oui, tout de suite
+signature électronique avancée avec certificat : dans une deuxième phase
+export comptable SYSCOHADA : oui, très important, juste après
+
+C’est le meilleur rapport entre valeur métier et complexité.
+
+La signature numérique n’est pas la même chose qu’une signature manuscrite dessinée.
+
+1. Signature numérique, c’est quoi ?
+
+C’est une signature informatique qui sert à prouver 3 choses :
+  le document vient bien de l’émetteur
+  le document n’a pas été modifié après signature
+  la signature a été faite à un moment donné
+
+En pratique, on utilise :
+  un certificat
+  une clé privée
+  un calcul cryptographique sur le document
+
+Donc ce n’est pas juste une image de signature.
+
+facture_securite_service.py
+facture_qr_service.py
+facture_pdf_data_service
+facture_pdf_service
+
+
+
+
+
+Service
+from io import BytesIO
+
+from reportlab.lib.pagesizes import A5, landscape
+from reportlab.pdfgen import canvas
+
+
+def generate_recu_paiement_pdf(*, paiement):
+    buffer = BytesIO()
+
+    c = canvas.Canvas(buffer, pagesize=landscape(A5))
+
+    # ... génération PDF ...
+
+    c.showPage()
+    c.save()
+
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+
+    return pdf_bytes
+Vue
+from django.http import HttpResponse
+
+from sale.services.receipt_service import generate_recu_paiement_pdf
+
+
+def imprimer_recu_paiement(request, paiement_id):
+    paiement = Paiement.objects.select_related("facture").get(pk=paiement_id)
+
+    pdf_bytes = generate_recu_paiement_pdf(paiement=paiement)
+
+    response = HttpResponse(pdf_bytes, content_type="application/pdf")
+    response["Content-Disposition"] = (
+        f'inline; filename="recu_paiement_{paiement.id}.pdf"'
+    )
+    return response
+inline ou attachment
+
+Tu peux choisir :
+
+Afficher dans le navigateur
+response["Content-Disposition"] = 'inline; filename="recu.pdf"'
+Forcer le téléchargement
+response["Content-Disposition"] = 'attachment; filename="recu.pdf"'
+Quand utiliser cette solution
+
+Elle est idéale pour :
+
+reçu de paiement
+ticket proforma
+ticket caisse 58mm / 80mm
+documents temporaires
+Quand ne pas l’utiliser
+
+Pour la facture officielle, ta logique actuelle de stockage est meilleure :
+
+facture_pdf
+réimpression possible
+archive officielle
+Conclusion
+
+Donc oui :
+
+reçu paiement → génération mémoire + HttpResponse
+facture officielle → génération + stockage fichier
+
+C’est une très bonne architecture.
+
+Si tu veux, je peux te donner la vue DRF finale complète pour retourner ce PDF sans stockage.
+
+////////////////////////
+UPDATE store_bijouterie
+SET appliquer_tva = 0,
+    taux_tva = NULL;
+////////////////////////
+
+
+is_locked sert à rendre une facture non modifiable définitivement après validation finale.
+Dans un ERP de vente/facturation, c’est très important pour éviter :
+modification après paiement
+fraude
+changement des montants
+modification TVA
+modification produits après impression PDF
+
+
+5. Exemple de paiement TPE
+{
+  "numero_facture": "FAC-20260604-0001",
+  "client": {
+    "nom": "Diouf",
+    "prenom": "AH",
+    "telephone": "771234567"
+  },
+  "lignes": [
+    {
+      "mode": "carte_bancaire",
+      "montant": 250000,
+      "reference": "TPE-458796",
+      "provider_reference": "AUTH-458796",
+      "banque": "CBAO",
+      "numero_carte_masque": "**** **** **** 4589"
+    }
+  ]
+}
+
+
+Cependant, pour un ERP de bijouterie physique, le plus simple est souvent de ne stocker que :
+reference
+car le ticket TPE contient déjà toutes les informations nécessaires. Les champs banque, 
+numero_carte_masque et provider_reference sont des améliorations utiles mais non obligatoires.

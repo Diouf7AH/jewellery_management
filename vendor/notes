@@ -1,0 +1,84 @@
+🔹 quantite_restante : c’est quoi exactement ?
+
+👉 quantite_restante appartient à ProduitLine (le lot d’achat)
+👉 Ce n’est PAS le stock du vendeur
+👉 C’est le stock physique global restant du lot, tous vendeurs confondus
+
+En une phrase
+
+quantite_restante = ce qu’il reste réellement dans le lot après toutes les sorties (ventes, transferts, annulations)
+
+🔹 Où se situe chaque quantité (rappel)
+1️⃣ ProduitLine (lot d’achat)
+Achat → Lot → ProduitLine
+
+Champ	Sens
+quantite	Quantité achetée initialement
+quantite_restante	Quantité encore disponible dans ce lot
+
+👉 Global, partagé entre tous les vendeurs / bijouteries
+
+2️⃣ VendorStock (réservation vendeur)
+ProduitLine → VendorStock → Vendor
+
+Champ	Sens
+quantite_allouee	Quantité réservée au vendeur
+quantite_vendue	Quantité déjà sortie (livrée)
+quantite_disponible (calcul)	quantite_allouee - quantite_vendue
+
+👉 Spécifique à un vendeur
+
+🔹 Exemple concret (très parlant)
+Achat
+Lot L1 – Produit "Bague Or"
+Quantité achetée = 20
+quantite_restante = 20
+
+Allocation vendeurs
+Vendeur A → allouée = 8
+Vendeur B → allouée = 6
+
+
+➡️ quantite_restante est toujours 20 (pas encore vendu)
+
+Livraison (vente réelle)
+Vendeur A livre 3 bagues
+
+
+VendorStock A :
+
+quantite_allouee = 8
+
+quantite_vendue = 3
+
+quantite_disponible = 5
+
+ProduitLine :
+
+quantite_restante = 17 ✅
+
+Nouvelle livraison (vendeur B)
+Vendeur B livre 2 bagues
+
+
+ProduitLine.quantite_restante = 15
+
+🔹 Pourquoi afficher quantite_restante au vendeur ?
+✔️ Avantages
+
+Transparence : “le stock global arrive à sa fin”
+
+Alerte : éviter de sur-allouer à d’autres vendeurs
+
+Contrôle manager/admin
+
+⚠️ Attention
+
+Le vendeur ne peut pas vendre au-delà de sa quantite_disponible, même si quantite_restante est élevée.
+
+🔹 Résumé ultra-clair
+Champ	Niveau	Sert à
+quantite_restante	Lot global	Stock physique réel
+quantite_allouee	Vendeur	Réservation
+quantite_vendue	Vendeur	Déjà livré
+quantite_disponible	Calcul	Ce que le vendeur peut encore livrer
