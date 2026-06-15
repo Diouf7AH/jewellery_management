@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # import os
 
 # import dj_database_url
@@ -54,7 +53,6 @@
 # # EMAIL_USE_TLS = True
 # # EMAIL_HOST_USER = os.environ.get('EMAIL_USER')
 # # EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_PASSWORD')
-=======
 # import os
 
 # import dj_database_url
@@ -110,5 +108,4 @@
 # # EMAIL_USE_TLS = True
 # # EMAIL_HOST_USER = os.environ.get('EMAIL_USER')
 # # EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_PASSWORD')
->>>>>>> fd5f1df121896de34fca9cd3384a1835551776dc
 # # DEFAULT_FROM_EMAIL = 'default from email'

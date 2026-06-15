@@ -80,4 +80,4 @@ def export_comptable_factures(factures):
             ])
 
     return wb
-    return wb
+

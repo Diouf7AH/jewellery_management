@@ -407,3 +407,4 @@ class OutboxEmail(models.Model):
 
     def __str__(self):
         return f"{self.to} ({self.status})"
+    
