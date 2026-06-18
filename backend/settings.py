@@ -257,11 +257,19 @@ SIMPLE_JWT = {
 # CORS_ALLOW_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
 # CORS_ALLOW_HEADERS = ['content-type', 'authorization', 'x-requested-with']
 
+# CORS_ALLOW_ALL_ORIGINS = False
+
+# CORS_ALLOWED_ORIGINS = config(
+#     "CORS_ALLOWED_ORIGINS",
+#     default="http://localhost:4200,http://127.0.0.1:4200,https://rio-gold.com,https://www.rio-gold.com,https://api.rio-gold.com",
+#     cast=Csv(),
+# )
+
 CORS_ALLOW_ALL_ORIGINS = False
 
 CORS_ALLOWED_ORIGINS = config(
     "CORS_ALLOWED_ORIGINS",
-    default="http://localhost:4200,http://127.0.0.1:4200,https://rio-gold.com,https://www.rio-gold.com,https://api.rio-gold.com",
+    default="http://localhost:4200,http://127.0.0.1:4200,https://rio-gold.com,https://www.rio-gold.com,https://admin.rio-gold.com,https://api.rio-gold.com",
     cast=Csv(),
 )
 
