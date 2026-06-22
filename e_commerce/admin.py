@@ -60,7 +60,7 @@ class EcommerceHomeProductAdmin(admin.ModelAdmin):
         "active",
         "ordre_affichage",
     ]
-    autocomplete_fields = [
+    raw_id_fields = [
         "produit",
         "bijouterie",
     ]

@@ -175,7 +175,7 @@ urlpatterns = [
     path("staff/create", staff_views.CreateStaffUnifiedView.as_view(), name="staff-create-unified"),
     path("staff/<int:staff_id>/update", staff_views.UpdateStaffUnifiedView.as_view(), name="staff-update-unified"),
     path("staff/list", staff_views.ListStaffUnifiedView.as_view(), name="staff-list-unified"),
-    path("staff/<str:role>/<int:staff_id>", staff_views.StaffDetailUnifiedView.as_view(), name="staff-detail-unified"),
+    path("staff/<str:role>/<int:staff_id>", staff_views.StaffDetailView.as_view(), name="staff-detail-unified"),
     path("staff/dashboard", staff_views.StaffDashboardView.as_view(), name="staff-dashboard"),
     #VENDOR
     # path('vendor/list', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
@@ -204,7 +204,7 @@ urlpatterns = [
 
     
     # SALE
-    path("produits/etiquettes/",sale_views.ProductionLineEtiquettesPDFView.as_view(),name="produits-etiquettes",),
+    path("produits/etiquettes/",sale_views.ProduitLineEtiquettesPDFView.as_view(),name="produits-etiquettes",),
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
     # PDF
     path("factures/<str:numero_facture>/ticket-58mm/",sale_views.TicketProforma58mmView.as_view(),name="ticket-proforma-58mm",),

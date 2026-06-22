@@ -1,6 +1,6 @@
 from django.contrib import admin
-
-from store.models import Bijouterie, Categorie, Marque, Modele, Produit, Purete, Gallery
+from store.models import (Bijouterie, Categorie, Gallery, Marque, Modele,
+                          Produit, Purete)
 
 
 # Register your models here.
@@ -8,7 +8,10 @@ from store.models import Bijouterie, Categorie, Marque, Modele, Produit, Purete,
 class BijouterieAdmin(admin.ModelAdmin):
     list_display = ('id', 'telephone_portable_1','nom', 'adresse')
     exclude = ("id",)
-    search_fields = ('id','nom',)
+    search_fields = [
+        "nom",
+        "telephone_portable_1",
+    ]
 
 @admin.register(Categorie)
 class CategorieAdmin(admin.ModelAdmin):
@@ -40,6 +43,11 @@ def regenerer_qr_code_action(modeladmin, request, queryset):
 # pouvoir regénérer un QR code manuellement depuis l’admin Django
 @admin.register(Produit)
 class ProduitAdmin(admin.ModelAdmin):
+    search_fields = [
+        "nom",
+        "sku",
+        "slug",
+    ]
     list_display = ('id', 'slug', 'nom', 'categorie', 'marque', 'modele', 'poids', 'taille', 'sku', 'qr_code_url')
     actions = [regenerer_qr_code_action]
     # readonly_fields = ('affiche_qr_code',)
