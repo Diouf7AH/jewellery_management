@@ -841,22 +841,46 @@ class EcommerceHomePageView(APIView):
         operation_summary="Page d'accueil e-commerce",
         operation_description=(
             "Retourne tout le contenu dynamique de la page d'accueil e-commerce : "
-            "bannières, nouveaux arrivages, vidéo et produits sélectionnés."
+            "grandes bannières, nouveaux arrivages, bannière vidéo, "
+            "produits sélectionnés et produits carrousel."
         ),
-        manual_parameters=[
-            openapi.Parameter(
-                "bijouterie_id",
-                openapi.IN_QUERY,
-                description="Filtrer le contenu par bijouterie",
-                type=openapi.TYPE_INTEGER,
-                required=False,
-            ),
-        ],
-        responses={200: "Contenu de la page d'accueil e-commerce"},
+        responses={
+            200: openapi.Response(
+                description="Contenu de la page d'accueil e-commerce",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "grande_bannieres": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        ),
+                        "nouveau_arrivage_bannieres": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        ),
+                        "bannieres_video": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        ),
+                        "produits_selectionnes": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        ),
+                        "produits_nouveau_arrivage": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        ),
+                        "produits_carrousel": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        ),
+                    },
+                ),
+            )
+        },
         tags=["E-commerce"],
     )
     def get(self, request):
-        bijouterie_id = request.query_params.get("bijouterie_id")
 
         banners = EcommerceBanner.objects.filter(active=True).order_by(
             "ordre_affichage",
@@ -872,8 +896,6 @@ class EcommerceHomePageView(APIView):
             "bijouterie",
         ).filter(active=True)
 
-        if bijouterie_id:
-            home_products = home_products.filter(bijouterie_id=bijouterie_id)
 
         return Response({
             "grande_bannieres": EcommerceBannerSerializer(
