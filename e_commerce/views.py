@@ -3,23 +3,26 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from e_commerce.models import (CommandeEcommerce, EcommerceBanner,
+                               EcommerceHomeProduct, LivraisonEcommerce,
+                               PaiementEcommerce)
+from e_commerce.selectors.products import get_ecommerce_products
+from e_commerce.serializers import (CommandeEcommerceCreateSerializer,
+                                    CommandeEcommerceDetailSerializer,
+                                    EcommerceBannerSerializer,
+                                    EcommerceDashboardQuerySerializer,
+                                    EcommerceHomeProductSerializer)
+from e_commerce.services.payment import initiate_payment
+from e_commerce.services.webhook import confirm_ecommerce_payment
 from rest_framework import generics, permissions, status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from sale.models import VenteProduit
+from stock.models import Stock
 
 from backend.permissions import (ROLE_MANAGER, ROLE_VENDOR, IsAdminOrManager,
                                  IsAdminOrManagerOrVendor, get_role_name)
-from e_commerce.models import (CommandeEcommerce, EcommerceBanner,
-                               LivraisonEcommerce, PaiementEcommerce)
-from e_commerce.selectors.products import get_ecommerce_products
-from e_commerce.serializers import (CommandeEcommerceCreateSerializer,
-                                    CommandeEcommerceDetailSerializer,
-                                    EcommerceDashboardQuerySerializer)
-from e_commerce.services.payment import initiate_payment
-from e_commerce.services.webhook import confirm_ecommerce_payment
-from sale.models import VenteProduit
-from stock.models import Stock
 
 from .models import CommandeEcommerce
 from .serializers import (CommandeEcommerceCreateSerializer,
@@ -829,5 +832,75 @@ class EcommerceBannerDetailView(generics.RetrieveAPIView):
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
     
-    
+
+
+class EcommerceHomePageView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    @swagger_auto_schema(
+        operation_summary="Page d'accueil e-commerce",
+        operation_description=(
+            "Retourne tout le contenu dynamique de la page d'accueil e-commerce : "
+            "bannières, nouveaux arrivages, vidéo et produits sélectionnés."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                description="Filtrer le contenu par bijouterie",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+        ],
+        responses={200: "Contenu de la page d'accueil e-commerce"},
+        tags=["E-commerce Accueil"],
+    )
+    def get(self, request):
+        bijouterie_id = request.query_params.get("bijouterie_id")
+
+        banners = EcommerceBanner.objects.filter(active=True).order_by(
+            "ordre_affichage",
+            "-created_at",
+        )
+
+        home_products = EcommerceHomeProduct.objects.select_related(
+            "produit",
+            "produit__categorie",
+            "produit__marque",
+            "produit__modele",
+            "produit__purete",
+            "bijouterie",
+        ).filter(active=True)
+
+        if bijouterie_id:
+            home_products = home_products.filter(bijouterie_id=bijouterie_id)
+
+        return Response({
+            "grande_bannieres": EcommerceBannerSerializer(
+                banners.filter(position=EcommerceBanner.POSITION_GRANDE_BANNIERE),
+                many=True,
+            ).data,
+            "nouveau_arrivage_bannieres": EcommerceBannerSerializer(
+                banners.filter(position=EcommerceBanner.POSITION_NOUVEAU_ARRIVAGE),
+                many=True,
+            ).data,
+            "bannieres_video": EcommerceBannerSerializer(
+                banners.filter(position=EcommerceBanner.POSITION_BANNIERE_VIDEO),
+                many=True,
+            ).data,
+            "produits_selectionnes": EcommerceHomeProductSerializer(
+                home_products.filter(section=EcommerceHomeProduct.SECTION_FEATURED),
+                many=True,
+            ).data,
+            "produits_nouveau_arrivage": EcommerceHomeProductSerializer(
+                home_products.filter(section=EcommerceHomeProduct.SECTION_NEW_ARRIVAL),
+                many=True,
+            ).data,
+            "produits_carrousel": EcommerceHomeProductSerializer(
+                home_products.filter(section=EcommerceHomeProduct.SECTION_SLIDER),
+                many=True,
+            ).data,
+        })
+        
+
 

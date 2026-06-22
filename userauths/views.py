@@ -23,10 +23,10 @@ from rest_framework.response import Response
 from rest_framework.reverse import reverse
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+from userauths.utils import send_confirmation_email, verify_email_token
 
 from backend.permissions import IsAdminOrManager
 from backend.renderers import UserRenderer
-from userauths.utils import send_confirmation_email, verify_email_token
 
 from .auth_backend import EmailPhoneUsernameAuthenticationBackend as EoP
 from .models import Profile, Role
@@ -178,7 +178,14 @@ class EmailVerificationView(APIView):
         if changed_fields:
             user.save(update_fields=changed_fields)
 
-        return render(request, "emails/email_confirmed.html", status=200)
+        return render(
+            request,
+            "emails/email_confirmed.html",
+            {
+                "frontend_url": settings.FRONTEND_URL.rstrip("/"),
+            },
+            status=200
+        )
 
 
 class ResendVerificationEmailView(APIView):

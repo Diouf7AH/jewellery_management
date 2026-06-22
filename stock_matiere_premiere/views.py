@@ -16,10 +16,6 @@ from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
-                           get_role_name)
-from backend.utils.helpers import resolve_bijouterie_for_user
 from sale.models import Client
 from stock_matiere_premiere.serializers import (
     CancelRachatClientSerializer, RachatClientCreateSerializer,
@@ -27,6 +23,10 @@ from stock_matiere_premiere.serializers import (
     ReverseAchatMatierePremiereSerializer, ReverseRachatClientSerializer,
     VenteMatierePremiereCreateSerializer, generate_ticket_number)
 from store.models import Bijouterie, Purete
+
+from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
+                           get_role_name)
+from backend.utils.helpers import resolve_bijouterie_for_user
 
 from .models import (AchatMatierePremiere, AchatMatierePremiereItem,
                      MatierePremiereMovement, MatierePremiereStock,
@@ -132,7 +132,7 @@ class RachatClientCreateView(APIView):
 
         rachat = (
             RachatClient.objects
-            .select_related("client", "bijouterie")
+            .select_related("client", "bijouterie", "paid_by", "cancelled_by")
             .prefetch_related("items__purete")
             .get(id=rachat.id)
         )
@@ -146,6 +146,141 @@ class RachatClientCreateView(APIView):
             status=status.HTTP_201_CREATED,
         )
         
+
+
+class RachatClientListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Lister les rachats client",
+        manual_parameters=[
+            openapi.Parameter(
+                "numero_ticket",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "payment_status",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "status",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "telephone",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "date_debut",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+            ),
+            openapi.Parameter(
+                "date_fin",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+            ),
+        ],
+        responses={200: RachatClientDetailSerializer(many=True)},
+        tags=["Rachat Client"],
+    )
+    def get(self, request):
+        role = get_role_name(request.user)
+
+        if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
+            return Response(
+                {"detail": "Accès refusé."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+            
+        queryset = (
+            RachatClient.objects
+            .select_related(
+                "client",
+                "bijouterie",
+                "paid_by",
+                "cancelled_by",
+            )
+            .prefetch_related(
+                "items__purete",
+            )
+            .order_by("-created_at")
+        )
+
+        if role == ROLE_MANAGER:
+            manager_profile = getattr(request.user, "staff_manager_profile", None)
+
+            if not manager_profile:
+                return Response(
+                    {"detail": "Profil manager introuvable."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            queryset = queryset.filter(
+                bijouterie__in=manager_profile.bijouteries.all()
+            )
+
+        elif role == ROLE_VENDOR:
+            bijouterie = resolve_bijouterie_for_user(request.user)
+
+            if not bijouterie:
+                return Response(
+                    {"detail": "Aucune bijouterie associée à ce vendeur."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            queryset = queryset.filter(bijouterie=bijouterie)
+
+        numero_ticket = request.GET.get("numero_ticket")
+        payment_status = request.GET.get("payment_status")
+        status_filter = request.GET.get("status")
+        telephone = request.GET.get("telephone")
+        date_debut = request.GET.get("date_debut")
+        date_fin = request.GET.get("date_fin")
+
+        if numero_ticket:
+            queryset = queryset.filter(
+                numero_ticket__icontains=numero_ticket
+            )
+
+        if payment_status:
+            queryset = queryset.filter(
+                payment_status=payment_status
+            )
+
+        if status_filter:
+            queryset = queryset.filter(
+                status=status_filter
+            )
+
+        if telephone:
+            queryset = queryset.filter(
+                client__telephone__icontains=telephone
+            )
+
+        if date_debut:
+            queryset = queryset.filter(
+                created_at__date__gte=date_debut
+            )
+
+        if date_fin:
+            queryset = queryset.filter(
+                created_at__date__lte=date_fin
+            )
+
+        serializer = RachatClientDetailSerializer(
+            queryset,
+            many=True,
+            context={"request": request},
+        )
+
+        return Response(serializer.data)
 
 
 class CancelRachatClientView(APIView):
@@ -365,11 +500,7 @@ class PaiementRachatClientView(APIView):
         rachat.paid_at = timezone.now()
         rachat.paid_by = user
         rachat.save(update_fields=["payment_status", "paid_at", "paid_by"])
-
-        data = RachatClientDetailSerializer(
-            rachat,
-            context={"request": request},
-        ).data
+        rachat.refresh_from_db()
 
         return Response(
             RachatClientDetailSerializer(
@@ -431,7 +562,6 @@ class RachatClientTicket58mmPDFView(APIView):
             content_type="application/pdf",
         )
 
-
 class RachatClientAttestationPDFView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -445,42 +575,60 @@ class RachatClientAttestationPDFView(APIView):
         - L'attestation est générée après validation du paiement.
         """,
         responses={
-            200: openapi.Response(
-                description="Attestation PDF générée avec succès",
-            ),
+            200: openapi.Response(description="Attestation PDF générée avec succès"),
             400: "Attestation indisponible tant que le ticket n'est pas payé",
+            403: "Accès refusé",
             404: "Rachat client introuvable",
         },
         produces=["application/pdf"],
         tags=["Rachat Client"],
     )
     def get(self, request, uuid):
+        role = get_role_name(request.user)
+
+        if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_CASHIER]:
+            return Response(
+                {"detail": "Accès refusé."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         rachat = get_object_or_404(
             RachatClient.objects.select_related(
                 "client",
                 "bijouterie",
                 "paid_by",
-            ).prefetch_related(
-                "items__purete",
-            ),
+            ).prefetch_related("items__purete"),
             uuid=uuid,
         )
 
+        if role == ROLE_MANAGER:
+            manager_profile = getattr(request.user, "staff_manager_profile", None)
+
+            if not manager_profile or not manager_profile.bijouteries.filter(
+                id=rachat.bijouterie_id
+            ).exists():
+                return Response(
+                    {"detail": "Accès refusé pour cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        if role == ROLE_CASHIER:
+            cashier_profile = getattr(request.user, "staff_cashier_profile", None)
+
+            if not cashier_profile or cashier_profile.bijouterie_id != rachat.bijouterie_id:
+                return Response(
+                    {"detail": "Accès refusé pour cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         if rachat.payment_status != RachatClient.PAYMENT_PAID:
             return Response(
-                {
-                    "detail": "La fiche d’attestation est disponible seulement après paiement."
-                },
+                {"detail": "La fiche d’attestation est disponible seulement après paiement."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         buffer = BytesIO()
-
-        build_attestation_rachat_client_pdf(
-            buffer,
-            rachat,
-        )
-
+        build_attestation_rachat_client_pdf(buffer, rachat)
         buffer.seek(0)
 
         return FileResponse(
@@ -489,8 +637,7 @@ class RachatClientAttestationPDFView(APIView):
             filename=f"attestation_rachat_{rachat.numero_ticket}.pdf",
             content_type="application/pdf",
         )
-
-
+        
 
 #annule rachat
 class ReverseRachatClientView(APIView):
@@ -655,6 +802,7 @@ class ReverseRachatClientView(APIView):
             "cancel_reason",
         ])
         rachat.refresh_from_db()
+        
 
         return Response(
             RachatClientDetailSerializer(
@@ -1382,6 +1530,17 @@ class ReverseAchatMatierePremiereView(APIView):
             uuid=uuid,
         )
 
+        if role == ROLE_MANAGER:
+            manager_profile = getattr(user, "staff_manager_profile", None)
+
+            if not manager_profile or not manager_profile.bijouteries.filter(
+                id=achat.bijouterie_id
+            ).exists():
+                return Response(
+                    {"detail": "Accès refusé pour cette bijouterie."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         if achat.status == AchatMatierePremiere.STATUS_CANCELLED:
             return Response(
                 {"detail": "Cet achat est déjà annulé/corrigé."},
@@ -1461,7 +1620,10 @@ class ReverseAchatMatierePremiereView(APIView):
         ])
 
         return Response(
-            AchatMatierePremiereDetailSerializer(achat).data,
+            AchatMatierePremiereDetailSerializer(
+                achat,
+                context={"request": request},
+            ).data,
             status=status.HTTP_200_OK,
         )
 

@@ -252,6 +252,18 @@ class EcommerceBanner(models.Model):
         (TYPE_IMAGE, "Image"),
         (TYPE_VIDEO, "Vidéo"),
     ]
+    
+    POSITION_GRANDE_BANNIERE = "grande_banniere"
+    POSITION_NOUVEAU_ARRIVAGE = "nouveau_arrivage"
+    POSITION_BANNIERE_VIDEO = "banniere_video"
+    POSITION_PROMOTION = "promotion"
+
+    POSITION_CHOICES = [
+        (POSITION_GRANDE_BANNIERE, "Grande bannière accueil"),
+        (POSITION_NOUVEAU_ARRIVAGE, "Bannière nouveau arrivage"),
+        (POSITION_BANNIERE_VIDEO, "Bannière vidéo"),
+        (POSITION_PROMOTION, "Bannière promotion"),
+    ]
 
     uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False, db_index=True,)
     titre = models.CharField(max_length=150, blank=True, null=True)
@@ -263,7 +275,12 @@ class EcommerceBanner(models.Model):
         default=TYPE_IMAGE,
         db_index=True,
     )
-
+    position = models.CharField(
+        max_length=40,
+        choices=POSITION_CHOICES,
+        default=POSITION_GRANDE_BANNIERE,
+        db_index=True,
+    )
     image = models.ImageField(
         upload_to="ecommerce/banners/images/",
         blank=True,
@@ -303,4 +320,69 @@ class EcommerceBanner(models.Model):
     def __str__(self):
         return self.titre or f"Bannière #{self.pk}"
     
+
+
+class EcommerceHomeProduct(models.Model):
+    SECTION_FEATURED = "featured"
+    SECTION_NEW_ARRIVAL = "new_arrival"
+    SECTION_SLIDER = "slider"
+    SECTION_BEST_SELLER = "best_seller"
+
+    SECTION_CHOICES = [
+        (SECTION_FEATURED, "Produits sélectionnés"),
+        (SECTION_NEW_ARRIVAL, "Nouveaux arrivages"),
+        (SECTION_SLIDER, "Carrousel"),
+        (SECTION_BEST_SELLER, "Meilleures ventes"),
+    ]
+
+    produit = models.ForeignKey(
+        "store.Produit",
+        on_delete=models.CASCADE,
+        related_name="home_ecommerce_items",
+    )
+
+    bijouterie = models.ForeignKey(
+        "store.Bijouterie",
+        on_delete=models.CASCADE,
+        related_name="home_ecommerce_products",
+        null=True,
+        blank=True,
+    )
+
+    section = models.CharField(
+        max_length=30,
+        choices=SECTION_CHOICES,
+        default=SECTION_FEATURED,
+        db_index=True,
+    )
+
+    active = models.BooleanField(default=True, db_index=True)
+    ordre_affichage = models.PositiveIntegerField(default=0)
+
+    titre_personnalise = models.CharField(max_length=150, blank=True, null=True)
+    badge = models.CharField(max_length=50, blank=True, null=True)  # Nouveau, Promo, Top
+    image_personnalisee = models.ImageField(
+        upload_to="ecommerce/home/products/",
+        blank=True,
+        null=True,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["section", "ordre_affichage", "-created_at"]
+
+    def __str__(self):
+        return f"{self.produit} - {self.section}"
+    
+    class Meta:
+        ordering = ["section", "ordre_affichage", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["produit", "bijouterie", "section"],
+                name="uniq_home_product_by_shop_section",
+            )
+        ]
+        
 

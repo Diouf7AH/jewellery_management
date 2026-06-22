@@ -50,34 +50,40 @@ def verify_email_token(token):
     
 
 def send_confirmation_email(user, request=None, *, confirm_url=None, home_url=None):
-    """
-    Envoie l'email de confirmation.
-    - Si confirm_url/home_url ne sont pas fournis, ils sont générés via request.
-    - Laisse remonter les exceptions SMTP (on les catchera dans la vue).
-    """
     if not confirm_url:
+        token = generate_email_token(user)
+
         if request is None:
-            # fallback si on n'a pas de request (ex: envoi différé)
-            frontend = getattr(settings, "FRONTEND_BASE_URL", "").rstrip("/")
-            token = generate_email_token(user)
-            confirm_url = f"{frontend}/confirm-email?token={token}" if frontend else None
-            home_url = home_url or (frontend or "/")
+            frontend = getattr(settings, "FRONTEND_URL", "https://rio-gold.com").rstrip("/")
+            confirm_url = f"{frontend}/confirm-email?token={token}"
         else:
-            token = generate_email_token(user)
-            confirm_url = request.build_absolute_uri(reverse('verify-email') + f"?token={token}")
-            home_url = home_url or request.build_absolute_uri('/')
+            confirm_url = request.build_absolute_uri(
+                reverse("verify-email") + f"?token={token}"
+            )
+
+    home_url = home_url or getattr(
+        settings,
+        "FRONTEND_URL",
+        "https://rio-gold.com"
+    ).rstrip("/")
 
     subject = "Confirmez votre adresse email"
+
     html = render_to_string("emails/email_confirmation.html", {
         "user": user,
         "home_url": home_url,
         "confirm_url": confirm_url,
-        "year": datetime.now().year
+        "year": datetime.now().year,
     })
 
-    email = EmailMultiAlternatives(subject, "", settings.DEFAULT_FROM_EMAIL, [user.email])
+    email = EmailMultiAlternatives(
+        subject,
+        "",
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email]
+    )
     email.attach_alternative(html, "text/html")
-    email.send()  # peut lever une exception SMTP → gérée dans la vue appelante
+    email.send()
 
 @receiver(reset_password_token_created)
 def send_password_reset_email(sender, instance, reset_password_token, *args, **kwargs):

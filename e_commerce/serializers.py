@@ -1,9 +1,9 @@
 from decimal import Decimal
 
 from django.db.models import Sum
-from rest_framework import serializers
-
+from e_commerce.models import EcommerceHomeProduct
 from purchase.models import ProduitLine
+from rest_framework import serializers
 from sale.models import Client
 from stock.models import Stock
 from store.models import Bijouterie
@@ -268,9 +268,6 @@ class EcommerceProductDetailSerializer(EcommerceProductListSerializer):
         
 
 
-from rest_framework import serializers
-
-
 class EcommerceDashboardQuerySerializer(serializers.Serializer):
     bijouterie_id = serializers.IntegerField(required=False)
     start_date = serializers.DateField(required=False)
@@ -309,5 +306,48 @@ class EcommerceBannerSerializer(serializers.ModelSerializer):
             "active",
             "ordre_affichage",
         ]
+        
+
+
+class EcommerceHomeProductSerializer(serializers.ModelSerializer):
+    produit_uuid = serializers.UUIDField(source="produit.uuid", read_only=True)
+    produit_nom = serializers.CharField(source="produit.nom", read_only=True)
+    produit_sku = serializers.CharField(source="produit.sku", read_only=True)
+    produit_slug = serializers.CharField(source="produit.slug", read_only=True)
+    produit_image = serializers.ImageField(source="produit.image", read_only=True)
+    produit_poids = serializers.DecimalField(
+        source="produit.poids",
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+    )
+
+    categorie = serializers.CharField(source="produit.categorie.nom", read_only=True)
+    marque = serializers.CharField(source="produit.marque.marque", read_only=True)
+    modele = serializers.CharField(source="produit.modele.modele", read_only=True)
+    purete = serializers.CharField(source="produit.purete.purete", read_only=True)
+
+    class Meta:
+        model = EcommerceHomeProduct
+        fields = [
+            "id",
+            "produit_uuid",
+            "produit_nom",
+            "produit_sku",
+            "produit_slug",
+            "produit_image",
+            "produit_poids",
+            "categorie",
+            "marque",
+            "modele",
+            "purete",
+            "section",
+            "active",
+            "ordre_affichage",
+            "titre_personnalise",
+            "badge",
+            "image_personnalisee",
+        ]
+        
         
 

@@ -6,6 +6,10 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
+from compte_depot.models import (ClientDepot, CompteDepot,
+                                 CompteDepotTransaction)
+from compte_depot.notifications import send_compte_depot_facture_notification
+from compte_depot.services import effectuer_retrait
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -18,8 +22,11 @@ from django.urls import reverse
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from inventory.models import InventoryMovement
+from inventory.services import log_move
 from openpyxl import Workbook
 from openpyxl.styles import Font, numbers
+from purchase.models import ProduitLine
 from rest_framework import permissions, status
 from rest_framework.exceptions import APIException
 from rest_framework.exceptions import ValidationError
@@ -27,26 +34,12 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-from backend.mixins import (GROUP_BY_CHOICES, ExportXlsxMixin,
-                            aware_range_month, parse_month_or_default,
-                            resolve_tz)
-from backend.permissions import CanCreateSale, IsCashierOnly
-from backend.query_scopes import scope_bijouterie_q
-from backend.renderers import UserRenderer
-from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
-                           get_role_name)
-from compte_depot.models import (ClientDepot, CompteDepot,
-                                 CompteDepotTransaction)
-from compte_depot.notifications import send_compte_depot_facture_notification
-from compte_depot.services import effectuer_retrait
-from inventory.models import InventoryMovement
-from inventory.services import log_move
 from sale.models import (Client, Facture,  # adapte le chemin si besoin
                          ModePaiement, Paiement, PaiementLigne, Vente,
                          VenteProduit)
 from sale.pdf.escpos_ticket_58mm import build_escpos_ticket_proforma_58mm
 from sale.pdf.escpos_ticket_80mm import build_escpos_recu_paiement_80mm
+from sale.pdf.etiquettes_produits import build_etiquettes_produits_pdf
 from sale.pdf.facture_A5_paysage import build_facture_a5_paysage_pdf
 from sale.pdf.ticket_paiement_80mm import build_ticket_paiement_80mm_pdf
 from sale.pdf.ticket_proforma_58mm import build_ticket_proforma_58mm_pdf
@@ -74,6 +67,15 @@ from stock.models import VendorStock
 from store.models import Bijouterie, MarquePurete, Produit
 from vendor.models import Vendor
 
+from backend.mixins import (GROUP_BY_CHOICES, ExportXlsxMixin,
+                            aware_range_month, parse_month_or_default,
+                            resolve_tz)
+from backend.permissions import CanCreateSale, IsCashierOnly
+from backend.query_scopes import scope_bijouterie_q
+from backend.renderers import UserRenderer
+from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
+                           get_role_name)
+
 from .utils import ensure_role_and_bijouterie, user_bijouterie
 
 DEFAULT_PAGE_SIZE = getattr(settings, "DEFAULT_PAGE_SIZE", 50)
@@ -81,6 +83,45 @@ MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+
+
+class ProduitLineEtiquettesPDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        produit_line_ids = request.data.get("produit_line_ids") or []
+
+        if not produit_line_ids:
+            return Response(
+                {"detail": "produit_line_ids est requis."},
+                status=400,
+            )
+
+        produit_lines = (
+            ProduitLine.objects
+            .select_related(
+                "produit",
+                "produit__purete",
+                "produit__marque",
+                "lot",
+            )
+            .filter(id__in=produit_line_ids)
+        )
+
+        if not produit_lines.exists():
+            return Response(
+                {"detail": "Aucune ligne produit trouvée."},
+                status=404,
+            )
+
+        buffer = build_etiquettes_produits_pdf(produit_lines)
+
+        return FileResponse(
+            buffer,
+            as_attachment=True,
+            filename="etiquettes_produits.pdf",
+            content_type="application/pdf",
+        )
 
 
 class VenteProduitCreateView(APIView):

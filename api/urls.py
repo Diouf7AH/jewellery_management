@@ -1,8 +1,7 @@
 # backend/api/urls.py
-from django.urls import include, path
-
 from api import views as api_views
 from compte_depot import views as compte_depot_views
+from django.urls import include, path
 from e_commerce import views as e_commerce_views
 from finance import views as finance_views
 from inventory import views as inv_views
@@ -205,6 +204,7 @@ urlpatterns = [
 
     
     # SALE
+    path("produits/etiquettes/",sale_views.ProductionLineEtiquettesPDFView.as_view(),name="produits-etiquettes",),
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
     # PDF
     path("factures/<str:numero_facture>/ticket-58mm/",sale_views.TicketProforma58mmView.as_view(),name="ticket-proforma-58mm",),
@@ -274,6 +274,7 @@ urlpatterns = [
     # path("dashboard-matiere-premiere",stock_matiere_premiere_views.DashboardMatierePremiereView.as_view(),name="dashboard-matiere-premiere",),
     # ///
     path("rachats-clients/create/",stock_matiere_premiere_views.RachatClientCreateView.as_view(),name="rachat-client-create",),
+    path("rachats-clients/",stock_matiere_premiere_views.RachatClientListView.as_view(),name="rachat-client-list",),
     path("rachats-clients/<uuid:uuid>/cancel/",stock_matiere_premiere_views.CancelRachatClientView.as_view(),name="cancel-rachat-client",),
     path("rachats-clients/<uuid:uuid>/paiement/",stock_matiere_premiere_views.PaiementRachatClientView.as_view(),name="rachat-client-paiement",),
     path("rachats-clients/<uuid:uuid>/ticket-58mm/",stock_matiere_premiere_views.RachatClientTicket58mmPDFView.as_view(),name="rachat-client-ticket-58mm",),
@@ -310,5 +311,6 @@ urlpatterns = [
     path("orders/",e_commerce_views.EcommerceOrderListView.as_view(),name="ecommerce-order-list",),
     path("orders/<uuid:uuid>/livraison/",e_commerce_views.EcommerceLivraisonDetailView.as_view(),name="ecommerce-livraison-detail",),
     path("orders/<uuid:uuid>/livraison/update/",e_commerce_views.LivraisonEcommerceUpdateView.as_view(),name="ecommerce-livraison-update",),
-    path("banners/<uuid:uuid>/",e_commerce_views.EcommerceBannerDetailView.as_view(),name="ecommerce-banner-detail",)
+    path("banners/<uuid:uuid>/",e_commerce_views.EcommerceBannerDetailView.as_view(),name="ecommerce-banner-detail",),
+    path("home/",e_commerce_views.EcommerceHomePageView.as_view(),name="ecommerce-home",),
 ]
