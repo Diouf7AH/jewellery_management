@@ -2,6 +2,7 @@
 # import weasyprint
 from __future__ import annotations
 
+import zipfile
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -40,7 +41,6 @@ from sale.models import (Client, Facture,  # adapte le chemin si besoin
                          VenteProduit)
 from sale.pdf.escpos_ticket_58mm import build_escpos_ticket_proforma_58mm
 from sale.pdf.escpos_ticket_80mm import build_escpos_recu_paiement_80mm
-from sale.pdf.etiquettes_produits import build_etiquettes_produits_pdf
 from sale.pdf.facture_A5_paysage import build_facture_a5_paysage_pdf
 from sale.pdf.ticket_paiement_80mm import build_ticket_paiement_80mm_pdf
 from sale.pdf.ticket_proforma_58mm import build_ticket_proforma_58mm_pdf
@@ -164,20 +164,98 @@ MAX_PAGE_SIZE = 100
         
         
 
-class ProduitEtiquettePNGView(APIView):
+class ProduitLineEtiquettesZIPView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, produit_id):
-        produit = get_object_or_404(Produit, id=produit_id)
+    @swagger_auto_schema(
+        operation_summary="Télécharger les étiquettes PNG",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["produit_line_ids"],
+            properties={
+                "produit_line_ids": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_INTEGER),
+                    example=[1, 2, 3],
+                ),
+            },
+        ),
+        tags=["Étiquettes"],
+    )
+    def post(self, request):
+        role = get_role_name(request.user)
 
-        buffer = build_etiquette_bague_png(produit)
+        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
+            return Response(
+                {"detail": "Accès refusé."},
+                status=403,
+            )
 
-        return FileResponse(
-            buffer,
-            as_attachment=True,
-            filename=f"etiquette_{produit.sku}.png",
-            content_type="image/png",
+        produit_line_ids = request.data.get("produit_line_ids") or []
+
+        if not produit_line_ids:
+            return Response(
+                {"detail": "produit_line_ids est requis."},
+                status=400,
+            )
+
+        produit_lines = (
+            ProduitLine.objects
+            .select_related(
+                "produit",
+                "produit__purete",
+                "produit__marque",
+            )
+            .filter(id__in=produit_line_ids)
         )
+
+        if not produit_lines.exists():
+            return Response(
+                {"detail": "Aucune ligne produit trouvée."},
+                status=404,
+            )
+
+        zip_buffer = BytesIO()
+
+        with zipfile.ZipFile(
+            zip_buffer,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as zip_file:
+
+            for line in produit_lines:
+                produit = line.produit
+
+                for i in range(1, line.quantite + 1):
+
+                    image_buffer = build_etiquette_bague_png(
+                        produit
+                    )
+
+                    filename = (
+                        f"{produit.sku}_{i}.png"
+                    )
+
+                    zip_file.writestr(
+                        filename,
+                        image_buffer.getvalue(),
+                    )
+
+        zip_buffer.seek(0)
+
+        response = HttpResponse(
+            zip_buffer.getvalue(),
+            content_type="application/zip",
+        )
+
+        response[
+            "Content-Disposition"
+        ] = (
+            'attachment; '
+            'filename="etiquettes_produits.zip"'
+        )
+
+        return response
 
 
 class VenteProduitCreateView(APIView):
