@@ -235,7 +235,7 @@ class PaymentWebhookView(APIView):
             400: "provider_reference obligatoire",
             404: "Paiement e-commerce introuvable",
         },
-        tags=["E-commerce Paiements"],
+        tags=["E-commerce"],
     )
     def post(self, request):
         payload = request.data
@@ -322,7 +322,7 @@ class PaymentInitiateView(APIView):
             400: "commande_uuid obligatoire ou commande déjà payée",
             404: "Commande ou paiement introuvable",
         },
-        tags=["E-commerce Paiements"],
+        tags=["E-commerce"],
     )
     def post(self, request):
         commande_uuid = request.data.get("commande_uuid")
@@ -416,7 +416,7 @@ class EcommerceInvoiceView(APIView):
             ),
             404: "Commande introuvable ou facture indisponible",
         },
-        tags=["E-commerce Factures"],
+        tags=["E-commerce"],
     )
     def get(self, request, uuid):
         commande = get_object_or_404(
@@ -492,7 +492,7 @@ class EcommerceDashboardView(APIView):
                 ),
             )
         },
-        tags=["E-commerce Dashboard"],
+        tags=["E-commerce"],
     )
     def get(self, request):
         serializer = EcommerceDashboardQuerySerializer(data=request.query_params)
@@ -595,7 +595,7 @@ class EcommerceOrderListView(generics.ListAPIView):
                 schema=CommandeEcommerceDetailSerializer(many=True),
             ),
         },
-        tags=["E-commerce Commandes"],
+        tags=["E-commerce"],
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
@@ -653,7 +653,7 @@ class EcommerceLivraisonDetailView(APIView):
             ),
             404: "Livraison introuvable",
         },
-        tags=["E-commerce Livraison"],
+        tags=["E-commerce"],
     )
     def get(self, request, uuid):
         livraison = get_object_or_404(
@@ -719,7 +719,7 @@ class LivraisonEcommerceUpdateView(APIView):
             ),
             404: "Livraison introuvable",
         },
-        tags=["E-commerce Livraison"],
+        tags=["E-commerce"],
     )
     def patch(self, request, uuid):
         livraison = get_object_or_404(
@@ -774,7 +774,7 @@ class EcommerceBannerListView(generics.ListAPIView):
                 schema=EcommerceBannerSerializer(many=True),
             ),
         },
-        tags=["E-commerce Bannières"],
+        tags=["E-commerce"],
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
@@ -827,7 +827,7 @@ class EcommerceBannerDetailView(generics.RetrieveAPIView):
             ),
             404: "Bannière introuvable",
         },
-        tags=["E-commerce Bannières"],
+        tags=["E-commerce"],
     )
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
@@ -853,7 +853,7 @@ class EcommerceHomePageView(APIView):
             ),
         ],
         responses={200: "Contenu de la page d'accueil e-commerce"},
-        tags=["E-commerce Accueil"],
+        tags=["E-commerce"],
     )
     def get(self, request):
         bijouterie_id = request.query_params.get("bijouterie_id")

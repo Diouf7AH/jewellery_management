@@ -89,6 +89,14 @@ class ProduitLineEtiquettesPDFView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        role = get_role_name(request.user)
+
+        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
+            return Response(
+                {"detail": "Accès refusé."},
+                status=403,
+            )
+
         produit_line_ids = request.data.get("produit_line_ids") or []
 
         if not produit_line_ids:
@@ -122,6 +130,7 @@ class ProduitLineEtiquettesPDFView(APIView):
             filename="etiquettes_produits.pdf",
             content_type="application/pdf",
         )
+        
 
 
 class VenteProduitCreateView(APIView):
