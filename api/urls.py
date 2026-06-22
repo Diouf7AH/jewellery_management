@@ -204,7 +204,7 @@ urlpatterns = [
 
     
     # SALE
-    path("produits/etiquettes/",sale_views.ProduitLineEtiquettesPDFView.as_view(),name="produits-etiquettes",),
+    path("produits/etiquettes-png/", sale_views.ProduitLineEtiquettesZIPView.as_view(),name="produits-etiquettes-png",),
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
     # PDF
     path("factures/<str:numero_facture>/ticket-58mm/",sale_views.TicketProforma58mmView.as_view(),name="ticket-proforma-58mm",),

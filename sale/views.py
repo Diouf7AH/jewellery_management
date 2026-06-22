@@ -34,6 +34,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from sale.images.etiquettes_produits import build_etiquette_bague_png
 from sale.models import (Client, Facture,  # adapte le chemin si besoin
                          ModePaiement, Paiement, PaiementLigne, Vente,
                          VenteProduit)
@@ -85,83 +86,99 @@ DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
 
-class ProduitLineEtiquettesPDFView(APIView):
+# class ProduitLineEtiquettesPDFView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Imprimer plusieurs étiquettes produits",
+#         operation_description=(
+#             "Génère un PDF contenant les étiquettes des ProduitLine sélectionnés. "
+#             "Accès réservé à ADMIN et MANAGER."
+#         ),
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["produit_line_ids"],
+#             properties={
+#                 "produit_line_ids": openapi.Schema(
+#                     type=openapi.TYPE_ARRAY,
+#                     items=openapi.Items(type=openapi.TYPE_INTEGER),
+#                     example=[1, 2, 3],
+#                     description="Liste des IDs ProduitLine.",
+#                 ),
+#             },
+#         ),
+#         responses={
+#             200: "PDF des étiquettes généré.",
+#             400: "produit_line_ids est requis.",
+#             403: "Accès refusé.",
+#             404: "Aucune ligne produit trouvée.",
+#         },
+#         tags=["Étiquettes"],
+#     )
+#     def post(self, request):
+#         role = get_role_name(request.user)
+
+#         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
+#             return Response({"detail": "Accès refusé."}, status=403)
+
+#         produit_line_ids = request.data.get("produit_line_ids") or []
+
+#         if not produit_line_ids:
+#             return Response(
+#                 {"detail": "produit_line_ids est requis."},
+#                 status=400,
+#             )
+
+#         produit_lines = (
+#             ProduitLine.objects
+#             .select_related(
+#                 "produit",
+#                 "produit__purete",
+#                 "produit__marque",
+#                 "lot",
+#             )
+#             .filter(id__in=produit_line_ids)
+#         )
+
+#         found_ids = set(produit_lines.values_list("id", flat=True))
+#         requested_ids = set(produit_line_ids)
+#         missing_ids = requested_ids - found_ids
+
+#         if missing_ids:
+#             return Response(
+#                 {
+#                     "detail": "Certaines lignes produit sont introuvables.",
+#                     "missing_ids": list(missing_ids),
+#                 },
+#                 status=404,
+#             )
+
+#         buffer = build_etiquettes_produits_pdf(produit_lines)
+
+#         return FileResponse(
+#             buffer,
+#             as_attachment=True,
+#             filename="etiquettes_produits.pdf",
+#             content_type="application/pdf",
+#         )
+        
+        
+
+class ProduitEtiquettePNGView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
-        operation_summary="Imprimer plusieurs étiquettes produits",
-        operation_description=(
-            "Génère un PDF contenant les étiquettes des ProduitLine sélectionnés. "
-            "Accès réservé à ADMIN et MANAGER."
-        ),
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["produit_line_ids"],
-            properties={
-                "produit_line_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    example=[1, 2, 3],
-                    description="Liste des IDs ProduitLine.",
-                ),
-            },
-        ),
-        responses={
-            200: "PDF des étiquettes généré.",
-            400: "produit_line_ids est requis.",
-            403: "Accès refusé.",
-            404: "Aucune ligne produit trouvée.",
-        },
-        tags=["Étiquettes"],
-    )
-    def post(self, request):
-        role = get_role_name(request.user)
+    def get(self, request, produit_id):
+        produit = get_object_or_404(Produit, id=produit_id)
 
-        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-            return Response({"detail": "Accès refusé."}, status=403)
-
-        produit_line_ids = request.data.get("produit_line_ids") or []
-
-        if not produit_line_ids:
-            return Response(
-                {"detail": "produit_line_ids est requis."},
-                status=400,
-            )
-
-        produit_lines = (
-            ProduitLine.objects
-            .select_related(
-                "produit",
-                "produit__purete",
-                "produit__marque",
-                "lot",
-            )
-            .filter(id__in=produit_line_ids)
-        )
-
-        found_ids = set(produit_lines.values_list("id", flat=True))
-        requested_ids = set(produit_line_ids)
-        missing_ids = requested_ids - found_ids
-
-        if missing_ids:
-            return Response(
-                {
-                    "detail": "Certaines lignes produit sont introuvables.",
-                    "missing_ids": list(missing_ids),
-                },
-                status=404,
-            )
-
-        buffer = build_etiquettes_produits_pdf(produit_lines)
+        buffer = build_etiquette_bague_png(produit)
 
         return FileResponse(
             buffer,
             as_attachment=True,
-            filename="etiquettes_produits.pdf",
-            content_type="application/pdf",
+            filename=f"etiquette_{produit.sku}.png",
+            content_type="image/png",
         )
-        
-        
+
 
 class VenteProduitCreateView(APIView):
     permission_classes = [CanCreateSale]
