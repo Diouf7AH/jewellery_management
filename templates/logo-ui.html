@@ -4,15 +4,26 @@
 {{ block.super }}
 
 <style>
-.topbar-wrapper img {
-    content: url("/media/logo/asset4.jpg");
-    width: 180px;
+/* Barre supérieure Swagger */
+.swagger-ui .topbar {
+    background: #000000;
 }
 
-.swagger-ui .topbar {
-    background: #000;
+/* Cache le logo Swagger */
+.topbar-wrapper img {
+    display: none !important;
+}
+
+/* Affiche le logo Rio Gold */
+.topbar-wrapper::after {
+    content: "";
+    display: block;
+    width: 220px;
+    height: 60px;
+
+    background-image: url("/media/logo/asset4.jpg");
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
 }
 </style>
-
-{% endblock %}
-
