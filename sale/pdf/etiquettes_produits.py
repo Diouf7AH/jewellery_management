@@ -8,9 +8,9 @@ from reportlab.pdfgen import canvas
 def build_etiquettes_produits_pdf(produit_lines):
     buffer = BytesIO()
 
-    # Format étiquette bague
+    # Etiquette bague T30x25
     width = 30 * mm
-    height = 12 * mm
+    height = 25 * mm
 
     p = canvas.Canvas(buffer, pagesize=(width, height))
 
@@ -18,27 +18,59 @@ def build_etiquettes_produits_pdf(produit_lines):
         produit = line.produit
 
         for _ in range(line.quantite):
-            sku = produit.sku or f"P-{produit.id}"
-            poids = produit.poids or ""
+
             purete = str(produit.purete) if produit.purete else ""
+            poids = produit.poids or ""
+            sku = produit.sku or f"P-{produit.id}"
 
-            p.setFont("Helvetica-Bold", 5)
-            p.drawCentredString(width / 2, height - 2 * mm, "RIO GOLD")
+            # RIO GOLD
+            p.setFont("Helvetica-Bold", 7)
+            p.drawCentredString(
+                width / 2,
+                height - 4 * mm,
+                "RIO GOLD"
+            )
 
-            p.setFont("Helvetica", 4.5)
-            p.drawString(2 * mm, height - 4 * mm, f"{purete} - {poids}g")
-            p.drawString(2 * mm, height - 6 * mm, sku[:20])
+            # Pureté
+            p.setFont("Helvetica", 6)
+            p.drawCentredString(
+                width / 2,
+                height - 9 * mm,
+                purete,
+            )
 
+            # Poids
+            p.drawCentredString(
+                width / 2,
+                height - 14 * mm,
+                f"{poids} g",
+            )
+
+            # Code barre
             barcode = code128.Code128(
                 sku,
-                barHeight=4 * mm,
-                barWidth=0.18 * mm,
+                barHeight=7 * mm,
+                barWidth=0.25 * mm,
             )
-            barcode.drawOn(p, 2 * mm, 1 * mm)
+
+            barcode.drawOn(
+                p,
+                2 * mm,
+                3 * mm,
+            )
+
+            # SKU sous le code barre
+            p.setFont("Helvetica", 5)
+            p.drawCentredString(
+                width / 2,
+                1.5 * mm,
+                sku,
+            )
 
             p.showPage()
 
     p.save()
     buffer.seek(0)
+
     return buffer
 
