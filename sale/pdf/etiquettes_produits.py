@@ -8,7 +8,6 @@ from reportlab.pdfgen import canvas
 def build_etiquettes_produits_pdf(produit_lines):
     buffer = BytesIO()
 
-    # Format étiquette : 50mm x 30mm
     width = 50 * mm
     height = 30 * mm
 
@@ -21,7 +20,7 @@ def build_etiquettes_produits_pdf(produit_lines):
             sku = produit.sku or f"P-{produit.id}"
             nom = produit.nom or "Produit"
             poids = produit.poids or ""
-            purete = produit.purete.nom if produit.purete else ""
+            purete = str(produit.purete) if produit.purete else ""
 
             p.setFont("Helvetica-Bold", 8)
             p.drawCentredString(width / 2, height - 5 * mm, "RIO GOLD")
@@ -43,4 +42,5 @@ def build_etiquettes_produits_pdf(produit_lines):
     p.save()
     buffer.seek(0)
     return buffer
+
 
