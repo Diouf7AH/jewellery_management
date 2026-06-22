@@ -8,8 +8,9 @@ from reportlab.pdfgen import canvas
 def build_etiquettes_produits_pdf(produit_lines):
     buffer = BytesIO()
 
-    width = 50 * mm
-    height = 30 * mm
+    # Format étiquette bague
+    width = 30 * mm
+    height = 12 * mm
 
     p = canvas.Canvas(buffer, pagesize=(width, height))
 
@@ -18,29 +19,26 @@ def build_etiquettes_produits_pdf(produit_lines):
 
         for _ in range(line.quantite):
             sku = produit.sku or f"P-{produit.id}"
-            nom = produit.nom or "Produit"
             poids = produit.poids or ""
             purete = str(produit.purete) if produit.purete else ""
 
-            p.setFont("Helvetica-Bold", 8)
-            p.drawCentredString(width / 2, height - 5 * mm, "RIO GOLD")
+            p.setFont("Helvetica-Bold", 5)
+            p.drawCentredString(width / 2, height - 2 * mm, "RIO GOLD")
 
-            p.setFont("Helvetica", 7)
-            p.drawString(3 * mm, height - 10 * mm, nom[:28])
-            p.drawString(3 * mm, height - 14 * mm, f"Pureté: {purete}  Poids: {poids}g")
-            p.drawString(3 * mm, height - 18 * mm, f"SKU: {sku}")
+            p.setFont("Helvetica", 4.5)
+            p.drawString(2 * mm, height - 4 * mm, f"{purete} - {poids}g")
+            p.drawString(2 * mm, height - 6 * mm, sku[:20])
 
             barcode = code128.Code128(
                 sku,
-                barHeight=8 * mm,
-                barWidth=0.35 * mm,
+                barHeight=4 * mm,
+                barWidth=0.18 * mm,
             )
-            barcode.drawOn(p, 5 * mm, 3 * mm)
+            barcode.drawOn(p, 2 * mm, 1 * mm)
 
             p.showPage()
 
     p.save()
     buffer.seek(0)
     return buffer
-
 

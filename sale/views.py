@@ -84,6 +84,7 @@ MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
+
 class ProduitLineEtiquettesPDFView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -138,9 +139,16 @@ class ProduitLineEtiquettesPDFView(APIView):
             .filter(id__in=produit_line_ids)
         )
 
-        if not produit_lines.exists():
+        found_ids = set(produit_lines.values_list("id", flat=True))
+        requested_ids = set(produit_line_ids)
+        missing_ids = requested_ids - found_ids
+
+        if missing_ids:
             return Response(
-                {"detail": "Aucune ligne produit trouvée."},
+                {
+                    "detail": "Certaines lignes produit sont introuvables.",
+                    "missing_ids": list(missing_ids),
+                },
                 status=404,
             )
 
@@ -152,6 +160,8 @@ class ProduitLineEtiquettesPDFView(APIView):
             filename="etiquettes_produits.pdf",
             content_type="application/pdf",
         )
+        
+        
 
 class VenteProduitCreateView(APIView):
     permission_classes = [CanCreateSale]
