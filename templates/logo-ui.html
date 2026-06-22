@@ -1,0 +1,18 @@
+{% extends "drf_yasg/swagger-ui.html" %}
+
+{% block extra_styles %}
+{{ block.super }}
+
+<style>
+.topbar-wrapper img {
+    content: url("/media/logo/rio-gold-logo.png");
+    width: 180px;
+}
+
+.swagger-ui .topbar {
+    background: #000;
+}
+</style>
+
+{% endblock %}
+

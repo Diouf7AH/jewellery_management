@@ -25,7 +25,6 @@ from drf_yasg.views import get_schema_view
 # drf-yasg imports
 # drf-yasg imports
 from rest_framework import permissions
-
 from userauths.views import (resend_confirmation_form,
                              resend_confirmation_submit)
 
@@ -45,32 +44,72 @@ schema_view = get_schema_view(
 API_DESCRIPTION = 'A Web API for creating and editing.' # new
 API_TITLE = 'API' # new
 
-urlpatterns = [
-    path('swagger<format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
-    path('', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
-    path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
-    path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
+# urlpatterns = [
+#     path('swagger<format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
+#     # path('', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
+#     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
+#     # path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     
-    # Admin URLbackofficegold/
-    path('admin/', admin.site.urls),
-    # API V1 Urls
-    path("api/", include("api.urls")),
+#     path('swagger/',schema_view.with_ui('swagger',cache_timeout=0,template_name='logo-ui.html',),name='schema-swagger-ui',),
+    
+#     # Admin URLbackofficegold/
+#     path('admin/', admin.site.urls),
+#     # API V1 Urls
+#     path("api/", include("api.urls")),
 
     
-    # # Admin URL
-    # path('admin/', admin.site.urls),
+#     # # Admin URL
+#     # path('admin/', admin.site.urls),
  
-    # # API V1 Urls
-    # path("api/", include("api.urls")),
+#     # # API V1 Urls
+#     # path("api/", include("api.urls")),
     
-    # Admin URL
-   # path('admin/', admin.site.urls),
+#     # Admin URL
+#    # path('admin/', admin.site.urls),
     
-    path('resend-confirmation-form/', resend_confirmation_form, name='resend-confirmation-form'),
-    path('resend-confirmation-submit/', resend_confirmation_submit, name='resend-confirmation-submit'),
+#     path('resend-confirmation-form/', resend_confirmation_form, name='resend-confirmation-form'),
+#     path('resend-confirmation-submit/', resend_confirmation_submit, name='resend-confirmation-submit'),
     
-    # path('logout/',knox_views.LogoutView.as_view(), name='knox_logout'), 
-    # path('logoutall/',knox_views.LogoutAllView.as_view(), name='knox_logoutall'), 
+#     # path('logout/',knox_views.LogoutView.as_view(), name='knox_logout'), 
+#     # path('logoutall/',knox_views.LogoutAllView.as_view(), name='knox_logoutall'), 
+# ]
+
+urlpatterns = [
+    path(
+        'swagger<format>/',
+        schema_view.without_ui(cache_timeout=0),
+        name='schema-json',
+    ),
+
+    path(
+        'swagger/',
+        schema_view.with_ui(
+            'swagger',
+            cache_timeout=0,
+            template_name='logo-ui.html',
+        ),
+        name='schema-swagger-ui',
+    ),
+
+    path(
+        'redoc/',
+        schema_view.with_ui('redoc', cache_timeout=0),
+        name='schema-redoc',
+    ),
+
+    path('admin/', admin.site.urls),
+    path("api/", include("api.urls")),
+
+    path(
+        'resend-confirmation-form/',
+        resend_confirmation_form,
+        name='resend-confirmation-form',
+    ),
+    path(
+        'resend-confirmation-submit/',
+        resend_confirmation_submit,
+        name='resend-confirmation-submit',
+    ),
 ]
 
 
