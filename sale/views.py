@@ -84,18 +84,40 @@ MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
-
 class ProduitLineEtiquettesPDFView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary="Imprimer plusieurs étiquettes produits",
+        operation_description=(
+            "Génère un PDF contenant les étiquettes des ProduitLine sélectionnés. "
+            "Accès réservé à ADMIN et MANAGER."
+        ),
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["produit_line_ids"],
+            properties={
+                "produit_line_ids": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_INTEGER),
+                    example=[1, 2, 3],
+                    description="Liste des IDs ProduitLine.",
+                ),
+            },
+        ),
+        responses={
+            200: "PDF des étiquettes généré.",
+            400: "produit_line_ids est requis.",
+            403: "Accès refusé.",
+            404: "Aucune ligne produit trouvée.",
+        },
+        tags=["Étiquettes"],
+    )
     def post(self, request):
         role = get_role_name(request.user)
 
         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-            return Response(
-                {"detail": "Accès refusé."},
-                status=403,
-            )
+            return Response({"detail": "Accès refusé."}, status=403)
 
         produit_line_ids = request.data.get("produit_line_ids") or []
 
@@ -130,8 +152,6 @@ class ProduitLineEtiquettesPDFView(APIView):
             filename="etiquettes_produits.pdf",
             content_type="application/pdf",
         )
-        
-
 
 class VenteProduitCreateView(APIView):
     permission_classes = [CanCreateSale]
