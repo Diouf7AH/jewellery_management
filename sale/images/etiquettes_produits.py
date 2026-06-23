@@ -52,59 +52,18 @@
 #     return output
 
 
-from io import BytesIO
+found_ids = set(produit_lines.values_list("id", flat=True))
+requested_ids = set(produit_line_ids)
 
-import qrcode
-from PIL import Image, ImageDraw, ImageFont
+missing_ids = requested_ids - found_ids
 
-
-def build_etiquette_bague_png(produit):
-    # 30mm x 25mm à 203 DPI ≈ 240 x 200 px
-    width = 240
-    height = 200
-
-    img = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(img)
-
-    font_title = ImageFont.load_default()
-    font_text = ImageFont.load_default()
-
-    purete = str(produit.purete) if produit.purete else ""
-    poids = produit.poids or ""
-    sku = produit.sku or f"P-{produit.id}"
-
-    # Contenu court à scanner
-    qr_content = sku
-
-    # Recto / infos visibles
-    draw.text((90, 10), "RIO GOLD", fill="black", font=font_title)
-    draw.text((105, 45), purete, fill="black", font=font_text)
-    draw.text((95, 70), f"{poids} g", fill="black", font=font_text)
-
-    # QR Code
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=4,
-        border=1,
+if missing_ids:
+    return Response(
+        {
+            "detail": "Certaines lignes produit sont introuvables.",
+            "missing_ids": list(missing_ids),
+        },
+        status=404,
     )
-    qr.add_data(qr_content)
-    qr.make(fit=True)
+    
 
-    qr_img = qr.make_image(
-        fill_color="black",
-        back_color="white",
-    ).convert("RGB")
-
-    qr_img = qr_img.resize((80, 80))
-
-    img.paste(qr_img, (80, 95))
-
-    # SKU sous QR
-    draw.text((70, 180), sku[:20], fill="black", font=font_text)
-
-    output = BytesIO()
-    img.save(output, format="PNG")
-    output.seek(0)
-
-    return output

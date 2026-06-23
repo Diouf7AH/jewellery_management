@@ -186,60 +186,43 @@ class ProduitLineEtiquettesZIPView(APIView):
         role = get_role_name(request.user)
 
         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-            return Response(
-                {"detail": "Accès refusé."},
-                status=403,
-            )
+            return Response({"detail": "Accès refusé."}, status=403)
 
         produit_line_ids = request.data.get("produit_line_ids") or []
 
         if not produit_line_ids:
-            return Response(
-                {"detail": "produit_line_ids est requis."},
-                status=400,
-            )
+            return Response({"detail": "produit_line_ids est requis."}, status=400)
 
         produit_lines = (
             ProduitLine.objects
-            .select_related(
-                "produit",
-                "produit__purete",
-                "produit__marque",
-            )
+            .select_related("produit", "produit__purete", "produit__marque")
             .filter(id__in=produit_line_ids)
         )
 
-        if not produit_lines.exists():
+        found_ids = set(produit_lines.values_list("id", flat=True))
+        requested_ids = set(produit_line_ids)
+        missing_ids = requested_ids - found_ids
+
+        if missing_ids:
             return Response(
-                {"detail": "Aucune ligne produit trouvée."},
+                {
+                    "detail": "Certaines lignes produit sont introuvables.",
+                    "missing_ids": list(missing_ids),
+                },
                 status=404,
             )
 
         zip_buffer = BytesIO()
 
-        with zipfile.ZipFile(
-            zip_buffer,
-            "w",
-            compression=zipfile.ZIP_DEFLATED,
-        ) as zip_file:
-
+        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
             for line in produit_lines:
                 produit = line.produit
+                safe_sku = produit.sku or f"P-{produit.id}"
 
                 for i in range(1, line.quantite + 1):
-
-                    image_buffer = build_etiquette_bague_png(
-                        produit
-                    )
-
-                    filename = (
-                        f"{produit.sku}_{i}.png"
-                    )
-
-                    zip_file.writestr(
-                        filename,
-                        image_buffer.getvalue(),
-                    )
+                    image_buffer = build_etiquette_bague_png(produit)
+                    filename = f"{safe_sku}_{i}.png"
+                    zip_file.writestr(filename, image_buffer.getvalue())
 
         zip_buffer.seek(0)
 
@@ -247,16 +230,12 @@ class ProduitLineEtiquettesZIPView(APIView):
             zip_buffer.getvalue(),
             content_type="application/zip",
         )
-
-        response[
-            "Content-Disposition"
-        ] = (
-            'attachment; '
-            'filename="etiquettes_produits.zip"'
+        response["Content-Disposition"] = (
+            'attachment; filename="etiquettes_produits.zip"'
         )
 
         return response
-
+    
 
 class VenteProduitCreateView(APIView):
     permission_classes = [CanCreateSale]
