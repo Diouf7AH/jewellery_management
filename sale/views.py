@@ -163,6 +163,39 @@ MAX_PAGE_SIZE = 100
 class VenteProduitCreateView(APIView):
     permission_classes = [CanCreateSale]
     http_method_names = ["post", "options"]
+    
+    def _get_vendor_for_user(self, user):
+        return (
+            Vendor.objects
+            .select_related("bijouterie", "user")
+            .filter(user=user)
+            .first()
+        )
+
+    def _ensure_product_in_vendor_stock(self, *, user, role, produit):
+        if role != ROLE_VENDOR:
+            return
+
+        vendor = self._get_vendor_for_user(user)
+
+        if not vendor:
+            raise ValidationError({
+                "vendor": "Profil vendeur introuvable."
+            })
+
+        exists = VendorStock.objects.filter(
+            vendor=vendor,
+            produit_line__produit=produit,
+            quantite_allouee__gt=0,
+        ).exists()
+
+        if not exists:
+            raise ValidationError({
+                "produit": (
+                    f"Le produit '{produit.nom}' n'est pas disponible "
+                    f"dans le stock de ce vendeur."
+                )
+            })
 
     # def _resolve_produit_id(self, item):
     #     produit_id = item.get("produit_id")
@@ -197,60 +230,57 @@ class VenteProduitCreateView(APIView):
     #         "produit": "Vous devez fournir produit_id, sku ou qr."
     #     })
     
-    def _resolve_produit_id(self, item):
+    def _resolve_produit_id(self, item, *, user, role):
         produit_id = item.get("produit_id")
         sku = item.get("sku")
         qr = item.get("qr") or item.get("qr_code")
 
+        produit = None
+
         if produit_id:
-            return produit_id
+            produit = Produit.objects.filter(id=produit_id).first()
 
-        scan_value = qr or sku
+        else:
+            scan_value = qr or sku
 
-        if scan_value:
-            scan_value = str(scan_value).strip()
-            scan_value = scan_value.replace("\n", "").replace("\r", "").strip()
+            if scan_value:
+                scan_value = str(scan_value).strip()
+                scan_value = scan_value.replace("\n", "").replace("\r", "").strip()
 
-            # Ancien format : P:15
-            if scan_value.startswith("P:"):
-                raw_id = scan_value.replace("P:", "").strip()
+                if scan_value.startswith("P:"):
+                    raw_id = scan_value.replace("P:", "").strip()
 
-                if not raw_id.isdigit():
-                    raise ValidationError({
-                        "qr": f"QR invalide : {scan_value}"
-                    })
+                    if raw_id.isdigit():
+                        produit = Produit.objects.filter(id=int(raw_id)).first()
+                else:
+                    produit = Produit.objects.filter(
+                        sku__iexact=scan_value
+                    ).first()
 
-                produit = Produit.objects.filter(id=int(raw_id)).first()
-
-                if not produit:
-                    raise ValidationError({
-                        "qr": f"Produit introuvable pour ID : {raw_id}"
-                    })
-
-                return produit.id
-
-            # Nouveau format : SKU scanné depuis QR
-            produit = Produit.objects.filter(
-                sku__iexact=scan_value
-            ).first()
-
-            if produit:
-                return produit.id
-
+        if not produit:
             raise ValidationError({
-                "qr": f"Produit introuvable pour le code scanné : {scan_value}"
+                "produit": "Produit introuvable ou code invalide."
             })
 
-        raise ValidationError({
-            "produit": "Vous devez fournir produit_id, sku ou qr."
-        })
+        self._ensure_product_in_vendor_stock(
+            user=user,
+            role=role,
+            produit=produit,
+        )
 
-    def _normalize_produits(self, produits):
+        return produit.id
+
+    def _normalize_produits(self, produits, *, user, role):
         normalized = []
 
         for item in produits:
             item = dict(item)
-            item["produit_id"] = self._resolve_produit_id(item)
+
+            item["produit_id"] = self._resolve_produit_id(
+                item,
+                user=user,
+                role=role,
+            )
 
             item.pop("sku", None)
             item.pop("qr", None)
@@ -282,7 +312,11 @@ class VenteProduitCreateView(APIView):
         role = (get_role_name(request.user) or "").lower().strip()
 
         try:
-            produits_normalized = self._normalize_produits(validated["produits"])
+            produits_normalized = self._normalize_produits(
+            validated["produits"],
+            user=request.user,
+            role=role,
+        )
         except ValidationError as e:
             detail = getattr(e, "message_dict", None) or getattr(e, "messages", None) or str(e)
             return Response(
