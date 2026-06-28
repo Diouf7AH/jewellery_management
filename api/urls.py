@@ -107,14 +107,16 @@ urlpatterns = [
     
     path('produit/<int:pk>/qr', store_views.QRCodeView.as_view(), name='product-qr-code'),
     # path('produit/export/qr-codes/', store_views.ExportQRCodeExcelAPIView.as_view(), name='export-qr-codes'),
-    path('produit/export/qr-code/<slug:slug>', store_views.ExportOneQRCodeExcelAPIView.as_view(), name='export-one-qr-code'),
+    # path('produit/export/qr-code/<slug:slug>', store_views.ExportOneQRCodeExcelAPIView.as_view(), name='export-one-qr-code'),
     # path('api/products/<int:pk>/qrcode/', ProductQRCodeView.as_view(), name='product-qrcode'),
     path("produit/<slug:slug>", store_views.ProduitDetailSlugView.as_view(), name="produit-detail-slug"),
+    path("produits/etiquettes-png/", store_views.ProduitLineEtiquettesZIPView.as_view(),name="produits-etiquettes-png",),
     
     path("prix/evolution", store_views.MarquePuretePriceEvolutionView.as_view(), name="prix-evolution"),
     path("prix/history", store_views.MarquePuretePrixHistoryListView.as_view(), name="prix-history"),
     path("prix/history/<int:history_id>/rollback", store_views.MarquePuretePriceRollbackView.as_view(), name="prix-history-rollback"),
     path("prix/compare-dates", store_views.MarquePuretePriceCompareDatesView.as_view(), name="prix-compare-dates"),
+    
     # END STORE
     
     #FOURNISEUR
@@ -139,7 +141,7 @@ urlpatterns = [
     # path('achat-produit/create-achats', achat_views.AchatCreateView.as_view(), name='achats-create'),
     # path("achats-produit-update/<int:achat_id>/", achat_views.AchatUpdateView.as_view(), name="achats-update"),
     path("stocks/list", stock_views.StockListView.as_view(), name="stock-list"),
-    path("stocks/transfer/reserve-to-vendor", stock_views.ReserveToVendorTransferView.as_view(), name="reserve-to-vendor"),
+    path("stocks/transfer/reserve-to-vendor/", stock_views.ReserveToVendorTransferView.as_view(), name="reserve-to-vendor"),
     # path("stocks/transfer/reserve-to-bijouterie", stock_views.ReserveToBijouterieTransferView.as_view(), name="reserve-to-bijouterie"),
     # path("stocks/recieve/recieve-reserve-for-bijouterie", stock_views.BijouterieReceiveView.as_view(), name="receive-bijouterie"),
     # path("stock/affectations/reserve", achat_views.StockReserveAffectationView.as_view(), name="stock-reserve-affect"),
@@ -204,7 +206,6 @@ urlpatterns = [
 
     
     # SALE
-    path("produits/etiquettes-png/", sale_views.ProduitLineEtiquettesZIPView.as_view(),name="produits-etiquettes-png",),
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
     # PDF
     path("factures/<str:numero_facture>/ticket-58mm/",sale_views.TicketProforma58mmView.as_view(),name="ticket-proforma-58mm",),

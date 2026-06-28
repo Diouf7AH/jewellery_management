@@ -2,7 +2,6 @@
 # import weasyprint
 from __future__ import annotations
 
-import zipfile
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -27,7 +26,6 @@ from inventory.models import InventoryMovement
 from inventory.services import log_move
 from openpyxl import Workbook
 from openpyxl.styles import Font, numbers
-from purchase.models import ProduitLine
 from rest_framework import permissions, status
 from rest_framework.exceptions import APIException
 from rest_framework.exceptions import ValidationError
@@ -35,7 +33,6 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from sale.images.etiquettes_produits import build_etiquette_bague_png
 from sale.models import (Client, Facture,  # adapte le chemin si besoin
                          ModePaiement, Paiement, PaiementLigne, Vente,
                          VenteProduit)
@@ -161,81 +158,7 @@ MAX_PAGE_SIZE = 100
 #             filename="etiquettes_produits.pdf",
 #             content_type="application/pdf",
 #         )
-        
-        
 
-class ProduitLineEtiquettesZIPView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Télécharger les étiquettes PNG",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["produit_line_ids"],
-            properties={
-                "produit_line_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    example=[1, 2, 3],
-                ),
-            },
-        ),
-        tags=["Étiquettes"],
-    )
-    def post(self, request):
-        role = get_role_name(request.user)
-
-        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-            return Response({"detail": "Accès refusé."}, status=403)
-
-        produit_line_ids = request.data.get("produit_line_ids") or []
-
-        if not produit_line_ids:
-            return Response({"detail": "produit_line_ids est requis."}, status=400)
-
-        produit_lines = (
-            ProduitLine.objects
-            .select_related("produit", "produit__purete", "produit__marque")
-            .filter(id__in=produit_line_ids)
-        )
-
-        found_ids = set(produit_lines.values_list("id", flat=True))
-        requested_ids = set(produit_line_ids)
-        missing_ids = requested_ids - found_ids
-
-        if missing_ids:
-            return Response(
-                {
-                    "detail": "Certaines lignes produit sont introuvables.",
-                    "missing_ids": list(missing_ids),
-                },
-                status=404,
-            )
-
-        zip_buffer = BytesIO()
-
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
-            for line in produit_lines:
-                produit = line.produit
-                safe_sku = produit.sku or f"P-{produit.id}"
-
-                for i in range(1, line.quantite + 1):
-                    image_buffer = build_etiquette_bague_png(produit)
-                    filename = f"{safe_sku}_{i}.png"
-                    zip_file.writestr(filename, image_buffer.getvalue())
-
-        zip_buffer.seek(0)
-
-        response = HttpResponse(
-            zip_buffer.getvalue(),
-            content_type="application/zip",
-        )
-        response["Content-Disposition"] = (
-            'attachment; filename="etiquettes_produits.zip"'
-        )
-
-        return response
-    
 
 class VenteProduitCreateView(APIView):
     permission_classes = [CanCreateSale]

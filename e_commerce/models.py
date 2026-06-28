@@ -4,6 +4,7 @@ import uuid
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -305,7 +306,6 @@ class EcommerceBanner(models.Model):
         ordering = ["ordre_affichage", "-created_at"]
 
     def clean(self):
-        from django.core.exceptions import ValidationError
 
         if self.type_media == self.TYPE_IMAGE and not self.image:
             raise ValidationError({
@@ -319,6 +319,10 @@ class EcommerceBanner(models.Model):
 
     def __str__(self):
         return self.titre or f"Bannière #{self.pk}"
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
     
 
 
@@ -369,20 +373,34 @@ class EcommerceHomeProduct(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["section", "ordre_affichage", "-created_at"]
-
-    def __str__(self):
-        return f"{self.produit} - {self.section}"
     
     class Meta:
-        ordering = ["section", "ordre_affichage", "-created_at"]
+        ordering = [
+            "section",
+            "ordre_affichage",
+            "-created_at",
+        ]
+
+        indexes = [
+            models.Index(
+                fields=[
+                    "section",
+                    "active",
+                ]
+            ),
+        ]
+
         constraints = [
             models.UniqueConstraint(
-                fields=["produit", "bijouterie", "section"],
+                fields=[
+                    "produit",
+                    "bijouterie",
+                    "section",
+                ],
                 name="uniq_home_product_by_shop_section",
             )
         ]
-        
+
+    def __str__(self):
+        return f"{self.produit} - {self.section}"
 

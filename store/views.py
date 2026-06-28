@@ -1,9 +1,10 @@
 # from knox.auth import TokenAuthentication
+#Export to excel
+import zipfile
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
-#Export to excel
 import qrcode
 from django.db import transaction
 from django.db.models import Q
@@ -16,6 +17,7 @@ from drf_yasg.utils import swagger_auto_schema
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from PIL import Image
+from purchase.models import ProduitLine
 from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.parsers import (FileUploadParser, FormParser, JSONParser,
@@ -23,10 +25,6 @@ from rest_framework.parsers import (FileUploadParser, FormParser, JSONParser,
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
-from backend.renderers import UserRenderer
-from backend.roles import ROLE_MANAGER, ROLE_VENDOR, get_role_name
 from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
                           MarquePuretePrixHistory, Modele, Produit, Purete)
 from store.serializers import (BijouterieSerializer, CategorieSerializer,
@@ -37,7 +35,13 @@ from store.serializers import (BijouterieSerializer, CategorieSerializer,
                                MarquePureteSerializer, MarqueSerializer,
                                ModeleSerializer, ProduitSerializer,
                                ProduitWithGallerySerializer, PureteSerializer)
+from store.services.etiquettes import build_etiquette_bague_png
 from store.services.price_history_service import update_marque_purete_price
+
+from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
+from backend.renderers import UserRenderer
+from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
+                           get_role_name)
 
 from .serializers import MarquePuretePrixHistorySerializer
 
@@ -1630,52 +1634,52 @@ class QRCodeView(APIView):
         
 
 
-class ExportOneQRCodeExcelAPIView(APIView):
-    renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
+# class ExportOneQRCodeExcelAPIView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
-        responses={200: openapi.Response('response description', ProduitSerializer)},
-        )
-    def get(self, request, slug):
-        try:
-            produit = Produit.objects.get(slug=slug)
-        except Produit.DoesNotExist:
-            raise Http404("Produit non trouvé")
+#     @swagger_auto_schema(
+#         responses={200: openapi.Response('response description', ProduitSerializer)},
+#         )
+#     def get(self, request, slug):
+#         try:
+#             produit = Produit.objects.get(slug=slug)
+#         except Produit.DoesNotExist:
+#             raise Http404("Produit non trouvé")
 
-        # Créer le QR code
-        data = f"Produit SKU: {produit.slug}"
-        qr = qrcode.make(data)
+#         # Créer le QR code
+#         data = f"Produit SKU: {produit.slug}"
+#         qr = qrcode.make(data)
 
-        buffer = BytesIO()
-        qr.save(buffer, format="PNG")
-        buffer.seek(0)
+#         buffer = BytesIO()
+#         qr.save(buffer, format="PNG")
+#         buffer.seek(0)
 
-        # Préparer le fichier Excel
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "QR Code Produit"
-        ws.append(["Nom du produit", "QR Code"])
-        ws.cell(row=2, column=1, value=produit.slug)
+#         # Préparer le fichier Excel
+#         wb = Workbook()
+#         ws = wb.active
+#         ws.title = "QR Code Produit"
+#         ws.append(["Nom du produit", "QR Code"])
+#         ws.cell(row=2, column=1, value=produit.slug)
 
-        # Ajouter l’image
-        img = XLImage(buffer)
-        img.width = 100
-        img.height = 100
-        ws.add_image(img, "B2")
+#         # Ajouter l’image
+#         img = XLImage(buffer)
+#         img.width = 100
+#         img.height = 100
+#         ws.add_image(img, "B2")
 
-        # Export
-        response = HttpResponse(
-            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
-        filename = f"qr_code_produit_{produit.slug}.xlsx"
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+#         # Export
+#         response = HttpResponse(
+#             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+#         )
+#         filename = f"qr_code_produit_{produit.slug}.xlsx"
+#         response['Content-Disposition'] = f'attachment; filename="{filename}"'
 
-        excel_buffer = BytesIO()
-        wb.save(excel_buffer)
-        response.write(excel_buffer.getvalue())
+#         excel_buffer = BytesIO()
+#         wb.save(excel_buffer)
+#         response.write(excel_buffer.getvalue())
 
-        return response
+#         return response
 
 
 class ProduitRecentListAPIView(APIView):
@@ -2526,4 +2530,77 @@ Principe :
         )
         
                                         
-                                
+
+
+class ProduitLineEtiquettesZIPView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Télécharger les étiquettes PNG",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["produit_line_ids"],
+            properties={
+                "produit_line_ids": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_INTEGER),
+                    example=[1, 2, 3],
+                ),
+            },
+        ),
+        tags=["Étiquettes"],
+    )
+    def post(self, request):
+        role = get_role_name(request.user)
+
+        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
+            return Response({"detail": "Accès refusé."}, status=403)
+
+        produit_line_ids = request.data.get("produit_line_ids") or []
+
+        if not produit_line_ids:
+            return Response({"detail": "produit_line_ids est requis."}, status=400)
+
+        produit_lines = (
+            ProduitLine.objects
+            .select_related("produit", "produit__purete", "produit__marque")
+            .filter(id__in=produit_line_ids)
+        )
+
+        found_ids = set(produit_lines.values_list("id", flat=True))
+        requested_ids = set(produit_line_ids)
+        missing_ids = requested_ids - found_ids
+
+        if missing_ids:
+            return Response(
+                {
+                    "detail": "Certaines lignes produit sont introuvables.",
+                    "missing_ids": list(missing_ids),
+                },
+                status=404,
+            )
+
+        zip_buffer = BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            for line in produit_lines:
+                produit = line.produit
+                safe_sku = produit.sku or f"P-{produit.id}"
+
+                for i in range(1, line.quantite + 1):
+                    image_buffer = build_etiquette_bague_png(produit)
+                    filename = f"{safe_sku}_{i}.png"
+                    zip_file.writestr(filename, image_buffer.getvalue())
+
+        zip_buffer.seek(0)
+
+        response = HttpResponse(
+            zip_buffer.getvalue(),
+            content_type="application/zip",
+        )
+        response["Content-Disposition"] = (
+            'attachment; filename="etiquettes_produits.zip"'
+        )
+
+        return response
+    

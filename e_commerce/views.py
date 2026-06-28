@@ -854,17 +854,13 @@ class EcommerceHomePageView(APIView):
                             type=openapi.TYPE_ARRAY,
                             items=openapi.Schema(type=openapi.TYPE_OBJECT),
                         ),
-                        "nouveau_arrivage_bannieres": openapi.Schema(
-                            type=openapi.TYPE_ARRAY,
-                            items=openapi.Schema(type=openapi.TYPE_OBJECT),
-                        ),
-                        "bannieres_video": openapi.Schema(
-                            type=openapi.TYPE_ARRAY,
-                            items=openapi.Schema(type=openapi.TYPE_OBJECT),
-                        ),
                         "produits_selectionnes": openapi.Schema(
                             type=openapi.TYPE_ARRAY,
                             items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        ),
+                        "banniere_nouveau_arrivage": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            nullable=True,
                         ),
                         "produits_nouveau_arrivage": openapi.Schema(
                             type=openapi.TYPE_ARRAY,
@@ -873,6 +869,10 @@ class EcommerceHomePageView(APIView):
                         "produits_carrousel": openapi.Schema(
                             type=openapi.TYPE_ARRAY,
                             items=openapi.Schema(type=openapi.TYPE_OBJECT),
+                        ),
+                        "banniere_video": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            nullable=True,
                         ),
                     },
                 ),
@@ -899,30 +899,49 @@ class EcommerceHomePageView(APIView):
 
         return Response({
             "grande_bannieres": EcommerceBannerSerializer(
-                banners.filter(position=EcommerceBanner.POSITION_GRANDE_BANNIERE),
+                banners.filter(
+                    position=EcommerceBanner.POSITION_GRANDE_BANNIERE
+                ),
                 many=True,
             ).data,
-            "nouveau_arrivage_bannieres": EcommerceBannerSerializer(
-                banners.filter(position=EcommerceBanner.POSITION_NOUVEAU_ARRIVAGE),
-                many=True,
-            ).data,
-            "bannieres_video": EcommerceBannerSerializer(
-                banners.filter(position=EcommerceBanner.POSITION_BANNIERE_VIDEO),
-                many=True,
-            ).data,
+
             "produits_selectionnes": EcommerceHomeProductSerializer(
-                home_products.filter(section=EcommerceHomeProduct.SECTION_FEATURED),
+                home_products.filter(
+                    section=EcommerceHomeProduct.SECTION_FEATURED
+                ),
                 many=True,
             ).data,
+
+            "banniere_nouveau_arrivage": EcommerceBannerSerializer(
+                banners.filter(
+                    position=EcommerceBanner.POSITION_NOUVEAU_ARRIVAGE
+                ).first()
+            ).data if banners.filter(
+                position=EcommerceBanner.POSITION_NOUVEAU_ARRIVAGE
+            ).exists() else None,
+
             "produits_nouveau_arrivage": EcommerceHomeProductSerializer(
-                home_products.filter(section=EcommerceHomeProduct.SECTION_NEW_ARRIVAL),
+                home_products.filter(
+                    section=EcommerceHomeProduct.SECTION_NEW_ARRIVAL
+                ),
                 many=True,
             ).data,
+
             "produits_carrousel": EcommerceHomeProductSerializer(
-                home_products.filter(section=EcommerceHomeProduct.SECTION_SLIDER),
+                home_products.filter(
+                    section=EcommerceHomeProduct.SECTION_SLIDER
+                ),
                 many=True,
             ).data,
+
+            "banniere_video": EcommerceBannerSerializer(
+                banners.filter(
+                    position=EcommerceBanner.POSITION_BANNIERE_VIDEO
+                ).first()
+            ).data if banners.filter(
+                position=EcommerceBanner.POSITION_BANNIERE_VIDEO
+            ).exists() else None,
         })
-        
+                
 
 

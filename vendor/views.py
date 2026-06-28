@@ -22,20 +22,14 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from inventory.models import Bucket, InventoryMovement, MovementType
+# ⬇️ aligne le chemin du modèle de lot d’achat
+from purchase.models import Lot, ProduitLine
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-from backend.permissions import IsAdminOrManager  # ton permission
-from backend.permissions import ROLE_VENDOR
-from backend.query_scopes import scope_bijouterie_q
-from backend.renderers import UserRenderer
-from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
-from inventory.models import Bucket, InventoryMovement, MovementType
-# ⬇️ aligne le chemin du modèle de lot d’achat
-from purchase.models import Lot, ProduitLine
 from sale.models import VenteProduit  # 👈 lignes de vente (contient vendor)
 from sale.models import Facture
 from staff.models import Manager
@@ -46,6 +40,12 @@ from store.serializers import ProduitSerializer
 from userauths.models import Role
 from vendor.models import Vendor  # 👈 ton modèle Vendor (app vendor)
 from vendor.serializer import VendorStockListSerializer  # adapte serializer
+
+from backend.permissions import IsAdminOrManager  # ton permission
+from backend.permissions import ROLE_VENDOR
+from backend.query_scopes import scope_bijouterie_q
+from backend.renderers import UserRenderer
+from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
 
 from .models import Vendor
 from .serializer import (CreateVendorSerializer, VendorDashboardKpiSerializer,
@@ -62,32 +62,153 @@ allowed_all_roles = ['admin', 'manager', 'vendeur']
 allowed_roles_admin_manager = ['admin', 'manager',]
 
 
+# class VendorStockView(APIView):
+#     """
+#     Stock réel du vendeur connecté
+#     = quantite_allouee - quantite_vendue
+#     """
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Stock réel du vendeur connecté",
+#         operation_description=(
+#             "Retourne le stock réel du vendeur connecté.\n\n"
+#             "Formule : stock_reel = quantite_allouee - quantite_vendue\n\n"
+#             "- Ignore les produits avec stock = 0\n"
+#             "- Inclut produit, SKU, lot\n"
+#         ),
+#         tags=["vendor"],
+#         responses={200: openapi.Response("Liste du stock vendeur")},
+#     )
+#     def get(self, request):
+#         vendor = getattr(request.user, "staff_vendor_profile", None)
+#         if not vendor:
+#             return Response(
+#                 {"detail": "Profil vendeur introuvable."},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+
+#         qs = (
+#             VendorStock.objects
+#             .select_related(
+#                 "produit_line",
+#                 "produit_line__produit",
+#                 "produit_line__lot",
+#             )
+#             .filter(vendor=vendor)
+#         )
+
+#         results = []
+
+#         for stock in qs:
+#             produit = getattr(stock.produit_line, "produit", None)
+
+#             quantite_allouee = int(stock.quantite_allouee or 0)
+#             quantite_vendue = int(stock.quantite_vendue or 0)
+
+#             stock_reel = quantite_allouee - quantite_vendue
+
+#             # ignorer stock vide
+#             if stock_reel <= 0:
+#                 continue
+
+#             results.append({
+#                 "produit_id": produit.id if produit else None,
+#                 "produit_nom": produit.nom if produit else None,
+#                 "sku": getattr(produit, "sku", None) if produit else None,
+#                 "lot": getattr(stock.produit_line.lot, "numero_lot", None),
+#                 "quantite_allouee": quantite_allouee,
+#                 "quantite_vendue": quantite_vendue,
+#                 "stock_reel": stock_reel,
+#             })
+
+#         return Response({
+#             "vendor_id": vendor.id,
+#             "count": len(results),
+#             "results": results
+#         }, status=status.HTTP_200_OK)
+    
+
+
 class VendorStockView(APIView):
     """
-    Stock réel du vendeur connecté
-    = quantite_allouee - quantite_vendue
+    Stock réel vendeur :
+    stock_reel = quantite_allouee - quantite_vendue
+
+    - vendor  : voit son propre stock
+    - admin   : fournit vendor_email
+    - manager : fournit vendor_email, limité à ses bijouteries
     """
     permission_classes = [IsAuthenticated]
+    http_method_names = ["get"]
 
     @swagger_auto_schema(
-        operation_summary="Stock réel du vendeur connecté",
+        operation_summary="Stock réel vendeur",
         operation_description=(
-            "Retourne le stock réel du vendeur connecté.\n\n"
-            "Formule : stock_reel = quantite_allouee - quantite_vendue\n\n"
-            "- Ignore les produits avec stock = 0\n"
-            "- Inclut produit, SKU, lot\n"
+            "Vendor connecté : aucun paramètre requis.\n"
+            "Admin/Manager : fournir `vendor_email`.\n\n"
+            "Formule : stock_reel = quantite_allouee - quantite_vendue."
         ),
+        manual_parameters=[
+            openapi.Parameter(
+                "vendor_email",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="Obligatoire pour admin/manager.",
+            ),
+        ],
         tags=["vendor"],
-        responses={200: openapi.Response("Liste du stock vendeur")},
+        responses={200: openapi.Response("Liste du stock réel vendeur")},
     )
     def get(self, request):
-        vendor = getattr(request.user, "staff_vendor_profile", None)
-        if not vendor:
-            return Response(
-                {"detail": "Profil vendeur introuvable."},
-                status=status.HTTP_400_BAD_REQUEST
+        role = (get_role_name(request.user) or "").lower()
+        vendor_email = (request.query_params.get("vendor_email") or "").strip()
+
+        # 1) Résoudre vendeur cible
+        if role == ROLE_VENDOR:
+            vendor = getattr(request.user, "staff_vendor_profile", None)
+            if not vendor:
+                return Response(
+                    {"detail": "Profil vendeur introuvable."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        elif role in {ROLE_ADMIN, ROLE_MANAGER}:
+            if not vendor_email:
+                return Response(
+                    {"detail": "vendor_email est obligatoire pour admin/manager."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            vendor = get_object_or_404(
+                Vendor.objects.select_related("user", "bijouterie"),
+                user__email__iexact=vendor_email,
             )
 
+            # Manager M2M : ne peut voir que ses bijouteries
+            if role == ROLE_MANAGER:
+                manager_profile = getattr(request.user, "staff_manager_profile", None)
+
+                if not manager_profile:
+                    return Response(
+                        {"detail": "Profil manager introuvable."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                if not manager_profile.bijouteries.filter(id=vendor.bijouterie_id).exists():
+                    return Response(
+                        {"detail": "Ce vendeur n'appartient pas à votre périmètre."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
+        else:
+            return Response(
+                {"detail": "Accès refusé."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # 2) Stock vendeur
         qs = (
             VendorStock.objects
             .select_related(
@@ -99,36 +220,61 @@ class VendorStockView(APIView):
         )
 
         results = []
+        total_allouee = 0
+        total_vendue = 0
+        total_stock_reel = 0
 
         for stock in qs:
-            produit = getattr(stock.produit_line, "produit", None)
+            produit_line = stock.produit_line
+            produit = getattr(produit_line, "produit", None)
+            lot = getattr(produit_line, "lot", None)
 
             quantite_allouee = int(stock.quantite_allouee or 0)
             quantite_vendue = int(stock.quantite_vendue or 0)
-
             stock_reel = quantite_allouee - quantite_vendue
 
-            # ignorer stock vide
             if stock_reel <= 0:
                 continue
 
+            total_allouee += quantite_allouee
+            total_vendue += quantite_vendue
+            total_stock_reel += stock_reel
+
             results.append({
+                "vendor_stock_id": stock.id,
+                "produit_line_id": produit_line.id if produit_line else None,
+
                 "produit_id": produit.id if produit else None,
                 "produit_nom": produit.nom if produit else None,
                 "sku": getattr(produit, "sku", None) if produit else None,
-                "lot": getattr(stock.produit_line.lot, "numero_lot", None),
+
+                "lot_id": lot.id if lot else None,
+                "lot": getattr(lot, "numero_lot", None) or getattr(lot, "lot_code", None),
+
                 "quantite_allouee": quantite_allouee,
                 "quantite_vendue": quantite_vendue,
                 "stock_reel": stock_reel,
             })
 
-        return Response({
-            "vendor_id": vendor.id,
-            "count": len(results),
-            "results": results
-        }, status=status.HTTP_200_OK)
-    
-    
+        return Response(
+            {
+                "vendor": {
+                    "id": vendor.id,
+                    "email": getattr(getattr(vendor, "user", None), "email", None),
+                    "bijouterie_id": vendor.bijouterie_id,
+                    "bijouterie_nom": getattr(getattr(vendor, "bijouterie", None), "nom", None),
+                },
+                "totaux": {
+                    "quantite_allouee": total_allouee,
+                    "quantite_vendue": total_vendue,
+                    "stock_reel": total_stock_reel,
+                },
+                "count": len(results),
+                "results": results,
+            },
+            status=status.HTTP_200_OK,
+        )
+
 
 class VendorDashboardView(APIView):
     permission_classes = [IsAuthenticated]
