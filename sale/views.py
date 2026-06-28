@@ -164,6 +164,39 @@ class VenteProduitCreateView(APIView):
     permission_classes = [CanCreateSale]
     http_method_names = ["post", "options"]
 
+    # def _resolve_produit_id(self, item):
+    #     produit_id = item.get("produit_id")
+    #     sku = item.get("sku")
+    #     qr = item.get("qr") or item.get("qr_code")
+
+    #     if produit_id:
+    #         return produit_id
+
+    #     if qr:
+    #         qr = str(qr).strip()
+
+    #         if qr.startswith("P:"):
+    #             raw_id = qr.replace("P:", "").strip()
+
+    #             if not raw_id.isdigit():
+    #                 raise ValidationError({"qr": "QR invalide. Format attendu: P:15"})
+
+    #             return int(raw_id)
+
+    #         raise ValidationError({"qr": "QR invalide. Format attendu: P:15"})
+
+    #     if sku:
+    #         produit = Produit.objects.filter(sku__iexact=str(sku).strip()).first()
+
+    #         if not produit:
+    #             raise ValidationError({"sku": f"Produit introuvable pour SKU: {sku}"})
+
+    #         return produit.id
+
+    #     raise ValidationError({
+    #         "produit": "Vous devez fournir produit_id, sku ou qr."
+    #     })
+    
     def _resolve_produit_id(self, item):
         produit_id = item.get("produit_id")
         sku = item.get("sku")
@@ -172,26 +205,41 @@ class VenteProduitCreateView(APIView):
         if produit_id:
             return produit_id
 
-        if qr:
-            qr = str(qr).strip()
+        scan_value = qr or sku
 
-            if qr.startswith("P:"):
-                raw_id = qr.replace("P:", "").strip()
+        if scan_value:
+            scan_value = str(scan_value).strip()
+            scan_value = scan_value.replace("\n", "").replace("\r", "").strip()
+
+            # Ancien format : P:15
+            if scan_value.startswith("P:"):
+                raw_id = scan_value.replace("P:", "").strip()
 
                 if not raw_id.isdigit():
-                    raise ValidationError({"qr": "QR invalide. Format attendu: P:15"})
+                    raise ValidationError({
+                        "qr": f"QR invalide : {scan_value}"
+                    })
 
-                return int(raw_id)
+                produit = Produit.objects.filter(id=int(raw_id)).first()
 
-            raise ValidationError({"qr": "QR invalide. Format attendu: P:15"})
+                if not produit:
+                    raise ValidationError({
+                        "qr": f"Produit introuvable pour ID : {raw_id}"
+                    })
 
-        if sku:
-            produit = Produit.objects.filter(sku__iexact=str(sku).strip()).first()
+                return produit.id
 
-            if not produit:
-                raise ValidationError({"sku": f"Produit introuvable pour SKU: {sku}"})
+            # Nouveau format : SKU scanné depuis QR
+            produit = Produit.objects.filter(
+                sku__iexact=scan_value
+            ).first()
 
-            return produit.id
+            if produit:
+                return produit.id
+
+            raise ValidationError({
+                "qr": f"Produit introuvable pour le code scanné : {scan_value}"
+            })
 
         raise ValidationError({
             "produit": "Vous devez fournir produit_id, sku ou qr."
