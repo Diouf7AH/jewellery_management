@@ -197,39 +197,6 @@ class VenteProduitCreateView(APIView):
                 )
             })
 
-    # def _resolve_produit_id(self, item):
-    #     produit_id = item.get("produit_id")
-    #     sku = item.get("sku")
-    #     qr = item.get("qr") or item.get("qr_code")
-
-    #     if produit_id:
-    #         return produit_id
-
-    #     if qr:
-    #         qr = str(qr).strip()
-
-    #         if qr.startswith("P:"):
-    #             raw_id = qr.replace("P:", "").strip()
-
-    #             if not raw_id.isdigit():
-    #                 raise ValidationError({"qr": "QR invalide. Format attendu: P:15"})
-
-    #             return int(raw_id)
-
-    #         raise ValidationError({"qr": "QR invalide. Format attendu: P:15"})
-
-    #     if sku:
-    #         produit = Produit.objects.filter(sku__iexact=str(sku).strip()).first()
-
-    #         if not produit:
-    #             raise ValidationError({"sku": f"Produit introuvable pour SKU: {sku}"})
-
-    #         return produit.id
-
-    #     raise ValidationError({
-    #         "produit": "Vous devez fournir produit_id, sku ou qr."
-    #     })
-    
     def _resolve_produit_id(self, item, *, user, role):
         produit_id = item.get("produit_id")
         sku = item.get("sku")
@@ -248,10 +215,12 @@ class VenteProduitCreateView(APIView):
                 scan_value = scan_value.replace("\n", "").replace("\r", "").strip()
 
                 if scan_value.startswith("P:"):
-                    raw_id = scan_value.replace("P:", "").strip()
+                    raw_value = scan_value.replace("P:", "", 1).strip()
 
-                    if raw_id.isdigit():
-                        produit = Produit.objects.filter(id=int(raw_id)).first()
+                    produit = Produit.objects.filter(uuid=raw_value).first()
+
+                    if not produit and raw_value.isdigit():
+                        produit = Produit.objects.filter(id=int(raw_value)).first()
                 else:
                     produit = Produit.objects.filter(
                         sku__iexact=scan_value
