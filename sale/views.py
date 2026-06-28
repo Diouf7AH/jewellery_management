@@ -217,11 +217,15 @@ class VenteProduitCreateView(APIView):
                 if scan_value.startswith("P:"):
                     raw_value = scan_value.replace("P:", "", 1).strip()
 
+                    # QR avec UUID : P:uuid
                     produit = Produit.objects.filter(uuid=raw_value).first()
 
+                    # Ancien QR avec ID : P:15
                     if not produit and raw_value.isdigit():
                         produit = Produit.objects.filter(id=int(raw_value)).first()
+
                 else:
+                    # Saisie ou scan SKU
                     produit = Produit.objects.filter(
                         sku__iexact=scan_value
                     ).first()
@@ -282,10 +286,10 @@ class VenteProduitCreateView(APIView):
 
         try:
             produits_normalized = self._normalize_produits(
-            validated["produits"],
-            user=request.user,
-            role=role,
-        )
+                validated["produits"],
+                user=request.user,
+                role=role,
+            )
         except ValidationError as e:
             detail = getattr(e, "message_dict", None) or getattr(e, "messages", None) or str(e)
             return Response(
