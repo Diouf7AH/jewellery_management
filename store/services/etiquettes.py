@@ -6,21 +6,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 def _center_text(draw, x1, x2, y, text, font):
     bbox = draw.textbbox((0, 0), text, font=font)
-    w = bbox[2] - bbox[0]
-    draw.text(
-        (x1 + ((x2 - x1 - w) // 2), y),
-        text,
-        fill="black",
-        font=font,
-    )
+    text_width = bbox[2] - bbox[0]
+    x = x1 + ((x2 - x1 - text_width) // 2)
+    draw.text((x, y), text, fill="black", font=font)
 
 
 def build_etiquette_bague_png(produit):
-
-    # ==========================================================
-    # Etiquette 35 x 30 mm (≈280 x 240 px à 203 dpi)
-    # ==========================================================
-
+    # 35 mm x 30 mm à 203 DPI ≈ 280 x 240 px
     width = 280
     height = 240
 
@@ -31,24 +23,23 @@ def build_etiquette_bague_png(produit):
         FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
         font_title = ImageFont.truetype(FONT, 24)
-        font_purete = ImageFont.truetype(FONT, 48)
-        font_poids = ImageFont.truetype(FONT, 38)
-        font_ref = ImageFont.truetype(FONT, 16)
+        font_purete = ImageFont.truetype(FONT, 40)
+        font_poids = ImageFont.truetype(FONT, 34)
+        font_sku_label = ImageFont.truetype(FONT, 14)
+        font_ref = ImageFont.truetype(FONT, 18)
 
     except Exception:
         font_title = ImageFont.load_default()
         font_purete = ImageFont.load_default()
         font_poids = ImageFont.load_default()
+        font_sku_label = ImageFont.load_default()
         font_ref = ImageFont.load_default()
 
-    # ==========================================================
-    # Données
-    # ==========================================================
+    sku = produit.sku or f"P-{produit.id}"
+    qr_content = sku
 
     purete = str(produit.purete) if produit.purete else ""
     poids = f"{produit.poids} g" if produit.poids else ""
-
-    qr_content = produit.sku
 
     reference = (
         f"{(produit.categorie.nom if produit.categorie else '')[:3].upper()}-"
@@ -57,114 +48,48 @@ def build_etiquette_bague_png(produit):
         f"{(produit.marque.marque if produit.marque else '')[:3].upper()}"
     )
 
-    # ==========================================================
-    # Mise en page
-    # ==========================================================
+    # Marges : 2 mm ≈ 16 px ; espace entre colonnes : 4 mm ≈ 32 px
+    margin = 16
+    gap = 32
 
-    marge = 16          # ≈2 mm
-    espace = 32         # ≈4 mm
+    left_x1 = margin
+    left_x2 = 130
 
-    colonne_gauche = 100
+    right_x1 = left_x2 + gap
+    right_x2 = width - margin
 
-    left_x1 = marge
-    left_x2 = marge + colonne_gauche
-
-    right_x1 = left_x2 + espace
-    right_x2 = width - marge
-
-    # ==========================================================
-    # QR Code
-    # ==========================================================
-
+    # QR code à gauche
+    qr_size = 92
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_L,
         box_size=4,
         border=1,
     )
-
     qr.add_data(qr_content)
     qr.make(fit=True)
 
-    qr_img = (
-        qr.make_image(
-            fill_color="black",
-            back_color="white",
-        )
-        .convert("RGB")
-        .resize((70, 70))
-    )
+    qr_img = qr.make_image(
+        fill_color="black",
+        back_color="white",
+    ).convert("RGB")
 
-    qr_x = left_x1 + ((colonne_gauche - 70) // 2)
+    qr_img = qr_img.resize((qr_size, qr_size))
 
-    img.paste(
-        qr_img,
-        (
-            qr_x,
-            35,
-        ),
-    )
+    qr_x = left_x1 + ((left_x2 - left_x1 - qr_size) // 2)
+    img.paste(qr_img, (qr_x, 38))
 
-    # ==========================================================
-    # Référence
-    # ==========================================================
+    # SKU court à gauche
+    _center_text(draw, left_x1, left_x2, 140, "SKU", font_sku_label)
+    _center_text(draw, left_x1, left_x2, 160, reference, font_ref)
 
-    _center_text(
-        draw,
-        left_x1,
-        left_x2,
-        118,
-        reference,
-        font_ref,
-    )
+    # Infos à droite
+    _center_text(draw, right_x1, right_x2, 30, "RIO GOLD", font_title)
+    _center_text(draw, right_x1, right_x2, 85, purete, font_purete)
+    _center_text(draw, right_x1, right_x2, 150, poids, font_poids)
 
-    # ==========================================================
-    # RIO GOLD
-    # ==========================================================
-
-    _center_text(
-        draw,
-        right_x1,
-        right_x2,
-        12,
-        "RIO GOLD",
-        font_title,
-    )
-
-    # ==========================================================
-    # Pureté
-    # ==========================================================
-
-    _center_text(
-        draw,
-        right_x1,
-        right_x2,
-        55,
-        purete,
-        font_purete,
-    )
-
-    # ==========================================================
-    # Poids
-    # ==========================================================
-
-    _center_text(
-        draw,
-        right_x1,
-        right_x2,
-        135,
-        poids,
-        font_poids,
-    )
-
-    # ==========================================================
     output = BytesIO()
-
-    img.save(
-        output,
-        format="PNG",
-    )
-
+    img.save(output, format="PNG")
     output.seek(0)
 
     return output
