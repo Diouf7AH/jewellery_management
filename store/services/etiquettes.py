@@ -34,7 +34,6 @@ def build_etiquette_bague_png(produit):
         font_poids = ImageFont.load_default()
         font_ref = ImageFont.load_default()
 
-    # QR = UUID produit
     qr_content = f"P:{produit.uuid}"
 
     purete = str(produit.purete) if produit.purete else ""
@@ -43,24 +42,23 @@ def build_etiquette_bague_png(produit):
     reference = (
         f"{(produit.categorie.nom if produit.categorie else '')[:3].upper()}-"
         f"{(produit.modele.modele if produit.modele else '')[:3].upper()}-"
-        f"{produit.etat or ''}-"
+        f"{(produit.etat or '')}-"
         f"{(produit.marque.marque if produit.marque else '')[:3].upper()}"
     )
 
-    # Découpage SKU sur 2 lignes
-    parts = reference.split("-")
-    if len(parts) >= 4:
-        sku_line_1 = "-".join(parts[:2]) + "-"
-        sku_line_2 = "-".join(parts[2:])
+    parts = reference.split("-", 2)
+
+    if len(parts) == 3:
+        sku_line_1 = f"{parts[0]}-{parts[1]}-"
+        sku_line_2 = parts[2]
     else:
         mid = len(reference) // 2
         sku_line_1 = reference[:mid]
         sku_line_2 = reference[mid:]
 
-    margin_outer = 20  # 2.5 mm
-    margin_inner = 12  # 1.5 mm
+    margin_outer = 20
+    margin_inner = 12
 
-    # Zone gauche : QR + SKU
     left_x1 = margin_outer
     left_x2 = 120
 
@@ -77,15 +75,10 @@ def build_etiquette_bague_png(produit):
     qr.add_data(qr_content)
     qr.make(fit=True)
 
-    qr_img = qr.make_image(
-        fill_color="black",
-        back_color="white",
-    ).convert("RGB")
-
+    qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     qr_img = qr_img.resize((qr_size, qr_size))
     img.paste(qr_img, (qr_x, qr_y))
 
-    # Boîte SKU sous QR
     sku_box_x1 = margin_outer
     sku_box_x2 = 120 - margin_outer
     sku_box_y1 = qr_y + qr_size + 12
@@ -97,25 +90,9 @@ def build_etiquette_bague_png(produit):
         width=1,
     )
 
-    _center_text(
-        draw,
-        sku_box_x1 + margin_inner,
-        sku_box_x2 - margin_inner,
-        sku_box_y1 + 8,
-        sku_line_1,
-        font_ref,
-    )
+    _center_text(draw, sku_box_x1 + margin_inner, sku_box_x2 - margin_inner, sku_box_y1 + 8, sku_line_1, font_ref)
+    _center_text(draw, sku_box_x1 + margin_inner, sku_box_x2 - margin_inner, sku_box_y1 + 33, sku_line_2, font_ref)
 
-    _center_text(
-        draw,
-        sku_box_x1 + margin_inner,
-        sku_box_x2 - margin_inner,
-        sku_box_y1 + 33,
-        sku_line_2,
-        font_ref,
-    )
-
-    # Zone droite : infos produit
     right_x1 = 120
     right_x2 = width - margin_outer
 
