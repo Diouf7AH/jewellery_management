@@ -42,12 +42,11 @@ def build_etiquette_bague_png(produit):
     reference = (
         f"{(produit.categorie.nom if produit.categorie else '')[:3].upper()}-"
         f"{(produit.modele.modele if produit.modele else '')[:3].upper()}-"
-        f"{(produit.etat or '')}-"
+        f"{produit.etat or ''}-"
         f"{(produit.marque.marque if produit.marque else '')[:3].upper()}"
     )
 
     parts = reference.split("-", 2)
-
     if len(parts) == 3:
         sku_line_1 = f"{parts[0]}-{parts[1]}-"
         sku_line_2 = parts[2]
@@ -57,7 +56,7 @@ def build_etiquette_bague_png(produit):
         sku_line_2 = reference[mid:]
 
     margin_outer = 20
-    margin_inner = 12
+    margin_inner = 6
 
     left_x1 = margin_outer
     left_x2 = 120
@@ -84,14 +83,30 @@ def build_etiquette_bague_png(produit):
     sku_box_y1 = qr_y + qr_size + 12
     sku_box_y2 = height - margin_outer
 
-    draw.rectangle(
+    draw.rounded_rectangle(
         (sku_box_x1, sku_box_y1, sku_box_x2, sku_box_y2),
+        radius=5,
         outline="black",
         width=1,
     )
 
-    _center_text(draw, sku_box_x1 + margin_inner, sku_box_x2 - margin_inner, sku_box_y1 + 8, sku_line_1, font_ref)
-    _center_text(draw, sku_box_x1 + margin_inner, sku_box_x2 - margin_inner, sku_box_y1 + 33, sku_line_2, font_ref)
+    _center_text(
+        draw,
+        sku_box_x1 + margin_inner,
+        sku_box_x2 - margin_inner,
+        sku_box_y1 + 8,
+        sku_line_1,
+        font_ref,
+    )
+
+    _center_text(
+        draw,
+        sku_box_x1 + margin_inner,
+        sku_box_x2 - margin_inner,
+        sku_box_y1 + 32,
+        sku_line_2,
+        font_ref,
+    )
 
     right_x1 = 120
     right_x2 = width - margin_outer

@@ -2559,11 +2559,20 @@ class ProduitLineEtiquettesZIPView(APIView):
         produit_line_ids = request.data.get("produit_line_ids") or []
 
         if not produit_line_ids:
-            return Response({"detail": "produit_line_ids est requis."}, status=400)
+            return Response(
+                {"detail": "produit_line_ids est requis."},
+                status=400,
+            )
 
         produit_lines = (
             ProduitLine.objects
-            .select_related("produit", "produit__purete", "produit__marque")
+            .select_related(
+                "produit",
+                "produit__purete",
+                "produit__marque",
+                "produit__categorie",
+                "produit__modele",
+            )
             .filter(id__in=produit_line_ids)
         )
 
@@ -2582,15 +2591,23 @@ class ProduitLineEtiquettesZIPView(APIView):
 
         zip_buffer = BytesIO()
 
-        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        with zipfile.ZipFile(
+            zip_buffer,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as zip_file:
             for line in produit_lines:
                 produit = line.produit
-                safe_sku = produit.sku or f"P-{produit.id}"
+                safe_name = f"produit_{produit.id}"
 
-                for i in range(1, line.quantite + 1):
+                for i in range(1, int(line.quantite) + 1):
                     image_buffer = build_etiquette_bague_png(produit)
-                    filename = f"{safe_sku}_{i}.png"
-                    zip_file.writestr(filename, image_buffer.getvalue())
+                    filename = f"{safe_name}_{i}.png"
+
+                    zip_file.writestr(
+                        filename,
+                        image_buffer.getvalue(),
+                    )
 
         zip_buffer.seek(0)
 
@@ -2603,4 +2620,5 @@ class ProduitLineEtiquettesZIPView(APIView):
         )
 
         return response
+    
     
