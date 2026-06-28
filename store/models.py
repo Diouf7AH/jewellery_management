@@ -388,8 +388,10 @@ class Produit(models.Model):
         taille_str = f"{taille:.2f}".replace(".", "-")
 
         return (
-            f"{(self.categorie.nom or '')[:4].upper()}-"
-            f"{(self.modele.modele or '')[:4].upper()}-"
+            # f"{(self.categorie.nom or '')[:4].upper()}-"
+            f"{(self.categorie.nom or '')[:3].upper()}-"
+            # f"{(self.modele.modele or '')[:4].upper()}-"
+            f"{(self.modele.modele or '')[:3].upper()}-"
             f"{self.etat}-"
             f"{self.purete.purete}-"
             f"{(self.marque.marque or '')[:3].upper()}-"
