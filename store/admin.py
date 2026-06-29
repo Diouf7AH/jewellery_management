@@ -48,7 +48,7 @@ class ProduitAdmin(admin.ModelAdmin):
         "sku",
         "slug",
     ]
-    list_display = ('id', 'slug', 'nom', 'categorie', 'marque', 'modele', 'poids', 'taille', 'sku', 'qr_code_url')
+    list_display = ('id', 'uuid', 'slug', 'nom', 'categorie', 'marque', 'modele', 'poids', 'taille', 'sku', 'qr_code_url')
     actions = [regenerer_qr_code_action]
     # readonly_fields = ('affiche_qr_code',)
 

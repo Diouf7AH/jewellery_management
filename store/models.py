@@ -50,7 +50,7 @@ GENRE = (
 
 ETAT = (
     ("N", "Neuf"),
-    ("R", "Retour")
+    ("O", "Occasion")
 )
 
 # store/models.py
@@ -348,7 +348,6 @@ class Produit(models.Model):
     taille = models.DecimalField(blank=True, null=True, default=Decimal("0.00"), decimal_places=2, max_digits=12)
 
     genre = models.CharField(choices=GENRE, default="F", max_length=10, blank=True, null=True)
-    status = models.CharField(choices=STATUS, max_length=10, default="publié", null=True, blank=True)
     etat = models.CharField(choices=ETAT, max_length=10, default="N", null=True, blank=True)
 
     sku = models.SlugField(unique=True, max_length=120, null=True, blank=True)

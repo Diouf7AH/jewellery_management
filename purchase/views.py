@@ -1,28 +1,32 @@
+import zipfile
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 
 from django.db import IntegrityError, transaction
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum
 from django.db.models.functions import Coalesce, ExtractYear
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from inventory.models import Bucket, InventoryMovement, MovementType
 from openpyxl import Workbook
+from purchase.services.etiquettes import build_etiquette_bague_png
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from stock.models import Stock
+from store.models import Produit
 
 from backend.mixins import ExportXlsxMixin
 from backend.permissions import ROLE_ADMIN, ROLE_MANAGER, IsAdminOrManager
 from backend.renderers import UserRenderer
 from backend.roles import get_role_name
-from inventory.models import Bucket, InventoryMovement, MovementType
-from stock.models import Stock
-from store.models import Produit
 
 from .models import Achat, Fournisseur, Lot, ProduitLine
 from .serializers import (AchatDetailSerializer, AchatSerializer,
@@ -33,105 +37,6 @@ from .serializers import (AchatDetailSerializer, AchatSerializer,
                           FournisseurSerializer, LotDisplaySerializer,
                           LotListSerializer, ProduitLineMiniSerializer)
 
-# class AchatDashboardView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def get(self, request):
-#         role = get_role_name(request.user)
-
-#         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-#             return Response({"detail": "Accès refusé."}, status=403)
-
-#         # 3 dernières années : année courante + 2 années précédentes
-#         current_year = timezone.now().year
-#         start_year = current_year - 2
-
-#         start_date = timezone.datetime(
-#             start_year, 1, 1,
-#             tzinfo=timezone.get_current_timezone()
-#         )
-
-#         achats = Achat.objects.filter(created_at__gte=start_date)
-
-#         lots = Lot.objects.filter(achat__created_at__gte=start_date)
-
-#         lignes = ProduitLine.objects.select_related("produit", "lot__achat").filter(
-#             lot__achat__created_at__gte=start_date
-#         )
-
-#         lignes = lignes.annotate(
-#             poids_ligne=ExpressionWrapper(
-#                 F("quantite") * Coalesce(F("produit__poids"), Decimal("0.00")),
-#                 output_field=DecimalField(max_digits=18, decimal_places=3)
-#             )
-#         )
-
-#         total_achats = achats.count()
-
-#         montant_total = achats.aggregate(
-#             total=Coalesce(Sum("montant_total_ht"), Decimal("0.00"))
-#         )["total"]
-
-#         total_lots = lots.count()
-
-#         total_poids = lignes.aggregate(
-#             total=Coalesce(Sum("poids_ligne"), Decimal("0.00"))
-#         )["total"]
-
-#         total_poids = lignes.aggregate(
-#             total=Coalesce(Sum("poids_ligne"), Decimal("0.00"))
-#         )["total"]
-
-#         top_fournisseurs_qs = (
-#             achats.values("fournisseur__nom", "fournisseur__prenom")
-#             .annotate(
-#                 total_achats=Count("id"),
-#                 montant_total=Coalesce(Sum("montant_total_ht"), Decimal("0.00")),
-#             )
-#             .order_by("-montant_total")[:5]
-#         )
-
-#         top_fournisseurs = [
-#             {
-#                 "fournisseur": f"{(f['fournisseur__prenom'] or '')} {(f['fournisseur__nom'] or '')}".strip() or "N/A",
-#                 "total_achats": f["total_achats"],
-#                 "montant_total": f["montant_total"],
-#             }
-#             for f in top_fournisseurs_qs
-#         ]
-
-#         produits_qs = (
-#             lignes.values("produit__nom")
-#             .annotate(
-#                 quantite=Coalesce(Sum("quantite"), 0),
-#                 poids_total=Coalesce(Sum("poids_ligne"), Decimal("0.00")),
-#             )
-#             .order_by("-quantite")[:5]
-#         )
-
-#         repartition_produits = [
-#             {
-#                 "produit": p["produit__nom"] or "N/A",
-#                 "quantite": p["quantite"],
-#                 "poids_total": p["poids_total"],
-#             }
-#             for p in produits_qs
-#         ]
-
-#         return Response({
-#             "periode": {
-#                 "start_year": start_year,
-#                 "end_year": current_year,
-#                 "label": f"{start_year}-{current_year}",
-#             },
-#             "total_achats": total_achats,
-#             "montant_total": montant_total,
-#             "total_lots": total_lots,
-#             "total_quantite": total_quantite,
-#             "total_poids": total_poids,
-#             "top_fournisseurs": top_fournisseurs,
-#             "repartition_produits": repartition_produits,
-#         })
 
 class AchatDashboardView(APIView):
     permission_classes = [IsAuthenticated]
@@ -2759,4 +2664,95 @@ class InventoryPhotoView(ExportXlsxMixin, ListAPIView):
 # -------------------------End InventoryPhotoView---------------------
 
 
+
+
+class ProduitLineEtiquettesZIPView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_summary="Télécharger les étiquettes PNG",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["produit_line_ids"],
+            properties={
+                "produit_line_ids": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    items=openapi.Items(type=openapi.TYPE_INTEGER),
+                    example=[1, 2, 3],
+                ),
+            },
+        ),
+        tags=["Étiquettes"],
+    )
+    def post(self, request):
+        role = get_role_name(request.user)
+
+        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
+            return Response({"detail": "Accès refusé."}, status=403)
+
+        produit_line_ids = request.data.get("produit_line_ids") or []
+
+        if not produit_line_ids:
+            return Response(
+                {"detail": "produit_line_ids est requis."},
+                status=400,
+            )
+
+        produit_lines = (
+            ProduitLine.objects
+            .select_related(
+                "produit",
+                "produit__purete",
+                "produit__marque",
+                "produit__categorie",
+                "produit__modele",
+            )
+            .filter(id__in=produit_line_ids)
+        )
+
+        found_ids = set(produit_lines.values_list("id", flat=True))
+        requested_ids = set(produit_line_ids)
+        missing_ids = requested_ids - found_ids
+
+        if missing_ids:
+            return Response(
+                {
+                    "detail": "Certaines lignes produit sont introuvables.",
+                    "missing_ids": list(missing_ids),
+                },
+                status=404,
+            )
+
+        zip_buffer = BytesIO()
+
+        with zipfile.ZipFile(
+            zip_buffer,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as zip_file:
+            for line in produit_lines:
+                produit = line.produit
+                safe_name = f"produit_{produit.id}"
+
+                for i in range(1, int(line.quantite) + 1):
+                    image_buffer = build_etiquette_bague_png(produit)
+                    filename = f"{safe_name}_{i}.png"
+
+                    zip_file.writestr(
+                        filename,
+                        image_buffer.getvalue(),
+                    )
+
+        zip_buffer.seek(0)
+
+        response = HttpResponse(
+            zip_buffer.getvalue(),
+            content_type="application/zip",
+        )
+        response["Content-Disposition"] = (
+            'attachment; filename="etiquettes_produits.zip"'
+        )
+
+        return response
+    
 

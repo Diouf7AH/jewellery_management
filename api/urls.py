@@ -109,9 +109,7 @@ urlpatterns = [
     # path('produit/export/qr-codes/', store_views.ExportQRCodeExcelAPIView.as_view(), name='export-qr-codes'),
     # path('produit/export/qr-code/<slug:slug>', store_views.ExportOneQRCodeExcelAPIView.as_view(), name='export-one-qr-code'),
     # path('api/products/<int:pk>/qrcode/', ProductQRCodeView.as_view(), name='product-qrcode'),
-    path("produit/<slug:slug>", store_views.ProduitDetailSlugView.as_view(), name="produit-detail-slug"),
-    path("produits/etiquettes-png/", store_views.ProduitLineEtiquettesZIPView.as_view(),name="produits-etiquettes-png",),
-    
+    path("produit/<slug:slug>", store_views.ProduitDetailSlugView.as_view(), name="produit-detail-slug"),    
     path("prix/evolution", store_views.MarquePuretePriceEvolutionView.as_view(), name="prix-evolution"),
     path("prix/history", store_views.MarquePuretePrixHistoryListView.as_view(), name="prix-history"),
     path("prix/history/<int:history_id>/rollback", store_views.MarquePuretePriceRollbackView.as_view(), name="prix-history-rollback"),
@@ -134,6 +132,7 @@ urlpatterns = [
     path("achat/arrivage/<int:lot_id>/meta", achat_views.ArrivageMetaUpdateView.as_view(), name="arrivage-meta-update"),
     path("achat/arrivage/<int:lot_id>/adjustments", achat_views.ArrivageAdjustmentsView.as_view(), name="arrivage-adjustments"),
     path("achat/produit-lines", achat_views.InventoryPhotoView.as_view(),name="produitline-list",),
+    path("achat/etiquettes-png/", achat_views.ProduitLineEtiquettesZIPView.as_view(),name="produits-etiquettes-png",),
     path("achat/dashboard", achat_views.AchatDashboardView.as_view(), name="achat-dashboard"),
     
     # path("achat/lots/export/csv", achat_views.LotExportCSVView.as_view(), name="lots-export-csv"),

@@ -1,28 +1,25 @@
 from textwrap import dedent
 
 from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-from backend.permissions import ROLE_ADMIN  # ton permission actuel
-from backend.permissions import (ROLE_MANAGER, ROLE_VENDOR, IsAdminOrManager,
-                                 IsAdminOrManagerOrVendor, get_role_name)
-from backend.query_scopes import scope_bijouterie_q
-from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
+from stock.models import Stock
+from stock.serializers import StockSerializer
 from vendor.models import Vendor
 
-from .models import Stock
-from .serializers import (ReserveToVendorInSerializer,
-                          ReserveToVendorOutSerializer, StockSerializer)
+from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
+from backend.query_scopes import scope_bijouterie_q
+from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
+
+from .serializers import ReserveToVendorInSerializer
 from .services.reserve_to_vendor_service import transfer_reserve_to_vendor
-
-allowed_roles = ['admin', 'manager', 'vendeur']
-
 
 # class StockListView(APIView):
 #     """
@@ -266,6 +263,83 @@ STATUS_CHOICES = ("in_stock", "reserved", "allocated", "all")
 
 
 
+# STATUS_CHOICES = ("in_stock", "reserved", "allocated", "all")
+
+
+# class StockListView(APIView):
+#     """
+#     GET /api/stock/?status=in_stock|reserved|allocated|all
+
+#     - admin   : voit tout (réserve + bijouteries)
+#     - manager : voit uniquement ses bijouteries (ManyToMany) via scope_bijouterie_q
+#     - vendor  : voit uniquement sa bijouterie via scope_bijouterie_q
+#     """
+#     permission_classes = [IsAuthenticated, IsAdminOrManagerOrVendor]
+
+#     @swagger_auto_schema(
+#         operation_id="listStock",
+#         operation_summary="Lister le stock (filtre: in_stock/reserved/allocated/all)",
+#         operation_description=(
+#             "Retourne les lignes de stock selon le statut.\n\n"
+#             "**Règles d’accès**\n"
+#             "- `reserved` (stock réserve) : **admin uniquement**\n"
+#             "- manager/vendor : limités à leurs bijouteries via `scope_bijouterie_q`\n\n"
+#             "**Paramètre**\n"
+#             "- `status` ∈ `in_stock|reserved|allocated|all` (défaut `in_stock`)"
+#         ),
+#         tags=["Stock"],
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "status",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 description="in_stock|reserved|allocated|all (défaut: in_stock)",
+#                 enum=list(STATUS_CHOICES),
+#             )
+#         ],
+#         responses={200: StockSerializer(many=True)},
+#     )
+#     def get(self, request, *args, **kwargs):
+#         status_param = (request.query_params.get("status") or "in_stock").strip().lower()
+#         if status_param not in STATUS_CHOICES:
+#             raise ValidationError({"status": f"Valeur invalide. Choisir parmi {STATUS_CHOICES}."})
+
+#         role = get_role_name(request.user)
+
+#         # 🔒 réserve = admin uniquement
+#         if status_param == "reserved" and role != ROLE_ADMIN:
+#             return Response({"detail": "Accès refusé au stock réserve."}, status=403)
+
+#         qs = (
+#             Stock.objects
+#             .select_related(
+#                 "produit_line",
+#                 "produit_line__lot",
+#                 "produit_line__produit",
+#                 "bijouterie",
+#             )
+#             .order_by("-id")
+#         )
+
+#         # ✅ Scope bijouterie (admin => Q() donc pas de filtre)
+#         qs = qs.filter(scope_bijouterie_q(request.user, field="bijouterie_id"))
+
+#         # ✅ Filtres par statut
+#         if status_param == "reserved":
+#             qs = qs.filter(is_reserve=True, bijouterie__isnull=True, en_stock__gt=0)
+
+#         elif status_param == "allocated":
+#             qs = qs.filter(is_reserve=False, bijouterie__isnull=False)
+
+#         elif status_param == "in_stock":
+#             qs = qs.filter(en_stock__gt=0)
+
+#         # status_param == "all" => pas de filtre supplémentaire
+
+#         return Response(StockSerializer(qs, many=True).data)
+
+
 STATUS_CHOICES = ("in_stock", "reserved", "allocated", "all")
 
 
@@ -273,22 +347,21 @@ class StockListView(APIView):
     """
     GET /api/stock/?status=in_stock|reserved|allocated|all
 
-    - admin   : voit tout (réserve + bijouteries)
-    - manager : voit uniquement ses bijouteries (ManyToMany) via scope_bijouterie_q
+    - admin   : voit tout
+    - manager : voit uniquement ses bijouteries via scope_bijouterie_q
     - vendor  : voit uniquement sa bijouterie via scope_bijouterie_q
     """
     permission_classes = [IsAuthenticated, IsAdminOrManagerOrVendor]
 
     @swagger_auto_schema(
         operation_id="listStock",
-        operation_summary="Lister le stock (filtre: in_stock/reserved/allocated/all)",
+        operation_summary="Lister le stock",
         operation_description=(
             "Retourne les lignes de stock selon le statut.\n\n"
-            "**Règles d’accès**\n"
-            "- `reserved` (stock réserve) : **admin uniquement**\n"
-            "- manager/vendor : limités à leurs bijouteries via `scope_bijouterie_q`\n\n"
-            "**Paramètre**\n"
-            "- `status` ∈ `in_stock|reserved|allocated|all` (défaut `in_stock`)"
+            "- reserved : stock réserve, admin uniquement\n"
+            "- allocated : stock boutique affecté\n"
+            "- in_stock : stock avec en_stock > 0\n"
+            "- all : tous les stocks visibles"
         ),
         tags=["Stock"],
         manual_parameters=[
@@ -297,7 +370,7 @@ class StockListView(APIView):
                 openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
                 required=False,
-                description="in_stock|reserved|allocated|all (défaut: in_stock)",
+                description="in_stock|reserved|allocated|all",
                 enum=list(STATUS_CHOICES),
             )
         ],
@@ -305,14 +378,19 @@ class StockListView(APIView):
     )
     def get(self, request, *args, **kwargs):
         status_param = (request.query_params.get("status") or "in_stock").strip().lower()
+
         if status_param not in STATUS_CHOICES:
-            raise ValidationError({"status": f"Valeur invalide. Choisir parmi {STATUS_CHOICES}."})
+            raise ValidationError({
+                "status": f"Valeur invalide. Choisir parmi {STATUS_CHOICES}."
+            })
 
-        role = get_role_name(request.user)
+        role = (get_role_name(request.user) or "").lower()
 
-        # 🔒 réserve = admin uniquement
         if status_param == "reserved" and role != ROLE_ADMIN:
-            return Response({"detail": "Accès refusé au stock réserve."}, status=403)
+            return Response(
+                {"detail": "Accès refusé au stock réserve."},
+                status=403,
+            )
 
         qs = (
             Stock.objects
@@ -325,22 +403,32 @@ class StockListView(APIView):
             .order_by("-id")
         )
 
-        # ✅ Scope bijouterie (admin => Q() donc pas de filtre)
-        qs = qs.filter(scope_bijouterie_q(request.user, field="bijouterie_id"))
+        # ✅ on applique le scope seulement hors réserve
+        # car la réserve est admin-only et bijouterie=NULL
+        if status_param != "reserved":
+            qs = qs.filter(scope_bijouterie_q(request.user, field="bijouterie_id"))
 
-        # ✅ Filtres par statut
         if status_param == "reserved":
-            qs = qs.filter(is_reserve=True, bijouterie__isnull=True, en_stock__gt=0)
+            qs = qs.filter(
+                is_reserve=True,
+                bijouterie__isnull=True,
+                en_stock__gt=0,
+            )
 
         elif status_param == "allocated":
-            qs = qs.filter(is_reserve=False, bijouterie__isnull=False)
+            qs = qs.filter(
+                is_reserve=False,
+                bijouterie__isnull=False,
+            )
 
         elif status_param == "in_stock":
             qs = qs.filter(en_stock__gt=0)
 
-        # status_param == "all" => pas de filtre supplémentaire
-
-        return Response(StockSerializer(qs, many=True).data)
+        return Response(
+            StockSerializer(qs, many=True).data,
+            status=200,
+        )
+        
 
 # VENDOR_STATUS_CHOICES = ("in_stock", "allocated", "all")
 
@@ -514,54 +602,122 @@ class StockListView(APIView):
 #         return Response(res, status=status.HTTP_200_OK)
 
 
-class ReserveToVendorTransferView(APIView):
-    """
-    POST /api/stocks/transfer/reserve-to-vendor/
+# class ReserveToVendorTransferView(APIView):
+#     """
+#     POST /api/stocks/transfer/reserve-to-vendor/
 
-    Transfert stock Réserve -> Vendeur :
-    - décrémente Stock réserve
-    - incrémente VendorStock (quantite_allouee)
-    - crée InventoryMovement(VENDOR_ASSIGN) par ligne
-    """
+#     Transfert stock Réserve -> Vendeur :
+#     - décrémente Stock réserve
+#     - incrémente VendorStock (quantite_allouee)
+#     - crée InventoryMovement(VENDOR_ASSIGN) par ligne
+#     """
+#     permission_classes = [IsAuthenticated, IsAdminOrManager]
+#     http_method_names = ["post"]
+
+#     @swagger_auto_schema(
+#         operation_id="reserveToVendorTransfer",
+#         operation_summary="Transférer du stock Réserve vers un vendeur",
+#         operation_description=(
+#             "Effectue un transfert **Réserve → Vendeur**.\n\n"
+#             "### Effets\n"
+#             "- Réserve : décrémente `Stock(en_stock)` (et `quantite_totale` si tu le fais aussi)\n"
+#             "- Vendeur : incrémente `VendorStock.quantite_allouee`\n"
+#             "- Audit : crée `InventoryMovement` de type **VENDOR_ASSIGN**\n\n"
+#             "### Sécurité\n"
+#             "- **admin** : toutes bijouteries\n"
+#             "- **manager** : uniquement vendeurs appartenant à ses bijouteries (ManyToMany)\n"
+#         ),
+#         tags=["Stock"],
+#         request_body=ReserveToVendorInSerializer,
+#         responses={
+#             200: openapi.Response(
+#                 description="Transfert effectué",
+#                 schema=openapi.Schema(
+#                     type=openapi.TYPE_OBJECT,
+#                     properties={
+#                         "vendor_id": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                         "vendor_email": openapi.Schema(type=openapi.TYPE_STRING),
+#                         "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                         "bijouterie_nom": openapi.Schema(type=openapi.TYPE_STRING),
+#                         "movements_created": openapi.Schema(type=openapi.TYPE_INTEGER),
+#                         "note": openapi.Schema(type=openapi.TYPE_STRING),
+#                         "lignes": openapi.Schema(
+#                             type=openapi.TYPE_ARRAY,
+#                             items=openapi.Items(type=openapi.TYPE_OBJECT),
+#                         ),
+#                     },
+#                 ),
+#             ),
+#             400: openapi.Response(description="ValidationError / stock insuffisant"),
+#             403: openapi.Response(description="Forbidden (scope manager)"),
+#         },
+#     )
+#     def post(self, request):
+#         serializer = ReserveToVendorInSerializer(data=request.data)
+#         serializer.is_valid(raise_exception=True)
+#         v = serializer.validated_data
+
+#         role = get_role_name(request.user)
+
+#         # ✅ Scope manager (ManyToMany bijouteries)
+#         if role == ROLE_MANAGER:
+#             mp = getattr(request.user, "staff_manager_profile", None)
+#             if not mp or (hasattr(mp, "verifie") and not mp.verifie):
+#                 return Response({"detail": "Profil manager invalide."}, status=403)
+
+#             vendor = (
+#                 Vendor.objects
+#                 .select_related("bijouterie", "user")
+#                 .filter(user__email=v["vendor_email"])
+#                 .first()
+#             )
+#             if not vendor:
+#                 return Response({"detail": "Vendeur introuvable."}, status=400)
+
+#             if not mp.bijouteries.filter(id=vendor.bijouterie_id).exists():
+#                 return Response(
+#                     {"detail": "⛔ Vous ne pouvez pas affecter un vendeur hors de vos bijouteries."},
+#                     status=403,
+#                 )
+
+#         try:
+#             res = transfer_reserve_to_vendor(
+#                 vendor_email=v["vendor_email"],
+#                 lignes=v["lignes"],
+#                 note=v.get("note", ""),
+#                 user=request.user,
+#             )
+#         except ValidationError as e:
+#             detail = getattr(e, "message_dict", None) or getattr(e, "messages", None) or str(e)
+#             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+
+#         return Response(res, status=status.HTTP_200_OK)
+
+class ReserveToVendorTransferView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrManager]
     http_method_names = ["post"]
 
     @swagger_auto_schema(
         operation_id="reserveToVendorTransfer",
         operation_summary="Transférer du stock Réserve vers un vendeur",
-        operation_description=(
-            "Effectue un transfert **Réserve → Vendeur**.\n\n"
-            "### Effets\n"
-            "- Réserve : décrémente `Stock(en_stock)` (et `quantite_totale` si tu le fais aussi)\n"
-            "- Vendeur : incrémente `VendorStock.quantite_allouee`\n"
-            "- Audit : crée `InventoryMovement` de type **VENDOR_ASSIGN**\n\n"
-            "### Sécurité\n"
-            "- **admin** : toutes bijouteries\n"
-            "- **manager** : uniquement vendeurs appartenant à ses bijouteries (ManyToMany)\n"
-        ),
+        operation_description=dedent("""
+            Effectue un transfert Réserve → Vendeur.
+
+            Effets :
+            - Réserve : décrémente Stock(en_stock) et quantite_disponible
+            - Vendeur : incrémente VendorStock.quantite_allouee
+            - Audit : crée InventoryMovement(VENDOR_ASSIGN)
+
+            Sécurité :
+            - admin : toutes bijouteries
+            - manager : uniquement vendeurs appartenant à ses bijouteries
+        """),
         tags=["Stock"],
         request_body=ReserveToVendorInSerializer,
         responses={
-            200: openapi.Response(
-                description="Transfert effectué",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "vendor_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "vendor_email": openapi.Schema(type=openapi.TYPE_STRING),
-                        "bijouterie_id": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "bijouterie_nom": openapi.Schema(type=openapi.TYPE_STRING),
-                        "movements_created": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "note": openapi.Schema(type=openapi.TYPE_STRING),
-                        "lignes": openapi.Schema(
-                            type=openapi.TYPE_ARRAY,
-                            items=openapi.Items(type=openapi.TYPE_OBJECT),
-                        ),
-                    },
-                ),
-            ),
+            200: openapi.Response(description="Transfert effectué"),
             400: openapi.Response(description="ValidationError / stock insuffisant"),
-            403: openapi.Response(description="Forbidden (scope manager)"),
+            403: openapi.Response(description="Forbidden"),
         },
     )
     def post(self, request):
@@ -569,9 +725,8 @@ class ReserveToVendorTransferView(APIView):
         serializer.is_valid(raise_exception=True)
         v = serializer.validated_data
 
-        role = get_role_name(request.user)
+        role = (get_role_name(request.user) or "").lower()
 
-        # ✅ Scope manager (ManyToMany bijouteries)
         if role == ROLE_MANAGER:
             mp = getattr(request.user, "staff_manager_profile", None)
             if not mp or (hasattr(mp, "verifie") and not mp.verifie):
@@ -580,7 +735,7 @@ class ReserveToVendorTransferView(APIView):
             vendor = (
                 Vendor.objects
                 .select_related("bijouterie", "user")
-                .filter(user__email=v["vendor_email"])
+                .filter(user__email__iexact=v["vendor_email"])
                 .first()
             )
             if not vendor:
@@ -588,7 +743,7 @@ class ReserveToVendorTransferView(APIView):
 
             if not mp.bijouteries.filter(id=vendor.bijouterie_id).exists():
                 return Response(
-                    {"detail": "⛔ Vous ne pouvez pas affecter un vendeur hors de vos bijouteries."},
+                    {"detail": "Vous ne pouvez pas affecter un vendeur hors de vos bijouteries."},
                     status=403,
                 )
 
@@ -599,12 +754,30 @@ class ReserveToVendorTransferView(APIView):
                 note=v.get("note", ""),
                 user=request.user,
             )
-        except ValidationError as e:
-            detail = getattr(e, "message_dict", None) or getattr(e, "messages", None) or str(e)
+
+        except (DjangoValidationError, DRFValidationError) as e:
+            detail = (
+                getattr(e, "message_dict", None)
+                or getattr(e, "detail", None)
+                or getattr(e, "messages", None)
+                or str(e)
+            )
             return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(res, status=status.HTTP_200_OK)
+        except IntegrityError as e:
+            return Response(
+                {"detail": f"Erreur base de données: {str(e)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
+        except Exception as e:
+            return Response(
+                {"detail": f"Erreur serveur: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(res, status=status.HTTP_200_OK)
+    
 
 
 

@@ -1,6 +1,5 @@
 # from knox.auth import TokenAuthentication
 #Export to excel
-import zipfile
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -35,7 +34,6 @@ from store.serializers import (BijouterieSerializer, CategorieSerializer,
                                MarquePureteSerializer, MarqueSerializer,
                                ModeleSerializer, ProduitSerializer,
                                ProduitWithGallerySerializer, PureteSerializer)
-from store.services.etiquettes import build_etiquette_bague_png
 from store.services.price_history_service import update_marque_purete_price
 
 from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
@@ -2530,95 +2528,4 @@ Principe :
         )
         
                                         
-
-
-class ProduitLineEtiquettesZIPView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    @swagger_auto_schema(
-        operation_summary="Télécharger les étiquettes PNG",
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["produit_line_ids"],
-            properties={
-                "produit_line_ids": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Items(type=openapi.TYPE_INTEGER),
-                    example=[1, 2, 3],
-                ),
-            },
-        ),
-        tags=["Étiquettes"],
-    )
-    def post(self, request):
-        role = get_role_name(request.user)
-
-        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-            return Response({"detail": "Accès refusé."}, status=403)
-
-        produit_line_ids = request.data.get("produit_line_ids") or []
-
-        if not produit_line_ids:
-            return Response(
-                {"detail": "produit_line_ids est requis."},
-                status=400,
-            )
-
-        produit_lines = (
-            ProduitLine.objects
-            .select_related(
-                "produit",
-                "produit__purete",
-                "produit__marque",
-                "produit__categorie",
-                "produit__modele",
-            )
-            .filter(id__in=produit_line_ids)
-        )
-
-        found_ids = set(produit_lines.values_list("id", flat=True))
-        requested_ids = set(produit_line_ids)
-        missing_ids = requested_ids - found_ids
-
-        if missing_ids:
-            return Response(
-                {
-                    "detail": "Certaines lignes produit sont introuvables.",
-                    "missing_ids": list(missing_ids),
-                },
-                status=404,
-            )
-
-        zip_buffer = BytesIO()
-
-        with zipfile.ZipFile(
-            zip_buffer,
-            "w",
-            compression=zipfile.ZIP_DEFLATED,
-        ) as zip_file:
-            for line in produit_lines:
-                produit = line.produit
-                safe_name = f"produit_{produit.id}"
-
-                for i in range(1, int(line.quantite) + 1):
-                    image_buffer = build_etiquette_bague_png(produit)
-                    filename = f"{safe_name}_{i}.png"
-
-                    zip_file.writestr(
-                        filename,
-                        image_buffer.getvalue(),
-                    )
-
-        zip_buffer.seek(0)
-
-        response = HttpResponse(
-            zip_buffer.getvalue(),
-            content_type="application/zip",
-        )
-        response["Content-Disposition"] = (
-            'attachment; filename="etiquettes_produits.zip"'
-        )
-
-        return response
-    
     

@@ -1,5 +1,4 @@
 from rest_framework import serializers
-
 from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
                           MarquePuretePrixHistory, Modele, Produit, Purete)
 
@@ -232,8 +231,8 @@ class ProduitSerializer(serializers.ModelSerializer):
     class Meta:
         model = Produit
         fields = (
-            "id", "slug", "categorie", "categorie_detail", "nom", "produit_url", "sku", "qr_code_url", "image", "description",
-            "status", "genre", "marque", "marque_detail", "modele", "modele_detail", "purete", "purete_detail", "matiere", "poids", "taille", "etat"
+            "id", "uuid", "slug", "categorie", "categorie_detail", "nom", "produit_url", "sku", 
+            "qr_code_url", "image", "description", "genre", "marque", "marque_detail", "modele", "modele_detail", "purete", "purete_detail", "matiere", "poids", "taille", "etat"
         )
 
     def get_categorie_detail(self, obj):
@@ -351,7 +350,7 @@ class ProduitWithGallerySerializer(serializers.ModelSerializer):
     class Meta:
         model = Produit
         fields = [
-            'id', 'nom', 'sku', 'etat', 'status',
+            'id', 'nom', 'sku', 'etat',
             'poids', 'taille',
             'categorie_nom', 'marque_nom', 'modele_nom', 'purete_purete',
             'image', 'description', 'date_ajout', 'date_modification',
