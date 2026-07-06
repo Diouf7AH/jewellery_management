@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from staff.models import Cashier, Manager
+from userauths.models import Role
 from vendor.models import Vendor
 
 from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
@@ -39,6 +40,7 @@ def _get_existing_staff_flags(user):
         ROLE_CASHIER: Cashier.objects.select_for_update().filter(user_id=user.id).exists(),
     }
 
+
 @transaction.atomic
 def create_staff_member(
     *,
@@ -50,6 +52,11 @@ def create_staff_member(
     verifie: bool = True,
 ):
     bijouteries = bijouteries or []
+    target_role = (target_role or "").strip().lower()
+    email = (email or "").strip().lower()
+
+    if not email:
+        raise ValueError("Email requis.")
 
     caller_role = get_role_name(caller_user)
 
@@ -64,8 +71,6 @@ def create_staff_member(
     if target_role not in ROLE_MODEL_MAP:
         raise ValueError("Type de staff invalide.")
 
-    email = email.strip().lower()
-
     user = User.objects.select_for_update().filter(email__iexact=email).first()
 
     if user is None:
@@ -74,21 +79,21 @@ def create_staff_member(
             "L'utilisateur doit d'abord créer son compte."
         )
 
+    if not user.is_email_verified:
+        raise ValueError("L'utilisateur doit confirmer son email avant d'être affecté comme staff.")
+
+    if not user.is_active:
+        raise ValueError("Le compte utilisateur n'est pas actif.")
+
     if getattr(user, "is_superuser", False):
         raise ValueError("Un super administrateur ne peut pas être transformé en staff.")
 
     existing_role = get_role_name(user)
-
     if existing_role == ROLE_ADMIN:
         raise ValueError("Un utilisateur admin ne peut pas être transformé en staff.")
 
     existing_staff = _get_existing_staff_flags(user)
-
-    if (
-        existing_staff[ROLE_MANAGER]
-        or existing_staff[ROLE_VENDOR]
-        or existing_staff[ROLE_CASHIER]
-    ):
+    if any(existing_staff.values()):
         raise ValueError("Cet utilisateur possède déjà un profil staff.")
 
     Model = ROLE_MODEL_MAP[target_role]
@@ -102,7 +107,6 @@ def create_staff_member(
                 user=user,
                 verifie=verifie,
             )
-
             staff.bijouteries.set(bijouteries)
 
         else:
@@ -113,10 +117,7 @@ def create_staff_member(
                 caller_manager = (
                     Manager.objects
                     .prefetch_related("bijouteries")
-                    .filter(
-                        user=caller_user,
-                        verifie=True,
-                    )
+                    .filter(user=caller_user, verifie=True)
                     .first()
                 )
 
@@ -137,13 +138,18 @@ def create_staff_member(
     except IntegrityError:
         raise ValueError("Conflit d'intégrité à la création du profil staff.")
 
+    role_obj, _ = Role.objects.get_or_create(role=target_role)
+    user.user_role = role_obj
+    user.save(update_fields=["user_role"])
+
     return StaffCreationResult(
         staff_type=target_role,
         staff=staff,
         user=user,
         created_user=False,
     )
-    
+
+
     
 # Update staff member
 @dataclass

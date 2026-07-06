@@ -2,7 +2,7 @@
 # import weasyprint
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
@@ -73,8 +73,6 @@ from backend.query_scopes import scope_bijouterie_q
 from backend.renderers import UserRenderer
 from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
                            get_role_name)
-
-from .utils import ensure_role_and_bijouterie, user_bijouterie
 
 DEFAULT_PAGE_SIZE = getattr(settings, "DEFAULT_PAGE_SIZE", 50)
 MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
@@ -168,7 +166,10 @@ class VenteProduitCreateView(APIView):
         return (
             Vendor.objects
             .select_related("bijouterie", "user")
-            .filter(user=user)
+            .filter(
+                user=user,
+                verifie=True,
+            )
             .first()
         )
 
@@ -314,7 +315,10 @@ class VenteProduitCreateView(APIView):
             vendor = (
                 Vendor.objects
                 .select_related("bijouterie", "user")
-                .filter(user__email__iexact=vendor_email)
+                .filter(
+                    user__email__iexact=vendor_email,
+                    verifie=True,
+                )
                 .first()
             )
             if not vendor:
@@ -431,7 +435,7 @@ class VenteListAPIView(APIView):
     Règles :
     - admin : voit toutes les ventes
     - manager : voit les ventes de ses bijouteries
-    - vendor : voit les ventes de sa bijouterie
+    - vendor : vendor : voit seulement ses propres ventes
     - cashier : voit les ventes de sa bijouterie
 
     Filtres disponibles :
@@ -549,9 +553,25 @@ class VenteListAPIView(APIView):
             .order_by("-created_at", "-id")
         )
 
-        months = 36 if role == ROLE_ADMIN else 18
-        min_date = timezone.now() - timedelta(days=months * 30)
-        qs = qs.filter(created_at__gte=min_date)
+        if role == ROLE_VENDOR:
+            my_vendor = getattr(user, "staff_vendor_profile", None)
+
+            if not my_vendor or not getattr(my_vendor, "verifie", False):
+                return Response(
+                    {"detail": "Profil vendeur introuvable ou non vérifié."},
+                    status=403,
+                )
+
+            qs = qs.filter(vendor_id=my_vendor.id)
+
+        # ✅ Ventes de l'année en cours pour tous les rôles
+        today = timezone.localdate()
+
+        start_date = timezone.make_aware(
+            datetime(today.year, 1, 1)
+        )
+
+        qs = qs.filter(created_at__gte=start_date)
 
         numero_vente = (request.query_params.get("numero_vente") or "").strip()
         if numero_vente:
@@ -621,12 +641,118 @@ class VenteListAPIView(APIView):
 
 
 
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
+
+class ListFacturesAPayerView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        role = (get_role_name(user) or "").lower().strip()
+
+        if role not in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
+            return Response({"detail": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
+
+        qs = (
+            Facture.objects
+            .select_related("bijouterie", "vente", "vente__client")
+            .prefetch_related(
+                "paiements",
+                "vente__lignes__vendor",
+                "vente__lignes__produit",
+                "vente__lignes__produit__categorie",
+                "vente__lignes__produit__marque",
+                "vente__lignes__produit__purete",
+                "vente__lignes__produit__modele",
+            )
+            .filter(
+                status__in=[
+                    Facture.STAT_NON_PAYE,
+                    Facture.STAT_PARTIEL,
+                ]
+            )
+        )
+
+        # ✅ Scope bijouterie
+        qs = qs.filter(scope_bijouterie_q(user, field="bijouterie_id"))
+
+        # ✅ Ventes de l'année en cours pour tous les rôles
+        today = timezone.localdate()
+
+        start_date = timezone.make_aware(
+            datetime(today.year, 1, 1)
+        )
+
+        qs = qs.filter(date_creation__gte=start_date)
+
+        # ✅ Filtres
+        numero = (request.query_params.get("numero_facture") or "").strip()
+        if numero:
+            qs = qs.filter(numero_facture__icontains=numero)
+
+        client_q = (request.query_params.get("client_q") or "").strip()
+        if client_q:
+            qs = qs.filter(
+                Q(vente__client__nom__icontains=client_q) |
+                Q(vente__client__prenom__icontains=client_q) |
+                Q(vente__client__telephone__icontains=client_q)
+            )
+
+        # (optionnel) payment_mode -> DISTINCT nécessaire uniquement ici
+        payment_mode = (request.query_params.get("payment_mode") or "").strip()
+        if payment_mode:
+            qs = qs.filter(
+                paiements__lignes__mode_paiement__code__iexact=payment_mode
+            ).distinct()
+
+        qs = qs.order_by("-date_creation")
+
+        # ✅ Pagination safe
+        def _int(name: str, default: int) -> int:
+            val = request.query_params.get(name)
+            if val in (None, ""):
+                return default
+            try:
+                return int(val)
+            except ValueError:
+                return default
+
+        page = max(1, _int("page", 1))
+        page_size = max(1, min(_int("page_size", DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
+
+        paginator = Paginator(qs, page_size)
+
+        if paginator.count == 0:
+            return Response(
+                {"count": 0, "page": 1, "page_size": page_size, "num_pages": 0, "results": []},
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            page_obj = paginator.page(page)
+        except EmptyPage:
+            page_obj = paginator.page(paginator.num_pages)
+
+        return Response(
+            {
+                "count": paginator.count,
+                "page": page_obj.number,
+                "page_size": page_size,
+                "num_pages": paginator.num_pages,
+                "results": FactureListSerializer(page_obj.object_list, many=True).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+
 class ListFacturePayeesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        role = get_role_name(user)  # admin/manager/vendor/cashier
+        role = (get_role_name(user) or "").lower().strip()  # admin/manager/vendor/cashier
 
         if role not in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
             return Response({"detail": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
@@ -649,10 +775,14 @@ class ListFacturePayeesView(APIView):
         # ✅ scope bijouterie (admin=all, manager=M2M, vendor/cashier=1)
         qs = qs.filter(scope_bijouterie_q(user, field="bijouterie_id"))
 
-        # ✅ fenêtre auto
-        months = 36 if role == ROLE_ADMIN else 18
-        min_datetime = timezone.now() - timedelta(days=months * 30)
-        qs = qs.filter(date_creation__gte=min_datetime)
+        # ✅ Ventes de l'année en cours pour tous les rôles
+        today = timezone.localdate()
+
+        start_date = timezone.make_aware(
+            datetime(today.year, 1, 1)
+        )
+
+        qs = qs.filter(date_creation__gte=start_date)
 
         # ✅ filtres
         numero = (request.query_params.get("numero_facture") or "").strip()
@@ -740,382 +870,6 @@ class ListFacturePayeesView(APIView):
             },
             status=200,
         )
-
-
-
-DEFAULT_PAGE_SIZE = 20
-MAX_PAGE_SIZE = 100
-
-class ListFacturesAPayerView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        user = request.user
-        role = get_role_name(user)
-
-        if role not in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
-            return Response({"detail": "⛔ Accès refusé"}, status=status.HTTP_403_FORBIDDEN)
-
-        qs = (
-            Facture.objects
-            .select_related("bijouterie", "vente", "vente__client")
-            .prefetch_related(
-                "paiements",
-                "vente__lignes__vendor",
-                "vente__lignes__produit",
-                "vente__lignes__produit__categorie",
-                "vente__lignes__produit__marque",
-                "vente__lignes__produit__purete",
-                "vente__lignes__produit__modele",
-            )
-            .filter(
-                status__in=[
-                    Facture.STAT_NON_PAYE,
-                    Facture.STAT_PARTIEL,
-                ]
-            )
-        )
-
-        # ✅ Scope bijouterie
-        qs = qs.filter(scope_bijouterie_q(user, field="bijouterie_id"))
-
-        # ✅ Fenêtre auto
-        months = 36 if role == ROLE_ADMIN else 18
-        min_datetime = timezone.now() - timedelta(days=months * 30)
-        qs = qs.filter(date_creation__gte=min_datetime)
-
-        # ✅ Filtres
-        numero = (request.query_params.get("numero_facture") or "").strip()
-        if numero:
-            qs = qs.filter(numero_facture__icontains=numero)
-
-        client_q = (request.query_params.get("client_q") or "").strip()
-        if client_q:
-            qs = qs.filter(
-                Q(vente__client__nom__icontains=client_q) |
-                Q(vente__client__prenom__icontains=client_q) |
-                Q(vente__client__telephone__icontains=client_q)
-            )
-
-        # (optionnel) payment_mode -> DISTINCT nécessaire uniquement ici
-        payment_mode = (request.query_params.get("payment_mode") or "").strip()
-        if payment_mode:
-            qs = qs.filter(paiements__mode_paiement__iexact=payment_mode).distinct()
-
-        qs = qs.order_by("-date_creation")
-
-        # ✅ Pagination safe
-        def _int(name: str, default: int) -> int:
-            val = request.query_params.get(name)
-            if val in (None, ""):
-                return default
-            try:
-                return int(val)
-            except ValueError:
-                return default
-
-        page = max(1, _int("page", 1))
-        page_size = max(1, min(_int("page_size", DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
-
-        paginator = Paginator(qs, page_size)
-
-        if paginator.count == 0:
-            return Response(
-                {"count": 0, "page": 1, "page_size": page_size, "num_pages": 0, "results": []},
-                status=status.HTTP_200_OK,
-            )
-
-        try:
-            page_obj = paginator.page(page)
-        except EmptyPage:
-            page_obj = paginator.page(paginator.num_pages)
-
-        return Response(
-            {
-                "count": paginator.count,
-                "page": page_obj.number,
-                "page_size": page_size,
-                "num_pages": paginator.num_pages,
-                "results": FactureListSerializer(page_obj.object_list, many=True).data,
-            },
-            status=status.HTTP_200_OK,
-        )
-
-
-# class PaiementFactureMultiModeView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Paiement facture multi-mode",
-#         operation_description="""
-#         Permet de payer une facture avec un ou plusieurs modes de paiement.
-
-#         Modes possibles :
-#         - cash
-#         - wave
-#         - orange_money
-#         - carte
-#         - depot
-
-#         Règles :
-#         - Le cumul des modes de paiement ne doit pas dépasser le reste à payer.
-#         - Si paiement partiel : statut facture = partiel.
-#         - Si paiement complet : statut facture = payé.
-#         - Si la facture est totalement payée, le stock vendeur est consommé.
-#         - Si la facture est totalement payée, le PDF officiel est généré.
-#         """,
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["numero_facture", "lignes"],
-#             properties={
-#                 "numero_facture": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     example="FAC-20260512-0003",
-#                 ),
-#                 "client": openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     properties={
-#                         "nom": openapi.Schema(type=openapi.TYPE_STRING, example="Diop"),
-#                         "prenom": openapi.Schema(type=openapi.TYPE_STRING, example="Awa"),
-#                         "telephone": openapi.Schema(type=openapi.TYPE_STRING, example="770000000"),
-#                     },
-#                 ),
-#                 "lignes": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Schema(
-#                         type=openapi.TYPE_OBJECT,
-#                         required=["mode", "montant"],
-#                         properties={
-#                             "mode": openapi.Schema(
-#                                 type=openapi.TYPE_STRING,
-#                                 example="cash",
-#                                 description="Code du mode de paiement : cash, wave, orange_money, carte, depot",
-#                             ),
-#                             "montant": openapi.Schema(
-#                                 type=openapi.TYPE_NUMBER,
-#                                 example=10000,
-#                             ),
-#                             "reference": openapi.Schema(
-#                                 type=openapi.TYPE_STRING,
-#                                 example="WAVE-123456",
-#                             ),
-#                         },
-#                     ),
-#                 ),
-#             },
-#         ),
-#         responses={
-#             201: openapi.Response(
-#                 description="Paiement effectué avec succès."
-#             ),
-#             400: "Erreur de validation.",
-#             403: "Accès refusé.",
-#             404: "Facture introuvable.",
-#         },
-#         tags=["Paiements"],
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         numero_facture = str(request.data.get("numero_facture") or "").strip()
-#         client_data = request.data.get("client") or {}
-#         lignes_data = request.data.get("lignes") or []
-
-#         if not numero_facture:
-#             return Response({"detail": "numero_facture requis."}, status=400)
-
-#         if not lignes_data:
-#             return Response({"detail": "lignes requises."}, status=400)
-
-#         facture = (
-#             Facture.objects
-#             .select_for_update()
-#             .select_related("vente", "vente__client", "bijouterie")
-#             .prefetch_related("paiements__lignes")
-#             .filter(numero_facture__iexact=numero_facture)
-#             .first()
-#         )
-
-#         if not facture:
-#             return Response(
-#                 {"detail": f"Facture introuvable avec le numéro : {numero_facture}"},
-#                 status=404,
-#             )
-
-#         try:
-#             validate_facture_payable(facture)
-#         except DjangoValidationError as e:
-#             return Response({"detail": getattr(e, "message", str(e))}, status=400)
-
-#         try:
-#             client = upsert_client_for_payment(
-#                 facture=facture,
-#                 client_data=client_data,
-#             )
-#         except DjangoValidationError as e:
-#             return Response({"detail": getattr(e, "message", str(e))}, status=400)
-
-#         total = Decimal("0.00")
-#         normalized_lignes = []
-
-#         for index, item in enumerate(lignes_data):
-#             mode = str(item.get("mode") or "").strip()
-#             reference = item.get("reference")
-
-#             if not mode:
-#                 return Response(
-#                     {"detail": f"Le mode de paiement est obligatoire à la ligne {index + 1}."},
-#                     status=400,
-#                 )
-
-#             try:
-#                 montant = Decimal(str(item.get("montant") or "0"))
-#             except (InvalidOperation, TypeError):
-#                 return Response(
-#                     {"detail": f"Montant invalide à la ligne {index + 1}."},
-#                     status=400,
-#                 )
-
-#             if montant <= 0:
-#                 return Response(
-#                     {"detail": f"Le montant doit être supérieur à 0 à la ligne {index + 1}."},
-#                     status=400,
-#                 )
-
-#             total += montant
-
-#             normalized_lignes.append({
-#                 "mode": mode,
-#                 "montant": montant,
-#                 "reference": reference,
-#             })
-
-#         if total > facture.reste_a_payer:
-#             return Response(
-#                 {
-#                     "detail": "Le cumul des modes de paiement ne doit pas dépasser le reste à payer.",
-#                     "reste_a_payer": str(facture.reste_a_payer),
-#                     "montant_recu": str(total),
-#                 },
-#                 status=400,
-#             )
-
-#         cashier = Cashier.objects.filter(user=request.user).first()
-
-#         paiement = Paiement.objects.create(
-#             facture=facture,
-#             created_by=request.user,
-#             cashier=cashier,
-#         )
-
-#         lignes_creees = []
-
-#         for item in normalized_lignes:
-#             mode_obj = ModePaiement.objects.filter(
-#                 code__iexact=item["mode"],
-#                 active=True,
-#             ).first()
-
-#             if not mode_obj:
-#                 transaction.set_rollback(True)
-#                 return Response(
-#                     {"detail": f"Mode de paiement invalide ou inactif : {item['mode']}"},
-#                     status=400,
-#                 )
-
-#             ligne = PaiementLigne.objects.create(
-#                 paiement=paiement,
-#                 mode_paiement=mode_obj,
-#                 montant_paye=item["montant"],
-#                 reference=item.get("reference"),
-#             )
-
-#             lignes_creees.append(ligne)
-
-#         Facture.recompute_facture_status(facture)
-#         facture.refresh_from_db()
-
-#         if facture.reste_a_payer <= Decimal("0.00") and facture.status != Facture.STAT_PAYE:
-#             facture.status = Facture.STAT_PAYE
-#             facture.save(update_fields=["status"])
-#             facture.refresh_from_db()
-
-#         if facture.type_facture == Facture.TYPE_PROFORMA:
-#             facture.type_facture = Facture.TYPE_FACTURE
-#             facture.save(update_fields=["type_facture"])
-
-#         audit = {
-#             "created": 0,
-#             "already": 0,
-#             "lines_done": 0,
-#         }
-
-#         if facture.status == Facture.STAT_PAYE and not facture.stock_consumed:
-#             try:
-#                 audit = confirm_sale_out_from_vendor(
-#                     facture=facture,
-#                     by_user=request.user,
-#                 )
-#                 facture.refresh_from_db()
-#             except DjangoValidationError as e:
-#                 transaction.set_rollback(True)
-#                 return Response({"detail": getattr(e, "message", str(e))}, status=400)
-
-#         facture_pdf_url = None
-
-#         if facture.status == Facture.STAT_PAYE:
-#             if not facture.facture_pdf:
-#                 facture.refresh_from_db()
-
-#                 if not facture.integrity_hash:
-#                     generate_facture_hash(facture)
-
-#                 if not facture.qr_code_image:
-#                     generate_facture_qr(facture)
-
-#                 facture_pdf_url = generate_facture_pdf(facture)
-
-#                 facture.is_locked = True
-#                 facture.locked_at = timezone.now()
-#                 facture.save(update_fields=["is_locked", "locked_at"])
-#             else:
-#                 try:
-#                     facture_pdf_url = facture.facture_pdf.url
-#                 except Exception:
-#                     facture_pdf_url = None
-
-#         return Response(
-#             {
-#                 "message": "Paiement effectué avec succès.",
-#                 "paiement_id": paiement.id,
-#                 "facture": {
-#                     "id": facture.id,
-#                     "numero_facture": facture.numero_facture,
-#                     "type_facture": facture.type_facture,
-#                     "status": facture.status,
-#                     "montant_total": str(facture.montant_total),
-#                     "total_paye": str(facture.total_paye),
-#                     "reste_a_payer": str(facture.reste_a_payer),
-#                 },
-#                 "client": {
-#                     "id": client.id if client else None,
-#                     "nom": getattr(client, "nom", None) if client else None,
-#                     "prenom": getattr(client, "prenom", None) if client else None,
-#                     "telephone": getattr(client, "telephone", None) if client else None,
-#                 },
-#                 "lignes": [
-#                     {
-#                         "id": ligne.id,
-#                         "mode_paiement": ligne.mode_paiement.code,
-#                         "montant_paye": str(ligne.montant_paye),
-#                         "reference": ligne.reference,
-#                     }
-#                     for ligne in lignes_creees
-#                 ],
-#                 "stock": audit,
-#                 "facture_pdf_url": facture_pdf_url,
-#             },
-#             status=201,
-#         )
 
 
 
@@ -2280,7 +2034,7 @@ Important :
     @transaction.atomic
     def put(self, request, vente_id):
         user = request.user
-        role = get_role_name(user)
+        role = (get_role_name(user) or "").lower().strip()
 
         if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
             return error_response(
@@ -2430,7 +2184,7 @@ Important :
     @transaction.atomic
     def post(self, request, vente_id):
         user = request.user
-        role = get_role_name(user)
+        role = (get_role_name(user) or "").lower().strip()
 
         if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
             return error_response(
@@ -2541,7 +2295,7 @@ Conditions :
     def post(self, request, vente_id):
 
         user = request.user
-        role = get_role_name(user)
+        role = (get_role_name(user) or "").lower().strip()
 
         if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
             return error_response(

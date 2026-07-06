@@ -1,7 +1,8 @@
 # backend/api/urls.py
+from django.urls import include, path
+
 from api import views as api_views
 from compte_depot import views as compte_depot_views
-from django.urls import include, path
 from e_commerce import views as e_commerce_views
 from finance import views as finance_views
 from inventory import views as inv_views
@@ -141,6 +142,7 @@ urlpatterns = [
     # path("achats-produit-update/<int:achat_id>/", achat_views.AchatUpdateView.as_view(), name="achats-update"),
     path("stocks/list", stock_views.StockListView.as_view(), name="stock-list"),
     path("stocks/transfer/reserve-to-vendor/", stock_views.ReserveToVendorTransferView.as_view(), name="reserve-to-vendor"),
+    path("stocks/disponibles-pour-vendeur/", stock_views.StockDisponiblePourVendeurView.as_view(),name="stock-disponibles-pour-vendeur",),
     # path("stocks/transfer/reserve-to-bijouterie", stock_views.ReserveToBijouterieTransferView.as_view(), name="reserve-to-bijouterie"),
     # path("stocks/recieve/recieve-reserve-for-bijouterie", stock_views.BijouterieReceiveView.as_view(), name="receive-bijouterie"),
     # path("stock/affectations/reserve", achat_views.StockReserveAffectationView.as_view(), name="stock-reserve-affect"),
@@ -173,10 +175,10 @@ urlpatterns = [
     # staff
     # path('staff/add-staff', staff_views.CreateStaffMemberView.as_view(), name='add_staff'),
     # path("staff/<int:staff_id>/update", staff_views.UpdateStaffView.as_view(), name="staff-update"),
-    path("staff/create", staff_views.CreateStaffUnifiedView.as_view(), name="staff-create-unified"),
-    path("staff/<int:staff_id>/update", staff_views.UpdateStaffUnifiedView.as_view(), name="staff-update-unified"),
-    path("staff/list", staff_views.ListStaffUnifiedView.as_view(), name="staff-list-unified"),
-    path("staff/<str:role>/<int:staff_id>", staff_views.StaffDetailView.as_view(), name="staff-detail-unified"),
+    path("staff/create", staff_views.CreateStaffView.as_view(), name="staff-c"),
+    path("staff/<int:staff_id>/update", staff_views.UpdateStaffView.as_view(), name="staff-u"),
+    path("staff/list", staff_views.ListStaffView.as_view(), name="staff"),
+    path("staff/<str:role>/<int:staff_id>", staff_views.StaffDetailView.as_view(), name="staff-d"),
     path("staff/dashboard", staff_views.StaffDashboardView.as_view(), name="staff-dashboard"),
     #VENDOR
     # path('vendor/list', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),

@@ -5,8 +5,8 @@ from .models import ClientDepot, CompteDepot, CompteDepotTransaction
 
 @admin.register(ClientDepot)
 class ClientDepotAdmin(admin.ModelAdmin):
-    list_display = ("id", "nom", "prenom", "telephone", "CNI")
-    search_fields = ("nom", "prenom", "telephone", "CNI")
+    list_display = ("id", "nom", "prenom", "telephone", "bijouterie")
+    search_fields = ("nom", "prenom", "telephone", "bijouterie__nom")
     list_per_page = 50
 
 
@@ -47,7 +47,6 @@ class CompteDepotAdmin(admin.ModelAdmin):
         "client__nom",
         "client__prenom",
         "client__telephone",
-        "client__CNI",
         "created_by__username",
     )
     list_filter = ("created_at", "updated_at")

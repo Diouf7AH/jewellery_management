@@ -2,10 +2,10 @@
 from django.contrib.auth import get_user_model
 from django.core.validators import EmailValidator
 from rest_framework import serializers
-
-from backend.roles import ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR
 from staff.models import Cashier
 from store.models import Bijouterie
+
+from backend.roles import ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR
 
 from .models import Manager
 
@@ -187,7 +187,7 @@ User = get_user_model()
 #         return email
 
 
-class CreateStaffUnifiedSerializer(serializers.Serializer):
+class CreateStaffSerializer(serializers.Serializer):
     role = serializers.ChoiceField(
         choices=[
             (ROLE_MANAGER, "Manager"),
@@ -257,7 +257,7 @@ class StaffCreatedResponseSerializer(serializers.Serializer):
     user = serializers.DictField()
     
 
-class UpdateStaffUnifiedSerializer(serializers.Serializer):
+class UpdateStaffSerializer(serializers.Serializer):
     role = serializers.ChoiceField(
         choices=[
             (ROLE_MANAGER, "Manager"),
@@ -323,7 +323,7 @@ class UpdateStaffUnifiedSerializer(serializers.Serializer):
         return attrs
 
 # List
-class StaffUnifiedListItemSerializer(serializers.Serializer):
+class StaffListItemSerializer(serializers.Serializer):
     staff_id = serializers.IntegerField()
     role = serializers.CharField()
     user_id = serializers.IntegerField(allow_null=True)
@@ -337,7 +337,7 @@ class StaffUnifiedListItemSerializer(serializers.Serializer):
     updated_at = serializers.DateTimeField()
     
     
-class StaffDetailUnifiedSerializer(serializers.Serializer):
+class StaffDetailSerializer(serializers.Serializer):
     staff_id = serializers.IntegerField()
     role = serializers.CharField()
 

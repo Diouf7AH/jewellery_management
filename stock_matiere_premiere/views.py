@@ -24,6 +24,7 @@ from stock_matiere_premiere.serializers import (
     VenteMatierePremiereCreateSerializer, generate_ticket_number)
 from store.models import Bijouterie, Purete
 
+from backend.permissions import IsAdminManagerBuyer, IsSameBijouterieOrAdmin
 from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
                            get_role_name)
 from backend.utils.helpers import resolve_bijouterie_for_user
@@ -42,7 +43,7 @@ from .serializers import (AchatMatierePremiereCreateSerializer,
 
 
 class RachatClientCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Créer un bon de rachat client",
@@ -149,7 +150,7 @@ class RachatClientCreateView(APIView):
 
 
 class RachatClientListView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Lister les rachats client",
@@ -284,7 +285,7 @@ class RachatClientListView(APIView):
 
 
 class CancelRachatClientView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Annuler un bon de rachat client",
@@ -383,7 +384,7 @@ class CancelRachatClientView(APIView):
 
 
 class PaiementRachatClientView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Payer un ticket de rachat client",
@@ -513,7 +514,7 @@ class PaiementRachatClientView(APIView):
 
 
 class RachatClientTicket58mmPDFView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Télécharger le ticket PDF 58mm d'un rachat client",
@@ -563,7 +564,7 @@ class RachatClientTicket58mmPDFView(APIView):
         )
 
 class RachatClientAttestationPDFView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Télécharger l'attestation de rachat client",
@@ -641,7 +642,7 @@ class RachatClientAttestationPDFView(APIView):
 
 #annule rachat
 class ReverseRachatClientView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Corriger / inverser un rachat client déjà payé",
@@ -817,7 +818,7 @@ class ReverseRachatClientView(APIView):
     # fournisseur
 # ///////////////////f///////////////////////
 # class AchatMatierePremiereCreateView(APIView):
-#     permission_classes = [IsAuthenticated]
+#     permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
 #     @swagger_auto_schema(
 #         operation_summary="Créer un achat matière première",
@@ -899,7 +900,7 @@ class ReverseRachatClientView(APIView):
 #         )
         
 class AchatMatierePremiereCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Créer un achat matière première",
@@ -1055,7 +1056,7 @@ class AchatMatierePremiereCreateView(APIView):
 
 
 class AchatRachatMatierePremiereListView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Lister les achats et rachats matière première",
@@ -1189,7 +1190,7 @@ class AchatRachatMatierePremiereListView(APIView):
     
 
 class AchatRachatMatierePremiereDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminManagerBuyer, IsSameBijouterieOrAdmin]
 
     @swagger_auto_schema(
         operation_summary="Détail achat ou rachat matière première",
@@ -1280,7 +1281,7 @@ class AchatRachatMatierePremiereDetailView(APIView):
         
 
 class DashboardAchatRachatMatierePremiereView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminManagerBuyer, IsSameBijouterieOrAdmin]
 
     @swagger_auto_schema(
         operation_summary="Dashboard achats et rachats matière première",
@@ -1485,7 +1486,7 @@ class DashboardAchatRachatMatierePremiereView(APIView):
 
 
 class ReverseAchatMatierePremiereView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Corriger / inverser un achat matière première",
@@ -1631,7 +1632,7 @@ class ReverseAchatMatierePremiereView(APIView):
 ########################## Rafinage ############################
 ################################################################
 class RaffinageCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Créer une opération de raffinage",
@@ -1772,7 +1773,7 @@ class RaffinageCreateView(APIView):
 ###################################################################
         
 class VenteMatierePremiereCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Créer une vente de matière première",
@@ -1932,7 +1933,7 @@ class VenteMatierePremiereCreateView(APIView):
 
 
 class DashboardMatierePremiereView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     @swagger_auto_schema(
         operation_summary="Dashboard global matière première",
@@ -2171,7 +2172,7 @@ class DashboardMatierePremiereView(APIView):
     
     
 class DashboardMatierePremiereView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     def get(self, request):
         user = request.user
@@ -2347,7 +2348,7 @@ class DashboardMatierePremiereView(APIView):
 
 
 class ExportDashboardMatierePremiereExcelView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsAdminManagerBuyer,IsSameBijouterieOrAdmin,]
 
     def get(self, request):
         user = request.user

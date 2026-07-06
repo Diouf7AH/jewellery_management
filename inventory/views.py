@@ -1,13 +1,14 @@
 # inventory/views.py
 from __future__ import annotations
 
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, Set
 
 from django.core.exceptions import ValidationError
 from django.db.models import (Case, Count, DecimalField, ExpressionWrapper, F,
                               Prefetch, Q, Sum, Value, When)
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Cast, Coalesce
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
@@ -36,542 +37,101 @@ from .utils import _b
 from .utils import parse_date as _date
 from .utils import parse_int as _int
 
-# ---------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------
 
-# ---------------------------------------------------------------------
-# InventoryMovementListView
-# ---------------------------------------------------------------------
-class InventoryMovementListView(ExportXlsxMixin, APIView):
-    """
-    Journal détaillé des mouvements d’inventaire (Admin/Manager).
-
-    - Admin   : voit tout + peut filtrer sur n'importe quelle bijouterie via ?bijouterie_id=
-    - Manager : limité aux bijouteries de son profil manager (ManyToMany)
-    - Export Excel : ?export=xlsx
-    - Pagination simple : ?limit=200&offset=0
-    """
-    permission_classes = [IsAuthenticated]
-    http_method_names = ["get"]
-
-    @swagger_auto_schema(
-        operation_id="inventoryMovementList",
-        operation_summary="Lister les mouvements d’inventaire (Admin/Manager) + export Excel",
-        operation_description=(
-            "Journal détaillé des mouvements d’inventaire.\n\n"
-            "### Scopes\n"
-            "- **admin** : voit tout (et peut filtrer une bijouterie via `bijouterie_id`)\n"
-            "- **manager** : voit uniquement les mouvements où `src_bijouterie` ou `dst_bijouterie` "
-            "appartient à **ses bijouteries (ManyToMany)**\n\n"
-            "### Filtres\n"
-            "- `q` : recherche (produit.nom, produit.sku, reason, lot.numero_lot)\n"
-            "- `date_from`, `date_to` : YYYY-MM-DD (inclusifs)\n"
-            "- `movement_types` : CSV ex `PURCHASE_IN,ALLOCATE,SALE_OUT`\n"
-            "- `produit_id`, `lot_id`, `lot_code`, `achat_id`\n"
-            "- `vendor_id`, `vente_id`, `facture_id`\n"
-            "- `src_bucket`, `dst_bucket`\n"
-            "- `bijouterie_id` : **admin seulement** (scope)\n"
-            "- `src_bijouterie_id`, `dst_bijouterie_id`\n"
-            "- `min_qty`, `max_qty`\n\n"
-            "### Options\n"
-            "- `include_costs=1` : calcule `total_cost = signed_qty * unit_cost`\n"
-            "- `ordering` : `-occurred_at` (def), `occurred_at`, `qty`, `-qty`, "
-            "`produit_nom`, `-produit_nom`, `movement_type`, `-movement_type`\n"
-            "- `export=xlsx` : export Excel\n"
-            "- `limit`, `offset` : pagination simple\n"
-        ),
-        manual_parameters=[
-            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
-            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
-            openapi.Parameter("movement_types", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="CSV"),
-            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("lot_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("lot_code", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("achat_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("vendor_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("vente_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("facture_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("src_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("dst_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="Admin seulement"),
-            openapi.Parameter("src_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("dst_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("min_qty", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("max_qty", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("include_costs", openapi.IN_QUERY, type=openapi.TYPE_BOOLEAN),
-            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, enum=["xlsx"]),
-            openapi.Parameter("limit", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="def 200, max 2000"),
-            openapi.Parameter("offset", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, description="def 0"),
-        ],
-        tags=["Inventaire"],
-        responses={
-            200: openapi.Response(description="OK"),
-            400: openapi.Response(description="Bad Request"),
-            403: openapi.Response(description="Forbidden"),
-        },
-    )
-    def get(self, request):
-        getf = request.GET.get
-        role = get_role_name(request.user)
-
-        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
-            return Response({"detail": "Accès réservé aux admins et managers."}, status=403)
-
-        qs = (
-            InventoryMovement.objects
-            .select_related(
-                "produit",
-                "lot",
-                "src_bijouterie",
-                "dst_bijouterie",
-                "created_by",
-                "vendor",
-                "vendor__user",
-                "vente",
-                "facture",
-            )
-            .all()
-        )
-
-        # ---------------------------
-        # Scope bijouterie
-        # ---------------------------
-        if role == ROLE_ADMIN:
-            bj_id = _int(getf("bijouterie_id"))
-            if bj_id:
-                qs = qs.filter(Q(src_bijouterie_id=bj_id) | Q(dst_bijouterie_id=bj_id))
-        else:
-            mp = getattr(request.user, "staff_manager_profile", None)
-            if not mp or (hasattr(mp, "verifie") and not mp.verifie):
-                return Response({"detail": "Profil manager invalide."}, status=403)
-
-            ids = list(mp.bijouteries.values_list("id", flat=True))
-            if not ids:
-                return Response({"detail": "Ce manager n'a aucune bijouterie assignée."}, status=400)
-
-            qs = qs.filter(Q(src_bijouterie_id__in=ids) | Q(dst_bijouterie_id__in=ids))
-
-        # ---------------------------
-        # Recherche
-        # ---------------------------
-        q = (getf("q") or "").strip()
-        if q:
-            qs = qs.filter(
-                Q(produit__nom__icontains=q) |
-                Q(produit__sku__icontains=q) |
-                Q(reason__icontains=q) |
-                Q(lot__numero_lot__icontains=q)
-            )
-
-        # ---------------------------
-        # Filtres simples
-        # ---------------------------
-        produit_id = _int(getf("produit_id"))
-        if produit_id:
-            qs = qs.filter(produit_id=produit_id)
-
-        lot_id = _int(getf("lot_id"))
-        if lot_id:
-            qs = qs.filter(lot_id=lot_id)
-
-        lot_code = (getf("lot_code") or "").strip()
-        if lot_code:
-            qs = qs.filter(lot__numero_lot__iexact=lot_code)
-
-        achat_id = _int(getf("achat_id"))
-        if achat_id:
-            qs = qs.filter(achat_id=achat_id)
-
-        vendor_id = _int(getf("vendor_id"))
-        if vendor_id:
-            qs = qs.filter(vendor_id=vendor_id)
-
-        vente_id = _int(getf("vente_id"))
-        if vente_id:
-            qs = qs.filter(vente_id=vente_id)
-
-        facture_id = _int(getf("facture_id"))
-        if facture_id:
-            qs = qs.filter(facture_id=facture_id)
-
-        src_bucket = (getf("src_bucket") or "").strip()
-        if src_bucket:
-            qs = qs.filter(src_bucket=src_bucket)
-
-        dst_bucket = (getf("dst_bucket") or "").strip()
-        if dst_bucket:
-            qs = qs.filter(dst_bucket=dst_bucket)
-
-        src_bij = _int(getf("src_bijouterie_id"))
-        if src_bij:
-            qs = qs.filter(src_bijouterie_id=src_bij)
-
-        dst_bij = _int(getf("dst_bijouterie_id"))
-        if dst_bij:
-            qs = qs.filter(dst_bijouterie_id=dst_bij)
-
-        # ---------------------------
-        # Movement types
-        # ---------------------------
-        types_csv = (getf("movement_types") or "").strip()
-        if types_csv:
-            types = [t.strip().upper() for t in types_csv.split(",") if t.strip()]
-            allowed_types = {c[0] for c in MovementType.choices}
-            bad = [t for t in types if t not in allowed_types]
-            if bad:
-                return Response(
-                    {"detail": f"movement_types invalide(s): {bad}. Allowed: {sorted(allowed_types)}"},
-                    status=400,
-                )
-            qs = qs.filter(movement_type__in=types)
-
-        # ---------------------------
-        # Dates
-        # ---------------------------
-        df_raw = getf("date_from")
-        dt_raw = getf("date_to")
-        df = _date(df_raw)
-        dt = _date(dt_raw)
-
-        if df_raw and not df:
-            return Response({"date_from": "Format invalide. Utiliser YYYY-MM-DD."}, status=400)
-        if dt_raw and not dt:
-            return Response({"date_to": "Format invalide. Utiliser YYYY-MM-DD."}, status=400)
-        if df and dt and df > dt:
-            return Response({"detail": "date_from doit être ≤ date_to."}, status=400)
-
-        if df:
-            qs = qs.filter(occurred_at__date__gte=df)
-        if dt:
-            qs = qs.filter(occurred_at__date__lte=dt)
-
-        # ---------------------------
-        # Qty range
-        # ---------------------------
-        min_qty = _int(getf("min_qty"))
-        max_qty = _int(getf("max_qty"))
-        if min_qty is not None:
-            qs = qs.filter(qty__gte=min_qty)
-        if max_qty is not None:
-            qs = qs.filter(qty__lte=max_qty)
-
-        # ---------------------------
-        # Annotations
-        # ---------------------------
-        include_costs = _b(getf("include_costs"), False)
-
-        sign = Case(
-            When(movement_type__in=[MovementType.SALE_OUT, MovementType.CANCEL_PURCHASE], then=Value(-1)),
-            default=Value(1),
-            output_field=DecimalField(max_digits=4, decimal_places=0),
-        )
-
-        qs = qs.annotate(
-            signed_qty=ExpressionWrapper(
-                F("qty") * sign,
-                output_field=DecimalField(max_digits=18, decimal_places=2),
-            )
-        )
-
-        if include_costs:
-            qs = qs.annotate(
-                total_cost=ExpressionWrapper(
-                    F("signed_qty") * Coalesce(F("unit_cost"), Value(Decimal("0.00"))),
-                    output_field=DecimalField(max_digits=20, decimal_places=2),
-                )
-            )
-
-        # ---------------------------
-        # Ordering
-        # ---------------------------
-        ordering = (getf("ordering") or "-occurred_at").strip()
-        allowed_ordering = {
-            "occurred_at", "-occurred_at",
-            "qty", "-qty",
-            "movement_type", "-movement_type",
-            "produit_nom", "-produit_nom",
-        }
-        if ordering not in allowed_ordering:
-            ordering = "-occurred_at"
-        if "produit_nom" in ordering:
-            ordering = ordering.replace("produit_nom", "produit__nom")
-        qs = qs.order_by(ordering)
-
-        # ---------------------------
-        # Export Excel
-        # ---------------------------
-        if (getf("export") or "").lower() == "xlsx":
-            values_fields = [
-                "id", "occurred_at", "movement_type",
-                "produit_id", "produit__nom", "produit__sku",
-                "lot_id", "lot__numero_lot",
-                "qty", "signed_qty",
-                "unit_cost",
-                "achat_id",
-                "vendor_id", "vendor__user__email",
-                "vente_id", "vente__numero_vente",
-                "facture_id", "facture__numero_facture",
-                "src_bucket", "src_bijouterie_id",
-                "dst_bucket", "dst_bijouterie_id",
-                "created_by_id",
-                "reason",
-            ]
-            if include_costs:
-                values_fields.insert(values_fields.index("unit_cost") + 1, "total_cost")
-
-            rows = list(qs.values(*values_fields))
-
-            bij_ids: Set[int] = set()
-            for r in rows:
-                if r.get("src_bijouterie_id"):
-                    bij_ids.add(r["src_bijouterie_id"])
-                if r.get("dst_bijouterie_id"):
-                    bij_ids.add(r["dst_bijouterie_id"])
-            bij_map = {b.id: b.nom for b in Bijouterie.objects.filter(id__in=bij_ids)} if bij_ids else {}
-
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Mouvements"
-
-            headers = [
-                "id", "occurred_at", "movement_type",
-                "produit_id", "produit_nom", "produit_sku",
-                "lot_id", "lot_code",
-                "qty", "signed_qty",
-                "unit_cost",
-                "total_cost" if include_costs else None,
-                "achat_id",
-                "vendor_id", "vendor_email",
-                "vente_id", "numero_vente",
-                "facture_id", "numero_facture",
-                "src_bucket", "src_bijouterie_id", "src_bijouterie_nom",
-                "dst_bucket", "dst_bijouterie_id", "dst_bijouterie_nom",
-                "created_by_id",
-                "reason",
-            ]
-            headers = [h for h in headers if h is not None]
-            ws.append(headers)
-
-            for r in rows:
-                line = {
-                    "id": r.get("id"),
-                    "occurred_at": r.get("occurred_at"),
-                    "movement_type": r.get("movement_type"),
-                    "produit_id": r.get("produit_id"),
-                    "produit_nom": r.get("produit__nom"),
-                    "produit_sku": r.get("produit__sku"),
-                    "lot_id": r.get("lot_id"),
-                    "lot_code": r.get("lot__numero_lot"),
-                    "qty": r.get("qty"),
-                    "signed_qty": r.get("signed_qty"),
-                    "unit_cost": r.get("unit_cost"),
-                    "total_cost": r.get("total_cost") if include_costs else None,
-                    "achat_id": r.get("achat_id"),
-                    "vendor_id": r.get("vendor_id"),
-                    "vendor_email": r.get("vendor__user__email"),
-                    "vente_id": r.get("vente_id"),
-                    "numero_vente": r.get("vente__numero_vente"),
-                    "facture_id": r.get("facture_id"),
-                    "numero_facture": r.get("facture__numero_facture"),
-                    "src_bucket": r.get("src_bucket"),
-                    "src_bijouterie_id": r.get("src_bijouterie_id"),
-                    "src_bijouterie_nom": bij_map.get(r.get("src_bijouterie_id")),
-                    "dst_bucket": r.get("dst_bucket"),
-                    "dst_bijouterie_id": r.get("dst_bijouterie_id"),
-                    "dst_bijouterie_nom": bij_map.get(r.get("dst_bijouterie_id")),
-                    "created_by_id": r.get("created_by_id"),
-                    "reason": r.get("reason"),
-                }
-                ws.append([line.get(h) for h in headers])
-
-            self._autosize(ws)
-            return self._xlsx_response(wb, "inventory_movements.xlsx")
-
-        # ---------------------------
-        # Pagination simple
-        # ---------------------------
-        limit = _int(getf("limit")) or 200
-        offset = _int(getf("offset")) or 0
-
-        if limit < 1:
-            limit = 200
-        if limit > 2000:
-            limit = 2000
-        if offset < 0:
-            offset = 0
-
-        total = qs.count()
-        page_qs = qs[offset: offset + limit]
-
-        values_fields = [
-            "id", "occurred_at", "movement_type",
-            "qty", "signed_qty",
-            "unit_cost",
-            "produit_id", "produit__nom", "produit__sku",
-            "lot_id", "lot__numero_lot",
-            "achat_id",
-            "vendor_id", "vendor__user__email",
-            "vente_id", "vente__numero_vente",
-            "facture_id", "facture__numero_facture",
-            "src_bucket", "src_bijouterie_id",
-            "dst_bucket", "dst_bijouterie_id",
-            "created_by_id",
-            "reason",
-        ]
-        if include_costs:
-            values_fields.insert(values_fields.index("unit_cost") + 1, "total_cost")
-
-        rows = list(page_qs.values(*values_fields))
-
-        bij_ids: Set[int] = set()
-        for r in rows:
-            if r.get("src_bijouterie_id"):
-                bij_ids.add(r["src_bijouterie_id"])
-            if r.get("dst_bijouterie_id"):
-                bij_ids.add(r["dst_bijouterie_id"])
-        bij_map = {b.id: b.nom for b in Bijouterie.objects.filter(id__in=bij_ids)} if bij_ids else {}
-
-        out = []
-        for r in rows:
-            out.append({
-                "id": r.get("id"),
-                "occurred_at": r.get("occurred_at"),
-                "movement_type": r.get("movement_type"),
-                "produit_id": r.get("produit_id"),
-                "produit_nom": r.get("produit__nom"),
-                "produit_sku": r.get("produit__sku"),
-                "lot_id": r.get("lot_id"),
-                "lot_code": r.get("lot__numero_lot"),
-                "achat_id": r.get("achat_id"),
-                "qty": r.get("qty"),
-                "signed_qty": r.get("signed_qty"),
-                "unit_cost": r.get("unit_cost"),
-                "total_cost": r.get("total_cost") if include_costs else None,
-                "vendor_id": r.get("vendor_id"),
-                "vendor_email": r.get("vendor__user__email"),
-                "vente_id": r.get("vente_id"),
-                "numero_vente": r.get("vente__numero_vente"),
-                "facture_id": r.get("facture_id"),
-                "numero_facture": r.get("facture__numero_facture"),
-                "src_bucket": r.get("src_bucket"),
-                "src_bijouterie_id": r.get("src_bijouterie_id"),
-                "src_bijouterie_nom": bij_map.get(r.get("src_bijouterie_id")),
-                "dst_bucket": r.get("dst_bucket"),
-                "dst_bijouterie_id": r.get("dst_bijouterie_id"),
-                "dst_bijouterie_nom": bij_map.get(r.get("dst_bijouterie_id")),
-                "created_by_id": r.get("created_by_id"),
-                "reason": r.get("reason"),
-            })
-
-        next_offset = offset + limit
-        return Response({
-            "count": total,
-            "limit": limit,
-            "offset": offset,
-            "next_offset": next_offset if next_offset < total else None,
-            "results": out,
-        }, status=status.HTTP_200_OK)
-
-
-# ---------------------------------------------------------------------
-# ProduitLineWithInventoryListView
-# ---------------------------------------------------------------------
 class ProduitLineWithInventoryListView(ListAPIView):
     """
-    GET /api/inventory/produit-lines/
+    Vue avancée FIFO / lot.
 
-    Liste des ProduitLine (par lot + produit) avec :
-    - infos lot/achat/produit
-    - agrégats stock (quantite_allouee, quantite_disponible_total)
-    - mouvements d'inventaire liés à chaque ProduitLine
+    Retourne les ProduitLine avec :
+    - lot
+    - achat
+    - fournisseur
+    - produit
+    - stock agrégé
+    - mouvements liés à la ProduitLine
     """
+
     permission_classes = [IsAuthenticated, IsAdminOrManager]
     serializer_class = ProduitLineWithInventorySerializer
     pagination_class = None
 
     @swagger_auto_schema(
         operation_id="listProduitLinesWithInventory",
-        operation_summary="Lister les ProduitLine avec stock + mouvements (par ligne)",
+        operation_summary="Lister les ProduitLine avec stock + mouvements",
         operation_description=(
-            "Retourne les **ProduitLine** (par lot) avec :\n"
-            "- **agrégats stock** : `quantite_allouee`, `quantite_disponible_total`\n"
-            "- **mouvements** : préchargés via `prefetched_movements`\n\n"
-            "### Accès\n"
-            "- **admin / manager** uniquement\n\n"
-            "### Filtres\n"
-            "- `year` : année des lots (`received_at__year`), défaut = année courante\n"
-            "- `lot_id`, `produit_id`, `numero_lot`\n"
+            "Retourne une vue détaillée par ligne d'achat `ProduitLine`.\n\n"
+            "Cette vue est utile pour :\n"
+            "- suivre le FIFO\n"
+            "- analyser les lots\n"
+            "- relier achat → lot → produit → stock → mouvements\n\n"
+            "Filtres disponibles :\n"
+            "- `year`\n"
+            "- `lot_id`\n"
+            "- `produit_id`\n"
+            "- `numero_lot`"
         ),
-        tags=["Inventaire"],
         manual_parameters=[
             openapi.Parameter(
                 "year",
                 openapi.IN_QUERY,
                 type=openapi.TYPE_INTEGER,
-                required=False,
-                description="Année (ex: 2026). Défaut: année courante.",
+                description="Année du lot. Défaut : année courante.",
             ),
             openapi.Parameter(
                 "lot_id",
                 openapi.IN_QUERY,
                 type=openapi.TYPE_INTEGER,
-                required=False,
-                description="Filtrer par ID du lot.",
+                description="Filtrer par lot_id.",
             ),
             openapi.Parameter(
                 "produit_id",
                 openapi.IN_QUERY,
                 type=openapi.TYPE_INTEGER,
-                required=False,
-                description="Filtrer par ID du produit.",
+                description="Filtrer par produit_id.",
             ),
             openapi.Parameter(
                 "numero_lot",
                 openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
-                required=False,
                 description="Recherche partielle sur le numéro de lot.",
             ),
         ],
-        responses={
-            200: openapi.Response(
-                description="Liste des ProduitLine avec inventaire",
-                schema=ProduitLineWithInventorySerializer(many=True),
-            ),
-            400: openapi.Response(description="Paramètres invalides"),
-            403: openapi.Response(description="Accès refusé"),
-        },
+        tags=["Inventaire"],
+        responses={200: ProduitLineWithInventorySerializer(many=True)},
     )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-    def _int_or_none(self, v, field_name: str):
-        if v in (None, "", "null"):
-            return None
-        try:
-            return int(v)
-        except (TypeError, ValueError):
-            raise ValidationError({field_name: "Doit être un entier."})
-
     def get_queryset(self):
         getf = self.request.query_params.get
 
+        # -------------------------
+        # Année
+        # -------------------------
         year_raw = getf("year")
+
         if year_raw in (None, "", "null"):
             year = timezone.localdate().year
         else:
-            year = self._int_or_none(year_raw, "year")
-            if not year:
-                year = timezone.localdate().year
-            if year < 2000 or year > 2100:
-                raise ValidationError({"year": "Année invalide (2000-2100)."})
+            try:
+                year = int(year_raw)
+            except ValueError:
+                raise ValidationError({"year": "Doit être un entier."})
 
-        pl_moves_qs = (
+            if year < 2000 or year > 2100:
+                raise ValidationError({"year": "Année invalide."})
+
+        # -------------------------
+        # Mouvements liés à ProduitLine
+        # -------------------------
+        movements_qs = (
             InventoryMovement.objects
-            .select_related("src_bijouterie", "dst_bijouterie", "vendor", "facture", "vente")
+            .select_related(
+                "src_bijouterie",
+                "dst_bijouterie",
+                "vendor",
+                "vendor__user",
+                "facture",
+                "vente",
+                "created_by",
+            )
             .order_by("-occurred_at", "-id")
         )
 
@@ -589,26 +149,39 @@ class ProduitLineWithInventoryListView(ListAPIView):
             .prefetch_related(
                 Prefetch(
                     "inventory_movements",
-                    queryset=pl_moves_qs,
+                    queryset=movements_qs,
                     to_attr="prefetched_movements",
                 )
             )
             .annotate(
-                quantite_totale=Coalesce(Sum("stocks__quantite_totale"), 0),
-                en_stock_total=Coalesce(Sum("stocks__en_stock"), 0),
-                vendor_quantite_allouee=Coalesce(Sum("vendor_stocks__quantite_allouee"), 0),
-                vendor_quantite_vendue=Coalesce(Sum("vendor_stocks__quantite_vendue"), 0),
+                quantite_allouee=Coalesce(
+                    Sum("stocks__quantite_allouee"),
+                    0,
+                ),
+                quantite_disponible_total=Coalesce(
+                    Sum("stocks__quantite_disponible"),
+                    0,
+                ),
             )
             .filter(lot__received_at__year=year)
         )
 
-        lot_id = self._int_or_none(getf("lot_id"), "lot_id")
+        # -------------------------
+        # Filtres
+        # -------------------------
+        lot_id = getf("lot_id")
         if lot_id:
-            qs = qs.filter(lot_id=lot_id)
+            try:
+                qs = qs.filter(lot_id=int(lot_id))
+            except ValueError:
+                raise ValidationError({"lot_id": "Doit être un entier."})
 
-        produit_id = self._int_or_none(getf("produit_id"), "produit_id")
+        produit_id = getf("produit_id")
         if produit_id:
-            qs = qs.filter(produit_id=produit_id)
+            try:
+                qs = qs.filter(produit_id=int(produit_id))
+            except ValueError:
+                raise ValidationError({"produit_id": "Doit être un entier."})
 
         numero_lot = (getf("numero_lot") or "").strip()
         if numero_lot:
@@ -616,6 +189,488 @@ class ProduitLineWithInventoryListView(ListAPIView):
 
         return qs.order_by("-lot__received_at", "lot__numero_lot", "id")
 
+
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+
+# ---------------------------------------------------------------------
+# InventoryMovementListView
+# ---------------------------------------------------------------------
+def _int(v: Optional[str]) -> Optional[int]:
+    if v in (None, "", "null"):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _date(v: Optional[str]) -> Optional[date]:
+    if not v:
+        return None
+    try:
+        return datetime.strptime(v, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _signed_qty(movement_type, qty) -> int:
+    q = int(qty or 0)
+    if movement_type in {
+        MovementType.SALE_OUT,
+        MovementType.CANCEL_PURCHASE,
+    }:
+        return -q
+    return q
+
+
+class InventoryMovementListView(ExportXlsxMixin, APIView):
+    """
+    Journal détaillé des mouvements d’inventaire.
+
+    - Admin   : voit tout
+    - Manager : voit uniquement les mouvements de ses bijouteries
+    - Export Excel : ?export=xlsx
+    - Pagination simple : ?limit=200&offset=0
+    """
+
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get"]
+
+    @swagger_auto_schema(
+        operation_id="inventoryMovementList",
+        operation_summary="Journal des mouvements d’inventaire",
+        operation_description=(
+            "Retourne le journal détaillé des mouvements d’inventaire.\n\n"
+            "### Rôles\n"
+            "- Admin : tous les mouvements\n"
+            "- Manager : mouvements de ses bijouteries uniquement\n\n"
+            "### Filtres\n"
+            "- q : recherche produit, SKU, lot, raison\n"
+            "- date_from/date_to : YYYY-MM-DD\n"
+            "- movement_types : CSV ex: PURCHASE_IN,SALE_OUT\n"
+            "- produit_id, lot_id, achat_id, vendor_id, vente_id, facture_id\n"
+            "- bijouterie_id, src_bijouterie_id, dst_bijouterie_id\n"
+            "- src_bucket, dst_bucket\n"
+            "- min_qty, max_qty\n\n"
+            "### Export\n"
+            "- export=xlsx"
+        ),
+        manual_parameters=[
+            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
+            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
+            openapi.Parameter("movement_types", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="CSV"),
+            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("lot_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("lot_code", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("achat_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("vendor_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("vente_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("facture_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("src_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("dst_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("src_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("dst_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("min_qty", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("max_qty", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING),
+            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, enum=["xlsx"]),
+            openapi.Parameter("limit", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+            openapi.Parameter("offset", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
+        ],
+        tags=["Inventaire"],
+    )
+    def get(self, request):
+        getf = request.GET.get
+        role = get_role_name(request.user)
+
+        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
+            return Response(
+                {"detail": "Accès réservé aux admins et managers."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        qs = InventoryMovement.objects.select_related(
+            "produit",
+            "lot",
+            "src_bijouterie",
+            "dst_bijouterie",
+            "created_by",
+            "vendor",
+            "vendor__user",
+            "vente",
+            "facture",
+        )
+
+        # -------------------------
+        # Scope rôle
+        # -------------------------
+        if role == ROLE_ADMIN:
+            bj_id = _int(getf("bijouterie_id"))
+            if bj_id:
+                qs = qs.filter(
+                    Q(src_bijouterie_id=bj_id) |
+                    Q(dst_bijouterie_id=bj_id)
+                )
+
+        else:
+            manager_profile = getattr(request.user, "staff_manager_profile", None)
+
+            if not manager_profile or (
+                hasattr(manager_profile, "verifie") and not manager_profile.verifie
+            ):
+                return Response(
+                    {"detail": "Profil manager invalide."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            bijouterie_ids = list(
+                manager_profile.bijouteries.values_list("id", flat=True)
+            )
+
+            if not bijouterie_ids:
+                return Response(
+                    {"detail": "Ce manager n'a aucune bijouterie assignée."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            qs = qs.filter(
+                Q(src_bijouterie_id__in=bijouterie_ids) |
+                Q(dst_bijouterie_id__in=bijouterie_ids)
+            )
+
+        # -------------------------
+        # Recherche texte
+        # -------------------------
+        q = (getf("q") or "").strip()
+        if q:
+            qs = qs.filter(
+                Q(produit__nom__icontains=q)
+                | Q(produit__sku__icontains=q)
+                | Q(lot__numero_lot__icontains=q)
+                | Q(reason__icontains=q)
+            )
+
+        # -------------------------
+        # Filtres IDs
+        # -------------------------
+        id_filters = {
+            "produit_id": "produit_id",
+            "lot_id": "lot_id",
+            "achat_id": "achat_id",
+            "vendor_id": "vendor_id",
+            "vente_id": "vente_id",
+            "facture_id": "facture_id",
+            "src_bijouterie_id": "src_bijouterie_id",
+            "dst_bijouterie_id": "dst_bijouterie_id",
+        }
+
+        for param, field in id_filters.items():
+            value = _int(getf(param))
+            if value:
+                qs = qs.filter(**{field: value})
+
+        lot_code = (getf("lot_code") or "").strip()
+        if lot_code:
+            qs = qs.filter(lot__numero_lot__iexact=lot_code)
+
+        src_bucket = (getf("src_bucket") or "").strip()
+        if src_bucket:
+            qs = qs.filter(src_bucket=src_bucket)
+
+        dst_bucket = (getf("dst_bucket") or "").strip()
+        if dst_bucket:
+            qs = qs.filter(dst_bucket=dst_bucket)
+
+        # -------------------------
+        # Types de mouvements
+        # -------------------------
+        types_csv = (getf("movement_types") or "").strip()
+        if types_csv:
+            types = [t.strip().upper() for t in types_csv.split(",") if t.strip()]
+            allowed = {choice[0] for choice in MovementType.choices}
+            bad = [t for t in types if t not in allowed]
+
+            if bad:
+                return Response(
+                    {
+                        "detail": (
+                            f"movement_types invalide(s): {bad}. "
+                            f"Allowed: {sorted(allowed)}"
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            qs = qs.filter(movement_type__in=types)
+
+        # -------------------------
+        # Dates
+        # -------------------------
+        date_from_raw = getf("date_from")
+        date_to_raw = getf("date_to")
+
+        date_from = _date(date_from_raw)
+        date_to = _date(date_to_raw)
+
+        if date_from_raw and not date_from:
+            return Response(
+                {"date_from": "Format invalide. Utiliser YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if date_to_raw and not date_to:
+            return Response(
+                {"date_to": "Format invalide. Utiliser YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if date_from and date_to and date_from > date_to:
+            return Response(
+                {"detail": "date_from doit être inférieur ou égal à date_to."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if date_from:
+            qs = qs.filter(occurred_at__date__gte=date_from)
+
+        if date_to:
+            qs = qs.filter(occurred_at__date__lte=date_to)
+
+        # -------------------------
+        # Quantités
+        # -------------------------
+        min_qty = _int(getf("min_qty"))
+        max_qty = _int(getf("max_qty"))
+
+        if min_qty is not None:
+            qs = qs.filter(qty__gte=min_qty)
+
+        if max_qty is not None:
+            qs = qs.filter(qty__lte=max_qty)
+
+        # -------------------------
+        # Tri
+        # -------------------------
+        ordering = (getf("ordering") or "-occurred_at").strip()
+
+        allowed_ordering = {
+            "occurred_at",
+            "-occurred_at",
+            "qty",
+            "-qty",
+            "movement_type",
+            "-movement_type",
+            "produit_nom",
+            "-produit_nom",
+            "id",
+            "-id",
+        }
+
+        if ordering not in allowed_ordering:
+            ordering = "-occurred_at"
+
+        if "produit_nom" in ordering:
+            ordering = ordering.replace("produit_nom", "produit__nom")
+
+        qs = qs.order_by(ordering, "-id")
+
+        values_fields = [
+            "id",
+            "occurred_at",
+            "movement_type",
+            "qty",
+            "produit_id",
+            "produit__nom",
+            "produit__sku",
+            "lot_id",
+            "lot__numero_lot",
+            "achat_id",
+            "vendor_id",
+            "vendor__user__email",
+            "vente_id",
+            "vente__numero_vente",
+            "facture_id",
+            "facture__numero_facture",
+            "src_bucket",
+            "src_bijouterie_id",
+            "dst_bucket",
+            "dst_bijouterie_id",
+            "created_by_id",
+            "created_by__email",
+            "reason",
+        ]
+
+        # -------------------------
+        # Export Excel
+        # -------------------------
+        if (getf("export") or "").lower() == "xlsx":
+            rows = list(qs.values(*values_fields))
+
+            bij_ids: Set[int] = set()
+            for r in rows:
+                if r.get("src_bijouterie_id"):
+                    bij_ids.add(r["src_bijouterie_id"])
+                if r.get("dst_bijouterie_id"):
+                    bij_ids.add(r["dst_bijouterie_id"])
+
+            bij_map = {
+                b.id: b.nom
+                for b in Bijouterie.objects.filter(id__in=bij_ids)
+            } if bij_ids else {}
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Mouvements"
+
+            headers = [
+                "id",
+                "occurred_at",
+                "movement_type",
+                "produit_id",
+                "produit_nom",
+                "produit_sku",
+                "lot_id",
+                "lot_code",
+                "qty",
+                "signed_qty",
+                "achat_id",
+                "vendor_id",
+                "vendor_email",
+                "vente_id",
+                "numero_vente",
+                "facture_id",
+                "numero_facture",
+                "src_bucket",
+                "src_bijouterie_id",
+                "src_bijouterie_nom",
+                "dst_bucket",
+                "dst_bijouterie_id",
+                "dst_bijouterie_nom",
+                "created_by_id",
+                "created_by_email",
+                "reason",
+            ]
+            ws.append(headers)
+
+            for r in rows:
+                signed_qty = _signed_qty(r.get("movement_type"), r.get("qty"))
+
+                ws.append([
+                    r.get("id"),
+                    r.get("occurred_at"),
+                    r.get("movement_type"),
+                    r.get("produit_id"),
+                    r.get("produit__nom"),
+                    r.get("produit__sku"),
+                    r.get("lot_id"),
+                    r.get("lot__numero_lot"),
+                    r.get("qty"),
+                    signed_qty,
+                    r.get("achat_id"),
+                    r.get("vendor_id"),
+                    r.get("vendor__user__email"),
+                    r.get("vente_id"),
+                    r.get("vente__numero_vente"),
+                    r.get("facture_id"),
+                    r.get("facture__numero_facture"),
+                    r.get("src_bucket"),
+                    r.get("src_bijouterie_id"),
+                    bij_map.get(r.get("src_bijouterie_id")),
+                    r.get("dst_bucket"),
+                    r.get("dst_bijouterie_id"),
+                    bij_map.get(r.get("dst_bijouterie_id")),
+                    r.get("created_by_id"),
+                    r.get("created_by__email"),
+                    r.get("reason"),
+                ])
+
+            self._autosize(ws)
+            return self._xlsx_response(wb, "inventory_movements.xlsx")
+
+        # -------------------------
+        # Pagination JSON
+        # -------------------------
+        limit = _int(getf("limit")) or 200
+        offset = _int(getf("offset")) or 0
+
+        limit = max(1, min(limit, 2000))
+        offset = max(0, offset)
+
+        total = qs.count()
+        page_qs = qs[offset: offset + limit]
+        rows = list(page_qs.values(*values_fields))
+
+        bij_ids: Set[int] = set()
+        for r in rows:
+            if r.get("src_bijouterie_id"):
+                bij_ids.add(r["src_bijouterie_id"])
+            if r.get("dst_bijouterie_id"):
+                bij_ids.add(r["dst_bijouterie_id"])
+
+        bij_map = {
+            b.id: b.nom
+            for b in Bijouterie.objects.filter(id__in=bij_ids)
+        } if bij_ids else {}
+
+        results = []
+
+        for r in rows:
+            results.append({
+                "id": r.get("id"),
+                "occurred_at": r.get("occurred_at"),
+                "movement_type": r.get("movement_type"),
+
+                "produit_id": r.get("produit_id"),
+                "produit_nom": r.get("produit__nom"),
+                "produit_sku": r.get("produit__sku"),
+
+                "lot_id": r.get("lot_id"),
+                "lot_code": r.get("lot__numero_lot"),
+
+                "achat_id": r.get("achat_id"),
+
+                "qty": r.get("qty"),
+                "signed_qty": _signed_qty(r.get("movement_type"), r.get("qty")),
+
+                "vendor_id": r.get("vendor_id"),
+                "vendor_email": r.get("vendor__user__email"),
+
+                "vente_id": r.get("vente_id"),
+                "numero_vente": r.get("vente__numero_vente"),
+
+                "facture_id": r.get("facture_id"),
+                "numero_facture": r.get("facture__numero_facture"),
+
+                "src_bucket": r.get("src_bucket"),
+                "src_bijouterie_id": r.get("src_bijouterie_id"),
+                "src_bijouterie_nom": bij_map.get(r.get("src_bijouterie_id")),
+
+                "dst_bucket": r.get("dst_bucket"),
+                "dst_bijouterie_id": r.get("dst_bijouterie_id"),
+                "dst_bijouterie_nom": bij_map.get(r.get("dst_bijouterie_id")),
+
+                "created_by_id": r.get("created_by_id"),
+                "created_by_email": r.get("created_by__email"),
+
+                "reason": r.get("reason"),
+            })
+
+        next_offset = offset + limit
+
+        return Response(
+            {
+                "count": total,
+                "limit": limit,
+                "offset": offset,
+                "next_offset": next_offset if next_offset < total else None,
+                "results": results,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 

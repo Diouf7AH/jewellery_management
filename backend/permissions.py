@@ -5,8 +5,8 @@ from typing import Optional
 
 from rest_framework.permissions import BasePermission
 
-from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
-                           get_role_name)
+from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
+                           ROLE_VENDOR, get_role_name)
 
 # ============================================================
 # Helpers locaux
@@ -30,6 +30,9 @@ def _cashier_profile(user):
     p = getattr(user, "staff_cashier_profile", None)
     return p if _verified(p) else None
 
+def _buyer_profile(user):
+    p = getattr(user, "staff_buyer_profile", None)
+    return p if _verified(p) else None
 
 def _obj_bijouterie_id(obj) -> Optional[int]:
     """
@@ -142,6 +145,13 @@ class IsCashierOnly(BasePermission):
         return bool(user and user.is_authenticated and get_role_name(user) == ROLE_CASHIER)
 
 
+class IsBuyer(BasePermission):
+    message = "Accès réservé au responsable des rachats."
+
+    def has_permission(self, request, view):
+        return get_role_name(request.user) == ROLE_BUYER
+    
+
 class IsAdminOrManager(BasePermission):
     message = "Accès réservé aux rôles admin/manager."
 
@@ -157,6 +167,17 @@ class IsAdminManagerVendorCashier(BasePermission):
             ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER
         }
 
+
+class IsAdminManagerBuyer(BasePermission):
+    message = "Accès réservé aux rôles admin, manager ou responsable rachat."
+
+    def has_permission(self, request, view):
+        return get_role_name(request.user) in {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_BUYER,
+        }
+        
 
 class CanCreateSale(BasePermission):
     message = "Seuls admin, manager ou vendor peuvent créer une vente."
@@ -212,7 +233,7 @@ class IsSameBijouterieOrAdmin(BasePermission):
 
     def has_permission(self, request, view):
         return get_role_name(request.user) in {
-            ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER
+            ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER, ROLE_BUYER
         }
 
     def has_object_permission(self, request, view, obj):
@@ -235,6 +256,10 @@ class IsSameBijouterieOrAdmin(BasePermission):
         if role == ROLE_CASHIER:
             cp = _cashier_profile(request.user)
             return bool(cp and cp.bijouterie_id == obj_bj_id)
+        
+        if role == ROLE_BUYER:
+            bp = _buyer_profile(request.user)
+            return bool(bp and bp.bijouterie_id == obj_bj_id)
 
         return False
 
@@ -270,6 +295,10 @@ class IsSameBijouterieForVenteOrAdmin(BasePermission):
         if role == ROLE_CASHIER:
             cp = _cashier_profile(request.user)
             return bool(cp and cp.bijouterie_id == vente_bj_id)
+        
+        if role == ROLE_BUYER:
+            bp = _buyer_profile(request.user)
+            return bool(bp and bp.bijouterie_id == vente_bj_id)
 
         return False
     

@@ -3,12 +3,11 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.conf import settings
 from django.db import models
 from django.db.models import CheckConstraint, F, Q
-
 from sale.models import Client
 
 
 class ClientDepot(Client):
-    CNI = models.CharField(max_length=50, blank=True, null=True)
+    # CNI = models.CharField(max_length=50, blank=True, null=True)
     photo = models.ImageField(upload_to="client/", default="client/default.jpg", null=True, blank=True)
     bijouterie = models.ForeignKey("store.Bijouterie",on_delete=models.SET_NULL,null=True,blank=True,related_name="clients_depot",)
     
@@ -51,10 +50,8 @@ class CompteDepot(models.Model):
         ]
 
     def __str__(self):
-        nom = getattr(self.client, "full_name", None) or getattr(self.client, "nom_complet", None)
-        if callable(nom):
-            nom = nom()
-        return f"{self.numero_compte} - {nom or 'Sans client'}"
+        nom = self.client.full_name if self.client else "Sans client"
+        return f"{self.numero_compte} - {nom}"
 
     def clean(self):
         super().clean()

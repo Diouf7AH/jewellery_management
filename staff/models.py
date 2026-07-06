@@ -1,11 +1,22 @@
 # staff/models.py
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class StaffCore(models.Model):
     verifie = models.BooleanField(default=True, db_index=True)
     raison_desactivation = models.TextField(null=True, blank=True)
+
+    date_desactivation = models.DateTimeField(null=True, blank=True)
+    desactive_par = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="%(app_label)s_%(class)s_desactives",
+        related_query_name="%(app_label)s_%(class)s_desactive",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -34,12 +45,38 @@ class StaffCore(models.Model):
 
     @property
     def is_active_staff(self):
-        """
-        Actif au sens métier + compte actif.
-        """
         user = getattr(self, "user", None)
         return bool(self.verifie and user and user.is_active)
 
+    def desactiver(self, *, by_user=None, raison=""):
+        self.verifie = False
+        self.raison_desactivation = raison or "Staff désactivé."
+        self.date_desactivation = timezone.now()
+        self.desactive_par = by_user
+        self.save(update_fields=[
+            "verifie",
+            "raison_desactivation",
+            "date_desactivation",
+            "desactive_par",
+            "updated_at",
+        ])
+
+    def reactiver(self):
+        if self.verifie:
+            return
+
+        self.verifie = True
+        self.raison_desactivation = None
+        self.date_desactivation = None
+        self.desactive_par = None
+        self.save(update_fields=[
+            "verifie",
+            "raison_desactivation",
+            "date_desactivation",
+            "desactive_par",
+            "updated_at",
+        ])
+        
 
 class Cashier(StaffCore):
     user = models.OneToOneField(
@@ -95,7 +132,23 @@ class Manager(StaffCore):
         return self.full_name or f"Manager #{self.pk}"
     
     
-    
+class Buyer(StaffCore):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="staff_buyer_profile",
+    )
+
+    bijouterie = models.ForeignKey(
+        "store.Bijouterie",
+        on_delete=models.CASCADE,
+        related_name="buyers",
+    )
+
+    class Meta:
+        verbose_name = "Acheteur"
+        verbose_name_plural = "Acheteurs"
+        
     
     
 

@@ -1,9 +1,8 @@
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from rest_framework import serializers
-
 from purchase.models import Achat, Fournisseur, Lot, ProduitLine
+from rest_framework import serializers
 from stock.models import Stock
 from store.models import Produit
 
@@ -524,6 +523,7 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
 
     # Produit
     produit_id = serializers.IntegerField(source="produit.id", read_only=True)
+    produit_uuid = serializers.UUIDField(source="produit.uuid", read_only=True)
     produit_nom = serializers.CharField(source="produit.nom", read_only=True)
     produit_sku = serializers.CharField(source="produit.sku", read_only=True, default=None)
     purete_purete = serializers.CharField(source="produit.purete", read_only=True, default=None)
@@ -544,7 +544,7 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
             # Lot / achat
             "numero_lot", "received_at", "numero_achat", "fournisseur_nom",
             # Produit
-            "produit_id", "produit_nom", "produit_sku", "purete_purete",
+            "produit_id", "produit_uuid", "produit_nom", "produit_sku", "purete_purete",
             # Ligne achat
             "quantite", "poids_total", "prix_gramme_achat",
             # Stock

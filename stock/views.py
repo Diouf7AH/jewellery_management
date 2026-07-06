@@ -3,6 +3,7 @@ from textwrap import dedent
 from django.core.exceptions import ValidationError
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.db.models import Q
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
@@ -10,13 +11,13 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from stock.models import Stock
-from stock.serializers import StockSerializer
-from vendor.models import Vendor
 
 from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
 from backend.query_scopes import scope_bijouterie_q
 from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
+from stock.models import Stock
+from stock.serializers import StockSerializer
+from vendor.models import Vendor
 
 from .serializers import ReserveToVendorInSerializer
 from .services.reserve_to_vendor_service import transfer_reserve_to_vendor
@@ -778,6 +779,93 @@ class ReserveToVendorTransferView(APIView):
 
         return Response(res, status=status.HTTP_200_OK)
     
+
+
+
+class StockDisponiblePourVendeurView(APIView):
+    """
+    GET /api/stocks/available-for-vendor/
+
+    Liste claire des ProduitLine disponibles en réserve pour affectation vendeur.
+    """
+    permission_classes = [IsAuthenticated, IsAdminOrManager]
+    http_method_names = ["get"]
+
+    @swagger_auto_schema(
+        operation_summary="Lister les ProduitLine disponibles à affecter à un vendeur",
+        manual_parameters=[
+            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
+            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
+            openapi.Parameter("lot_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
+        ],
+        tags=["Stock"],
+        responses={200: openapi.Response("OK")},
+    )
+    def get(self, request):
+        q = (request.GET.get("q") or "").strip()
+        produit_id = request.GET.get("produit_id")
+        lot_id = request.GET.get("lot_id")
+
+        qs = (
+            Stock.objects
+            .select_related(
+                "produit_line",
+                "produit_line__produit",
+                "produit_line__lot",
+            )
+            .filter(
+                is_reserve=True,
+                bijouterie__isnull=True,
+                en_stock__gt=0,
+            )
+            .order_by(
+                "produit_line__lot__received_at",
+                "produit_line_id",
+            )
+        )
+
+        if produit_id:
+            qs = qs.filter(produit_line__produit_id=produit_id)
+
+        if lot_id:
+            qs = qs.filter(produit_line__lot_id=lot_id)
+
+        if q:
+            qs = qs.filter(
+                Q(produit_line__produit__nom__icontains=q) |
+                Q(produit_line__produit__sku__icontains=q) |
+                Q(produit_line__lot__numero_lot__icontains=q) |
+                Q(produit_line__lot__lot_code__icontains=q)
+            )
+
+        results = []
+
+        for stock in qs:
+            pl = stock.produit_line
+            produit = getattr(pl, "produit", None)
+            lot = getattr(pl, "lot", None)
+
+            results.append({
+                "produit_line_id": pl.id,
+                "produit_id": produit.id if produit else None,
+                "produit_nom": produit.nom if produit else None,
+                "sku": getattr(produit, "sku", None) if produit else None,
+
+                "lot_id": lot.id if lot else None,
+                "lot": (
+                    getattr(lot, "numero_lot", None)
+                    or getattr(lot, "lot_code", None)
+                ),
+
+                "stock_disponible": int(stock.en_stock or 0),
+                "stock_total": int(stock.quantite_disponible or 0),
+            })
+
+        return Response({
+            "count": len(results),
+            "results": results,
+        })
+        
 
 
 

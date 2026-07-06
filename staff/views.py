@@ -6,11 +6,10 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from staff.models import Cashier, Manager
-from staff.serializers import (CreateStaffUnifiedSerializer,
+from staff.serializers import (CreateStaffSerializer,
                                StaffDashboardResponseSerializer,
-                               StaffDetailUnifiedSerializer,
-                               StaffUnifiedListItemSerializer,
-                               UpdateStaffUnifiedSerializer)
+                               StaffDetailSerializer, StaffListItemSerializer,
+                               UpdateStaffSerializer)
 from staff.services import create_staff_member, update_staff_member
 from vendor.models import Vendor
 
@@ -19,7 +18,7 @@ from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
                            get_role_name)
 
 
-class CreateStaffUnifiedView(APIView):
+class CreateStaffView(APIView):
     """
     API unique de création de staff.
 
@@ -46,7 +45,7 @@ class CreateStaffUnifiedView(APIView):
     - Manager → plusieurs bijouteries.
     - Vendor/Cashier → une seule bijouterie.
     """,
-        request_body=CreateStaffUnifiedSerializer,
+        request_body=CreateStaffSerializer,
         responses={
             201: openapi.Response(
                 description="Staff créé avec succès",
@@ -107,7 +106,7 @@ class CreateStaffUnifiedView(APIView):
         tags=["Staff"],
     )
     def post(self, request):
-        serializer = CreateStaffUnifiedSerializer(data=request.data)
+        serializer = CreateStaffSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
@@ -133,7 +132,7 @@ class CreateStaffUnifiedView(APIView):
         staff = result.staff
         user = result.user
 
-        if result.staff_type == "manager":
+        if result.staff_type == ROLE_MANAGER:
             bijouteries_data = [
                 {"id": b.id, "nom": b.nom}
                 for b in staff.bijouteries.all()
@@ -169,14 +168,14 @@ class CreateStaffUnifiedView(APIView):
                 
 
 
-class UpdateStaffUnifiedView(APIView):
+class UpdateStaffView(APIView):
     """
     API unique de mise à jour de staff.
     """
     permission_classes = [IsAdminOrManager]
 
     @swagger_auto_schema(
-        operation_id="updateUnifiedStaff",
+        operation_id="updateStaff",
         operation_summary="Mettre à jour un staff (manager, vendeur, caissier)",
         operation_description=(
             "Cette route met à jour un staff existant via une API unifiée.\n\n"
@@ -215,7 +214,7 @@ class UpdateStaffUnifiedView(APIView):
                 description="ID du staff à mettre à jour",
             )
         ],
-        request_body=UpdateStaffUnifiedSerializer,
+        request_body=UpdateStaffSerializer,
         responses={
             200: openapi.Response(
                 description="Staff mis à jour avec succès",
@@ -280,14 +279,14 @@ class UpdateStaffUnifiedView(APIView):
         tags=["Staff"],
     )
     def put(self, request, staff_id):
-        serializer = UpdateStaffUnifiedSerializer(
+        serializer = UpdateStaffSerializer(
             data=request.data,
             context={"user_id": None},
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        serializer = UpdateStaffUnifiedSerializer(
+        serializer = UpdateStaffSerializer(
             data=request.data,
             context={"user_id": self._get_target_user_id(data["role"], staff_id)},
         )
@@ -376,7 +375,7 @@ class UpdateStaffUnifiedView(APIView):
     
 
 
-class ListStaffUnifiedView(APIView):
+class ListStaffView(APIView):
     """
     GET /api/staff/list/
 
@@ -388,7 +387,7 @@ class ListStaffUnifiedView(APIView):
     permission_classes = [IsAdminOrManager]
 
     @swagger_auto_schema(
-        operation_id="listUnifiedStaff",
+        operation_id="listStaff",
         operation_summary="Lister tous les staff",
         operation_description=(
             "Retourne une liste unifiée des profils staff.\n\n"
@@ -676,7 +675,7 @@ class StaffDetailView(APIView):
     }
 
     @swagger_auto_schema(
-        operation_id="staffDetailUnified",
+        operation_id="staffDetail",
         operation_summary="Détail d'un staff",
         operation_description=(
             "Retourne le détail complet d'un staff.\n\n"

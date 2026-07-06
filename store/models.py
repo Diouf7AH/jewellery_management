@@ -45,7 +45,8 @@ STATUS = (
 GENRE = (
     ("H", "Homme"),
     ("F", "Femme"),
-    ("E", "Enfant")
+    ("E", "Enfant"),
+    ("U", "Unisexe")
 )
 
 ETAT = (

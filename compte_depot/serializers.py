@@ -1,7 +1,6 @@
 # compte_depot/serializers.py
 
 from rest_framework import serializers
-
 from userauths.serializers import UserMiniSerializer
 
 from .models import ClientDepot, CompteDepot, CompteDepotTransaction
@@ -18,7 +17,7 @@ class ClientDepotSerializer(serializers.ModelSerializer):
             "nom",
             "prenom",
             "telephone",
-            "CNI",
+            # "CNI",
             "photo",
         ]
 

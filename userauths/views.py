@@ -55,55 +55,121 @@ def get_tokens_for_user(user):
     }
 
 
+# class UserRegistrationView(APIView):
+#     permission_classes = [AllowAny]
+
+#     @swagger_auto_schema(
+#         operation_summary="Inscription d’un nouvel utilisateur avec confirmation email",
+#         operation_description="Crée l'utilisateur, génère les tokens JWT et envoie l'email de confirmation.",
+#         request_body=UserRegistrationSerializer,
+#         responses={
+#             201: openapi.Response('Inscription réussie'),
+#             400: openapi.Response('Requête invalide')
+#         }
+#     )
+#     @transaction.atomic
+#     def post(self, request, format=None):
+#         s = UserRegistrationSerializer(data=request.data)
+#         s.is_valid(raise_exception=True)
+#         data = s.validated_data
+
+#         # --- Création utilisateur ---
+#         email_norm = (data["email"] or "").strip().lower()
+#         username = (data.get("username") or "").strip()
+#         telephone = (data.get("telephone") or "").strip()
+
+#         user = User(
+#             email=email_norm,
+#             username=username,
+#             telephone=telephone,
+#             is_active=False,
+#             is_email_verified=False,
+#         )
+#         user.set_password(data["password"])
+#         user.save()
+
+#         # --- JWT tokens ---
+#         refresh = RefreshToken.for_user(user)
+#         tokens = {
+#             "access": str(refresh.access_token),
+#             "refresh": str(refresh),
+#         }
+
+#         # --- Lien de confirmation (BACKEND) ---
+#         token = generate_email_token(user)
+
+#         confirm_url = request.build_absolute_uri(
+#             reverse("verify-email") + f"?token={token}"
+#         )
+#         home_url = request.build_absolute_uri("/")
+
+#         # --- Envoi email direct ---
+#         email_status = "sent"
+#         try:
+#             send_confirmation_email(
+#                 user,
+#                 request=None,
+#                 confirm_url=confirm_url,
+#                 home_url=home_url,
+#             )
+#         except (SMTPRecipientsRefused, SMTPDataError, SMTPSenderRefused, SMTPException) as e:
+#             print("ERREUR SMTP >>>", e)
+#             email_status = "failed"
+#         except Exception as e:
+#             print("ERREUR ENVOI EMAIL >>>", e)
+#             email_status = "failed"
+
+#         return Response(
+#             {
+#                 "message": "Inscription réussie ✅. Vérifiez votre email.",
+#                 "user": {
+#                     "id": user.id,
+#                     "email": user.email,
+#                     "username": user.username,
+#                     "telephone": user.telephone,
+#                     "is_active": user.is_active,
+#                     "is_email_verified": getattr(user, "is_email_verified", False),
+#                 },
+#                 "tokens": tokens,
+#                 "email_status": email_status,
+#             },
+#             status=status.HTTP_201_CREATED,
+#         )
+
+
 class UserRegistrationView(APIView):
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(
-        operation_summary="Inscription d’un nouvel utilisateur avec confirmation email",
-        operation_description="Crée l'utilisateur, génère les tokens JWT et envoie l'email de confirmation.",
+        operation_summary="Inscription publique avec confirmation email",
+        operation_description=(
+            "Crée un utilisateur public sans rôle staff. "
+            "Le rôle sera affecté plus tard par admin/manager via l'API Staff."
+        ),
         request_body=UserRegistrationSerializer,
         responses={
-            201: openapi.Response('Inscription réussie'),
-            400: openapi.Response('Requête invalide')
-        }
+            201: openapi.Response("Inscription réussie"),
+            400: openapi.Response("Requête invalide"),
+        },
     )
     @transaction.atomic
     def post(self, request, format=None):
-        s = UserRegistrationSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
-        data = s.validated_data
+        serializer = UserRegistrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        # --- Création utilisateur ---
-        email_norm = (data["email"] or "").strip().lower()
-        username = (data.get("username") or "").strip()
-        telephone = (data.get("telephone") or "").strip()
+        user = serializer.save()
 
-        user = User(
-            email=email_norm,
-            username=username,
-            telephone=telephone,
-            is_active=False,
-            is_email_verified=False,
-        )
-        user.set_password(data["password"])
-        user.save()
+        # ✅ aucun rôle au register public
+        if user.user_role_id is not None:
+            user.user_role = None
+            user.save(update_fields=["user_role"])
 
-        # --- JWT tokens ---
-        refresh = RefreshToken.for_user(user)
-        tokens = {
-            "access": str(refresh.access_token),
-            "refresh": str(refresh),
-        }
-
-        # --- Lien de confirmation (BACKEND) ---
         token = generate_email_token(user)
-
         confirm_url = request.build_absolute_uri(
             reverse("verify-email") + f"?token={token}"
         )
         home_url = request.build_absolute_uri("/")
 
-        # --- Envoi email direct ---
         email_status = "sent"
         try:
             send_confirmation_email(
@@ -127,15 +193,15 @@ class UserRegistrationView(APIView):
                     "email": user.email,
                     "username": user.username,
                     "telephone": user.telephone,
+                    "role": None,
                     "is_active": user.is_active,
-                    "is_email_verified": getattr(user, "is_email_verified", False),
+                    "is_email_verified": user.is_email_verified,
                 },
-                "tokens": tokens,
                 "email_status": email_status,
             },
             status=status.HTTP_201_CREATED,
         )
-
+        
 
 @method_decorator(require_GET, name="dispatch")
 class EmailVerificationView(APIView):
