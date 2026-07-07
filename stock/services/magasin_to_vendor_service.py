@@ -6,8 +6,8 @@ from django.db.models import F
 from django.utils import timezone
 
 from inventory.models import Bucket, InventoryMovement, MovementType
-from staff.models import Vendor
 from stock.models import Stock, VendorStock
+from vendor.models import Vendor
 
 
 @transaction.atomic

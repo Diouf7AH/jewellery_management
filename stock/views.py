@@ -16,7 +16,6 @@ from rest_framework.views import APIView
 from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
 from backend.query_scopes import scope_bijouterie_q
 from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
-from staff.models import Vendor
 from stock.models import Stock
 from stock.serializers import StockSerializer
 from vendor.models import Vendor
@@ -24,7 +23,6 @@ from vendor.models import Vendor
 from .serializers import (MagasinProduitDisponibleSerializer,
                           MagasinToVendorInSerializer,
                           MagasinToVendorOutSerializer)
-from .services import transfer_magasin_to_vendor
 from .services.magasin_to_vendor_service import transfer_magasin_to_vendor
 
 
