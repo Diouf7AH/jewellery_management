@@ -717,6 +717,18 @@ class PaiementLigne(models.Model):
         help_text="Indique si le callback/webhook du fournisseur a été reçu"
     )
     
+#     banque = models.CharField(
+#     max_length=100,
+#     blank=True,
+#     null=True,
+# )
+
+# numero_carte_masque = models.CharField(
+#     max_length=30,
+#     blank=True,
+#     null=True,
+# )
+    
     class Meta:
         ordering = ["id"]
 

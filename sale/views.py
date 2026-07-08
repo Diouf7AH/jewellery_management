@@ -6,10 +6,6 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
-from compte_depot.models import (ClientDepot, CompteDepot,
-                                 CompteDepotTransaction)
-from compte_depot.notifications import send_compte_depot_facture_notification
-from compte_depot.services import effectuer_retrait
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -22,8 +18,6 @@ from django.urls import reverse
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from inventory.models import InventoryMovement
-from inventory.services import log_move
 from openpyxl import Workbook
 from openpyxl.styles import Font, numbers
 from rest_framework import permissions, status
@@ -33,6 +27,21 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from backend.mixins import (GROUP_BY_CHOICES, ExportXlsxMixin,
+                            aware_range_month, parse_month_or_default,
+                            resolve_tz)
+from backend.permissions import CanCreateSale, IsCashierOnly
+from backend.query_scopes import scope_bijouterie_q
+from backend.renderers import UserRenderer
+from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
+                           get_role_name)
+from compte_depot.models import (ClientDepot, CompteDepot,
+                                 CompteDepotTransaction)
+from compte_depot.notifications import send_compte_depot_facture_notification
+from compte_depot.services import effectuer_retrait
+from inventory.models import InventoryMovement
+from inventory.services import log_move
 from sale.models import (Client, Facture,  # adapte le chemin si besoin
                          ModePaiement, Paiement, PaiementLigne, Vente,
                          VenteProduit)
@@ -64,15 +73,6 @@ from staff.models import Cashier
 from stock.models import VendorStock
 from store.models import Bijouterie, MarquePurete, Produit
 from vendor.models import Vendor
-
-from backend.mixins import (GROUP_BY_CHOICES, ExportXlsxMixin,
-                            aware_range_month, parse_month_or_default,
-                            resolve_tz)
-from backend.permissions import CanCreateSale, IsCashierOnly
-from backend.query_scopes import scope_bijouterie_q
-from backend.renderers import UserRenderer
-from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
-                           get_role_name)
 
 DEFAULT_PAGE_SIZE = getattr(settings, "DEFAULT_PAGE_SIZE", 50)
 MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
@@ -936,15 +936,15 @@ class PaiementFactureMultiModeView(APIView):
                                 type=openapi.TYPE_STRING,
                                 example="WAVE-123456",
                             ),
-                            "banque": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                example="CBAO",
-                            ),
+                            # "banque": openapi.Schema(
+                            #     type=openapi.TYPE_STRING,
+                            #     example="CBAO",
+                            # ),
 
-                            "numero_carte_masque": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                example="**** **** **** 4589",
-                            ),
+                            # "numero_carte_masque": openapi.Schema(
+                            #     type=openapi.TYPE_STRING,
+                            #     example="**** **** **** 4589",
+                            # ),
 
                             "provider_reference": openapi.Schema(
                                 type=openapi.TYPE_STRING,
@@ -1040,8 +1040,8 @@ class PaiementFactureMultiModeView(APIView):
                 "reference": reference,
                 "numero_compte": item.get("numero_compte"),
 
-                "banque": item.get("banque"),
-                "numero_carte_masque": item.get("numero_carte_masque"),
+                # "banque": item.get("banque"),
+                # "numero_carte_masque": item.get("numero_carte_masque"),
                 "provider_reference": item.get("provider_reference"),
             })
 
@@ -1142,8 +1142,8 @@ class PaiementFactureMultiModeView(APIView):
                     montant_paye=item["montant"],
                     reference=item.get("reference"),
 
-                    banque=item.get("banque"),
-                    numero_carte_masque=item.get("numero_carte_masque"),
+                    # banque=item.get("banque"),
+                    # numero_carte_masque=item.get("numero_carte_masque"),
                     provider_reference=item.get("provider_reference"),
                 )
 
