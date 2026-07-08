@@ -970,6 +970,14 @@ class PaiementFactureMultiModeView(APIView):
         numero_facture = str(request.data.get("numero_facture") or "").strip()
         client_data = request.data.get("client") or {}
         lignes_data = request.data.get("lignes") or []
+        
+        role = (get_role_name(request.user) or "").lower().strip()
+
+        if role not in {ROLE_MANAGER, ROLE_CASHIER}:
+            return Response(
+                {"detail": "⛔ Seul le manager ou le caissier peut réaliser un paiement."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         if not numero_facture:
             return Response({"detail": "numero_facture requis."}, status=400)
