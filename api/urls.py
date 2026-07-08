@@ -221,7 +221,7 @@ urlpatterns = [
     path("facture/List-factures-a-payer", sale_views.ListFacturesAPayerView.as_view(),name="list_factures_a_payer",),
     # path('facture/paiement-facture/<str:facture_numero>', sale_views.PaiementFactureView.as_view(), name='Paiement-facture-par-numero'),
     # path("factures/paiement", sale_views.PaiementFactureMultiModeView.as_view(),name="paiement-facture-multi-mode",),
-    path("facture/paiement-facture/<str:facture_numero>", sale_views.PaiementFactureMultiModeView.as_view(),name="paiement-facture-multi-mode",),
+    path("factures/paiement/",sale_views.PaiementFactureMultiModeView.as_view(),name="paiement-facture-multi-mode",),
     path("factures/export-comptable", sale_views.ExportComptableView.as_view(), name="export-comptable"),
     # path("ventes/<int:vente_id>/livraison/confirm/", sale_views.ConfirmerLivraisonView.as_view(), name="vente-confirmer-livraison"),
     # END STOCK
