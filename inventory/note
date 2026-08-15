@@ -85,3 +85,77 @@ journal = indispensable
 photo stock = indispensable
 stock vendeur = indispensable dans ton métier
 résumé bijouterie = très utile, mais plus “dashboard” que “coeur métier”
+
+
+
+
+quantite_totale
+= quantité historiquement reçue
+en_stock_total
+= quantité encore dans le magasin
+vendor_en_stock
+= quantité encore chez les vendeurs
+quantite_restante_globale
+= en_stock_total + vendor_en_stock
+quantite_sortie_globale
+= quantité vendue
+
+
+
+vendor_en_stock
+= vendor_quantite_allouee - vendor_quantite_vendue
+quantite_restante_globale
+= en_stock_total + vendor_en_stock
+quantite_sortie_globale
+= vendor_quantite_vendue
+
+
+
+Formules finales
+Stock magasin
+stock_magasin_net = (
+    purchase_in
+    + return_in
+    + adjustment_in
+    - cancel_purchase_out
+    - vendor_assign_out
+    - adjustment_out
+)
+Stock global de la bijouterie
+stock_global_net = (
+    purchase_in
+    + return_in
+    + adjustment_in
+    - cancel_purchase_out
+    - sale_out
+    - adjustment_out
+)
+
+Il ne faut surtout pas écrire :
+stock_net = purchase_in - vendor_assign_out - sale_out
+
+car une même pièce serait déduite deux fois :
+
+lors de son affectation au vendeur ;
+lors de sa vente.
+
+
+Aujourd'hui ton cycle est :
+
+FOURNISSEUR
+      │
+      ▼
+PURCHASE_IN
+EXTERNAL → BIJOUTERIE
+      │
+      ▼
+VENDOR_ASSIGN
+BIJOUTERIE → VENDOR
+      │
+      ▼
+SALE_OUT
+VENDOR → EXTERNAL
+      │
+      ▼
+RETURN_IN
+EXTERNAL → BIJOUTERIE

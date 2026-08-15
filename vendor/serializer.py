@@ -192,7 +192,7 @@ class VendorReadSerializer(serializers.ModelSerializer):
 
 #     quantite_allouee = serializers.IntegerField()
 #     quantite_vendue = serializers.IntegerField()
-#     quantite_disponible = serializers.IntegerField()
+#     quantite_totale = serializers.IntegerField()
 #     quantite_lot = serializers.IntegerField()
 
 # class VendorProduitGroupedSerializer(serializers.Serializer):
@@ -203,7 +203,7 @@ class VendorReadSerializer(serializers.ModelSerializer):
 #     # ✅ STOCK (optionnels si scope=sales)
 #     quantite_allouee = serializers.IntegerField(required=False)
 #     quantite_vendue = serializers.IntegerField(required=False)
-#     quantite_disponible = serializers.IntegerField(required=False)
+#     quantite_totale = serializers.IntegerField(required=False)
 #     quantite_lot = serializers.IntegerField(required=False)
 
 #     # ✅ SALES (optionnel si scope=stock)
@@ -220,9 +220,9 @@ class VendorReadSerializer(serializers.ModelSerializer):
 #     lot_received_at = serializers.DateTimeField(source="produit_line.lot.received_at", read_only=True)
 #     quantite_lot = serializers.IntegerField(source="produit_line.quantite", read_only=True)
     
-#     quantite_disponible = serializers.SerializerMethodField()
+#     quantite_totale = serializers.SerializerMethodField()
 
-#     def get_quantite_disponible(self, obj):
+#     def get_quantite_totale(self, obj):
 #         return int((obj.quantite_allouee or 0) - (obj.quantite_vendue or 0))
 
 #     class Meta:
@@ -231,7 +231,7 @@ class VendorReadSerializer(serializers.ModelSerializer):
 #             "id",
 #             "produit_id", "produit_nom", "produit_sku",
 #             "produit_line_id", "lot_id", "lot_received_at",
-#             "quantite_allouee", "quantite_vendue", "quantite_disponible",
+#             "quantite_allouee", "quantite_vendue", "quantite_totale",
 #             "quantite_lot",
 #         ]
 # ---------------- End List Produit for vendor ----------------------
@@ -266,7 +266,7 @@ class VendorStockListSerializer(serializers.ModelSerializer):
     purete_nom = serializers.CharField(source="produit_line.produit.purete.purete", read_only=True, default=None)
 
     # --- Calcul dispo ---
-    quantite_disponible = serializers.SerializerMethodField()
+    quantite_totale = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorStock
@@ -277,11 +277,11 @@ class VendorStockListSerializer(serializers.ModelSerializer):
             "produit_line_id", "lot_id", "lot_code", "received_at",
             "produit_id", "produit_nom", "produit_sku",
             "categorie_nom", "marque_nom", "purete_nom",
-            "quantite_allouee", "quantite_vendue", "quantite_disponible",
+            "quantite_allouee", "quantite_vendue", "quantite_totale",
             "created_at", "updated_at",
         ]
 
-    def get_quantite_disponible(self, obj):
+    def get_quantite_totale(self, obj):
         return max(0, int(obj.quantite_allouee or 0) - int(obj.quantite_vendue or 0))
 
     def get_vendor_nom(self, obj):

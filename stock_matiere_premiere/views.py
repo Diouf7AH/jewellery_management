@@ -16,6 +16,11 @@ from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from backend.permissions import IsAdminManagerBuyer, IsSameBijouterieOrAdmin
+from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
+                           get_role_name)
+from backend.utils.helpers import resolve_bijouterie_for_user
 from sale.models import Client
 from stock_matiere_premiere.serializers import (
     CancelRachatClientSerializer, RachatClientCreateSerializer,
@@ -23,11 +28,6 @@ from stock_matiere_premiere.serializers import (
     ReverseAchatMatierePremiereSerializer, ReverseRachatClientSerializer,
     VenteMatierePremiereCreateSerializer, generate_ticket_number)
 from store.models import Bijouterie, Purete
-
-from backend.permissions import IsAdminManagerBuyer, IsSameBijouterieOrAdmin
-from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
-                           get_role_name)
-from backend.utils.helpers import resolve_bijouterie_for_user
 
 from .models import (AchatMatierePremiere, AchatMatierePremiereItem,
                      MatierePremiereMovement, MatierePremiereStock,

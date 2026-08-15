@@ -1,11 +1,16 @@
 from django.db.models import Count
 # staff/views.py
+# staff/views.py
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from staff.models import Cashier, Manager
+
+from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
+from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
+                           ROLE_VENDOR, get_role_name)
+from staff.models import Buyer, Cashier, Manager
 from staff.serializers import (CreateStaffSerializer,
                                StaffDashboardResponseSerializer,
                                StaffDetailSerializer, StaffListItemSerializer,
@@ -13,45 +18,67 @@ from staff.serializers import (CreateStaffSerializer,
 from staff.services import create_staff_member, update_staff_member
 from vendor.models import Vendor
 
-from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
-from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
-                           get_role_name)
+SINGLE_BIJOUTERIE_ROLES = {
+    ROLE_VENDOR,
+    ROLE_CASHIER,
+    ROLE_BUYER,
+}
 
 
 class CreateStaffView(APIView):
     """
     API unique de création de staff.
 
-    - admin   : manager / vendor / cashier
-    - manager : vendor / cashier
-    """
-    permission_classes = [IsAdminOrManager]
-
-    @swagger_auto_schema(
-        operation_summary="Créer un staff",
-        operation_description="""
-
     Règles :
-
-    - L'utilisateur doit déjà avoir créé son compte.
-    - Admin peut créer :
+    - Admin :
         - Manager
         - Vendor
         - Cashier
-    - Manager peut créer :
+        - Buyer
+
+    - Manager :
         - Vendor
         - Cashier
-    - Un utilisateur ne peut avoir qu'un seul profil staff.
-    - Manager → plusieurs bijouteries.
-    - Vendor/Cashier → une seule bijouterie.
-    """,
+
+    - Manager :
+        - plusieurs bijouteries
+
+    - Vendor / Cashier / Buyer :
+        - une seule bijouterie
+
+    - Un staff est toujours créé actif.
+    - La désactivation se fait ensuite via UpdateStaffView.
+    """
+
+    permission_classes = [IsAdminOrManager]
+
+    @swagger_auto_schema(
+        operation_id="createStaff",
+        operation_summary="Créer un staff",
+        operation_description=(
+            "Crée un profil staff pour un utilisateur existant.\n\n"
+            "### Règles\n"
+            "- L'utilisateur doit déjà avoir créé son compte.\n"
+            "- L'utilisateur doit avoir confirmé son email.\n"
+            "- L'utilisateur doit être actif.\n"
+            "- Un utilisateur ne peut avoir qu'un seul profil staff.\n\n"
+            "### Rôles autorisés\n"
+            "- Admin : `manager`, `vendor`, `cashier`, `buyer`\n"
+            "- Manager : `vendor`, `cashier`\n\n"
+            "### Affectation aux bijouteries\n"
+            "- Manager : utiliser `bijouteries` avec une liste d'IDs.\n"
+            "- Vendor / Cashier / Buyer : utiliser `bijouterie_nom`.\n\n"
+            "### Statut\n"
+            "- Le staff est toujours créé avec `verifie=true`.\n"
+            "- La désactivation se fait via l'API de mise à jour du staff."
+        ),
         request_body=CreateStaffSerializer,
         responses={
             201: openapi.Response(
                 description="Staff créé avec succès",
                 examples={
                     "application/json": {
-                        "message": "Staff créé avec succès",
+                        "message": "✅ Staff créé avec succès",
                         "staff_type": "vendor",
                         "staff": {
                             "id": 5,
@@ -59,11 +86,11 @@ class CreateStaffView(APIView):
                             "bijouteries": [
                                 {
                                     "id": 1,
-                                    "nom": "RIO GOLD Dakar"
+                                    "nom": "RIO GOLD Dakar",
                                 }
                             ],
                             "created_at": "2026-05-30T20:00:00Z",
-                            "updated_at": "2026-05-30T20:00:00Z"
+                            "updated_at": "2026-05-30T20:00:00Z",
                         },
                         "user": {
                             "id": 12,
@@ -71,43 +98,54 @@ class CreateStaffView(APIView):
                             "first_name": "Moussa",
                             "last_name": "Fall",
                             "telephone": "771234567",
-                            "role": "vendor"
-                        }
+                            "role": "vendor",
+                        },
                     }
-                }
+                },
             ),
             400: openapi.Response(
                 description="Erreur de validation",
                 examples={
                     "application/json": {
                         "email": [
-                            "Aucun utilisateur trouvé avec cet email. L'utilisateur doit d'abord créer son compte."
+                            "Aucun utilisateur trouvé avec cet email. "
+                            "L'utilisateur doit d'abord créer son compte."
                         ]
                     }
-                }
+                },
             ),
             403: openapi.Response(
                 description="Accès refusé",
                 examples={
                     "application/json": {
-                        "error": "Accès réservé aux rôles admin et manager."
+                        "error": (
+                            "Accès réservé aux rôles admin et manager."
+                        )
                     }
-                }
+                },
             ),
             409: openapi.Response(
-                description="Conflit",
+                description="Conflit métier",
                 examples={
                     "application/json": {
-                        "error": "Cet utilisateur possède déjà un profil staff."
+                        "error": (
+                            "Cet utilisateur possède déjà un profil staff."
+                        )
                     }
-                }
+                },
             ),
         },
         tags=["Staff"],
     )
     def post(self, request):
-        serializer = CreateStaffSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        serializer = CreateStaffSerializer(
+            data=request.data,
+        )
+
+        serializer.is_valid(
+            raise_exception=True,
+        )
+
         data = serializer.validated_data
 
         try:
@@ -116,94 +154,183 @@ class CreateStaffView(APIView):
                 target_role=data["role"],
                 email=data["email"],
                 bijouterie=data.get("bijouterie_nom"),
-                bijouteries=data.get("bijouteries", []),
-                verifie=data.get("verifie", True),
+                bijouteries=data.get(
+                    "bijouteries",
+                    [],
+                ),
             )
-        except PermissionError as e:
-            return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
-        except ValueError as e:
-            return Response({"error": str(e)}, status=status.HTTP_409_CONFLICT)
-        except Exception as e:
+
+        except PermissionError as exc:
             return Response(
-                {"detail": "Erreur inattendue", "error": str(e)},
-                status=status.HTTP_400_BAD_REQUEST,
+                {
+                    "error": str(exc),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        except ValueError as exc:
+            message = str(exc)
+
+            if (
+                "Aucun utilisateur" in message
+                or "confirmer son email" in message
+                or "n'est pas actif" in message
+            ):
+                response_status = (
+                    status.HTTP_400_BAD_REQUEST
+                )
+            else:
+                response_status = (
+                    status.HTTP_409_CONFLICT
+                )
+
+            return Response(
+                {
+                    "error": message,
+                },
+                status=response_status,
             )
 
         staff = result.staff
         user = result.user
 
+        # ====================================================
+        # Bijouteries du staff
+        # ====================================================
+
         if result.staff_type == ROLE_MANAGER:
             bijouteries_data = [
-                {"id": b.id, "nom": b.nom}
-                for b in staff.bijouteries.all()
+                {
+                    "id": bijouterie.id,
+                    "nom": bijouterie.nom,
+                }
+                for bijouterie in staff.bijouteries.all()
             ]
+
+        elif result.staff_type in SINGLE_BIJOUTERIE_ROLES:
+            bijouterie = getattr(
+                staff,
+                "bijouterie",
+                None,
+            )
+
+            bijouteries_data = (
+                [
+                    {
+                        "id": bijouterie.id,
+                        "nom": bijouterie.nom,
+                    }
+                ]
+                if bijouterie
+                else []
+            )
+
         else:
-            bj = getattr(staff, "bijouterie", None)
-            bijouteries_data = [
-                {"id": bj.id, "nom": bj.nom}
-            ] if bj else []
+            return Response(
+                {
+                    "detail": (
+                        "Rôle staff non pris en charge."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ====================================================
+        # Réponse
+        # ====================================================
 
         return Response(
             {
-                "message": "✅ Staff créé avec succès",
+                "message": (
+                    "✅ Staff créé avec succès"
+                ),
                 "staff_type": result.staff_type,
                 "staff": {
                     "id": staff.id,
                     "verifie": staff.verifie,
-                    "bijouteries": bijouteries_data,
-                    "created_at": staff.created_at,
-                    "updated_at": staff.updated_at,
+                    "bijouteries": (
+                        bijouteries_data
+                    ),
+                    "created_at": (
+                        staff.created_at
+                    ),
+                    "updated_at": (
+                        staff.updated_at
+                    ),
                 },
                 "user": {
                     "id": user.id,
                     "email": user.email,
-                    "first_name": user.first_name,
-                    "last_name": user.last_name,
-                    "telephone": user.telephone,
-                    "role": result.staff_type,
+                    "first_name": (
+                        user.first_name
+                    ),
+                    "last_name": (
+                        user.last_name
+                    ),
+                    "telephone": getattr(
+                        user,
+                        "telephone",
+                        None,
+                    ),
+                    "role": (
+                        result.staff_type
+                    ),
                 },
             },
             status=status.HTTP_201_CREATED,
         )
-                
 
 
 class UpdateStaffView(APIView):
     """
     API unique de mise à jour de staff.
+
+    Règles :
+    - Admin :
+        - Manager
+        - Vendor
+        - Cashier
+        - Buyer
+
+    - Manager :
+        - Vendor
+        - Cashier
+        - uniquement dans ses bijouteries
+
+    - Manager :
+        - plusieurs bijouteries
+
+    - Vendor / Cashier / Buyer :
+        - une seule bijouterie
+
+    - La désactivation agit uniquement sur le profil staff.
+    - raison_desactivation est obligatoire si verifie=False.
     """
+
     permission_classes = [IsAdminOrManager]
 
     @swagger_auto_schema(
         operation_id="updateStaff",
-        operation_summary="Mettre à jour un staff (manager, vendeur, caissier)",
+        operation_summary=(
+            "Mettre à jour un staff "
+            "(manager, vendeur, caissier, responsable rachat)"
+        ),
         operation_description=(
-            "Cette route met à jour un staff existant via une API unifiée.\n\n"
-
-            "### URL\n"
-            "- `PUT /api/staff/<staff_id>/update`\n\n"
-
+            "Met à jour un profil staff existant.\n\n"
             "### Règles d'accès\n"
-            "- **Admin** : peut modifier `manager`, `vendor`, `cashier`\n"
-            "- **Manager** : peut modifier seulement `vendor` et `cashier` de ses bijouteries\n"
-            "- **Manager** : ne peut pas modifier un autre `manager`\n\n"
+            "- Admin : `manager`, `vendor`, `cashier`, `buyer`\n"
+            "- Manager : seulement `vendor` et `cashier` "
+            "de ses bijouteries\n"
+            "- Manager : ne peut pas modifier un autre manager\n\n"
 
-            "### Champs modifiables\n"
-            "- `role` : type de staff ciblé (`manager`, `vendor`, `cashier`) **obligatoire**\n"
-            "- `email`\n"
-            "- `first_name`\n"
-            "- `last_name`\n"
-            "- `bijouterie_nom`\n"
-            "- `verifie`\n"
-            "- `raison_desactivation`\n\n"
+            "### Affectation aux bijouteries\n"
+            "- Manager : utiliser `bijouteries`\n"
+            "- Vendor / Cashier / Buyer : utiliser `bijouterie_nom`\n\n"
 
-            "### Exemples d'appels\n"
-            "1. **Mettre à jour un vendeur**\n"
-            "   - `PUT /api/staff/5/update`\n\n"
-            "2. **Mettre à jour un caissier**\n"
-            "   - `PUT /api/staff/8/update`\n\n"
-            "3. **Mettre à jour un manager**\n"
-            "   - `PUT /api/staff/2/update`\n"
+            "### Désactivation\n"
+            "- `verifie=false` nécessite `raison_desactivation`\n"
+            "- `verifie=true` réactive le profil staff\n"
+            "- Le compte utilisateur reste actif\n"
         ),
         manual_parameters=[
             openapi.Parameter(
@@ -211,86 +338,50 @@ class UpdateStaffView(APIView):
                 in_=openapi.IN_PATH,
                 type=openapi.TYPE_INTEGER,
                 required=True,
-                description="ID du staff à mettre à jour",
+                description="ID du profil staff à mettre à jour",
             )
         ],
         request_body=UpdateStaffSerializer,
         responses={
             200: openapi.Response(
                 description="Staff mis à jour avec succès",
-                examples={
-                    "application/json": {
-                        "message": "✅ Staff mis à jour avec succès",
-                        "staff_type": "vendor",
-                        "staff": {
-                            "id": 5,
-                            "verifie": True,
-                            "raison_desactivation": "",
-                            "bijouteries": [{
-                                    "id": 2,
-                                    "nom": "Rio-Gold Centre"
-                                }],
-                            "created_at": "2026-04-01T09:00:00Z",
-                            "updated_at": "2026-04-01T10:15:00Z"
-                        },
-                        "user": {
-                            "id": 21,
-                            "email": "vendeur.new@example.com",
-                            "first_name": "Jean",
-                            "last_name": "Dupont",
-                            "role": "vendor"
-                        }
-                    }
-                },
             ),
             400: openapi.Response(
                 description="Erreur de validation",
-                examples={
-                    "application/json": {
-                        "email": ["Cet email est déjà utilisé par un autre utilisateur."]
-                    }
-                },
             ),
             403: openapi.Response(
                 description="Accès refusé",
-                examples={
-                    "application/json": {
-                        "error": "Vous ne pouvez modifier que les staff de votre bijouterie."
-                    }
-                },
             ),
             404: openapi.Response(
                 description="Staff introuvable",
-                examples={
-                    "application/json": {
-                        "error": "Staff introuvable."
-                    }
-                },
             ),
             409: openapi.Response(
                 description="Conflit métier",
-                examples={
-                    "application/json": {
-                        "error": "Un manager ne peut pas modifier un autre manager."
-                    }
-                },
             ),
         },
         tags=["Staff"],
     )
     def put(self, request, staff_id):
-        serializer = UpdateStaffSerializer(
-            data=request.data,
-            context={"user_id": None},
+        role = (
+            request.data.get("role") or ""
+        ).strip().lower()
+
+        user_id = self._get_target_user_id(
+            role,
+            staff_id,
         )
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
 
         serializer = UpdateStaffSerializer(
             data=request.data,
-            context={"user_id": self._get_target_user_id(data["role"], staff_id)},
+            context={
+                "user_id": user_id,
+            },
         )
-        serializer.is_valid(raise_exception=True)
+
+        serializer.is_valid(
+            raise_exception=True,
+        )
+
         data = serializer.validated_data
 
         try:
@@ -304,75 +395,158 @@ class UpdateStaffView(APIView):
                 bijouterie=data.get("bijouterie_nom"),
                 bijouteries=data.get("bijouteries"),
                 verifie=data.get("verifie"),
-                raison_desactivation=data.get("raison_desactivation"),
+                raison_desactivation=data.get(
+                    "raison_desactivation"
+                ),
             )
-        except PermissionError as e:
-            return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
-        except ValueError as e:
-            msg = str(e)
-            code = status.HTTP_404_NOT_FOUND if "introuvable" in msg.lower() else status.HTTP_409_CONFLICT
-            return Response({"error": msg}, status=code)
-        except Exception as e:
+
+        except PermissionError as exc:
             return Response(
-                {"detail": "Erreur inattendue", "error": str(e)},
-                status=status.HTTP_400_BAD_REQUEST,
+                {
+                    "error": str(exc),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        except ValueError as exc:
+            message = str(exc)
+
+            if "introuvable" in message.lower():
+                response_status = (
+                    status.HTTP_404_NOT_FOUND
+                )
+            else:
+                response_status = (
+                    status.HTTP_409_CONFLICT
+                )
+
+            return Response(
+                {
+                    "error": message,
+                },
+                status=response_status,
             )
 
         staff = result.staff
         user = result.user
 
+        # ====================================================
+        # Bijouteries
+        # ====================================================
+
         if result.staff_type == ROLE_MANAGER:
             bijouteries_data = [
-                {"id": b.id, "nom": b.nom}
-                for b in staff.bijouteries.all()
+                {
+                    "id": bijouterie.id,
+                    "nom": bijouterie.nom,
+                }
+                for bijouterie in staff.bijouteries.all()
             ]
+
+        elif result.staff_type in SINGLE_BIJOUTERIE_ROLES:
+            bijouterie = getattr(
+                staff,
+                "bijouterie",
+                None,
+            )
+
+            bijouteries_data = (
+                [
+                    {
+                        "id": bijouterie.id,
+                        "nom": bijouterie.nom,
+                    }
+                ]
+                if bijouterie
+                else []
+            )
+
         else:
-            bj = getattr(staff, "bijouterie", None)
-            bijouteries_data = [
-                {"id": bj.id, "nom": bj.nom}
-            ] if bj else []
+            return Response(
+                {
+                    "detail": (
+                        "Rôle staff non pris en charge."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ====================================================
+        # Réponse
+        # ====================================================
 
         return Response(
             {
-                "message": "✅ Staff mis à jour avec succès",
+                "message": (
+                    "✅ Staff mis à jour avec succès"
+                ),
                 "staff_type": result.staff_type,
                 "staff": {
                     "id": staff.id,
                     "verifie": staff.verifie,
-                    "raison_desactivation": staff.raison_desactivation,
+                    "raison_desactivation": (
+                        staff.raison_desactivation
+                    ),
                     "bijouteries": bijouteries_data,
                     "created_at": staff.created_at,
                     "updated_at": staff.updated_at,
                 },
                 "user": {
-                    "id": user.id if user else None,
-                    "email": user.email if user else None,
-                    "first_name": user.first_name if user else "",
-                    "last_name": user.last_name if user else "",
+                    "id": (
+                        user.id
+                        if user
+                        else None
+                    ),
+                    "email": (
+                        user.email
+                        if user
+                        else None
+                    ),
+                    "first_name": (
+                        user.first_name
+                        if user
+                        else ""
+                    ),
+                    "last_name": (
+                        user.last_name
+                        if user
+                        else ""
+                    ),
                     "role": result.staff_type,
                 },
             },
             status=status.HTTP_200_OK,
         )
 
-    def _get_target_user_id(self, role, staff_id):
-        from staff.models import Cashier, Manager
-        from vendor.models import Vendor
-
-        from backend.roles import ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR
-
-        model_map = {
+    def _get_target_user_id(
+        self,
+        role,
+        staff_id,
+    ):
+        MODEL_MAP = {
             ROLE_MANAGER: Manager,
             ROLE_VENDOR: Vendor,
             ROLE_CASHIER: Cashier,
+            ROLE_BUYER: Buyer,
         }
-        Model = model_map.get(role)
+
+        Model = MODEL_MAP.get(role)
+
         if not Model:
             return None
 
-        obj = Model.objects.select_related("user").filter(pk=staff_id).first()
-        return getattr(obj, "user_id", None)
-    
+        obj = (
+            Model.objects
+            .select_related("user")
+            .filter(pk=staff_id)
+            .first()
+        )
+
+        return getattr(
+            obj,
+            "user_id",
+            None,
+        )
 
 
 class ListStaffView(APIView):
@@ -498,6 +672,7 @@ class ListStaffView(APIView):
             ROLE_MANAGER,
             ROLE_VENDOR,
             ROLE_CASHIER,
+            ROLE_BUYER,
         }:
             return Response(
                 {"detail": "Rôle invalide."},
@@ -672,6 +847,7 @@ class StaffDetailView(APIView):
         ROLE_MANAGER: Manager,
         ROLE_VENDOR: Vendor,
         ROLE_CASHIER: Cashier,
+        ROLE_BUYER: Buyer,
     }
 
     @swagger_auto_schema(
@@ -782,12 +958,19 @@ class StaffDetailView(APIView):
                 .filter(pk=staff_id)
                 .first()
             )
-        else:
+
+        elif role in SINGLE_BIJOUTERIE_ROLES:
             staff = (
                 Model.objects
                 .select_related("user", "bijouterie")
                 .filter(pk=staff_id)
                 .first()
+            )
+
+        else:
+            return Response(
+                {"detail": "Rôle staff non pris en charge."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         if not staff:
@@ -866,37 +1049,50 @@ class StaffDetailView(APIView):
         return Response(payload, status=status.HTTP_200_OK)
 
 
-
 class StaffDashboardView(APIView):
     """
     Dashboard global des staff.
 
-    - admin   : voit tous les staff
-    - manager : voit seulement les staff de ses bijouteries
+    Règles :
+    - Admin : voit tous les staff de toutes les bijouteries.
+    - Manager : voit les staff rattachés à ses bijouteries.
     """
+
     permission_classes = [IsAdminOrManager]
 
     @swagger_auto_schema(
         operation_id="staffDashboard",
         operation_summary="Dashboard des staff",
         operation_description=(
-            "Retourne un dashboard global des staff.\n\n"
-            "- Admin : voit tous les managers, vendeurs et caissiers\n"
-            "- Manager : voit seulement les staff de ses bijouteries\n\n"
-            "Réponse :\n"
-            "- summary : compteurs globaux\n"
-            "- by_bijouterie : répartition des staff par bijouterie\n"
-            "- recent_staff : derniers staff créés\n"
+            "Retourne le dashboard global des profils staff.\n\n"
+            "### Visibilité\n"
+            "- Admin : voit tous les managers, vendeurs, caissiers et "
+            "responsables rachats.\n"
+            "- Manager : voit uniquement les profils staff rattachés à "
+            "ses bijouteries.\n\n"
+            "### Réponse\n"
+            "- `summary` : compteurs globaux\n"
+            "- `by_bijouterie` : répartition des staff par bijouterie\n"
+            "- `recent_staff` : 10 derniers profils staff créés\n"
         ),
-        responses={200: StaffDashboardResponseSerializer()},
+        responses={
+            200: StaffDashboardResponseSerializer(),
+        },
         tags=["Staff"],
     )
     def get(self, request):
         caller_role = get_role_name(request.user)
 
-        if caller_role not in (ROLE_ADMIN, ROLE_MANAGER):
+        if caller_role not in {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+        }:
             return Response(
-                {"detail": "Accès réservé aux rôles admin et manager."},
+                {
+                    "detail": (
+                        "Accès réservé aux rôles admin et manager."
+                    )
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -905,6 +1101,7 @@ class StaffDashboardView(APIView):
                 "managers_count": 0,
                 "vendors_count": 0,
                 "cashiers_count": 0,
+                "buyers_count": 0,
                 "verified_count": 0,
                 "disabled_count": 0,
             },
@@ -912,214 +1109,382 @@ class StaffDashboardView(APIView):
             "recent_staff": [],
         }
 
-        manager_bj_ids = []
+        manager_bijouterie_ids = []
+
+        # ====================================================
+        # Périmètre du manager
+        # ====================================================
 
         if caller_role == ROLE_MANAGER:
             manager_profile = (
                 Manager.objects
                 .prefetch_related("bijouteries")
-                .filter(user=request.user, verifie=True)
+                .filter(
+                    user=request.user,
+                    verifie=True,
+                )
                 .first()
             )
 
             if not manager_profile:
-                serializer = StaffDashboardResponseSerializer(empty_payload)
-                return Response(serializer.data, status=status.HTTP_200_OK)
+                serializer = StaffDashboardResponseSerializer(
+                    empty_payload
+                )
 
-            manager_bj_ids = list(
-                manager_profile.bijouteries.values_list("id", flat=True)
+                return Response(
+                    serializer.data,
+                    status=status.HTTP_200_OK,
+                )
+
+            manager_bijouterie_ids = list(
+                manager_profile.bijouteries.values_list(
+                    "id",
+                    flat=True,
+                )
             )
 
-            if not manager_bj_ids:
-                serializer = StaffDashboardResponseSerializer(empty_payload)
-                return Response(serializer.data, status=status.HTTP_200_OK)
+            if not manager_bijouterie_ids:
+                serializer = StaffDashboardResponseSerializer(
+                    empty_payload
+                )
 
-        qs_managers = (
+                return Response(
+                    serializer.data,
+                    status=status.HTTP_200_OK,
+                )
+
+        # ====================================================
+        # Querysets de base
+        # ====================================================
+
+        managers_qs = (
             Manager.objects
             .select_related("user")
             .prefetch_related("bijouteries")
         )
-        qs_vendors = Vendor.objects.select_related("user", "bijouterie")
-        qs_cashiers = Cashier.objects.select_related("user", "bijouterie")
+
+        vendors_qs = (
+            Vendor.objects
+            .select_related(
+                "user",
+                "bijouterie",
+            )
+        )
+
+        cashiers_qs = (
+            Cashier.objects
+            .select_related(
+                "user",
+                "bijouterie",
+            )
+        )
+
+        buyers_qs = (
+            Buyer.objects
+            .select_related(
+                "user",
+                "bijouterie",
+            )
+        )
+
+        # ====================================================
+        # Filtrage selon les bijouteries du manager
+        # ====================================================
 
         if caller_role == ROLE_MANAGER:
-            qs_managers = qs_managers.filter(
-                bijouteries__id__in=manager_bj_ids
-            ).distinct()
-            qs_vendors = qs_vendors.filter(
-                bijouterie__id__in=manager_bj_ids
-            )
-            qs_cashiers = qs_cashiers.filter(
-                bijouterie__id__in=manager_bj_ids
+            managers_qs = (
+                managers_qs
+                .filter(
+                    bijouteries__id__in=manager_bijouterie_ids
+                )
+                .distinct()
             )
 
-        managers_count = qs_managers.count()
-        vendors_count = qs_vendors.count()
-        cashiers_count = qs_cashiers.count()
+            vendors_qs = vendors_qs.filter(
+                bijouterie_id__in=manager_bijouterie_ids
+            )
 
-        verified_count = (
-            qs_managers.filter(verifie=True).count()
-            + qs_vendors.filter(verifie=True).count()
-            + qs_cashiers.filter(verifie=True).count()
-        )
+            cashiers_qs = cashiers_qs.filter(
+                bijouterie_id__in=manager_bijouterie_ids
+            )
 
-        disabled_count = (
-            qs_managers.filter(verifie=False).count()
-            + qs_vendors.filter(verifie=False).count()
-            + qs_cashiers.filter(verifie=False).count()
-        )
+            buyers_qs = buyers_qs.filter(
+                bijouterie_id__in=manager_bijouterie_ids
+            )
+
+        # ====================================================
+        # Compteurs globaux
+        # ====================================================
+
+        managers_count = managers_qs.count()
+        vendors_count = vendors_qs.count()
+        cashiers_count = cashiers_qs.count()
+        buyers_count = buyers_qs.count()
+
+        verified_count = sum([
+            managers_qs.filter(verifie=True).count(),
+            vendors_qs.filter(verifie=True).count(),
+            cashiers_qs.filter(verifie=True).count(),
+            buyers_qs.filter(verifie=True).count(),
+        ])
+
+        disabled_count = sum([
+            managers_qs.filter(verifie=False).count(),
+            vendors_qs.filter(verifie=False).count(),
+            cashiers_qs.filter(verifie=False).count(),
+            buyers_qs.filter(verifie=False).count(),
+        ])
 
         summary = {
             "managers_count": managers_count,
             "vendors_count": vendors_count,
             "cashiers_count": cashiers_count,
+            "buyers_count": buyers_count,
             "verified_count": verified_count,
             "disabled_count": disabled_count,
         }
 
+        # ====================================================
+        # Répartition des staff par bijouterie
+        # ====================================================
+
         by_bijouterie_map = {}
 
+        def ensure_bijouterie_row(
+            bijouterie_id,
+            bijouterie_nom,
+        ):
+            return by_bijouterie_map.setdefault(
+                bijouterie_id,
+                {
+                    "bijouterie_id": bijouterie_id,
+                    "bijouterie_nom": bijouterie_nom,
+                    "managers_count": 0,
+                    "vendors_count": 0,
+                    "cashiers_count": 0,
+                    "buyers_count": 0,
+                },
+            )
+
+        # Managers
         managers_grouped = (
-            qs_managers
-            .values("bijouteries__id", "bijouteries__nom")
-            .annotate(managers_count=Count("id", distinct=True))
+            managers_qs
+            .values(
+                "bijouteries__id",
+                "bijouteries__nom",
+            )
+            .annotate(
+                managers_count=Count(
+                    "id",
+                    distinct=True,
+                )
+            )
             .order_by("bijouteries__nom")
         )
 
         for row in managers_grouped:
-            bj_id = row["bijouteries__id"]
-            bj_nom = row["bijouteries__nom"]
+            bijouterie_id = row["bijouteries__id"]
+            bijouterie_nom = row["bijouteries__nom"]
 
-            if bj_id is None:
+            if bijouterie_id is None:
                 continue
 
-            by_bijouterie_map.setdefault(bj_id, {
-                "bijouterie_id": bj_id,
-                "bijouterie_nom": bj_nom,
-                "managers_count": 0,
-                "vendors_count": 0,
-                "cashiers_count": 0,
-            })
+            item = ensure_bijouterie_row(
+                bijouterie_id,
+                bijouterie_nom,
+            )
 
-            by_bijouterie_map[bj_id]["managers_count"] = row["managers_count"] or 0
+            item["managers_count"] = (
+                row["managers_count"] or 0
+            )
 
+        # Vendeurs
         vendors_grouped = (
-            qs_vendors
-            .values("bijouterie_id", "bijouterie__nom")
-            .annotate(vendors_count=Count("id"))
+            vendors_qs
+            .values(
+                "bijouterie_id",
+                "bijouterie__nom",
+            )
+            .annotate(
+                vendors_count=Count("id")
+            )
             .order_by("bijouterie__nom")
         )
 
         for row in vendors_grouped:
-            bj_id = row["bijouterie_id"]
-            bj_nom = row["bijouterie__nom"]
+            bijouterie_id = row["bijouterie_id"]
+            bijouterie_nom = row["bijouterie__nom"]
 
-            if bj_id is None:
+            if bijouterie_id is None:
                 continue
 
-            by_bijouterie_map.setdefault(bj_id, {
-                "bijouterie_id": bj_id,
-                "bijouterie_nom": bj_nom,
-                "managers_count": 0,
-                "vendors_count": 0,
-                "cashiers_count": 0,
-            })
+            item = ensure_bijouterie_row(
+                bijouterie_id,
+                bijouterie_nom,
+            )
 
-            by_bijouterie_map[bj_id]["vendors_count"] = row["vendors_count"] or 0
+            item["vendors_count"] = (
+                row["vendors_count"] or 0
+            )
 
+        # Caissiers
         cashiers_grouped = (
-            qs_cashiers
-            .values("bijouterie_id", "bijouterie__nom")
-            .annotate(cashiers_count=Count("id"))
+            cashiers_qs
+            .values(
+                "bijouterie_id",
+                "bijouterie__nom",
+            )
+            .annotate(
+                cashiers_count=Count("id")
+            )
             .order_by("bijouterie__nom")
         )
 
         for row in cashiers_grouped:
-            bj_id = row["bijouterie_id"]
-            bj_nom = row["bijouterie__nom"]
+            bijouterie_id = row["bijouterie_id"]
+            bijouterie_nom = row["bijouterie__nom"]
 
-            if bj_id is None:
+            if bijouterie_id is None:
                 continue
 
-            by_bijouterie_map.setdefault(bj_id, {
-                "bijouterie_id": bj_id,
-                "bijouterie_nom": bj_nom,
-                "managers_count": 0,
-                "vendors_count": 0,
-                "cashiers_count": 0,
-            })
+            item = ensure_bijouterie_row(
+                bijouterie_id,
+                bijouterie_nom,
+            )
 
-            by_bijouterie_map[bj_id]["cashiers_count"] = row["cashiers_count"] or 0
+            item["cashiers_count"] = (
+                row["cashiers_count"] or 0
+            )
+
+        # Responsables rachats
+        buyers_grouped = (
+            buyers_qs
+            .values(
+                "bijouterie_id",
+                "bijouterie__nom",
+            )
+            .annotate(
+                buyers_count=Count("id")
+            )
+            .order_by("bijouterie__nom")
+        )
+
+        for row in buyers_grouped:
+            bijouterie_id = row["bijouterie_id"]
+            bijouterie_nom = row["bijouterie__nom"]
+
+            if bijouterie_id is None:
+                continue
+
+            item = ensure_bijouterie_row(
+                bijouterie_id,
+                bijouterie_nom,
+            )
+
+            item["buyers_count"] = (
+                row["buyers_count"] or 0
+            )
 
         by_bijouterie = sorted(
             by_bijouterie_map.values(),
-            key=lambda x: (x["bijouterie_nom"] or "").lower()
+            key=lambda item: (
+                item["bijouterie_nom"] or ""
+            ).lower(),
         )
+
+        # ====================================================
+        # Staff récemment créés
+        # ====================================================
 
         recent_staff = []
 
-        for obj in qs_managers.order_by("-created_at")[:10]:
-            user = getattr(obj, "user", None)
+        for manager in managers_qs.order_by("-created_at")[:10]:
+            user = getattr(manager, "user", None)
 
             recent_staff.append({
-                "staff_id": obj.id,
+                "staff_id": manager.id,
                 "role": ROLE_MANAGER,
                 "email": getattr(user, "email", None),
-                "first_name": getattr(user, "first_name", "") or "",
-                "last_name": getattr(user, "last_name", "") or "",
-                "verifie": obj.verifie,
+                "first_name": (
+                    getattr(user, "first_name", "") or ""
+                ),
+                "last_name": (
+                    getattr(user, "last_name", "") or ""
+                ),
+                "verifie": manager.verifie,
                 "bijouteries": [
                     {
-                        "id": b.id,
-                        "nom": b.nom,
+                        "id": bijouterie.id,
+                        "nom": bijouterie.nom,
                     }
-                    for b in obj.bijouteries.all()
+                    for bijouterie in manager.bijouteries.all()
                 ],
-                "created_at": obj.created_at,
+                "created_at": manager.created_at,
             })
 
-        for obj in qs_vendors.order_by("-created_at")[:10]:
-            user = getattr(obj, "user", None)
-            bj = getattr(obj, "bijouterie", None)
+        single_bijouterie_querysets = (
+            (vendors_qs, ROLE_VENDOR),
+            (cashiers_qs, ROLE_CASHIER),
+            (buyers_qs, ROLE_BUYER),
+        )
 
-            recent_staff.append({
-                "staff_id": obj.id,
-                "role": ROLE_VENDOR,
-                "email": getattr(user, "email", None),
-                "first_name": getattr(user, "first_name", "") or "",
-                "last_name": getattr(user, "last_name", "") or "",
-                "verifie": obj.verifie,
-                "bijouteries": [
-                    {
-                        "id": bj.id,
-                        "nom": bj.nom,
-                    }
-                ] if bj else [],
-                "created_at": obj.created_at,
-            })
+        for queryset, role_name in single_bijouterie_querysets:
+            for staff in queryset.order_by("-created_at")[:10]:
+                user = getattr(staff, "user", None)
+                bijouterie = getattr(
+                    staff,
+                    "bijouterie",
+                    None,
+                )
 
-        for obj in qs_cashiers.order_by("-created_at")[:10]:
-            user = getattr(obj, "user", None)
-            bj = getattr(obj, "bijouterie", None)
+                recent_staff.append({
+                    "staff_id": staff.id,
+                    "role": role_name,
+                    "email": getattr(
+                        user,
+                        "email",
+                        None,
+                    ),
+                    "first_name": (
+                        getattr(
+                            user,
+                            "first_name",
+                            "",
+                        )
+                        or ""
+                    ),
+                    "last_name": (
+                        getattr(
+                            user,
+                            "last_name",
+                            "",
+                        )
+                        or ""
+                    ),
+                    "verifie": staff.verifie,
+                    "bijouteries": (
+                        [
+                            {
+                                "id": bijouterie.id,
+                                "nom": bijouterie.nom,
+                            }
+                        ]
+                        if bijouterie
+                        else []
+                    ),
+                    "created_at": staff.created_at,
+                })
 
-            recent_staff.append({
-                "staff_id": obj.id,
-                "role": ROLE_CASHIER,
-                "email": getattr(user, "email", None),
-                "first_name": getattr(user, "first_name", "") or "",
-                "last_name": getattr(user, "last_name", "") or "",
-                "verifie": obj.verifie,
-                "bijouteries": [
-                    {
-                        "id": bj.id,
-                        "nom": bj.nom,
-                    }
-                ] if bj else [],
-                "created_at": obj.created_at,
-            })
+        recent_staff.sort(
+            key=lambda item: item["created_at"],
+            reverse=True,
+        )
 
-        recent_staff.sort(key=lambda x: x["created_at"], reverse=True)
         recent_staff = recent_staff[:10]
+
+        # ====================================================
+        # Réponse
+        # ====================================================
 
         payload = {
             "summary": summary,
@@ -1127,8 +1492,13 @@ class StaffDashboardView(APIView):
             "recent_staff": recent_staff,
         }
 
-        serializer = StaffDashboardResponseSerializer(payload)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-    
+        serializer = StaffDashboardResponseSerializer(
+            payload
+        )
 
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+        
 

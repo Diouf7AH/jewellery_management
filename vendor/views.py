@@ -22,14 +22,20 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from inventory.models import Bucket, InventoryMovement, MovementType
-# ⬇️ aligne le chemin du modèle de lot d’achat
-from purchase.models import Lot, ProduitLine
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from backend.permissions import IsAdminOrManager  # ton permission
+from backend.permissions import ROLE_VENDOR
+from backend.query_scopes import scope_bijouterie_q
+from backend.renderers import UserRenderer
+from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
+from inventory.models import Bucket, InventoryMovement, MovementType
+# ⬇️ aligne le chemin du modèle de lot d’achat
+from purchase.models import Lot, ProduitLine
 from sale.models import VenteProduit  # 👈 lignes de vente (contient vendor)
 from sale.models import Facture
 from staff.models import Manager
@@ -40,12 +46,6 @@ from store.serializers import ProduitSerializer
 from userauths.models import Role
 from vendor.models import Vendor  # 👈 ton modèle Vendor (app vendor)
 from vendor.serializer import VendorStockListSerializer  # adapte serializer
-
-from backend.permissions import IsAdminOrManager  # ton permission
-from backend.permissions import ROLE_VENDOR
-from backend.query_scopes import scope_bijouterie_q
-from backend.renderers import UserRenderer
-from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
 
 from .models import Vendor
 from .serializer import (CreateVendorSerializer, VendorDashboardKpiSerializer,

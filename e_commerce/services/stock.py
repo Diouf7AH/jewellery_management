@@ -13,7 +13,6 @@ def decrease_bijouterie_stock(*, commande, vente, facture, vendor, lignes_map):
         stock = Stock.objects.select_for_update().filter(
             produit_line=commande_ligne.produit_line,
             bijouterie=commande.bijouterie,
-            is_reserve=False,
         ).first()
 
         if not stock:

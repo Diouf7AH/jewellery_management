@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
+from uuid import UUID
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -31,7 +32,8 @@ from rest_framework.views import APIView
 from backend.mixins import (GROUP_BY_CHOICES, ExportXlsxMixin,
                             aware_range_month, parse_month_or_default,
                             resolve_tz)
-from backend.permissions import CanCreateSale, IsCashierOnly
+from backend.permissions import (CanCreateSale, CanProcessInvoicePayment,
+                                 IsCashierOnly)
 from backend.query_scopes import scope_bijouterie_q
 from backend.renderers import UserRenderer
 from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
@@ -40,7 +42,7 @@ from compte_depot.models import (ClientDepot, CompteDepot,
                                  CompteDepotTransaction)
 from compte_depot.notifications import send_compte_depot_facture_notification
 from compte_depot.services import effectuer_retrait
-from inventory.models import InventoryMovement
+from inventory.models import Bucket, InventoryMovement, MovementType
 from inventory.services import log_move
 from sale.models import (Client, Facture,  # adapte le chemin si besoin
                          ModePaiement, Paiement, PaiementLigne, Vente,
@@ -48,12 +50,8 @@ from sale.models import (Client, Facture,  # adapte le chemin si besoin
 from sale.pdf.escpos_ticket_58mm import build_escpos_ticket_proforma_58mm
 from sale.pdf.escpos_ticket_80mm import build_escpos_recu_paiement_80mm
 from sale.pdf.facture_A5_paysage import build_facture_a5_paysage_pdf
-from sale.pdf.ticket_paiement_80mm import build_ticket_paiement_80mm_pdf
-from sale.pdf.ticket_proforma_58mm import build_ticket_proforma_58mm_pdf
 from sale.serializers import (CancelProformaVenteSerializer,
-                              FactureListSerializer, FactureSerializer,
-                              PaiementFactureMultiModeResponseSerializer,
-                              PaiementMultiModeSerializer,
+                              FactureListSerializer,
                               RetourVenteProduitSerializer,
                               UpdateVenteProduitSerializer,
                               VenteCreateInSerializer, VenteDetailSerializer,
@@ -64,14 +62,12 @@ from sale.services.export.export_facture_excel import export_factures_excel
 from sale.services.facture_hash_service import generate_facture_hash
 from sale.services.facture_pdf_service import generate_facture_pdf
 from sale.services.facture_qr_service import generate_facture_qr
-# from sale.services.receipt_service import generate_recu_paiement_pdf_bytes
-from sale.services.sale_service import (cancel_sale_restore_direct,
-                                        create_sale_one_vendor,
+from sale.services.sale_service import (create_sale_one_vendor,
                                         upsert_client_for_payment,
                                         validate_facture_payable)
 from staff.models import Cashier
-from stock.models import VendorStock
-from store.models import Bijouterie, MarquePurete, Produit
+from stock.models import Stock, VendorStock
+from store.models import Produit
 from vendor.models import Vendor
 
 DEFAULT_PAGE_SIZE = getattr(settings, "DEFAULT_PAGE_SIZE", 50)
@@ -79,83 +75,6 @@ MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
-
-
-# class ProduitLineEtiquettesPDFView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Imprimer plusieurs étiquettes produits",
-#         operation_description=(
-#             "Génère un PDF contenant les étiquettes des ProduitLine sélectionnés. "
-#             "Accès réservé à ADMIN et MANAGER."
-#         ),
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["produit_line_ids"],
-#             properties={
-#                 "produit_line_ids": openapi.Schema(
-#                     type=openapi.TYPE_ARRAY,
-#                     items=openapi.Items(type=openapi.TYPE_INTEGER),
-#                     example=[1, 2, 3],
-#                     description="Liste des IDs ProduitLine.",
-#                 ),
-#             },
-#         ),
-#         responses={
-#             200: "PDF des étiquettes généré.",
-#             400: "produit_line_ids est requis.",
-#             403: "Accès refusé.",
-#             404: "Aucune ligne produit trouvée.",
-#         },
-#         tags=["Étiquettes"],
-#     )
-#     def post(self, request):
-#         role = get_role_name(request.user)
-
-#         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-#             return Response({"detail": "Accès refusé."}, status=403)
-
-#         produit_line_ids = request.data.get("produit_line_ids") or []
-
-#         if not produit_line_ids:
-#             return Response(
-#                 {"detail": "produit_line_ids est requis."},
-#                 status=400,
-#             )
-
-#         produit_lines = (
-#             ProduitLine.objects
-#             .select_related(
-#                 "produit",
-#                 "produit__purete",
-#                 "produit__marque",
-#                 "lot",
-#             )
-#             .filter(id__in=produit_line_ids)
-#         )
-
-#         found_ids = set(produit_lines.values_list("id", flat=True))
-#         requested_ids = set(produit_line_ids)
-#         missing_ids = requested_ids - found_ids
-
-#         if missing_ids:
-#             return Response(
-#                 {
-#                     "detail": "Certaines lignes produit sont introuvables.",
-#                     "missing_ids": list(missing_ids),
-#                 },
-#                 status=404,
-#             )
-
-#         buffer = build_etiquettes_produits_pdf(produit_lines)
-
-#         return FileResponse(
-#             buffer,
-#             as_attachment=True,
-#             filename="etiquettes_produits.pdf",
-#             content_type="application/pdf",
-#         )
 
 
 class VenteProduitCreateView(APIView):
@@ -187,17 +106,18 @@ class VenteProduitCreateView(APIView):
         exists = VendorStock.objects.filter(
             vendor=vendor,
             produit_line__produit=produit,
-            quantite_allouee__gt=0,
+            quantite_allouee__gt=F("quantite_vendue"),
         ).exists()
 
         if not exists:
             raise ValidationError({
                 "produit": (
-                    f"Le produit '{produit.nom}' n'est pas disponible "
+                    f"Le produit '{produit.nom}' n'est plus disponible "
                     f"dans le stock de ce vendeur."
                 )
             })
-
+            
+        
     def _resolve_produit_id(self, item, *, user, role):
         produit_id = item.get("produit_id")
         sku = item.get("sku")
@@ -212,21 +132,28 @@ class VenteProduitCreateView(APIView):
             scan_value = qr or sku
 
             if scan_value:
-                scan_value = str(scan_value).strip()
-                scan_value = scan_value.replace("\n", "").replace("\r", "").strip()
+                scan_value = (
+                    str(scan_value)
+                    .replace("\n", "")
+                    .replace("\r", "")
+                    .strip()
+                )
 
                 if scan_value.startswith("P:"):
-                    raw_value = scan_value.replace("P:", "", 1).strip()
+                    raw_uuid = scan_value.removeprefix("P:").strip()
 
-                    # QR avec UUID : P:uuid
-                    produit = Produit.objects.filter(uuid=raw_value).first()
+                    try:
+                        produit_uuid = UUID(raw_uuid)
+                    except (ValueError, TypeError, AttributeError):
+                        raise ValidationError({
+                            "produit": "Le QR code du produit contient un UUID invalide."
+                        })
 
-                    # Ancien QR avec ID : P:15
-                    if not produit and raw_value.isdigit():
-                        produit = Produit.objects.filter(id=int(raw_value)).first()
+                    produit = Produit.objects.filter(
+                        uuid=produit_uuid
+                    ).first()
 
                 else:
-                    # Saisie ou scan SKU
                     produit = Produit.objects.filter(
                         sku__iexact=scan_value
                     ).first()
@@ -422,30 +349,30 @@ def error_response(code, message, status_code=status.HTTP_400_BAD_REQUEST):
         },
         status=status_code,
     )
-
-
 class VenteListAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Lister les ventes",
         operation_description="""
-    Liste les ventes selon le rôle connecté.
+Liste les ventes selon le rôle connecté.
 
-    Règles :
-    - admin : voit toutes les ventes
-    - manager : voit les ventes de ses bijouteries
-    - vendor : vendor : voit seulement ses propres ventes
-    - cashier : voit les ventes de sa bijouterie
+Règles :
+- admin : voit toutes les ventes
+- manager : voit les ventes de ses bijouteries
+- vendor : voit seulement ses propres ventes
+- cashier : voit les ventes de sa bijouterie
 
-    Filtres disponibles :
-    - numero_vente
-    - client_q
-    - vendor_id
-    - status_facture
-    - page
-    - page_size
-            """,
+La liste est limitée aux ventes de l’année en cours.
+
+Filtres disponibles :
+- numero_vente
+- client_q
+- vendor_id
+- status_facture
+- page
+- page_size
+        """,
         manual_parameters=[
             openapi.Parameter(
                 "numero_vente",
@@ -456,7 +383,10 @@ class VenteListAPIView(APIView):
             openapi.Parameter(
                 "client_q",
                 openapi.IN_QUERY,
-                description="Recherche client : nom, prénom ou téléphone",
+                description=(
+                    "Recherche client par nom, prénom "
+                    "ou téléphone"
+                ),
                 type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
@@ -468,14 +398,21 @@ class VenteListAPIView(APIView):
             openapi.Parameter(
                 "status_facture",
                 openapi.IN_QUERY,
-                description="Statut facture : non_paye, partiel, paye",
+                description=(
+                    "Statut facture : "
+                    "non_paye, partiel ou paye"
+                ),
                 type=openapi.TYPE_STRING,
-                enum=["non_paye", "partiel", "paye"],
+                enum=[
+                    "non_paye",
+                    "partiel",
+                    "paye",
+                ],
             ),
             openapi.Parameter(
                 "page",
                 openapi.IN_QUERY,
-                description="Page",
+                description="Numéro de page",
                 type=openapi.TYPE_INTEGER,
             ),
             openapi.Parameter(
@@ -497,27 +434,35 @@ class VenteListAPIView(APIView):
                         "results": [
                             {
                                 "id": 12,
-                                "numero_vente": "VENTE-20260520-0001",
-                                "created_at": "2026-05-20T12:30:00Z",
+                                "numero_vente": (
+                                    "VENTE-20260520-0001"
+                                ),
+                                "created_at": (
+                                    "2026-05-20T12:30:00Z"
+                                ),
                                 "montant_total": "150000.00",
                                 "client": {
                                     "prenom": "Awa",
                                     "nom": "Diop",
-                                    "telephone": "771234567"
+                                    "telephone": "771234567",
                                 },
                                 "produits": [
                                     {
                                         "id": 30,
                                         "quantite": 2,
-                                        "prix_vente_grammes": "25000.00",
+                                        "prix_vente_grammes": (
+                                            "25000.00"
+                                        ),
                                         "remise": "0.00",
                                         "autres": "0.00",
                                         "montant_ht": "150000.00",
-                                        "montant_total": "150000.00"
+                                        "montant_total": (
+                                            "150000.00"
+                                        ),
                                     }
-                                ]
+                                ],
                             }
-                        ]
+                        ],
                     }
                 },
             ),
@@ -528,11 +473,58 @@ class VenteListAPIView(APIView):
     )
     def get(self, request):
         user = request.user
-        role = (get_role_name(user) or "").lower().strip()
+        role = get_role_name(user)
 
-        if role not in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER}:
-            return Response({"detail": "⛔ Accès refusé."}, status=403)
+        allowed_roles = {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_VENDOR,
+            ROLE_CASHIER,
+        }
 
+        if role not in allowed_roles:
+            return Response(
+                {
+                    "detail": "⛔ Accès refusé."
+                },
+                status=403,
+            )
+
+        # =====================================================
+        # Résolution du profil vendeur connecté
+        # =====================================================
+
+        my_vendor = None
+
+        if role == ROLE_VENDOR:
+            my_vendor = getattr(
+                user,
+                "staff_vendor_profile",
+                None,
+            )
+
+            if not (
+                my_vendor
+                and getattr(
+                    my_vendor,
+                    "verifie",
+                    False,
+                )
+                and my_vendor.bijouterie_id
+            ):
+                return Response(
+                    {
+                        "detail": (
+                            "Profil vendeur introuvable, "
+                            "non vérifié ou sans bijouterie."
+                        )
+                    },
+                    status=403,
+                )
+
+        # =====================================================
+        # Queryset de base avec scope bijouterie
+        # =====================================================
 
         qs = (
             Vente.objects
@@ -549,97 +541,271 @@ class VenteListAPIView(APIView):
                 "lignes__vendor",
                 "lignes__vendor__user",
             )
-            .filter(scope_bijouterie_q(user, field="bijouterie_id"))
-            .order_by("-created_at", "-id")
+            .filter(
+                scope_bijouterie_q(
+                    user,
+                    field="bijouterie_id",
+                )
+            )
+            .order_by(
+                "-created_at",
+                "-id",
+            )
         )
 
+        # =====================================================
+        # Vendeur : uniquement ses propres ventes
+        # =====================================================
+
         if role == ROLE_VENDOR:
-            my_vendor = getattr(user, "staff_vendor_profile", None)
+            qs = qs.filter(
+                vendor_id=my_vendor.id,
+            )
 
-            if not my_vendor or not getattr(my_vendor, "verifie", False):
-                return Response(
-                    {"detail": "Profil vendeur introuvable ou non vérifié."},
-                    status=403,
-                )
+        # =====================================================
+        # Ventes de l’année en cours
+        # =====================================================
 
-            qs = qs.filter(vendor_id=my_vendor.id)
-
-        # ✅ Ventes de l'année en cours pour tous les rôles
         today = timezone.localdate()
 
         start_date = timezone.make_aware(
-            datetime(today.year, 1, 1)
+            datetime(
+                today.year,
+                1,
+                1,
+            ),
+            timezone.get_current_timezone(),
         )
 
-        qs = qs.filter(created_at__gte=start_date)
+        qs = qs.filter(
+            created_at__gte=start_date,
+        )
 
-        numero_vente = (request.query_params.get("numero_vente") or "").strip()
+        # =====================================================
+        # Filtre numéro de vente
+        # =====================================================
+
+        numero_vente = (
+            request.query_params
+            .get(
+                "numero_vente",
+                "",
+            )
+            .strip()
+        )
+
         if numero_vente:
-            qs = qs.filter(numero_vente__icontains=numero_vente)
-
-        client_q = (request.query_params.get("client_q") or "").strip()
-        if client_q:
             qs = qs.filter(
-                Q(client__nom__icontains=client_q) |
-                Q(client__prenom__icontains=client_q) |
-                Q(client__telephone__icontains=client_q)
+                numero_vente__icontains=numero_vente,
             )
 
-        vendor_id = request.query_params.get("vendor_id")
-        if vendor_id:
+        # =====================================================
+        # Filtre client
+        # =====================================================
+
+        client_q = (
+            request.query_params
+            .get(
+                "client_q",
+                "",
+            )
+            .strip()
+        )
+
+        if client_q:
+            qs = qs.filter(
+                Q(
+                    client__nom__icontains=client_q
+                )
+                |
+                Q(
+                    client__prenom__icontains=client_q
+                )
+                |
+                Q(
+                    client__telephone__icontains=client_q
+                )
+            )
+
+        # =====================================================
+        # Filtre vendeur
+        # =====================================================
+
+        vendor_id_raw = request.query_params.get(
+            "vendor_id"
+        )
+
+        if vendor_id_raw not in {
+            None,
+            "",
+        }:
             try:
-                vendor_id = int(vendor_id)
-            except ValueError:
-                return Response({"vendor_id": "Doit être un entier."}, status=400)
+                vendor_id = int(
+                    vendor_id_raw
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                return Response(
+                    {
+                        "vendor_id": (
+                            "Doit être un entier positif."
+                        )
+                    },
+                    status=400,
+                )
 
-            if role == ROLE_VENDOR:
-                my_vendor = getattr(user, "staff_vendor_profile", None)
-                if not my_vendor or my_vendor.id != vendor_id:
-                    return Response(
-                        {"detail": "Un vendeur ne peut filtrer que ses propres ventes."},
-                        status=403,
-                    )
+            if vendor_id <= 0:
+                return Response(
+                    {
+                        "vendor_id": (
+                            "Doit être un entier positif."
+                        )
+                    },
+                    status=400,
+                )
 
-            qs = qs.filter(vendor_id=vendor_id)
+            if (
+                role == ROLE_VENDOR
+                and vendor_id != my_vendor.id
+            ):
+                return Response(
+                    {
+                        "detail": (
+                            "Un vendeur ne peut filtrer "
+                            "que ses propres ventes."
+                        )
+                    },
+                    status=403,
+                )
 
-        status_facture = (request.query_params.get("status_facture") or "").strip()
+            qs = qs.filter(
+                vendor_id=vendor_id,
+            )
+
+        # =====================================================
+        # Filtre statut facture
+        # =====================================================
+
+        status_facture = (
+            request.query_params
+            .get(
+                "status_facture",
+                "",
+            )
+            .strip()
+        )
+
+        allowed_invoice_statuses = {
+            "non_paye",
+            "partiel",
+            "paye",
+        }
+
         if status_facture:
-            qs = qs.filter(facture_vente__status=status_facture)
+            if (
+                status_facture
+                not in allowed_invoice_statuses
+            ):
+                return Response(
+                    {
+                        "status_facture": (
+                            "Valeur invalide. "
+                            "Utiliser non_paye, "
+                            "partiel ou paye."
+                        )
+                    },
+                    status=400,
+                )
 
-        def to_int(name, default):
-            try:
-                return int(request.query_params.get(name, default))
-            except Exception:
+            qs = qs.filter(
+                facture_vente__status=status_facture,
+            )
+
+        # =====================================================
+        # Pagination
+        # =====================================================
+
+        def parse_positive_int(
+            name: str,
+            default: int,
+        ) -> int:
+            raw_value = request.query_params.get(
+                name
+            )
+
+            if raw_value in {
+                None,
+                "",
+            }:
                 return default
 
-        page = max(1, to_int("page", 1))
-        page_size = min(max(1, to_int("page_size", 20)), 100)
+            try:
+                value = int(raw_value)
+            except (
+                TypeError,
+                ValueError,
+            ):
+                return default
 
-        paginator = Paginator(qs, page_size)
+            return max(
+                1,
+                value,
+            )
+
+        page = parse_positive_int(
+            "page",
+            1,
+        )
+
+        page_size = min(
+            parse_positive_int(
+                "page_size",
+                20,
+            ),
+            100,
+        )
+
+        paginator = Paginator(
+            qs,
+            page_size,
+        )
 
         if paginator.count == 0:
-            return Response({
-                "count": 0,
-                "page": 1,
-                "page_size": page_size,
-                "num_pages": 0,
-                "results": [],
-            })
+            return Response(
+                {
+                    "count": 0,
+                    "page": 1,
+                    "page_size": page_size,
+                    "num_pages": 0,
+                    "results": [],
+                }
+            )
 
         try:
-            page_obj = paginator.page(page)
+            page_obj = paginator.page(
+                page
+            )
         except EmptyPage:
-            page_obj = paginator.page(paginator.num_pages)
+            page_obj = paginator.page(
+                paginator.num_pages
+            )
 
-        return Response({
-            "count": paginator.count,
-            "page": page_obj.number,
-            "page_size": page_size,
-            "num_pages": paginator.num_pages,
-            "results": VenteListSerializer(page_obj.object_list, many=True).data,
-        })
+        serializer = VenteListSerializer(
+            page_obj.object_list,
+            many=True,
+        )
 
-
+        return Response(
+            {
+                "count": paginator.count,
+                "page": page_obj.number,
+                "page_size": page_size,
+                "num_pages": paginator.num_pages,
+                "results": serializer.data,
+            }
+        )
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
@@ -874,7 +1040,10 @@ class ListFacturePayeesView(APIView):
 
 
 class PaiementFactureMultiModeView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        CanProcessInvoicePayment,
+    ]
 
     @swagger_auto_schema(
         operation_summary="Paiement facture multi-mode",
@@ -2280,6 +2449,7 @@ Important :
 # ==========================================================
 # 3. RETOUR CLIENT SOUS 72H APRÈS PAIEMENT
 # ==========================================================
+
 class RetourVenteProduitView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -2292,7 +2462,10 @@ Conditions :
 - facture payée
 - stock déjà consommé
 - délai maximum 72h
-- restaure VendorStock
+- remet le produit dans le stock bijouterie
+- augmente Stock.en_stock
+- augmente Stock.quantite_totale
+- ne modifie pas VendorStock
 - crée InventoryMovement RETURN_IN
 - FIFO réel basé sur SALE_OUT
         """,
@@ -2305,15 +2478,22 @@ Conditions :
         user = request.user
         role = (get_role_name(user) or "").lower().strip()
 
-        if role not in [ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR]:
+        if role not in [
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_VENDOR,
+        ]:
             return error_response(
                 "ACCESS_DENIED",
                 "Accès refusé.",
                 status.HTTP_403_FORBIDDEN,
             )
 
-        input_serializer = RetourVenteProduitSerializer(data=request.data)
+        input_serializer = RetourVenteProduitSerializer(
+            data=request.data
+        )
         input_serializer.is_valid(raise_exception=True)
+
         data = input_serializer.validated_data
 
         vente = get_object_or_404(
@@ -2321,6 +2501,7 @@ Conditions :
             .select_for_update()
             .select_related(
                 "vendor",
+                "vendor__bijouterie",
                 "bijouterie",
                 "client",
             ),
@@ -2357,12 +2538,18 @@ Conditions :
                 status.HTTP_400_BAD_REQUEST,
             )
 
-        reference_date = vente.delivered_at or facture.date_creation
+        reference_date = (
+            vente.delivered_at
+            or facture.date_creation
+        )
 
-        if timezone.now() > reference_date + timedelta(hours=72):
+        if (
+            timezone.now()
+            > reference_date + timedelta(hours=72)
+        ):
             return error_response(
                 "RETURN_DELAY_EXPIRED",
-                "Retour impossible : délai 72h dépassé.",
+                "Retour impossible : délai de 72h dépassé.",
                 status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2384,28 +2571,28 @@ Conditions :
         produits_retour = data.get("produits") or []
 
         # =====================================================
-        # AGREGER LES DEMANDES
+        # 1. AGRÉGER LES DEMANDES
         # =====================================================
         requested_by_line = {}
 
         for item in produits_retour:
-
             ligne_id = int(item["vente_ligne_id"])
             qty = int(item["quantite"])
 
             if qty <= 0:
                 return error_response(
                     "INVALID_QTY",
-                    "La quantité doit être supérieure à 0.",
+                    "La quantité doit être supérieure à zéro.",
                     status.HTTP_400_BAD_REQUEST,
                 )
 
             requested_by_line[ligne_id] = (
-                requested_by_line.get(ligne_id, 0) + qty
+                requested_by_line.get(ligne_id, 0)
+                + qty
             )
 
         # =====================================================
-        # FIFO DES SALE_OUT
+        # 2. RÉCUPÉRER LES SALE_OUT EN FIFO
         # =====================================================
         sale_outs = (
             InventoryMovement.objects
@@ -2413,13 +2600,15 @@ Conditions :
             .filter(
                 vente=vente,
                 facture=facture,
-                movement_type=InventoryMovement.MovementType.SALE_OUT,
+                movement_type=MovementType.SALE_OUT,
             )
             .select_related(
                 "produit",
                 "produit_line",
+                "produit_line__lot",
                 "lot",
                 "vendor",
+                "vendor__bijouterie",
                 "vente_ligne",
             )
             .order_by(
@@ -2435,11 +2624,10 @@ Conditions :
             )
 
         total_returned_now = 0
-
         details = []
 
         # =====================================================
-        # PARCOURS FIFO
+        # 3. PARCOURS FIFO
         # =====================================================
         for move in sale_outs:
 
@@ -2448,16 +2636,48 @@ Conditions :
             if not ligne:
                 continue
 
+            if not move.produit_line_id:
+                return error_response(
+                    "PRODUCT_LINE_NOT_FOUND",
+                    (
+                        "Le mouvement SALE_OUT ne contient pas "
+                        "de ProduitLine."
+                    ),
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+            bijouterie_id = (
+                vente.bijouterie_id
+                or getattr(
+                    move.vendor,
+                    "bijouterie_id",
+                    None,
+                )
+            )
+
+            if not bijouterie_id:
+                return error_response(
+                    "BIJOUTERIE_NOT_FOUND",
+                    (
+                        "Impossible de déterminer la bijouterie "
+                        "du retour."
+                    ),
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Quantité déjà retournée pour ce SALE_OUT.
             already_returned = (
                 InventoryMovement.objects
                 .filter(
                     vente=vente,
                     facture=facture,
-                    movement_type=InventoryMovement.MovementType.RETURN_IN,
+                    movement_type=MovementType.RETURN_IN,
                     vente_ligne=ligne,
                     produit_line=move.produit_line,
                 )
-                .aggregate(total=Sum("qty"))["total"]
+                .aggregate(
+                    total=Sum("qty")
+                )["total"]
                 or 0
             )
 
@@ -2470,10 +2690,9 @@ Conditions :
                 continue
 
             # =================================================
-            # MODE PARTIEL
+            # 4. MODE PARTIEL OU RETOUR COMPLET
             # =================================================
             if requested_by_line:
-
                 wanted_for_line = requested_by_line.get(
                     ligne.id,
                     0,
@@ -2487,66 +2706,83 @@ Conditions :
                     wanted_for_line,
                 )
 
-                requested_by_line[ligne.id] -= qty_to_return
+                requested_by_line[ligne.id] -= (
+                    qty_to_return
+                )
 
             else:
                 qty_to_return = remaining_returnable
 
+            if qty_to_return <= 0:
+                continue
+
             # =================================================
-            # RESTAURATION VENDOR STOCK
+            # 5. REMISE EN STOCK BIJOUTERIE
             # =================================================
-            stock = (
-                VendorStock.objects
+            stock_magasin, _ = (
+                Stock.objects
                 .select_for_update()
-                .filter(
-                    vendor=move.vendor,
+                .get_or_create(
                     produit_line=move.produit_line,
+                    bijouterie_id=bijouterie_id,
+                    defaults={
+                        "en_stock": 0,
+                        "quantite_totale": 0,
+                    },
                 )
-                .first()
             )
 
-            if not stock:
-                return error_response(
-                    "VENDOR_STOCK_NOT_FOUND",
-                    f"Stock vendeur introuvable pour ligne {ligne.id}.",
-                    status.HTTP_400_BAD_REQUEST,
+            stock_updated = (
+                Stock.objects
+                .filter(pk=stock_magasin.pk)
+                .update(
+                    en_stock=(
+                        F("en_stock")
+                        + qty_to_return
+                    ),
+                    quantite_totale=(
+                        F("quantite_totale")
+                        + qty_to_return
+                    ),
+                    updated_at=timezone.now(),
                 )
-
-            if stock.quantite_vendue < qty_to_return:
-                return error_response(
-                    "INVALID_VENDOR_STOCK_STATE",
-                    f"Stock vendeur incohérent pour {move.produit.nom}.",
-                    status.HTTP_400_BAD_REQUEST,
-                )
-
-            stock.quantite_vendue -= qty_to_return
-
-            stock.save(
-                update_fields=[
-                    "quantite_vendue",
-                    "updated_at",
-                ]
             )
+
+            if stock_updated != 1:
+                raise ValidationError({
+                    "stock": (
+                        "Impossible de remettre le produit "
+                        "dans le stock de la bijouterie."
+                    )
+                })
 
             # =================================================
-            # INVENTORY MOVEMENT RETURN_IN
+            # 6. INVENTORY MOVEMENT RETURN_IN
             # =================================================
             log_move(
                 produit=move.produit,
-                qty=qty_to_return,
-                movement_type=InventoryMovement.MovementType.RETURN_IN,
-                src_bucket=InventoryMovement.Bucket.EXTERNAL,
-                dst_bucket=InventoryMovement.Bucket.BIJOUTERIE,
-                dst_bijouterie_id=move.vendor.bijouterie_id,
-                unit_cost=move.unit_cost,
                 produit_line=move.produit_line,
-                lot=move.lot,
-                vendor=move.vendor,
+                achat=move.produit_line.lot.achat,
+                lot=move.produit_line.lot,
+
+                movement_type=MovementType.RETURN_IN,
+                qty=qty_to_return,
+
+                src_bucket=Bucket.EXTERNAL,
+                dst_bucket=Bucket.BIJOUTERIE,
+                dst_bijouterie_id=bijouterie_id,
+
+                vendor=move.vendor or vente.vendor,
                 vente=vente,
-                facture=facture,
                 vente_ligne=ligne,
+                facture=facture,
+
+                reason=(
+                    reason.strip()
+                    or "Retour client dans le délai de 72 heures."
+                ),
+
                 user=user,
-                reason=reason,
             )
 
             total_returned_now += qty_to_return
@@ -2554,38 +2790,47 @@ Conditions :
             details.append({
                 "vente_ligne_id": ligne.id,
                 "produit_id": move.produit_id,
-                "produit": move.produit.nom,
-                "produit_line_id": move.produit_line_id,
+                "produit": getattr(
+                    move.produit,
+                    "nom",
+                    None,
+                ),
+                "produit_line_id": (
+                    move.produit_line_id
+                ),
                 "lot_id": move.lot_id,
-                "quantite_retournee": qty_to_return,
+                "bijouterie_id": bijouterie_id,
+                "quantite_retournee": (
+                    qty_to_return
+                ),
             })
 
         # =====================================================
-        # QUANTITES NON RETOURNABLES
+        # 7. QUANTITÉS NON RETOURNABLES
         # =====================================================
         if requested_by_line:
-
             not_returned = {
-                k: v
-                for k, v in requested_by_line.items()
-                if v > 0
+                ligne_id: qty
+                for ligne_id, qty
+                in requested_by_line.items()
+                if qty > 0
             }
 
             if not_returned:
-
                 transaction.set_rollback(True)
 
                 return error_response(
                     "RETURN_QTY_TOO_HIGH",
                     (
                         "Quantité demandée supérieure "
-                        f"à la quantité retournable : {not_returned}"
+                        "à la quantité retournable : "
+                        f"{not_returned}"
                     ),
                     status.HTTP_400_BAD_REQUEST,
                 )
 
         # =====================================================
-        # RIEN RETOURNE
+        # 8. AUCUN RETOUR EFFECTUÉ
         # =====================================================
         if total_returned_now <= 0:
             return error_response(
@@ -2598,19 +2843,20 @@ Conditions :
             {
                 "status": "success",
                 "code": "RETURN_IN_CREATED",
-                "message": "Retour client enregistré avec succès.",
-
+                "message": (
+                    "Retour client enregistré avec succès."
+                ),
                 "vente_id": vente.id,
                 "numero_vente": vente.numero_vente,
-
                 "facture": facture.numero_facture,
-
-                "quantite_totale_retournee": total_returned_now,
-
+                "quantite_totale_retournee": (
+                    total_returned_now
+                ),
                 "details": details,
             },
             status=status.HTTP_200_OK,
         )
+        
 
 
 

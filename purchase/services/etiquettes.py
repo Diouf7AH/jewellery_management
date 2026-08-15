@@ -86,7 +86,14 @@ def build_etiquette_bague_png(produit) -> BytesIO:
     # Données produit
     # ------------------------------------------------------------
 
-    qr_content = f"P:{produit.uuid}" if getattr(produit, "uuid", None) else f"P:{produit.id}"
+    produit_uuid = getattr(produit, "uuid", None)
+
+    if not produit_uuid:
+        raise ValueError(
+            f"Le produit #{getattr(produit, 'id', '?')} ne possède pas d'UUID."
+        )
+
+    qr_content = f"P:{produit_uuid}"
 
     purete = str(produit.purete) if getattr(produit, "purete", None) else ""
     poids = f"{produit.poids} g" if getattr(produit, "poids", None) else ""
@@ -111,12 +118,14 @@ def build_etiquette_bague_png(produit) -> BytesIO:
         else ""
     )
 
+    # SKU visible sous le QR
     sku_court = (
         f"{categorie_nom[:3].upper()}-"
         f"{modele_nom[:3].upper()}-"
         f"{etat.upper()}"
     ).strip("-")
 
+    # Marque affichée à droite
     marque_courte = marque[:5].upper()
 
     # ------------------------------------------------------------

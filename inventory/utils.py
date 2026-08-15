@@ -1,28 +1,54 @@
-from datetime import datetime
+# inventory/utils.py
+
+from __future__ import annotations
+
+from datetime import date, datetime
 from typing import Optional
 
 
-def parse_int(v: Optional[str]):
-    if v in (None, "", "null"):
+def parse_int(value: Optional[str]) -> Optional[int]:
+    """
+    Convertit une chaîne en entier.
+
+    Retourne None si la valeur est absente ou invalide.
+    """
+
+    if value in (None, "", "null", "None"):
         return None
+
     try:
-        return int(v)
+        return int(value)
     except (TypeError, ValueError):
         return None
 
 
-def _b(v, default=False):
-    if v is None:
+def parse_bool(value, default: bool = False) -> bool:
+    """
+    Convertit une valeur provenant des query params en booléen.
+    """
+
+    if value is None:
         return default
-    return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    return str(value).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
 
 
-def parse_date(v: Optional[str]):
-    if not v:
+def parse_date(value: Optional[str]) -> Optional[date]:
+    """
+    Convertit une date au format YYYY-MM-DD.
+    """
+
+    if not value:
         return None
+
     try:
-        return datetime.strptime(v, "%Y-%m-%d").date()
+        return datetime.strptime(value, "%Y-%m-%d").date()
     except (TypeError, ValueError):
         return None
-    
     

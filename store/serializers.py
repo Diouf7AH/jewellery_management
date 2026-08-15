@@ -1,4 +1,5 @@
 from rest_framework import serializers
+
 from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
                           MarquePuretePrixHistory, Modele, Produit, Purete)
 
@@ -226,13 +227,13 @@ class ProduitSerializer(serializers.ModelSerializer):
     purete_detail = serializers.SerializerMethodField(read_only=True)
     
     produit_url = serializers.SerializerMethodField()
-    qr_code_url = serializers.SerializerMethodField()
+    # qr_code_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Produit
         fields = (
             "id", "uuid", "slug", "categorie", "categorie_detail", "nom", "produit_url", "sku", 
-            "qr_code_url", "image", "description", "genre", "marque", "marque_detail", "modele", "modele_detail", "purete", "purete_detail", "matiere", "poids", "taille", "etat"
+            "image", "description", "genre", "marque", "marque_detail", "modele", "modele_detail", "purete", "purete_detail", "matiere", "poids", "taille", "etat"
         )
 
     def get_categorie_detail(self, obj):
@@ -293,13 +294,13 @@ class ProduitSerializer(serializers.ModelSerializer):
     #         return obj.qr_code.url
     #     return None
     
-    def get_qr_code_url(self, obj):
-        request = self.context.get('request')
-        if obj.qr_code and request:
-            return request.build_absolute_uri(obj.qr_code.url)
-        elif obj.qr_code:
-            return obj.qr_code.url
-        return None
+    # def get_qr_code_url(self, obj):
+    #     request = self.context.get('request')
+    #     if obj.qr_code and request:
+    #         return request.build_absolute_uri(obj.qr_code.url)
+    #     elif obj.qr_code:
+    #         return obj.qr_code.url
+    #     return None
     
     def validate(self, attrs):
         marque = attrs.get("marque") or getattr(self.instance, "marque", None)

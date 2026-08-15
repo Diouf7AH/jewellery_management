@@ -1,9 +1,10 @@
 from decimal import Decimal
 
 from django.db.models import Sum
+from rest_framework import serializers
+
 from e_commerce.models import EcommerceHomeProduct
 from purchase.models import ProduitLine
-from rest_framework import serializers
 from sale.models import Client
 from stock.models import Stock
 from store.models import Bijouterie
@@ -81,7 +82,6 @@ class CommandeEcommerceCreateSerializer(serializers.Serializer):
             stock = Stock.objects.filter(
                 produit_line=produit_line,
                 bijouterie=bijouterie,
-                is_reserve=False,
             ).first()
 
             if not stock:

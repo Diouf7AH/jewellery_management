@@ -1,1328 +1,2436 @@
-# inventory/views.py
 from __future__ import annotations
 
-from datetime import date, datetime
-from decimal import Decimal
-from typing import Optional, Set
+from datetime import datetime
 
-from django.core.exceptions import ValidationError
-from django.db.models import (Case, Count, DecimalField, ExpressionWrapper, F,
-                              Prefetch, Q, Sum, Value, When)
-from django.db.models.functions import Cast, Coalesce
-from django.utils import timezone
+from django.db.models import F, IntegerField, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
+from django.utils.dateparse import parse_date, parse_datetime
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from openpyxl import Workbook
-from rest_framework import status
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.mixins import (GROUP_BY_CHOICES, ExportXlsxMixin,
-                            aware_range_month, parse_month_or_default,
-                            resolve_tz)
-from backend.permissions import IsAdminOrManager
-from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
-from inventory.models import InventoryMovement, MovementType
+from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
+                           get_role_name)
+from inventory.models import Bucket, InventoryMovement, MovementType
+from inventory.serializers import (InventoryBijouterieSerializer,
+                                   InventoryMovementSerializer,
+                                   InventoryVendorSerializer,
+                                   ProduitLineWithInventorySerializer)
 from purchase.models import ProduitLine
-from stock.models import VendorStock
+from stock.models import Stock, VendorStock
 from store.models import Bijouterie
 from vendor.models import Vendor
 
-from .serializers import (InventoryBijouterieSerializer,
-                          InventoryVendorSerializer,
-                          ProduitLineWithInventorySerializer)
-from .utils import _b
-from .utils import parse_date as _date
-from .utils import parse_int as _int
 
-
-class ProduitLineWithInventoryListView(ListAPIView):
+class InventoryMovementListView(ListAPIView):
     """
-    Vue avancée FIFO / lot.
+    Journal central des mouvements d'inventaire.
 
-    Retourne les ProduitLine avec :
-    - lot
-    - achat
-    - fournisseur
-    - produit
-    - stock agrégé
-    - mouvements liés à la ProduitLine
+    Accès :
+    - admin : tous les mouvements ;
+    - manager : mouvements de ses bijouteries ;
+    - vendor : mouvements qui lui sont directement liés ;
+    - cashier : mouvements de sa bijouterie.
+
+    Filtres :
+    - q
+    - movement_type
+    - movement_types
+    - produit_id
+    - produit_line_id
+    - lot_id
+    - numero_lot
+    - achat_id
+    - facture_id
+    - vente_id
+    - vente_ligne_id
+    - vendor_id
+    - bijouterie_id
+    - src_bucket
+    - dst_bucket
+    - date_from
+    - date_to
+    - min_qty
+    - max_qty
+    - is_locked
+    - stock_consumed
+    - ordering
     """
 
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-    serializer_class = ProduitLineWithInventorySerializer
+    permission_classes = [IsAuthenticated]
+    serializer_class = InventoryMovementSerializer
     pagination_class = None
 
+    ALLOWED_ORDERING = {
+        "id",
+        "-id",
+        "occurred_at",
+        "-occurred_at",
+        "created_at",
+        "-created_at",
+        "qty",
+        "-qty",
+        "movement_type",
+        "-movement_type",
+    }
+
     @swagger_auto_schema(
-        operation_id="listProduitLinesWithInventory",
-        operation_summary="Lister les ProduitLine avec stock + mouvements",
+        operation_id="listInventoryMovements",
+        operation_summary="Lister les mouvements d'inventaire",
         operation_description=(
-            "Retourne une vue détaillée par ligne d'achat `ProduitLine`.\n\n"
-            "Cette vue est utile pour :\n"
-            "- suivre le FIFO\n"
-            "- analyser les lots\n"
-            "- relier achat → lot → produit → stock → mouvements\n\n"
-            "Filtres disponibles :\n"
-            "- `year`\n"
-            "- `lot_id`\n"
-            "- `produit_id`\n"
-            "- `numero_lot`"
+            "Retourne le journal central des mouvements d'inventaire.\n\n"
+            "Types disponibles :\n"
+            "- PURCHASE_IN\n"
+            "- VENDOR_ASSIGN\n"
+            "- SALE_OUT\n"
+            "- RETURN_IN\n"
+            "- CANCEL_PURCHASE\n"
+            "- ADJUSTMENT\n\n"
+            "Le résultat est automatiquement limité selon le rôle connecté."
         ),
         manual_parameters=[
             openapi.Parameter(
-                "year",
+                "q",
                 openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description="Année du lot. Défaut : année courante.",
+                description=(
+                    "Recherche dans le produit, SKU, lot, achat, "
+                    "facture, vente, motif et vendeur."
+                ),
+                type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
-                "lot_id",
+                "movement_type",
                 openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description="Filtrer par lot_id.",
+                description="Type unique de mouvement.",
+                type=openapi.TYPE_STRING,
+                enum=[choice[0] for choice in MovementType.choices],
+            ),
+            openapi.Parameter(
+                "movement_types",
+                openapi.IN_QUERY,
+                description=(
+                    "Plusieurs types séparés par des virgules. "
+                    "Exemple : PURCHASE_IN,ADJUSTMENT"
+                ),
+                type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
                 "produit_id",
                 openapi.IN_QUERY,
+                description="Identifiant du produit.",
                 type=openapi.TYPE_INTEGER,
-                description="Filtrer par produit_id.",
+            ),
+            openapi.Parameter(
+                "produit_line_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la ProduitLine.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "lot_id",
+                openapi.IN_QUERY,
+                description="Identifiant du lot.",
+                type=openapi.TYPE_INTEGER,
             ),
             openapi.Parameter(
                 "numero_lot",
                 openapi.IN_QUERY,
+                description="Recherche par numéro de lot.",
                 type=openapi.TYPE_STRING,
-                description="Recherche partielle sur le numéro de lot.",
+            ),
+            openapi.Parameter(
+                "achat_id",
+                openapi.IN_QUERY,
+                description="Identifiant de l'achat.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "facture_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la facture.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "vente_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la vente.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "vente_ligne_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la ligne de vente.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "vendor_id",
+                openapi.IN_QUERY,
+                description="Identifiant du vendeur.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                description=(
+                    "Mouvements dont la bijouterie est source "
+                    "ou destination."
+                ),
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "src_bucket",
+                openapi.IN_QUERY,
+                description="Emplacement source.",
+                type=openapi.TYPE_STRING,
+                enum=[choice[0] for choice in Bucket.choices],
+            ),
+            openapi.Parameter(
+                "dst_bucket",
+                openapi.IN_QUERY,
+                description="Emplacement destination.",
+                type=openapi.TYPE_STRING,
+                enum=[choice[0] for choice in Bucket.choices],
+            ),
+            openapi.Parameter(
+                "date_from",
+                openapi.IN_QUERY,
+                description="Date minimale, format YYYY-MM-DD.",
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+            ),
+            openapi.Parameter(
+                "date_to",
+                openapi.IN_QUERY,
+                description="Date maximale, format YYYY-MM-DD.",
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+            ),
+            openapi.Parameter(
+                "min_qty",
+                openapi.IN_QUERY,
+                description="Quantité minimale.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "max_qty",
+                openapi.IN_QUERY,
+                description="Quantité maximale.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "is_locked",
+                openapi.IN_QUERY,
+                description="Filtrer les mouvements verrouillés.",
+                type=openapi.TYPE_BOOLEAN,
+            ),
+            openapi.Parameter(
+                "stock_consumed",
+                openapi.IN_QUERY,
+                description="Filtrer selon la consommation du stock.",
+                type=openapi.TYPE_BOOLEAN,
+            ),
+            openapi.Parameter(
+                "ordering",
+                openapi.IN_QUERY,
+                description=(
+                    "Tri : -occurred_at, occurred_at, -qty, qty, "
+                    "-id, id, movement_type."
+                ),
+                type=openapi.TYPE_STRING,
             ),
         ],
-        tags=["Inventaire"],
-        responses={200: ProduitLineWithInventorySerializer(many=True)},
+        responses={
+            200: InventoryMovementSerializer(many=True),
+        },
     )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    # ========================================================
+    # Helpers
+    # ========================================================
+
+    @staticmethod
+    def _parse_positive_int(value, field_name):
+        if value in (None, ""):
+            return None
+
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: "Une valeur entière est requise."
+            })
+
+        if parsed <= 0:
+            raise ValidationError({
+                field_name: "La valeur doit être supérieure à zéro."
+            })
+
+        return parsed
+
+    @staticmethod
+    def _parse_non_negative_int(value, field_name):
+        if value in (None, ""):
+            return None
+
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: "Une valeur entière est requise."
+            })
+
+        if parsed < 0:
+            raise ValidationError({
+                field_name: (
+                    "La valeur doit être supérieure ou égale à zéro."
+                )
+            })
+
+        return parsed
+
+    @staticmethod
+    def _parse_boolean(value, field_name):
+        if value in (None, ""):
+            return None
+
+        normalized = str(value).strip().lower()
+
+        if normalized in {"1", "true", "yes", "oui"}:
+            return True
+
+        if normalized in {"0", "false", "no", "non"}:
+            return False
+
+        raise ValidationError({
+            field_name: (
+                "Valeur booléenne invalide. "
+                "Utilisez true, false, 1 ou 0."
+            )
+        })
+
+    @staticmethod
+    def _parse_date(value, field_name):
+        if not value:
+            return None
+
+        parsed = parse_date(value)
+
+        if parsed is None:
+            parsed_datetime = parse_datetime(value)
+
+            if parsed_datetime is not None:
+                parsed = parsed_datetime.date()
+
+        if parsed is None:
+            raise ValidationError({
+                field_name: "Format invalide. Utilisez YYYY-MM-DD."
+            })
+
+        return parsed
+
+    @staticmethod
+    def _verified_profile(user, attribute):
+        profile = getattr(user, attribute, None)
+
+        if not profile:
+            return None
+
+        if not getattr(profile, "verifie", True):
+            return None
+
+        return profile
+
+    # ========================================================
+    # Scope selon le rôle
+    # ========================================================
+
+    def _apply_role_scope(self, queryset):
+        user = self.request.user
+        role = get_role_name(user)
+
+        if role == ROLE_ADMIN:
+            return queryset
+
+        if role == ROLE_MANAGER:
+            manager = self._verified_profile(
+                user,
+                "staff_manager_profile",
+            )
+
+            if not manager:
+                return queryset.none()
+
+            bijouterie_ids = manager.bijouteries.values_list(
+                "id",
+                flat=True,
+            )
+
+            return queryset.filter(
+                Q(src_bijouterie_id__in=bijouterie_ids)
+                | Q(dst_bijouterie_id__in=bijouterie_ids)
+            )
+
+        if role == ROLE_VENDOR:
+            vendor = (
+                self._verified_profile(user, "vendor_profile")
+                or self._verified_profile(
+                    user,
+                    "staff_vendor_profile",
+                )
+            )
+
+            if not vendor:
+                return queryset.none()
+
+            return queryset.filter(
+                vendor_id=vendor.id,
+            )
+
+        if role == ROLE_CASHIER:
+            cashier = self._verified_profile(
+                user,
+                "staff_cashier_profile",
+            )
+
+            if not cashier or not cashier.bijouterie_id:
+                return queryset.none()
+
+            return queryset.filter(
+                Q(src_bijouterie_id=cashier.bijouterie_id)
+                | Q(dst_bijouterie_id=cashier.bijouterie_id)
+            )
+
+        return queryset.none()
+
+    # ========================================================
+    # Queryset
+    # ========================================================
+
     def get_queryset(self):
-        getf = self.request.query_params.get
-
-        # -------------------------
-        # Année
-        # -------------------------
-        year_raw = getf("year")
-
-        if year_raw in (None, "", "null"):
-            year = timezone.localdate().year
-        else:
-            try:
-                year = int(year_raw)
-            except ValueError:
-                raise ValidationError({"year": "Doit être un entier."})
-
-            if year < 2000 or year > 2100:
-                raise ValidationError({"year": "Année invalide."})
-
-        # -------------------------
-        # Mouvements liés à ProduitLine
-        # -------------------------
-        movements_qs = (
+        queryset = (
             InventoryMovement.objects
             .select_related(
-                "src_bijouterie",
-                "dst_bijouterie",
-                "vendor",
-                "vendor__user",
-                "facture",
-                "vente",
-                "created_by",
-            )
-            .order_by("-occurred_at", "-id")
-        )
-
-        qs = (
-            ProduitLine.objects
-            .select_related(
-                "lot",
-                "lot__achat",
-                "lot__achat__fournisseur",
                 "produit",
                 "produit__categorie",
+                "produit__modele",
                 "produit__marque",
                 "produit__purete",
+                "produit_line",
+                "produit_line__lot",
+                "produit_line__lot__achat",
+                "lot",
+                "lot__achat",
+                "achat",
+                "achat__fournisseur",
+                "facture",
+                "vente",
+                "vente_ligne",
+                "vendor",
+                "vendor__user",
+                "vendor__bijouterie",
+                "src_bijouterie",
+                "dst_bijouterie",
+                "created_by",
             )
-            .prefetch_related(
-                Prefetch(
-                    "inventory_movements",
-                    queryset=movements_qs,
-                    to_attr="prefetched_movements",
-                )
-            )
-            .annotate(
-                quantite_allouee=Coalesce(
-                    Sum("stocks__quantite_allouee"),
-                    0,
-                ),
-                quantite_disponible_total=Coalesce(
-                    Sum("stocks__quantite_disponible"),
-                    0,
-                ),
-            )
-            .filter(lot__received_at__year=year)
         )
 
-        # -------------------------
-        # Filtres
-        # -------------------------
-        lot_id = getf("lot_id")
-        if lot_id:
-            try:
-                qs = qs.filter(lot_id=int(lot_id))
-            except ValueError:
-                raise ValidationError({"lot_id": "Doit être un entier."})
+        queryset = self._apply_role_scope(queryset)
 
-        produit_id = getf("produit_id")
-        if produit_id:
-            try:
-                qs = qs.filter(produit_id=int(produit_id))
-            except ValueError:
-                raise ValidationError({"produit_id": "Doit être un entier."})
+        params = self.request.query_params
 
-        numero_lot = (getf("numero_lot") or "").strip()
-        if numero_lot:
-            qs = qs.filter(lot__numero_lot__icontains=numero_lot)
+        # ====================================================
+        # Recherche globale
+        # ====================================================
 
-        return qs.order_by("-lot__received_at", "lot__numero_lot", "id")
+        q = (params.get("q") or "").strip()
 
-
-# ---------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------
-
-# ---------------------------------------------------------------------
-# InventoryMovementListView
-# ---------------------------------------------------------------------
-def _int(v: Optional[str]) -> Optional[int]:
-    if v in (None, "", "null"):
-        return None
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
-
-
-def _date(v: Optional[str]) -> Optional[date]:
-    if not v:
-        return None
-    try:
-        return datetime.strptime(v, "%Y-%m-%d").date()
-    except Exception:
-        return None
-
-
-def _signed_qty(movement_type, qty) -> int:
-    q = int(qty or 0)
-    if movement_type in {
-        MovementType.SALE_OUT,
-        MovementType.CANCEL_PURCHASE,
-    }:
-        return -q
-    return q
-
-
-class InventoryMovementListView(ExportXlsxMixin, APIView):
-    """
-    Journal détaillé des mouvements d’inventaire.
-
-    - Admin   : voit tout
-    - Manager : voit uniquement les mouvements de ses bijouteries
-    - Export Excel : ?export=xlsx
-    - Pagination simple : ?limit=200&offset=0
-    """
-
-    permission_classes = [IsAuthenticated]
-    http_method_names = ["get"]
-
-    @swagger_auto_schema(
-        operation_id="inventoryMovementList",
-        operation_summary="Journal des mouvements d’inventaire",
-        operation_description=(
-            "Retourne le journal détaillé des mouvements d’inventaire.\n\n"
-            "### Rôles\n"
-            "- Admin : tous les mouvements\n"
-            "- Manager : mouvements de ses bijouteries uniquement\n\n"
-            "### Filtres\n"
-            "- q : recherche produit, SKU, lot, raison\n"
-            "- date_from/date_to : YYYY-MM-DD\n"
-            "- movement_types : CSV ex: PURCHASE_IN,SALE_OUT\n"
-            "- produit_id, lot_id, achat_id, vendor_id, vente_id, facture_id\n"
-            "- bijouterie_id, src_bijouterie_id, dst_bijouterie_id\n"
-            "- src_bucket, dst_bucket\n"
-            "- min_qty, max_qty\n\n"
-            "### Export\n"
-            "- export=xlsx"
-        ),
-        manual_parameters=[
-            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
-            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="YYYY-MM-DD"),
-            openapi.Parameter("movement_types", openapi.IN_QUERY, type=openapi.TYPE_STRING, description="CSV"),
-            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("lot_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("lot_code", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("achat_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("vendor_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("vente_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("facture_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("src_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("dst_bucket", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("src_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("dst_bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("min_qty", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("max_qty", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING),
-            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING, enum=["xlsx"]),
-            openapi.Parameter("limit", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-            openapi.Parameter("offset", openapi.IN_QUERY, type=openapi.TYPE_INTEGER),
-        ],
-        tags=["Inventaire"],
-    )
-    def get(self, request):
-        getf = request.GET.get
-        role = get_role_name(request.user)
-
-        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
-            return Response(
-                {"detail": "Accès réservé aux admins et managers."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        qs = InventoryMovement.objects.select_related(
-            "produit",
-            "lot",
-            "src_bijouterie",
-            "dst_bijouterie",
-            "created_by",
-            "vendor",
-            "vendor__user",
-            "vente",
-            "facture",
-        )
-
-        # -------------------------
-        # Scope rôle
-        # -------------------------
-        if role == ROLE_ADMIN:
-            bj_id = _int(getf("bijouterie_id"))
-            if bj_id:
-                qs = qs.filter(
-                    Q(src_bijouterie_id=bj_id) |
-                    Q(dst_bijouterie_id=bj_id)
-                )
-
-        else:
-            manager_profile = getattr(request.user, "staff_manager_profile", None)
-
-            if not manager_profile or (
-                hasattr(manager_profile, "verifie") and not manager_profile.verifie
-            ):
-                return Response(
-                    {"detail": "Profil manager invalide."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-            bijouterie_ids = list(
-                manager_profile.bijouteries.values_list("id", flat=True)
-            )
-
-            if not bijouterie_ids:
-                return Response(
-                    {"detail": "Ce manager n'a aucune bijouterie assignée."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            qs = qs.filter(
-                Q(src_bijouterie_id__in=bijouterie_ids) |
-                Q(dst_bijouterie_id__in=bijouterie_ids)
-            )
-
-        # -------------------------
-        # Recherche texte
-        # -------------------------
-        q = (getf("q") or "").strip()
         if q:
-            qs = qs.filter(
+            queryset = queryset.filter(
                 Q(produit__nom__icontains=q)
                 | Q(produit__sku__icontains=q)
                 | Q(lot__numero_lot__icontains=q)
+                | Q(achat__numero_achat__icontains=q)
+                | Q(facture__numero_facture__icontains=q)
+                | Q(vente__numero_vente__icontains=q)
                 | Q(reason__icontains=q)
+                | Q(vendor__user__email__icontains=q)
+                | Q(vendor__user__first_name__icontains=q)
+                | Q(vendor__user__last_name__icontains=q)
             )
 
-        # -------------------------
-        # Filtres IDs
-        # -------------------------
+        # ====================================================
+        # Type de mouvement
+        # ====================================================
+
+        movement_type = (
+            params.get("movement_type") or ""
+        ).strip()
+
+        if movement_type:
+            valid_types = {
+                choice[0]
+                for choice in MovementType.choices
+            }
+
+            if movement_type not in valid_types:
+                raise ValidationError({
+                    "movement_type": (
+                        "Type invalide. Valeurs autorisées : "
+                        + ", ".join(sorted(valid_types))
+                    )
+                })
+
+            queryset = queryset.filter(
+                movement_type=movement_type,
+            )
+
+        movement_types_raw = (
+            params.get("movement_types") or ""
+        ).strip()
+
+        if movement_types_raw:
+            movement_types = [
+                value.strip()
+                for value in movement_types_raw.split(",")
+                if value.strip()
+            ]
+
+            valid_types = {
+                choice[0]
+                for choice in MovementType.choices
+            }
+
+            invalid_types = [
+                value
+                for value in movement_types
+                if value not in valid_types
+            ]
+
+            if invalid_types:
+                raise ValidationError({
+                    "movement_types": (
+                        "Types invalides : "
+                        + ", ".join(invalid_types)
+                    )
+                })
+
+            queryset = queryset.filter(
+                movement_type__in=movement_types,
+            )
+
+        # ====================================================
+        # Identifiants
+        # ====================================================
+
         id_filters = {
             "produit_id": "produit_id",
+            "produit_line_id": "produit_line_id",
             "lot_id": "lot_id",
             "achat_id": "achat_id",
-            "vendor_id": "vendor_id",
-            "vente_id": "vente_id",
             "facture_id": "facture_id",
-            "src_bijouterie_id": "src_bijouterie_id",
-            "dst_bijouterie_id": "dst_bijouterie_id",
+            "vente_id": "vente_id",
+            "vente_ligne_id": "vente_ligne_id",
+            "vendor_id": "vendor_id",
         }
 
-        for param, field in id_filters.items():
-            value = _int(getf(param))
-            if value:
-                qs = qs.filter(**{field: value})
+        for parameter_name, model_field in id_filters.items():
+            value = self._parse_positive_int(
+                params.get(parameter_name),
+                parameter_name,
+            )
 
-        lot_code = (getf("lot_code") or "").strip()
-        if lot_code:
-            qs = qs.filter(lot__numero_lot__iexact=lot_code)
-
-        src_bucket = (getf("src_bucket") or "").strip()
-        if src_bucket:
-            qs = qs.filter(src_bucket=src_bucket)
-
-        dst_bucket = (getf("dst_bucket") or "").strip()
-        if dst_bucket:
-            qs = qs.filter(dst_bucket=dst_bucket)
-
-        # -------------------------
-        # Types de mouvements
-        # -------------------------
-        types_csv = (getf("movement_types") or "").strip()
-        if types_csv:
-            types = [t.strip().upper() for t in types_csv.split(",") if t.strip()]
-            allowed = {choice[0] for choice in MovementType.choices}
-            bad = [t for t in types if t not in allowed]
-
-            if bad:
-                return Response(
-                    {
-                        "detail": (
-                            f"movement_types invalide(s): {bad}. "
-                            f"Allowed: {sorted(allowed)}"
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
+            if value is not None:
+                queryset = queryset.filter(
+                    **{model_field: value}
                 )
 
-            qs = qs.filter(movement_type__in=types)
+        numero_lot = (
+            params.get("numero_lot") or ""
+        ).strip()
 
-        # -------------------------
-        # Dates
-        # -------------------------
-        date_from_raw = getf("date_from")
-        date_to_raw = getf("date_to")
-
-        date_from = _date(date_from_raw)
-        date_to = _date(date_to_raw)
-
-        if date_from_raw and not date_from:
-            return Response(
-                {"date_from": "Format invalide. Utiliser YYYY-MM-DD."},
-                status=status.HTTP_400_BAD_REQUEST,
+        if numero_lot:
+            queryset = queryset.filter(
+                lot__numero_lot__icontains=numero_lot,
             )
 
-        if date_to_raw and not date_to:
-            return Response(
-                {"date_to": "Format invalide. Utiliser YYYY-MM-DD."},
-                status=status.HTTP_400_BAD_REQUEST,
+        # ====================================================
+        # Bijouterie
+        # ====================================================
+
+        bijouterie_id = self._parse_positive_int(
+            params.get("bijouterie_id"),
+            "bijouterie_id",
+        )
+
+        if bijouterie_id is not None:
+            queryset = queryset.filter(
+                Q(src_bijouterie_id=bijouterie_id)
+                | Q(dst_bijouterie_id=bijouterie_id)
             )
 
-        if date_from and date_to and date_from > date_to:
-            return Response(
-                {"detail": "date_from doit être inférieur ou égal à date_to."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # ====================================================
+        # Buckets
+        # ====================================================
 
-        if date_from:
-            qs = qs.filter(occurred_at__date__gte=date_from)
-
-        if date_to:
-            qs = qs.filter(occurred_at__date__lte=date_to)
-
-        # -------------------------
-        # Quantités
-        # -------------------------
-        min_qty = _int(getf("min_qty"))
-        max_qty = _int(getf("max_qty"))
-
-        if min_qty is not None:
-            qs = qs.filter(qty__gte=min_qty)
-
-        if max_qty is not None:
-            qs = qs.filter(qty__lte=max_qty)
-
-        # -------------------------
-        # Tri
-        # -------------------------
-        ordering = (getf("ordering") or "-occurred_at").strip()
-
-        allowed_ordering = {
-            "occurred_at",
-            "-occurred_at",
-            "qty",
-            "-qty",
-            "movement_type",
-            "-movement_type",
-            "produit_nom",
-            "-produit_nom",
-            "id",
-            "-id",
+        valid_buckets = {
+            choice[0]
+            for choice in Bucket.choices
         }
 
-        if ordering not in allowed_ordering:
-            ordering = "-occurred_at"
+        src_bucket = (
+            params.get("src_bucket") or ""
+        ).strip()
 
-        if "produit_nom" in ordering:
-            ordering = ordering.replace("produit_nom", "produit__nom")
+        if src_bucket:
+            if src_bucket not in valid_buckets:
+                raise ValidationError({
+                    "src_bucket": (
+                        "Bucket source invalide. Valeurs autorisées : "
+                        + ", ".join(sorted(valid_buckets))
+                    )
+                })
 
-        qs = qs.order_by(ordering, "-id")
+            queryset = queryset.filter(
+                src_bucket=src_bucket,
+            )
 
-        values_fields = [
-            "id",
-            "occurred_at",
-            "movement_type",
-            "qty",
-            "produit_id",
-            "produit__nom",
-            "produit__sku",
-            "lot_id",
-            "lot__numero_lot",
-            "achat_id",
-            "vendor_id",
-            "vendor__user__email",
-            "vente_id",
-            "vente__numero_vente",
-            "facture_id",
-            "facture__numero_facture",
-            "src_bucket",
-            "src_bijouterie_id",
-            "dst_bucket",
-            "dst_bijouterie_id",
-            "created_by_id",
-            "created_by__email",
-            "reason",
-        ]
+        dst_bucket = (
+            params.get("dst_bucket") or ""
+        ).strip()
 
-        # -------------------------
-        # Export Excel
-        # -------------------------
-        if (getf("export") or "").lower() == "xlsx":
-            rows = list(qs.values(*values_fields))
+        if dst_bucket:
+            if dst_bucket not in valid_buckets:
+                raise ValidationError({
+                    "dst_bucket": (
+                        "Bucket destination invalide. "
+                        "Valeurs autorisées : "
+                        + ", ".join(sorted(valid_buckets))
+                    )
+                })
 
-            bij_ids: Set[int] = set()
-            for r in rows:
-                if r.get("src_bijouterie_id"):
-                    bij_ids.add(r["src_bijouterie_id"])
-                if r.get("dst_bijouterie_id"):
-                    bij_ids.add(r["dst_bijouterie_id"])
+            queryset = queryset.filter(
+                dst_bucket=dst_bucket,
+            )
 
-            bij_map = {
-                b.id: b.nom
-                for b in Bijouterie.objects.filter(id__in=bij_ids)
-            } if bij_ids else {}
+        # ====================================================
+        # Dates
+        # ====================================================
 
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Mouvements"
+        date_from = self._parse_date(
+            params.get("date_from"),
+            "date_from",
+        )
 
-            headers = [
-                "id",
-                "occurred_at",
-                "movement_type",
-                "produit_id",
-                "produit_nom",
-                "produit_sku",
-                "lot_id",
-                "lot_code",
-                "qty",
-                "signed_qty",
+        date_to = self._parse_date(
+            params.get("date_to"),
+            "date_to",
+        )
+
+        if date_from and date_to and date_from > date_to:
+            raise ValidationError({
+                "date_to": (
+                    "date_to doit être supérieure ou égale à date_from."
+                )
+            })
+
+        if date_from:
+            queryset = queryset.filter(
+                occurred_at__date__gte=date_from,
+            )
+
+        if date_to:
+            queryset = queryset.filter(
+                occurred_at__date__lte=date_to,
+            )
+
+        # ====================================================
+        # Quantités
+        # ====================================================
+
+        min_qty = self._parse_non_negative_int(
+            params.get("min_qty"),
+            "min_qty",
+        )
+
+        max_qty = self._parse_non_negative_int(
+            params.get("max_qty"),
+            "max_qty",
+        )
+
+        if (
+            min_qty is not None
+            and max_qty is not None
+            and min_qty > max_qty
+        ):
+            raise ValidationError({
+                "max_qty": (
+                    "max_qty doit être supérieur ou égal à min_qty."
+                )
+            })
+
+        if min_qty is not None:
+            queryset = queryset.filter(
+                qty__gte=min_qty,
+            )
+
+        if max_qty is not None:
+            queryset = queryset.filter(
+                qty__lte=max_qty,
+            )
+
+        # ====================================================
+        # États
+        # ====================================================
+
+        is_locked = self._parse_boolean(
+            params.get("is_locked"),
+            "is_locked",
+        )
+
+        if is_locked is not None:
+            queryset = queryset.filter(
+                is_locked=is_locked,
+            )
+
+        stock_consumed = self._parse_boolean(
+            params.get("stock_consumed"),
+            "stock_consumed",
+        )
+
+        if stock_consumed is not None:
+            queryset = queryset.filter(
+                stock_consumed=stock_consumed,
+            )
+
+        # ====================================================
+        # Tri
+        # ====================================================
+
+        ordering = (
+            params.get("ordering")
+            or "-occurred_at"
+        ).strip()
+
+        if ordering not in self.ALLOWED_ORDERING:
+            raise ValidationError({
+                "ordering": (
+                    "Tri invalide. Valeurs autorisées : "
+                    + ", ".join(sorted(self.ALLOWED_ORDERING))
+                )
+            })
+
+        return queryset.order_by(ordering, "-id")
+    
+
+
+class ProduitLineWithInventoryListView(ListAPIView):
+    """
+    Liste détaillée des ProduitLine avec :
+
+    - achat ;
+    - fournisseur ;
+    - lot ;
+    - produit ;
+    - stock magasin ;
+    - stock vendeur ;
+    - quantité vendue ;
+    - quantité retournée ;
+    - mouvements d'inventaire.
+
+    Accès :
+    - admin : toutes les ProduitLine ;
+    - manager : ProduitLine de ses bijouteries ;
+    - cashier : ProduitLine de sa bijouterie ;
+    - vendor : ProduitLine présentes dans son stock vendeur.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = ProduitLineWithInventorySerializer
+    pagination_class = None
+
+    ALLOWED_ORDERING = {
+        "id",
+        "-id",
+        "lot__received_at",
+        "-lot__received_at",
+        "lot__numero_lot",
+        "-lot__numero_lot",
+        "produit__nom",
+        "-produit__nom",
+        "quantite",
+        "-quantite",
+        "stock_magasin",
+        "-stock_magasin",
+        "stock_vendeur",
+        "-stock_vendeur",
+        "stock_global",
+        "-stock_global",
+    }
+
+    @swagger_auto_schema(
+        operation_id="listProduitLinesWithInventory",
+        operation_summary=(
+            "Lister les ProduitLine avec stocks et mouvements"
+        ),
+        operation_description=(
+            "Retourne une vue détaillée par ligne d'achat ProduitLine.\n\n"
+            "Chaque ligne contient notamment :\n"
+            "- l'achat et le fournisseur ;\n"
+            "- le lot ;\n"
+            "- le produit ;\n"
+            "- le stock magasin ;\n"
+            "- le stock affecté aux vendeurs ;\n"
+            "- les quantités vendues ;\n"
+            "- les mouvements d'inventaire associés.\n\n"
+            "Le résultat est automatiquement limité selon le rôle "
+            "de l'utilisateur connecté."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "q",
+                openapi.IN_QUERY,
+                description=(
+                    "Recherche par produit, SKU, lot, achat, "
+                    "fournisseur ou description."
+                ),
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "year",
+                openapi.IN_QUERY,
+                description="Année de réception du lot.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
                 "achat_id",
+                openapi.IN_QUERY,
+                description="Identifiant de l'achat.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "lot_id",
+                openapi.IN_QUERY,
+                description="Identifiant du lot.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "numero_lot",
+                openapi.IN_QUERY,
+                description="Recherche par numéro de lot.",
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "produit_id",
+                openapi.IN_QUERY,
+                description="Identifiant du produit.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "produit_line_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la ProduitLine.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "fournisseur_id",
+                openapi.IN_QUERY,
+                description="Identifiant du fournisseur.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la bijouterie.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
                 "vendor_id",
-                "vendor_email",
-                "vente_id",
-                "numero_vente",
-                "facture_id",
-                "numero_facture",
-                "src_bucket",
-                "src_bijouterie_id",
-                "src_bijouterie_nom",
-                "dst_bucket",
-                "dst_bijouterie_id",
-                "dst_bijouterie_nom",
-                "created_by_id",
-                "created_by_email",
-                "reason",
-            ]
-            ws.append(headers)
+                openapi.IN_QUERY,
+                description="Identifiant du vendeur.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "has_stock",
+                openapi.IN_QUERY,
+                description=(
+                    "true : uniquement les lignes avec stock global positif."
+                ),
+                type=openapi.TYPE_BOOLEAN,
+            ),
+            openapi.Parameter(
+                "movement_type",
+                openapi.IN_QUERY,
+                description=(
+                    "ProduitLine ayant au moins un mouvement de ce type."
+                ),
+                type=openapi.TYPE_STRING,
+                enum=[
+                    choice[0]
+                    for choice in MovementType.choices
+                ],
+            ),
+            openapi.Parameter(
+                "ordering",
+                openapi.IN_QUERY,
+                description=(
+                    "Tri par défaut : -lot__received_at. "
+                    "Exemples : produit__nom, -stock_global, "
+                    "lot__numero_lot."
+                ),
+                type=openapi.TYPE_STRING,
+            ),
+        ],
+        responses={
+            200: ProduitLineWithInventorySerializer(many=True),
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
-            for r in rows:
-                signed_qty = _signed_qty(r.get("movement_type"), r.get("qty"))
+    # ========================================================
+    # Helpers
+    # ========================================================
 
-                ws.append([
-                    r.get("id"),
-                    r.get("occurred_at"),
-                    r.get("movement_type"),
-                    r.get("produit_id"),
-                    r.get("produit__nom"),
-                    r.get("produit__sku"),
-                    r.get("lot_id"),
-                    r.get("lot__numero_lot"),
-                    r.get("qty"),
-                    signed_qty,
-                    r.get("achat_id"),
-                    r.get("vendor_id"),
-                    r.get("vendor__user__email"),
-                    r.get("vente_id"),
-                    r.get("vente__numero_vente"),
-                    r.get("facture_id"),
-                    r.get("facture__numero_facture"),
-                    r.get("src_bucket"),
-                    r.get("src_bijouterie_id"),
-                    bij_map.get(r.get("src_bijouterie_id")),
-                    r.get("dst_bucket"),
-                    r.get("dst_bijouterie_id"),
-                    bij_map.get(r.get("dst_bijouterie_id")),
-                    r.get("created_by_id"),
-                    r.get("created_by__email"),
-                    r.get("reason"),
-                ])
+    @staticmethod
+    def _parse_positive_int(value, field_name):
+        if value in (None, ""):
+            return None
 
-            self._autosize(ws)
-            return self._xlsx_response(wb, "inventory_movements.xlsx")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: "Une valeur entière est requise."
+            })
 
-        # -------------------------
-        # Pagination JSON
-        # -------------------------
-        limit = _int(getf("limit")) or 200
-        offset = _int(getf("offset")) or 0
+        if parsed <= 0:
+            raise ValidationError({
+                field_name: (
+                    "La valeur doit être supérieure à zéro."
+                )
+            })
 
-        limit = max(1, min(limit, 2000))
-        offset = max(0, offset)
+        return parsed
 
-        total = qs.count()
-        page_qs = qs[offset: offset + limit]
-        rows = list(page_qs.values(*values_fields))
+    @staticmethod
+    def _parse_year(value):
+        if value in (None, ""):
+            return None
 
-        bij_ids: Set[int] = set()
-        for r in rows:
-            if r.get("src_bijouterie_id"):
-                bij_ids.add(r["src_bijouterie_id"])
-            if r.get("dst_bijouterie_id"):
-                bij_ids.add(r["dst_bijouterie_id"])
+        try:
+            year = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError({
+                "year": "Une année valide est requise."
+            })
 
-        bij_map = {
-            b.id: b.nom
-            for b in Bijouterie.objects.filter(id__in=bij_ids)
-        } if bij_ids else {}
+        if year < 2000 or year > 2100:
+            raise ValidationError({
+                "year": (
+                    "L'année doit être comprise entre 2000 et 2100."
+                )
+            })
+
+        return year
+
+    @staticmethod
+    def _parse_boolean(value, field_name):
+        if value in (None, ""):
+            return None
+
+        normalized = str(value).strip().lower()
+
+        if normalized in {
+            "1",
+            "true",
+            "yes",
+            "oui",
+        }:
+            return True
+
+        if normalized in {
+            "0",
+            "false",
+            "no",
+            "non",
+        }:
+            return False
+
+        raise ValidationError({
+            field_name: (
+                "Valeur booléenne invalide. "
+                "Utilisez true, false, 1 ou 0."
+            )
+        })
+
+    @staticmethod
+    def _verified_profile(user, attribute):
+        profile = getattr(user, attribute, None)
+
+        if not profile:
+            return None
+
+        if not getattr(profile, "verifie", True):
+            return None
+
+        return profile
+
+    # ========================================================
+    # Scope selon le rôle
+    # ========================================================
+
+    def _apply_role_scope(self, queryset):
+        user = self.request.user
+        role = get_role_name(user)
+
+        if role == ROLE_ADMIN:
+            return queryset
+
+        if role == ROLE_MANAGER:
+            manager = self._verified_profile(
+                user,
+                "staff_manager_profile",
+            )
+
+            if not manager:
+                return queryset.none()
+
+            bijouterie_ids = manager.bijouteries.values_list(
+                "id",
+                flat=True,
+            )
+
+            return queryset.filter(
+                Q(stocks__bijouterie_id__in=bijouterie_ids)
+                | Q(
+                    vendor_stocks__bijouterie_id__in=
+                    bijouterie_ids
+                )
+                | Q(
+                    inventory_movements__src_bijouterie_id__in=
+                    bijouterie_ids
+                )
+                | Q(
+                    inventory_movements__dst_bijouterie_id__in=
+                    bijouterie_ids
+                )
+            ).distinct()
+
+        if role == ROLE_CASHIER:
+            cashier = self._verified_profile(
+                user,
+                "staff_cashier_profile",
+            )
+
+            if not cashier or not cashier.bijouterie_id:
+                return queryset.none()
+
+            bijouterie_id = cashier.bijouterie_id
+
+            return queryset.filter(
+                Q(stocks__bijouterie_id=bijouterie_id)
+                | Q(vendor_stocks__bijouterie_id=bijouterie_id)
+                | Q(
+                    inventory_movements__src_bijouterie_id=
+                    bijouterie_id
+                )
+                | Q(
+                    inventory_movements__dst_bijouterie_id=
+                    bijouterie_id
+                )
+            ).distinct()
+
+        if role == ROLE_VENDOR:
+            vendor = (
+                self._verified_profile(
+                    user,
+                    "vendor_profile",
+                )
+                or self._verified_profile(
+                    user,
+                    "staff_vendor_profile",
+                )
+            )
+
+            if not vendor:
+                return queryset.none()
+
+            return queryset.filter(
+                vendor_stocks__vendor_id=vendor.id,
+            ).distinct()
+
+        return queryset.none()
+
+    # ========================================================
+    # Queryset
+    # ========================================================
+
+    def get_queryset(self):
+        params = self.request.query_params
+
+        bijouterie_id = self._parse_positive_int(
+            params.get("bijouterie_id"),
+            "bijouterie_id",
+        )
+
+        vendor_id = self._parse_positive_int(
+            params.get("vendor_id"),
+            "vendor_id",
+        )
+
+        # ----------------------------------------------------
+        # Sous-requête stock magasin
+        # ----------------------------------------------------
+
+        stock_magasin_queryset = (
+            Stock.objects
+            .filter(
+                produit_line_id=OuterRef("pk"),
+            )
+        )
+
+        if bijouterie_id is not None:
+            stock_magasin_queryset = (
+                stock_magasin_queryset.filter(
+                    bijouterie_id=bijouterie_id,
+                )
+            )
+
+        stock_magasin_subquery = (
+            stock_magasin_queryset
+            .values("produit_line_id")
+            .annotate(total=Sum("en_stock"))
+            .values("total")[:1]
+        )
+
+        # ----------------------------------------------------
+        # Sous-requête entrées cumulées magasin
+        # ----------------------------------------------------
+
+        quantite_totale_queryset = (
+            Stock.objects
+            .filter(
+                produit_line_id=OuterRef("pk"),
+            )
+        )
+
+        if bijouterie_id is not None:
+            quantite_totale_queryset = (
+                quantite_totale_queryset.filter(
+                    bijouterie_id=bijouterie_id,
+                )
+            )
+
+        quantite_totale_subquery = (
+            quantite_totale_queryset
+            .values("produit_line_id")
+            .annotate(total=Sum("quantite_totale"))
+            .values("total")[:1]
+        )
+
+        # ----------------------------------------------------
+        # Sous-requêtes stock vendeur
+        # ----------------------------------------------------
+
+        vendor_stock_queryset = (
+            VendorStock.objects
+            .filter(
+                produit_line_id=OuterRef("pk"),
+            )
+        )
+
+        if bijouterie_id is not None:
+            vendor_stock_queryset = (
+                vendor_stock_queryset.filter(
+                    bijouterie_id=bijouterie_id,
+                )
+            )
+
+        if vendor_id is not None:
+            vendor_stock_queryset = (
+                vendor_stock_queryset.filter(
+                    vendor_id=vendor_id,
+                )
+            )
+
+        quantite_allouee_subquery = (
+            vendor_stock_queryset
+            .values("produit_line_id")
+            .annotate(total=Sum("quantite_allouee"))
+            .values("total")[:1]
+        )
+
+        quantite_vendue_subquery = (
+            vendor_stock_queryset
+            .values("produit_line_id")
+            .annotate(total=Sum("quantite_vendue"))
+            .values("total")[:1]
+        )
+
+        # ----------------------------------------------------
+        # Quantité retournée
+        # ----------------------------------------------------
+
+        returned_queryset = (
+            InventoryMovement.objects
+            .filter(
+                produit_line_id=OuterRef("pk"),
+                movement_type=MovementType.RETURN_IN,
+            )
+        )
+
+        if bijouterie_id is not None:
+            returned_queryset = returned_queryset.filter(
+                dst_bijouterie_id=bijouterie_id,
+            )
+
+        returned_subquery = (
+            returned_queryset
+            .values("produit_line_id")
+            .annotate(total=Sum("qty"))
+            .values("total")[:1]
+        )
+
+        # ----------------------------------------------------
+        # Queryset principal
+        # ----------------------------------------------------
+
+        queryset = (
+            ProduitLine.objects
+            .select_related(
+                "produit",
+                "produit__categorie",
+                "produit__modele",
+                "produit__marque",
+                "produit__purete",
+                "lot",
+                "lot__achat",
+                "lot__achat__fournisseur",
+                "lot__achat__bijouterie",
+            )
+            .prefetch_related(
+                "stocks",
+                "stocks__bijouterie",
+                "vendor_stocks",
+                "vendor_stocks__vendor",
+                "vendor_stocks__vendor__user",
+                "vendor_stocks__bijouterie",
+                "inventory_movements",
+                "inventory_movements__src_bijouterie",
+                "inventory_movements__dst_bijouterie",
+                "inventory_movements__vendor",
+                "inventory_movements__created_by",
+            )
+            .annotate(
+                stock_magasin=Coalesce(
+                    Subquery(
+                        stock_magasin_subquery,
+                        output_field=IntegerField(),
+                    ),
+                    Value(0),
+                ),
+                quantite_entree_cumulee=Coalesce(
+                    Subquery(
+                        quantite_totale_subquery,
+                        output_field=IntegerField(),
+                    ),
+                    Value(0),
+                ),
+                quantite_allouee_vendeur=Coalesce(
+                    Subquery(
+                        quantite_allouee_subquery,
+                        output_field=IntegerField(),
+                    ),
+                    Value(0),
+                ),
+                quantite_vendue=Coalesce(
+                    Subquery(
+                        quantite_vendue_subquery,
+                        output_field=IntegerField(),
+                    ),
+                    Value(0),
+                ),
+                quantite_retournee=Coalesce(
+                    Subquery(
+                        returned_subquery,
+                        output_field=IntegerField(),
+                    ),
+                    Value(0),
+                ),
+            )
+            .annotate(
+                stock_vendeur=(
+                    F("quantite_allouee_vendeur")
+                    - F("quantite_vendue")
+                ),
+                stock_global=(
+                    F("stock_magasin")
+                    + F("quantite_allouee_vendeur")
+                    - F("quantite_vendue")
+                ),
+            )
+        )
+
+        queryset = self._apply_role_scope(queryset)
+
+        # ====================================================
+        # Filtres simples
+        # ====================================================
+
+        q = (params.get("q") or "").strip()
+
+        if q:
+            queryset = queryset.filter(
+                Q(produit__nom__icontains=q)
+                | Q(produit__sku__icontains=q)
+                | Q(lot__numero_lot__icontains=q)
+                | Q(lot__description__icontains=q)
+                | Q(
+                    lot__achat__numero_achat__icontains=q
+                )
+                | Q(
+                    lot__achat__description__icontains=q
+                )
+                | Q(
+                    lot__achat__fournisseur__nom__icontains=q
+                )
+                | Q(
+                    lot__achat__fournisseur__prenom__icontains=q
+                )
+                | Q(
+                    lot__achat__fournisseur__telephone__icontains=q
+                )
+            )
+
+        year = self._parse_year(
+            params.get("year"),
+        )
+
+        if year is not None:
+            queryset = queryset.filter(
+                lot__received_at__year=year,
+            )
+
+        id_filters = {
+            "achat_id": "lot__achat_id",
+            "lot_id": "lot_id",
+            "produit_id": "produit_id",
+            "produit_line_id": "id",
+            "fournisseur_id": (
+                "lot__achat__fournisseur_id"
+            ),
+        }
+
+        for parameter_name, model_field in id_filters.items():
+            value = self._parse_positive_int(
+                params.get(parameter_name),
+                parameter_name,
+            )
+
+            if value is not None:
+                queryset = queryset.filter(
+                    **{model_field: value}
+                )
+
+        numero_lot = (
+            params.get("numero_lot") or ""
+        ).strip()
+
+        if numero_lot:
+            queryset = queryset.filter(
+                lot__numero_lot__icontains=numero_lot,
+            )
+
+        if bijouterie_id is not None:
+            queryset = queryset.filter(
+                Q(stocks__bijouterie_id=bijouterie_id)
+                | Q(
+                    vendor_stocks__bijouterie_id=
+                    bijouterie_id
+                )
+                | Q(
+                    inventory_movements__src_bijouterie_id=
+                    bijouterie_id
+                )
+                | Q(
+                    inventory_movements__dst_bijouterie_id=
+                    bijouterie_id
+                )
+            )
+
+        if vendor_id is not None:
+            queryset = queryset.filter(
+                vendor_stocks__vendor_id=vendor_id,
+            )
+
+        movement_type = (
+            params.get("movement_type") or ""
+        ).strip()
+
+        if movement_type:
+            valid_types = {
+                choice[0]
+                for choice in MovementType.choices
+            }
+
+            if movement_type not in valid_types:
+                raise ValidationError({
+                    "movement_type": (
+                        "Type invalide. Valeurs autorisées : "
+                        + ", ".join(sorted(valid_types))
+                    )
+                })
+
+            queryset = queryset.filter(
+                inventory_movements__movement_type=
+                movement_type,
+            )
+
+        has_stock = self._parse_boolean(
+            params.get("has_stock"),
+            "has_stock",
+        )
+
+        if has_stock is True:
+            queryset = queryset.filter(
+                stock_global__gt=0,
+            )
+
+        elif has_stock is False:
+            queryset = queryset.filter(
+                stock_global=0,
+            )
+
+        # ====================================================
+        # Tri
+        # ====================================================
+
+        ordering = (
+            params.get("ordering")
+            or "-lot__received_at"
+        ).strip()
+
+        if ordering not in self.ALLOWED_ORDERING:
+            raise ValidationError({
+                "ordering": (
+                    "Tri invalide. Valeurs autorisées : "
+                    + ", ".join(
+                        sorted(self.ALLOWED_ORDERING)
+                    )
+                )
+            })
+
+        return queryset.distinct().order_by(
+            ordering,
+            "-id",
+        )
+        
+
+class InventoryBijouterieView(APIView):
+    """
+    Résumé global de l'inventaire par bijouterie.
+
+    Définitions :
+
+    stock_magasin_net :
+        Stock physiquement disponible dans la bijouterie.
+
+        PURCHASE_IN
+        + RETURN_IN
+        + ADJUSTMENT entrée
+        - VENDOR_ASSIGN
+        - CANCEL_PURCHASE
+        - ADJUSTMENT sortie
+
+    stock_global_net :
+        Stock encore détenu par la bijouterie,
+        magasin + vendeurs.
+
+        PURCHASE_IN
+        + RETURN_IN
+        + ADJUSTMENT entrée
+        - SALE_OUT
+        - CANCEL_PURCHASE
+        - ADJUSTMENT sortie
+
+    VENDOR_ASSIGN ne diminue donc pas le stock global :
+    il déplace seulement le stock du magasin vers un vendeur.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @swagger_auto_schema(
+        operation_id="inventoryByBijouterie",
+        operation_summary="Résumé de l'inventaire par bijouterie",
+        operation_description=(
+            "Retourne les entrées, sorties et stocks nets "
+            "pour chaque bijouterie accessible à l'utilisateur.\n\n"
+            "Règles d'accès :\n"
+            "- admin : toutes les bijouteries ;\n"
+            "- manager : ses bijouteries ;\n"
+            "- cashier : sa bijouterie ;\n"
+            "- vendor : sa bijouterie.\n\n"
+            "Filtres :\n"
+            "- bijouterie_id ;\n"
+            "- date_from ;\n"
+            "- date_to ;\n"
+            "- produit_id ;\n"
+            "- lot_id ;\n"
+            "- produit_line_id."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la bijouterie.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "date_from",
+                openapi.IN_QUERY,
+                description="Date minimale au format YYYY-MM-DD.",
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+            ),
+            openapi.Parameter(
+                "date_to",
+                openapi.IN_QUERY,
+                description="Date maximale au format YYYY-MM-DD.",
+                type=openapi.TYPE_STRING,
+                format=openapi.FORMAT_DATE,
+            ),
+            openapi.Parameter(
+                "produit_id",
+                openapi.IN_QUERY,
+                description="Identifiant du produit.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "lot_id",
+                openapi.IN_QUERY,
+                description="Identifiant du lot.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "produit_line_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la ProduitLine.",
+                type=openapi.TYPE_INTEGER,
+            ),
+        ],
+        responses={
+            200: InventoryBijouterieSerializer(many=True),
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        params = request.query_params
+
+        bijouterie_id = self._parse_positive_int(
+            params.get("bijouterie_id"),
+            "bijouterie_id",
+        )
+
+        produit_id = self._parse_positive_int(
+            params.get("produit_id"),
+            "produit_id",
+        )
+
+        lot_id = self._parse_positive_int(
+            params.get("lot_id"),
+            "lot_id",
+        )
+
+        produit_line_id = self._parse_positive_int(
+            params.get("produit_line_id"),
+            "produit_line_id",
+        )
+
+        date_from = self._parse_date(
+            params.get("date_from"),
+            "date_from",
+        )
+
+        date_to = self._parse_date(
+            params.get("date_to"),
+            "date_to",
+        )
+
+        if date_from and date_to and date_from > date_to:
+            raise ValidationError({
+                "date_to": (
+                    "date_to doit être supérieure ou égale à date_from."
+                )
+            })
+
+        bijouteries = self._get_accessible_bijouteries()
+
+        if bijouterie_id is not None:
+            bijouteries = bijouteries.filter(
+                id=bijouterie_id,
+            )
+
+        movements = InventoryMovement.objects.all()
+
+        if date_from:
+            movements = movements.filter(
+                occurred_at__date__gte=date_from,
+            )
+
+        if date_to:
+            movements = movements.filter(
+                occurred_at__date__lte=date_to,
+            )
+
+        if produit_id is not None:
+            movements = movements.filter(
+                produit_id=produit_id,
+            )
+
+        if lot_id is not None:
+            movements = movements.filter(
+                lot_id=lot_id,
+            )
+
+        if produit_line_id is not None:
+            movements = movements.filter(
+                produit_line_id=produit_line_id,
+            )
 
         results = []
 
-        for r in rows:
-            results.append({
-                "id": r.get("id"),
-                "occurred_at": r.get("occurred_at"),
-                "movement_type": r.get("movement_type"),
+        for bijouterie in bijouteries.order_by("nom", "id"):
+            summary = self._build_summary(
+                bijouterie=bijouterie,
+                movements=movements,
+            )
 
-                "produit_id": r.get("produit_id"),
-                "produit_nom": r.get("produit__nom"),
-                "produit_sku": r.get("produit__sku"),
+            results.append(summary)
 
-                "lot_id": r.get("lot_id"),
-                "lot_code": r.get("lot__numero_lot"),
+        serializer = InventoryBijouterieSerializer(
+            results,
+            many=True,
+        )
 
-                "achat_id": r.get("achat_id"),
+        return Response(serializer.data)
 
-                "qty": r.get("qty"),
-                "signed_qty": _signed_qty(r.get("movement_type"), r.get("qty")),
+    # ========================================================
+    # Helpers de validation
+    # ========================================================
 
-                "vendor_id": r.get("vendor_id"),
-                "vendor_email": r.get("vendor__user__email"),
+    @staticmethod
+    def _parse_positive_int(value, field_name):
+        if value in (None, ""):
+            return None
 
-                "vente_id": r.get("vente_id"),
-                "numero_vente": r.get("vente__numero_vente"),
-
-                "facture_id": r.get("facture_id"),
-                "numero_facture": r.get("facture__numero_facture"),
-
-                "src_bucket": r.get("src_bucket"),
-                "src_bijouterie_id": r.get("src_bijouterie_id"),
-                "src_bijouterie_nom": bij_map.get(r.get("src_bijouterie_id")),
-
-                "dst_bucket": r.get("dst_bucket"),
-                "dst_bijouterie_id": r.get("dst_bijouterie_id"),
-                "dst_bijouterie_nom": bij_map.get(r.get("dst_bijouterie_id")),
-
-                "created_by_id": r.get("created_by_id"),
-                "created_by_email": r.get("created_by__email"),
-
-                "reason": r.get("reason"),
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: "Une valeur entière est requise."
             })
 
-        next_offset = offset + limit
+        if parsed <= 0:
+            raise ValidationError({
+                field_name: (
+                    "La valeur doit être supérieure à zéro."
+                )
+            })
 
-        return Response(
-            {
-                "count": total,
-                "limit": limit,
-                "offset": offset,
-                "next_offset": next_offset if next_offset < total else None,
-                "results": results,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return parsed
 
+    @staticmethod
+    def _parse_date(value, field_name):
+        if not value:
+            return None
 
+        from django.utils.dateparse import parse_date
 
+        parsed = parse_date(value)
 
-class InventoryBijouterieView(ExportXlsxMixin, APIView):
-    """
-    Résumé des entrées / sorties de stock par bijouterie.
-    """
-    permission_classes = [IsAuthenticated]
-    http_method_names = ["get"]
+        if parsed is None:
+            raise ValidationError({
+                field_name: (
+                    "Format de date invalide. Utilisez YYYY-MM-DD."
+                )
+            })
 
-    @swagger_auto_schema(
-        operation_id="inventoryBijouterie",
-        operation_summary="Résumé des entrées et sorties de stock par bijouterie",
-        operation_description=(
-            "Retourne un **résumé global des mouvements de stock par bijouterie**.\n\n"
-            "Cette vue permet de connaître, pour chaque bijouterie :\n"
-            "- les **entrées d'achat** (`purchase_in`)\n"
-            "- les **annulations d'achat** (`cancel_purchase_out`)\n"
-            "- les **affectations reçues depuis la réserve** (`allocate_in`)\n"
-            "- les **transferts entrants** (`transfer_in`)\n"
-            "- les **transferts sortants** (`transfer_out`)\n"
-            "- les **sorties de vente** (`sale_out`)\n"
-            "- les **retours clients** (`return_in`)\n"
-            "- les **ajustements positifs** (`adjustment_in`)\n"
-            "- les **ajustements négatifs** (`adjustment_out`)\n"
-            "- le **solde net des mouvements** (`stock_net`)\n\n"
-            "### Règles d'accès\n"
-            "- **Admin** : peut voir toutes les bijouteries\n"
-            "- **Manager** : ne voit que les bijouteries qui lui sont assignées\n\n"
-            "### Filtres disponibles\n"
-            "- `bijouterie_id` : limiter le résumé à une seule bijouterie\n"
-            "- `produit_id` : limiter le résumé à un produit précis\n"
-            "- `date_from` : date de début incluse (`YYYY-MM-DD`)\n"
-            "- `date_to` : date de fin incluse (`YYYY-MM-DD`)\n"
-            "- `export=xlsx` : exporter le résumé au format Excel\n\n"
-            "### Notes métier\n"
-            "- `stock_net` est un **solde de mouvements**, pas une photo instantanée du stock physique.\n"
-            "- Pour voir l'état actuel du stock par lot/produit, utilise la vue d'**inventaire photo**.\n"
-        ),
-        manual_parameters=[
-            openapi.Parameter(
-                "bijouterie_id",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                required=False,
-                description="ID d'une bijouterie pour limiter le résumé à cette bijouterie uniquement.",
-            ),
-            openapi.Parameter(
-                "produit_id",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                required=False,
-                description="ID d'un produit pour limiter le résumé à ce produit.",
-            ),
-            openapi.Parameter(
-                "date_from",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATE,
-                required=False,
-                description="Date de début incluse au format YYYY-MM-DD.",
-            ),
-            openapi.Parameter(
-                "date_to",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATE,
-                required=False,
-                description="Date de fin incluse au format YYYY-MM-DD.",
-            ),
-            openapi.Parameter(
-                "export",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-                enum=["xlsx"],
-                description="Mettre `xlsx` pour exporter le résumé en fichier Excel.",
-            ),
-        ],
-        responses={
-            200: openapi.Response(
-                description="Résumé des mouvements de stock par bijouterie.",
-                schema=InventoryBijouterieSerializer(many=True),
-                examples={
-                    "application/json": [
-                        {
-                            "bijouterie_id": 1,
-                            "bijouterie_nom": "Rio Gold Dakar",
-                            "purchase_in": "120.00",
-                            "cancel_purchase_out": "5.00",
-                            "allocate_in": "20.00",
-                            "transfer_in": "8.00",
-                            "transfer_out": "3.00",
-                            "sale_out": "42.00",
-                            "return_in": "2.00",
-                            "adjustment_in": "1.00",
-                            "adjustment_out": "0.00",
-                            "stock_net": "101.00",
-                        }
-                    ]
-                },
-            ),
-            400: openapi.Response(
-                description="Paramètres invalides.",
-                examples={
-                    "application/json": {
-                        "date_from": "Format invalide. Utiliser YYYY-MM-DD."
-                    }
-                },
-            ),
-            403: openapi.Response(
-                description="Accès refusé.",
-                examples={
-                    "application/json": {
-                        "detail": "Accès refusé."
-                    }
-                },
-            ),
-        },
-        tags=["Inventaire / Résumés"],
-    )
-    def get(self, request):
-        role = get_role_name(request.user)
-        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
-            return Response({"detail": "Accès refusé."}, status=status.HTTP_403_FORBIDDEN)
+        return parsed
 
-        getf = request.GET.get
-        bijouterie_id = _int(getf("bijouterie_id"))
-        produit_id = _int(getf("produit_id"))
-        date_from = _date(getf("date_from"))
-        date_to = _date(getf("date_to"))
+    @staticmethod
+    def _verified_profile(user, attribute):
+        profile = getattr(user, attribute, None)
 
-        if getf("date_from") and not date_from:
-            return Response(
-                {"date_from": "Format invalide. Utiliser YYYY-MM-DD."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if getf("date_to") and not date_to:
-            return Response(
-                {"date_to": "Format invalide. Utiliser YYYY-MM-DD."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if date_from and date_to and date_from > date_to:
-            return Response(
-                {"detail": "date_from doit être <= date_to."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if not profile:
+            return None
 
-        qs = InventoryMovement.objects.select_related(
-            "src_bijouterie",
-            "dst_bijouterie",
-            "produit",
-        )
+        if not getattr(profile, "verifie", True):
+            return None
 
-        allowed_ids = None
+        return profile
+
+    # ========================================================
+    # Bijouteries accessibles selon le rôle
+    # ========================================================
+
+    def _get_accessible_bijouteries(self):
+        user = self.request.user
+        role = get_role_name(user)
+
+        queryset = Bijouterie.objects.all()
+
+        if role == ROLE_ADMIN:
+            return queryset
+
         if role == ROLE_MANAGER:
-            mp = getattr(request.user, "staff_manager_profile", None)
-            if not mp or (hasattr(mp, "verifie") and not mp.verifie):
-                return Response(
-                    {"detail": "Profil manager invalide."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-            allowed_ids = list(mp.bijouteries.values_list("id", flat=True))
-            if not allowed_ids:
-                return Response(
-                    {"detail": "Ce manager n'a aucune bijouterie assignée."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            qs = qs.filter(
-                Q(src_bijouterie_id__in=allowed_ids) |
-                Q(dst_bijouterie_id__in=allowed_ids)
+            manager = self._verified_profile(
+                user,
+                "staff_manager_profile",
             )
 
-        if bijouterie_id:
-            qs = qs.filter(
-                Q(src_bijouterie_id=bijouterie_id) |
-                Q(dst_bijouterie_id=bijouterie_id)
+            if not manager:
+                return queryset.none()
+
+            return queryset.filter(
+                id__in=manager.bijouteries.values_list(
+                    "id",
+                    flat=True,
+                )
             )
 
-        if produit_id:
-            qs = qs.filter(produit_id=produit_id)
-
-        if date_from:
-            qs = qs.filter(occurred_at__date__gte=date_from)
-        if date_to:
-            qs = qs.filter(occurred_at__date__lte=date_to)
-
-        bijouteries = Bijouterie.objects.all()
-        if role == ROLE_MANAGER and allowed_ids is not None:
-            bijouteries = bijouteries.filter(id__in=allowed_ids)
-        if bijouterie_id:
-            bijouteries = bijouteries.filter(id=bijouterie_id)
-
-        rows = []
-        for bj in bijouteries.order_by("nom"):
-            in_qs = qs.filter(dst_bijouterie_id=bj.id)
-            out_qs = qs.filter(src_bijouterie_id=bj.id)
-
-            purchase_in = in_qs.filter(
-                movement_type=MovementType.PURCHASE_IN
-            ).aggregate(
-                v=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["v"]
-
-            cancel_purchase_out = out_qs.filter(
-                movement_type=MovementType.CANCEL_PURCHASE
-            ).aggregate(
-                v=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["v"]
-
-            allocate_in = in_qs.filter(
-                movement_type=MovementType.ALLOCATE
-            ).aggregate(
-                v=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["v"]
-
-            transfer_in = in_qs.filter(
-                movement_type=MovementType.TRANSFER
-            ).aggregate(
-                v=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["v"]
-
-            transfer_out = out_qs.filter(
-                movement_type=MovementType.TRANSFER
-            ).aggregate(
-                v=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["v"]
-
-            sale_out = out_qs.filter(
-                movement_type=MovementType.SALE_OUT
-            ).aggregate(
-                v=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["v"]
-
-            return_in = in_qs.filter(
-                movement_type=MovementType.RETURN_IN
-            ).aggregate(
-                v=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["v"]
-
-            adjustment_in = in_qs.filter(
-                movement_type=MovementType.ADJUSTMENT
-            ).aggregate(
-                v=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["v"]
-
-            adjustment_out = out_qs.filter(
-                movement_type=MovementType.ADJUSTMENT
-            ).aggregate(
-                v=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["v"]
-
-            stock_net = (
-                purchase_in
-                + allocate_in
-                + transfer_in
-                + return_in
-                + adjustment_in
-                - cancel_purchase_out
-                - transfer_out
-                - sale_out
-                - adjustment_out
+        if role == ROLE_CASHIER:
+            cashier = self._verified_profile(
+                user,
+                "staff_cashier_profile",
             )
 
-            rows.append({
-                "bijouterie_id": bj.id,
-                "bijouterie_nom": bj.nom,
-                "purchase_in": purchase_in,
-                "cancel_purchase_out": cancel_purchase_out,
-                "allocate_in": allocate_in,
-                "transfer_in": transfer_in,
-                "transfer_out": transfer_out,
-                "sale_out": sale_out,
-                "return_in": return_in,
-                "adjustment_in": adjustment_in,
-                "adjustment_out": adjustment_out,
-                "stock_net": stock_net,
-            })
+            if not cashier or not cashier.bijouterie_id:
+                return queryset.none()
 
-        if (getf("export") or "").lower() == "xlsx":
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Résumé bijouteries"
+            return queryset.filter(
+                id=cashier.bijouterie_id,
+            )
 
-            headers = [
-                "bijouterie_id",
-                "bijouterie_nom",
-                "purchase_in",
-                "cancel_purchase_out",
-                "allocate_in",
-                "transfer_in",
-                "transfer_out",
-                "sale_out",
-                "return_in",
-                "adjustment_in",
-                "adjustment_out",
-                "stock_net",
-            ]
-            ws.append(headers)
+        if role == ROLE_VENDOR:
+            vendor = (
+                self._verified_profile(
+                    user,
+                    "vendor_profile",
+                )
+                or self._verified_profile(
+                    user,
+                    "staff_vendor_profile",
+                )
+            )
 
-            for row in rows:
-                ws.append([row.get(h) for h in headers])
+            if not vendor or not vendor.bijouterie_id:
+                return queryset.none()
 
-            self._autosize(ws)
-            return self._xlsx_response(wb, "inventory_bijouterie.xlsx")
+            return queryset.filter(
+                id=vendor.bijouterie_id,
+            )
 
-        serializer = InventoryBijouterieSerializer(rows, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        raise PermissionDenied(
+            "Vous n'êtes pas autorisé à consulter l'inventaire."
+        )
+
+    # ========================================================
+    # Calcul des quantités
+    # ========================================================
+
+    @staticmethod
+    def _sum_qty(queryset):
+        return (
+            queryset.aggregate(
+                total=Coalesce(
+                    Sum("qty"),
+                    0,
+                )
+            )["total"]
+            or 0
+        )
+
+    def _build_summary(self, *, bijouterie, movements):
+        bijouterie_id = bijouterie.id
+
+        # ----------------------------------------------------
+        # Entrée fournisseur dans la bijouterie
+        # ----------------------------------------------------
+
+        purchase_in = self._sum_qty(
+            movements.filter(
+                movement_type=MovementType.PURCHASE_IN,
+                src_bucket=Bucket.EXTERNAL,
+                dst_bucket=Bucket.BIJOUTERIE,
+                dst_bijouterie_id=bijouterie_id,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Annulation d'achat : sortie de la bijouterie
+        # ----------------------------------------------------
+
+        cancel_purchase_out = self._sum_qty(
+            movements.filter(
+                movement_type=MovementType.CANCEL_PURCHASE,
+                src_bucket=Bucket.BIJOUTERIE,
+                dst_bucket=Bucket.EXTERNAL,
+                src_bijouterie_id=bijouterie_id,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Affectation au vendeur
+        # ----------------------------------------------------
+
+        vendor_assign_out = self._sum_qty(
+            movements.filter(
+                movement_type=MovementType.VENDOR_ASSIGN,
+                src_bucket=Bucket.BIJOUTERIE,
+                dst_bucket=Bucket.VENDOR,
+                src_bijouterie_id=bijouterie_id,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Vente depuis un vendeur de cette bijouterie
+        # ----------------------------------------------------
+
+        sale_out = self._sum_qty(
+            movements.filter(
+                movement_type=MovementType.SALE_OUT,
+                src_bucket=Bucket.VENDOR,
+                dst_bucket=Bucket.EXTERNAL,
+                vendor__bijouterie_id=bijouterie_id,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Retour client dans la bijouterie
+        # ----------------------------------------------------
+
+        return_in = self._sum_qty(
+            movements.filter(
+                movement_type=MovementType.RETURN_IN,
+                src_bucket=Bucket.EXTERNAL,
+                dst_bucket=Bucket.BIJOUTERIE,
+                dst_bijouterie_id=bijouterie_id,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Ajustement positif
+        # ----------------------------------------------------
+
+        adjustment_in = self._sum_qty(
+            movements.filter(
+                movement_type=MovementType.ADJUSTMENT,
+                src_bucket=Bucket.EXTERNAL,
+                dst_bucket=Bucket.BIJOUTERIE,
+                dst_bijouterie_id=bijouterie_id,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Ajustement négatif
+        # ----------------------------------------------------
+
+        adjustment_out = self._sum_qty(
+            movements.filter(
+                movement_type=MovementType.ADJUSTMENT,
+                src_bucket=Bucket.BIJOUTERIE,
+                dst_bucket=Bucket.EXTERNAL,
+                src_bijouterie_id=bijouterie_id,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Stock physiquement présent en magasin
+        # ----------------------------------------------------
+
+        stock_magasin_net = (
+            purchase_in
+            + return_in
+            + adjustment_in
+            - vendor_assign_out
+            - cancel_purchase_out
+            - adjustment_out
+        )
+
+        # ----------------------------------------------------
+        # Stock global détenu par la bijouterie
+        #
+        # Une affectation vendeur ne diminue pas le stock global.
+        # Une vente vendeur le diminue.
+        # ----------------------------------------------------
+
+        stock_global_net = (
+            purchase_in
+            + return_in
+            + adjustment_in
+            - sale_out
+            - cancel_purchase_out
+            - adjustment_out
+        )
+
+        return {
+            "bijouterie_id": bijouterie_id,
+            "bijouterie_nom": bijouterie.nom,
+
+            "purchase_in": purchase_in,
+            "cancel_purchase_out": cancel_purchase_out,
+
+            "vendor_assign_out": vendor_assign_out,
+            "sale_out": sale_out,
+
+            "return_in": return_in,
+
+            "adjustment_in": adjustment_in,
+            "adjustment_out": adjustment_out,
+
+            "stock_magasin_net": stock_magasin_net,
+            "stock_global_net": stock_global_net,
+        }
+        
 
 
-class InventoryVendorView(ExportXlsxMixin, APIView):
+class InventoryVendorView(APIView):
     """
-    Résumé du stock et des mouvements par vendeur.
+    Résumé d'inventaire par vendeur.
+
+    Cycle pris en charge :
+
+        BIJOUTERIE
+            ↓ VENDOR_ASSIGN
+        VENDOR
+            ↓ SALE_OUT
+        EXTERNAL
+
+    Définitions :
+
+    vendor_assign_in :
+        quantité totale affectée au vendeur selon InventoryMovement.
+
+    sale_out_vendor :
+        quantité totale vendue par le vendeur selon InventoryMovement.
+
+    quantite_allouee :
+        somme de VendorStock.quantite_allouee.
+
+    quantite_vendue :
+        somme de VendorStock.quantite_vendue.
+
+    stock_restant :
+        quantite_allouee - quantite_vendue.
+
+    RETURN_IN ne retourne pas dans le stock du vendeur.
+    Le retour client retourne directement dans la bijouterie.
     """
+
     permission_classes = [IsAuthenticated]
-    http_method_names = ["get"]
 
     @swagger_auto_schema(
-        operation_id="inventoryVendor",
-        operation_summary="Résumé du stock par vendeur",
+        operation_id="inventoryByVendor",
+        operation_summary="Résumé de l'inventaire par vendeur",
         operation_description=(
-            "Retourne un **résumé du stock et des mouvements par vendeur**.\n\n"
-            "Cette vue permet de connaître, pour chaque vendeur :\n"
-            "- le **stock affecté reçu** (`vendor_assign_in`)\n"
-            "- les **sorties de vente du vendeur** (`sale_out_vendor`)\n"
-            "- les **retours/restaurations éventuels** (`return_in_vendor`)\n"
-            "- le **stock restant vendeur** (`stock_restant`)\n\n"
-            "### Règles d'accès\n"
-            "- **Admin** : peut voir tous les vendeurs\n"
-            "- **Manager** : ne voit que les vendeurs de ses bijouteries\n\n"
-            "### Filtres disponibles\n"
-            "- `vendor_id` : limiter à un vendeur précis\n"
-            "- `bijouterie_id` : limiter aux vendeurs d'une bijouterie\n"
-            "- `produit_id` : limiter à un produit précis\n"
-            "- `date_from` : date de début incluse (`YYYY-MM-DD`)\n"
-            "- `date_to` : date de fin incluse (`YYYY-MM-DD`)\n"
-            "- `export=xlsx` : exporter le résumé en Excel\n\n"
-            "### Notes métier\n"
-            "- `vendor_assign_in` correspond aux mouvements `VENDOR_ASSIGN` liés au vendeur.\n"
-            "- `sale_out_vendor` correspond aux mouvements `SALE_OUT` liés au vendeur.\n"
-            "- `stock_restant` est calculé depuis `VendorStock` : `quantite_allouee - quantite_vendue`.\n"
+            "Retourne le stock et les mouvements d'inventaire "
+            "agrégés par vendeur.\n\n"
+            "Règles d'accès :\n"
+            "- admin : tous les vendeurs ;\n"
+            "- manager : vendeurs de ses bijouteries ;\n"
+            "- cashier : vendeurs de sa bijouterie ;\n"
+            "- vendor : uniquement son propre inventaire.\n\n"
+            "Filtres disponibles :\n"
+            "- vendor_id ;\n"
+            "- bijouterie_id ;\n"
+            "- produit_id ;\n"
+            "- produit_line_id ;\n"
+            "- lot_id ;\n"
+            "- date_from ;\n"
+            "- date_to ;\n"
+            "- has_stock."
         ),
         manual_parameters=[
             openapi.Parameter(
                 "vendor_id",
                 openapi.IN_QUERY,
+                description="Identifiant du vendeur.",
                 type=openapi.TYPE_INTEGER,
-                required=False,
-                description="ID d'un vendeur pour limiter le résumé à ce vendeur uniquement.",
             ),
             openapi.Parameter(
                 "bijouterie_id",
                 openapi.IN_QUERY,
+                description="Identifiant de la bijouterie.",
                 type=openapi.TYPE_INTEGER,
-                required=False,
-                description="ID d'une bijouterie pour limiter aux vendeurs de cette bijouterie.",
             ),
             openapi.Parameter(
                 "produit_id",
                 openapi.IN_QUERY,
+                description="Identifiant du produit.",
                 type=openapi.TYPE_INTEGER,
-                required=False,
-                description="ID d'un produit pour limiter le résumé à ce produit.",
+            ),
+            openapi.Parameter(
+                "produit_line_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la ProduitLine.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "lot_id",
+                openapi.IN_QUERY,
+                description="Identifiant du lot.",
+                type=openapi.TYPE_INTEGER,
             ),
             openapi.Parameter(
                 "date_from",
                 openapi.IN_QUERY,
+                description="Date minimale au format YYYY-MM-DD.",
                 type=openapi.TYPE_STRING,
                 format=openapi.FORMAT_DATE,
-                required=False,
-                description="Date de début incluse au format YYYY-MM-DD.",
             ),
             openapi.Parameter(
                 "date_to",
                 openapi.IN_QUERY,
+                description="Date maximale au format YYYY-MM-DD.",
                 type=openapi.TYPE_STRING,
                 format=openapi.FORMAT_DATE,
-                required=False,
-                description="Date de fin incluse au format YYYY-MM-DD.",
             ),
             openapi.Parameter(
-                "export",
+                "has_stock",
                 openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-                enum=["xlsx"],
-                description="Mettre `xlsx` pour exporter le résumé vendeur en fichier Excel.",
+                description=(
+                    "true : uniquement les vendeurs ayant "
+                    "un stock restant positif."
+                ),
+                type=openapi.TYPE_BOOLEAN,
             ),
         ],
         responses={
-            200: openapi.Response(
-                description="Résumé du stock par vendeur.",
-                schema=InventoryVendorSerializer(many=True),
-                examples={
-                    "application/json": [
-                        {
-                            "vendor_id": 3,
-                            "vendor_nom": "Amadou Diop",
-                            "vendor_email": "amadou@riogold.sn",
-                            "bijouterie_id": 1,
-                            "bijouterie_nom": "Rio Gold Dakar",
-                            "vendor_assign_in": "80.00",
-                            "sale_out_vendor": "25.00",
-                            "return_in_vendor": "2.00",
-                            "stock_restant": "57.00",
-                        }
-                    ]
-                },
-            ),
-            400: openapi.Response(
-                description="Paramètres invalides.",
-                examples={
-                    "application/json": {
-                        "vendor_id": "Doit être un entier."
-                    }
-                },
-            ),
-            403: openapi.Response(
-                description="Accès refusé.",
-                examples={
-                    "application/json": {
-                        "detail": "Accès refusé."
-                    }
-                },
-            ),
+            200: InventoryVendorSerializer(many=True),
         },
-        tags=["Inventaire / Résumés"],
     )
-    def get(self, request):
-        role = get_role_name(request.user)
-        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
-            return Response({"detail": "Accès refusé."}, status=status.HTTP_403_FORBIDDEN)
+    def get(self, request, *args, **kwargs):
+        params = request.query_params
 
-        getf = request.GET.get
-        vendor_id = _int(getf("vendor_id"))
-        bijouterie_id = _int(getf("bijouterie_id"))
-        produit_id = _int(getf("produit_id"))
-        date_from = _date(getf("date_from"))
-        date_to = _date(getf("date_to"))
+        vendor_id = self._parse_positive_int(
+            params.get("vendor_id"),
+            "vendor_id",
+        )
 
-        if getf("date_from") and not date_from:
-            return Response(
-                {"date_from": "Format invalide. Utiliser YYYY-MM-DD."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if getf("date_to") and not date_to:
-            return Response(
-                {"date_to": "Format invalide. Utiliser YYYY-MM-DD."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        bijouterie_id = self._parse_positive_int(
+            params.get("bijouterie_id"),
+            "bijouterie_id",
+        )
+
+        produit_id = self._parse_positive_int(
+            params.get("produit_id"),
+            "produit_id",
+        )
+
+        produit_line_id = self._parse_positive_int(
+            params.get("produit_line_id"),
+            "produit_line_id",
+        )
+
+        lot_id = self._parse_positive_int(
+            params.get("lot_id"),
+            "lot_id",
+        )
+
+        date_from = self._parse_date(
+            params.get("date_from"),
+            "date_from",
+        )
+
+        date_to = self._parse_date(
+            params.get("date_to"),
+            "date_to",
+        )
+
+        has_stock = self._parse_boolean(
+            params.get("has_stock"),
+            "has_stock",
+        )
+
         if date_from and date_to and date_from > date_to:
-            return Response(
-                {"detail": "date_from doit être <= date_to."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        vendors = Vendor.objects.select_related("user", "bijouterie").all()
-
-        allowed_ids = None
-        if role == ROLE_MANAGER:
-            mp = getattr(request.user, "staff_manager_profile", None)
-            if not mp or (hasattr(mp, "verifie") and not mp.verifie):
-                return Response(
-                    {"detail": "Profil manager invalide."},
-                    status=status.HTTP_403_FORBIDDEN,
+            raise ValidationError({
+                "date_to": (
+                    "date_to doit être supérieure ou égale à date_from."
                 )
+            })
 
-            allowed_ids = list(mp.bijouteries.values_list("id", flat=True))
-            if not allowed_ids:
-                return Response(
-                    {"detail": "Ce manager n'a aucune bijouterie assignée."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        vendors = self._get_accessible_vendors()
 
-            vendors = vendors.filter(bijouterie_id__in=allowed_ids)
-
-        if vendor_id:
+        if vendor_id is not None:
             vendors = vendors.filter(id=vendor_id)
 
-        if bijouterie_id:
-            vendors = vendors.filter(bijouterie_id=bijouterie_id)
+        if bijouterie_id is not None:
+            vendors = vendors.filter(
+                bijouterie_id=bijouterie_id,
+            )
 
-        move_qs = InventoryMovement.objects.select_related(
-            "vendor",
-            "vendor__user",
-            "vendor__bijouterie",
-            "produit",
-        )
-        stock_qs = VendorStock.objects.select_related(
-            "vendor",
-            "vendor__user",
-            "vendor__bijouterie",
-            "produit_line",
-            "produit_line__produit",
-        )
+        movements = InventoryMovement.objects.all()
 
-        if role == ROLE_MANAGER and allowed_ids is not None:
-            move_qs = move_qs.filter(vendor__bijouterie_id__in=allowed_ids)
-            stock_qs = stock_qs.filter(vendor__bijouterie_id__in=allowed_ids)
+        vendor_stocks = VendorStock.objects.all()
 
-        if vendor_id:
-            move_qs = move_qs.filter(vendor_id=vendor_id)
-            stock_qs = stock_qs.filter(vendor_id=vendor_id)
+        if produit_id is not None:
+            movements = movements.filter(
+                produit_id=produit_id,
+            )
 
-        if bijouterie_id:
-            move_qs = move_qs.filter(vendor__bijouterie_id=bijouterie_id)
-            stock_qs = stock_qs.filter(vendor__bijouterie_id=bijouterie_id)
+            vendor_stocks = vendor_stocks.filter(
+                produit_line__produit_id=produit_id,
+            )
 
-        if produit_id:
-            move_qs = move_qs.filter(produit_id=produit_id)
-            stock_qs = stock_qs.filter(produit_line__produit_id=produit_id)
+        if produit_line_id is not None:
+            movements = movements.filter(
+                produit_line_id=produit_line_id,
+            )
+
+            vendor_stocks = vendor_stocks.filter(
+                produit_line_id=produit_line_id,
+            )
+
+        if lot_id is not None:
+            movements = movements.filter(
+                lot_id=lot_id,
+            )
+
+            vendor_stocks = vendor_stocks.filter(
+                produit_line__lot_id=lot_id,
+            )
 
         if date_from:
-            move_qs = move_qs.filter(occurred_at__date__gte=date_from)
+            movements = movements.filter(
+                occurred_at__date__gte=date_from,
+            )
+
         if date_to:
-            move_qs = move_qs.filter(occurred_at__date__lte=date_to)
+            movements = movements.filter(
+                occurred_at__date__lte=date_to,
+            )
 
-        rows = []
-        for v in vendors.order_by("id"):
-            vendor_assign_in = move_qs.filter(
-                vendor_id=v.id,
-                movement_type=MovementType.VENDOR_ASSIGN,
-            ).aggregate(
-                s=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["s"]
+        results = []
 
-            sale_out_vendor = move_qs.filter(
-                vendor_id=v.id,
-                movement_type=MovementType.SALE_OUT,
-            ).aggregate(
-                s=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["s"]
+        for vendor in vendors.select_related(
+            "user",
+            "bijouterie",
+        ).order_by(
+            "bijouterie__nom",
+            "user__first_name",
+            "user__last_name",
+            "id",
+        ):
+            summary = self._build_summary(
+                vendor=vendor,
+                movements=movements,
+                vendor_stocks=vendor_stocks,
+            )
 
-            return_in_vendor = move_qs.filter(
-                vendor_id=v.id,
-                movement_type=MovementType.RETURN_IN,
-            ).aggregate(
-                s=Coalesce(
-                    Sum("qty"),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["s"]
+            if has_stock is True and summary["stock_restant"] <= 0:
+                continue
 
-            stock_restant = stock_qs.filter(
-                vendor_id=v.id
-            ).aggregate(
-                s=Coalesce(
-                    Sum(
-                        ExpressionWrapper(
-                            F("quantite_allouee") - F("quantite_vendue"),
-                            output_field=DecimalField(max_digits=18, decimal_places=2),
-                        )
-                    ),
-                    Value(0),
-                    output_field=DecimalField(max_digits=18, decimal_places=2),
-                )
-            )["s"]
+            if has_stock is False and summary["stock_restant"] > 0:
+                continue
 
-            full_name = ""
-            if getattr(v, "user", None):
-                full_name = f"{(v.user.first_name or '').strip()} {(v.user.last_name or '').strip()}".strip()
+            results.append(summary)
 
-            rows.append({
-                "vendor_id": v.id,
-                "vendor_nom": full_name or getattr(v, "nom", "") or "",
-                "vendor_email": getattr(getattr(v, "user", None), "email", None),
-                "bijouterie_id": getattr(v, "bijouterie_id", None),
-                "bijouterie_nom": getattr(getattr(v, "bijouterie", None), "nom", None),
-                "vendor_assign_in": vendor_assign_in,
-                "sale_out_vendor": sale_out_vendor,
-                "return_in_vendor": return_in_vendor,
-                "stock_restant": stock_restant,
+        serializer = InventoryVendorSerializer(
+            results,
+            many=True,
+        )
+
+        return Response(serializer.data)
+
+    # ========================================================
+    # Validation des paramètres
+    # ========================================================
+
+    @staticmethod
+    def _parse_positive_int(value, field_name):
+        if value in (None, ""):
+            return None
+
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: "Une valeur entière est requise."
             })
 
-        if (getf("export") or "").lower() == "xlsx":
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Résumé vendeurs"
+        if parsed <= 0:
+            raise ValidationError({
+                field_name: (
+                    "La valeur doit être supérieure à zéro."
+                )
+            })
 
-            headers = [
-                "vendor_id",
-                "vendor_nom",
-                "vendor_email",
-                "bijouterie_id",
-                "bijouterie_nom",
-                "vendor_assign_in",
-                "sale_out_vendor",
-                "return_in_vendor",
-                "stock_restant",
-            ]
-            ws.append(headers)
+        return parsed
 
-            for row in rows:
-                ws.append([row.get(h) for h in headers])
+    @staticmethod
+    def _parse_date(value, field_name):
+        if not value:
+            return None
 
-            self._autosize(ws)
-            return self._xlsx_response(wb, "inventory_vendor.xlsx")
+        from django.utils.dateparse import parse_date
 
-        serializer = InventoryVendorSerializer(rows, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        parsed = parse_date(value)
+
+        if parsed is None:
+            raise ValidationError({
+                field_name: (
+                    "Format de date invalide. Utilisez YYYY-MM-DD."
+                )
+            })
+
+        return parsed
+
+    @staticmethod
+    def _parse_boolean(value, field_name):
+        if value in (None, ""):
+            return None
+
+        normalized = str(value).strip().lower()
+
+        if normalized in {
+            "1",
+            "true",
+            "yes",
+            "oui",
+        }:
+            return True
+
+        if normalized in {
+            "0",
+            "false",
+            "no",
+            "non",
+        }:
+            return False
+
+        raise ValidationError({
+            field_name: (
+                "Valeur booléenne invalide. "
+                "Utilisez true, false, 1 ou 0."
+            )
+        })
+
+    @staticmethod
+    def _verified_profile(user, attribute):
+        profile = getattr(user, attribute, None)
+
+        if not profile:
+            return None
+
+        if not getattr(profile, "verifie", True):
+            return None
+
+        return profile
+
+    # ========================================================
+    # Scope selon le rôle
+    # ========================================================
+
+    def _get_accessible_vendors(self):
+        user = self.request.user
+        role = get_role_name(user)
+
+        queryset = Vendor.objects.all()
+
+        if role == ROLE_ADMIN:
+            return queryset
+
+        if role == ROLE_MANAGER:
+            manager = self._verified_profile(
+                user,
+                "staff_manager_profile",
+            )
+
+            if not manager:
+                return queryset.none()
+
+            bijouterie_ids = manager.bijouteries.values_list(
+                "id",
+                flat=True,
+            )
+
+            return queryset.filter(
+                bijouterie_id__in=bijouterie_ids,
+            )
+
+        if role == ROLE_CASHIER:
+            cashier = self._verified_profile(
+                user,
+                "staff_cashier_profile",
+            )
+
+            if not cashier or not cashier.bijouterie_id:
+                return queryset.none()
+
+            return queryset.filter(
+                bijouterie_id=cashier.bijouterie_id,
+            )
+
+        if role == ROLE_VENDOR:
+            vendor = (
+                self._verified_profile(
+                    user,
+                    "vendor_profile",
+                )
+                or self._verified_profile(
+                    user,
+                    "staff_vendor_profile",
+                )
+            )
+
+            if not vendor:
+                return queryset.none()
+
+            return queryset.filter(
+                id=vendor.id,
+            )
+
+        raise PermissionDenied(
+            "Vous n'êtes pas autorisé à consulter "
+            "l'inventaire des vendeurs."
+        )
+
+    # ========================================================
+    # Agrégation
+    # ========================================================
+
+    @staticmethod
+    def _sum_qty(queryset):
+        return (
+            queryset.aggregate(
+                total=Coalesce(
+                    Sum("qty"),
+                    0,
+                )
+            )["total"]
+            or 0
+        )
+
+    @staticmethod
+    def _sum_vendor_stock(queryset, field):
+        return (
+            queryset.aggregate(
+                total=Coalesce(
+                    Sum(field),
+                    0,
+                )
+            )["total"]
+            or 0
+        )
+
+    def _build_summary(
+        self,
+        *,
+        vendor,
+        movements,
+        vendor_stocks,
+    ):
+        # ----------------------------------------------------
+        # Quantité affectée au vendeur selon le journal
+        # ----------------------------------------------------
+
+        vendor_assign_in = self._sum_qty(
+            movements.filter(
+                movement_type=MovementType.VENDOR_ASSIGN,
+                src_bucket=Bucket.BIJOUTERIE,
+                dst_bucket=Bucket.VENDOR,
+                vendor_id=vendor.id,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Quantité vendue selon le journal
+        # ----------------------------------------------------
+
+        sale_out_vendor = self._sum_qty(
+            movements.filter(
+                movement_type=MovementType.SALE_OUT,
+                src_bucket=Bucket.VENDOR,
+                dst_bucket=Bucket.EXTERNAL,
+                vendor_id=vendor.id,
+            )
+        )
+
+        # ----------------------------------------------------
+        # État courant du VendorStock
+        # ----------------------------------------------------
+
+        current_vendor_stocks = vendor_stocks.filter(
+            vendor_id=vendor.id,
+        )
+
+        quantite_allouee = self._sum_vendor_stock(
+            current_vendor_stocks,
+            "quantite_allouee",
+        )
+
+        quantite_vendue = self._sum_vendor_stock(
+            current_vendor_stocks,
+            "quantite_vendue",
+        )
+
+        stock_restant = max(
+            0,
+            int(quantite_allouee)
+            - int(quantite_vendue),
+        )
+
+        user = getattr(vendor, "user", None)
+
+        vendor_nom = ""
+
+        vendor_email = None
+
+        if user:
+            vendor_nom = (
+                user.get_full_name().strip()
+                or user.email
+                or f"Vendeur #{vendor.id}"
+            )
+
+            vendor_email = user.email
+
+        else:
+            vendor_nom = f"Vendeur #{vendor.id}"
+
+        bijouterie = getattr(
+            vendor,
+            "bijouterie",
+            None,
+        )
+
+        return {
+            "vendor_id": vendor.id,
+            "vendor_nom": vendor_nom,
+            "vendor_email": vendor_email,
+
+            "bijouterie_id": (
+                bijouterie.id
+                if bijouterie
+                else None
+            ),
+            "bijouterie_nom": (
+                bijouterie.nom
+                if bijouterie
+                else None
+            ),
+
+            "vendor_assign_in": vendor_assign_in,
+            "sale_out_vendor": sale_out_vendor,
+
+            "quantite_allouee": quantite_allouee,
+            "quantite_vendue": quantite_vendue,
+
+            "stock_restant": stock_restant,
+        }
     
-    
-
-
-
-
-

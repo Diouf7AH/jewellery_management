@@ -13,3 +13,26 @@ quelle bijouterie
 réserve ou non
 
 👉 utile pour stock, arrivages, audit photo
+
+
+
+quantite = models.PositiveIntegerField() 
+has_bijouterie_allocations
+
+
+
+FOURNISSEUR
+      │
+      ▼
+PURCHASE_IN
+      │
+      ▼
+VENDOR_ASSIGN
+      │
+      ▼
+SALE_OUT
+      │
+      ▼
+RETURN_IN
+
+InventoryAdjustmentView sera plus propre et plus générale que ArrivageAdjustmentsView.

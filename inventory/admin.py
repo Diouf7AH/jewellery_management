@@ -97,7 +97,6 @@ class InventoryMovementAdmin(admin.ModelAdmin):
         ("Liens Achats", {
             "fields": (
                 "achat",
-                "achat_ligne",
                 "lot",
             )
         }),

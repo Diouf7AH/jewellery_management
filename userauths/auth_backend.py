@@ -1,69 +1,119 @@
-from django.contrib.auth.backends import BaseBackend
-from django.contrib.auth import get_user_model
-from django.db.models import Q
 import re
+
+from django.contrib.auth import get_user_model
+from django.contrib.auth.backends import ModelBackend
 
 User = get_user_model()
 
-# class EmailPhoneUsernameAuthenticationBackend(BaseBackend):
-#     def authenticate(self, request, username=None, password=None, **kwargs):
-#         if not username or not password:
-#             return None
 
-#         try:
-#             user = User.objects.get(
-#                 Q(email=username) | Q(username=username) | Q(telephone=username)
-#             )
-#         except User.DoesNotExist:
-#             return None
-
-#         if user.check_password(password) and user.is_active:
-#             return user
-
-#         return None
-
-#     def get_user(self, user_id):
-#         try:
-#             return User.objects.get(pk=user_id)
-#         except User.DoesNotExist:
-#             return None
-
-
-class EmailPhoneUsernameAuthenticationBackend(BaseBackend):
+class EmailPhoneUsernameAuthenticationBackend(ModelBackend):
     """
-    Auth par email / username / téléphone.
-    - Insensible à la casse (email/username).
-    - Normalise basiquement le téléphone (retire espaces, -, .).
-    - Anti timing-attack si l'utilisateur n'existe pas.
+    Authentification par :
+
+    - adresse email ;
+    - nom d'utilisateur ;
+    - numéro de téléphone.
+
+    L'email et le username sont insensibles à la casse.
+    Le téléphone est normalisé comme dans le modèle User.
     """
-    def authenticate(self, request, username=None, password=None, **kwargs):
-        if not username or not password:
+
+    @staticmethod
+    def normalize_phone(value: str) -> str:
+        """
+        Applique la même normalisation que User.clean() et User.save() :
+
+        - suppression des espaces et séparateurs ;
+        - suppression du + initial ;
+        - conservation des chiffres uniquement.
+        """
+
+        phone = re.sub(r"\D", "", value or "")
+        return phone
+
+    def authenticate(
+        self,
+        request,
+        username=None,
+        password=None,
+        **kwargs,
+    ):
+        identifier = username or kwargs.get(User.USERNAME_FIELD)
+
+        if not identifier or password is None:
             return None
 
-        ident = str(username).strip()
-        # Normalise un peu le téléphone (garde + et chiffres)
-        phone_norm = re.sub(r"[^\d+]", "", ident)
+        identifier = str(identifier).strip()
 
-        qs = User.objects.filter(
-            Q(email__iexact=ident) |
-            Q(username__iexact=ident) |
-            Q(telephone=ident) |
-            Q(telephone=phone_norm)
+        if not identifier:
+            return None
+
+        phone = self.normalize_phone(identifier)
+
+        # On recherche séparément pour éviter qu'un OR retourne
+        # plusieurs utilisateurs différents.
+        candidates = []
+
+        email_user = (
+            User.objects
+            .filter(email__iexact=identifier)
+            .first()
         )
 
-        user = qs.first()
-        # Anti timing-attack: brûle le hash même si l'utilisateur n'existe pas
-        if user is None:
-            dummy = User()
-            dummy.set_password(password)
-            return None
+        if email_user:
+            candidates.append(email_user)
 
-        if user.is_active and user.check_password(password):
-            return user
+        username_user = (
+            User.objects
+            .filter(username__iexact=identifier)
+            .first()
+        )
+
+        if (
+            username_user
+            and username_user.pk not in {
+                user.pk for user in candidates
+            }
+        ):
+            candidates.append(username_user)
+
+        if phone:
+            phone_user = (
+                User.objects
+                .filter(telephone=phone)
+                .first()
+            )
+
+            if (
+                phone_user
+                and phone_user.pk not in {
+                    user.pk for user in candidates
+                }
+            ):
+                candidates.append(phone_user)
+
+        # Vérifie le mot de passe de chaque compte correspondant.
+        for user in candidates:
+            if (
+                user.check_password(password)
+                and self.user_can_authenticate(user)
+            ):
+                return user
+
+        # Protection contre les attaques temporelles lorsqu'aucun
+        # utilisateur n'a été trouvé.
+        if not candidates:
+            dummy_user = User()
+            dummy_user.set_password(password)
+
         return None
 
     def get_user(self, user_id):
         try:
-            return User.objects.get(pk=user_id)
+            user = User.objects.get(pk=user_id)
         except User.DoesNotExist:
             return None
+
+        return user if self.user_can_authenticate(user) else None
+    
+

@@ -122,8 +122,28 @@ class CommandeClient(models.Model):
 
     def clean(self):
         if self.vendor and self.vendor.bijouterie_id and self.bijouterie_id:
-            if self.vendor.bijouterie_id != self.bijouterie_id:
-                raise ValidationError("Le vendeur ne dépend pas de cette bijouterie.")
+            if self.vendor_id and self.bijouterie_id:
+                try:
+                    vendor_bijouterie_id = getattr(
+                        self.vendor,
+                        "bijouterie_id",
+                        None,
+                    )
+                except ObjectDoesNotExist:
+                    vendor_bijouterie_id = None
+                    errors["vendor"] = "Le vendeur sélectionné est introuvable."
+
+                if not vendor_bijouterie_id:
+                    errors["vendor"] = (
+                        "Le vendeur n'est rattaché à aucune bijouterie."
+                    )
+                elif vendor_bijouterie_id != self.bijouterie_id:
+                    errors["bijouterie"] = (
+                        "Le vendeur n'appartient pas à cette bijouterie."
+                    )
+            
+            
+            
 
         if self.poids_envoye_ouvrier < ZERO:
             raise ValidationError({
@@ -359,7 +379,7 @@ class CommandeClientHistorique(models.Model):
     ancien_statut = models.CharField(max_length=20, blank=True, default="")
     nouveau_statut = models.CharField(max_length=20)
     commentaire = models.TextField(blank=True, default="")
-    changed_by = models.ForeignKey(
+    modifier_par = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,

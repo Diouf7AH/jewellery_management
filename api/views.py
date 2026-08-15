@@ -31,35 +31,6 @@ from store.services.price_history_service import update_marque_purete_price
 
 from .serializers import CommercialSettingsSerializer
 
-from datetime import timedelta, timezone as dt_timezone
-from decimal import Decimal
-
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum, Value
-from django.db.models.functions import (
-    Coalesce,
-    ExtractYear,
-    TruncDay,
-    TruncMonth,
-    TruncWeek,
-)
-from django.utils import timezone
-from django.utils.dateparse import parse_date
-
-from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
-
-from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.views import APIView
-
-from backend.permissions import IsAdminOrManager
-from backend.query_scopes import scope_bijouterie_q
-from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
-
-from sale.models import Facture, Paiement, PaiementLigne, Vente, VenteProduit
-from stock.models import Stock, VendorStock
-
 
 def _parse_date(value):
     if not value:
@@ -755,7 +726,7 @@ Permet à l’admin ou au manager de :
             #     new_appliquer_tva=bijouterie.appliquer_tva,
             #     old_taux_tva=old_taux_tva,
             #     new_taux_tva=bijouterie.taux_tva,
-            #     changed_by=request.user,
+            #     modifier_par=request.user,
             #     source="api",
             # )
 

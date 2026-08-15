@@ -132,7 +132,7 @@ class CommandeProduitClientSerializer(serializers.ModelSerializer):
 
 
 class CommandeClientHistoriqueSerializer(serializers.ModelSerializer):
-    changed_by_username = serializers.CharField(source="changed_by.username", read_only=True)
+    modifier_par_username = serializers.CharField(source="modifier_par.username", read_only=True)
 
     class Meta:
         model = CommandeClientHistorique
@@ -141,8 +141,8 @@ class CommandeClientHistoriqueSerializer(serializers.ModelSerializer):
             "ancien_statut",
             "nouveau_statut",
             "commentaire",
-            "changed_by",
-            "changed_by_username",
+            "modifier_par",
+            "modifier_par_username",
             "changed_at",
         ]
         read_only_fields = fields

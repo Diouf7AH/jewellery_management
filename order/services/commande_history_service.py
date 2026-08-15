@@ -7,7 +7,7 @@ def add_commande_history(*, commande, ancien_statut, nouveau_statut, commentaire
         ancien_statut=ancien_statut or "",
         nouveau_statut=nouveau_statut,
         commentaire=commentaire or "",
-        changed_by=user,
+        modifier_par=user,
     )
     
 

@@ -23,13 +23,13 @@
 #     def get_queryset(self, request):
 #         qs = super().get_queryset(request).select_related("achat", "achat__fournisseur")
 #         poids_total_expr = ExpressionWrapper(
-#             F("lignes__quantite_total") * F("lignes__produit__poids"),
+#             F("lignes__quantite_totale") * F("lignes__produit__poids"),
 #             output_field=DecimalField(max_digits=18, decimal_places=3)
 #         )
 #         return (qs
 #                 .annotate(
 #                     nb_lignes=Count("lignes", distinct=True),
-#                     qte_totale=Sum("lignes__quantite_total", output_field=IntegerField()),
+#                     qte_totale=Sum("lignes__quantite_totale", output_field=IntegerField()),
 #                     poids_total=Sum(poids_total_expr),
 #                 ))
 

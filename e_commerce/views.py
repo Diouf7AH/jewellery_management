@@ -3,6 +3,13 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+from rest_framework import generics, permissions, status
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from backend.permissions import (ROLE_MANAGER, ROLE_VENDOR, IsAdminOrManager,
+                                 IsAdminOrManagerOrVendor, get_role_name)
 from e_commerce.models import (CommandeEcommerce, EcommerceBanner,
                                EcommerceHomeProduct, LivraisonEcommerce,
                                PaiementEcommerce)
@@ -14,15 +21,8 @@ from e_commerce.serializers import (CommandeEcommerceCreateSerializer,
                                     EcommerceHomeProductSerializer)
 from e_commerce.services.payment import initiate_payment
 from e_commerce.services.webhook import confirm_ecommerce_payment
-from rest_framework import generics, permissions, status
-from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
-from rest_framework.views import APIView
 from sale.models import VenteProduit
 from stock.models import Stock
-
-from backend.permissions import (ROLE_MANAGER, ROLE_VENDOR, IsAdminOrManager,
-                                 IsAdminOrManagerOrVendor, get_role_name)
 
 from .models import CommandeEcommerce
 from .serializers import (CommandeEcommerceCreateSerializer,

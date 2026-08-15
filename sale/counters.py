@@ -8,7 +8,11 @@ from store.models import Bijouterie
 
 # pour les numero de facture
 class InvoiceCounter(models.Model):
-    bijouterie = models.ForeignKey(Bijouterie, on_delete=models.CASCADE, related_name="invoice_counters")
+    bijouterie = models.ForeignKey(
+        Bijouterie,
+        on_delete=models.CASCADE,
+        related_name="invoice_counters"
+    )
     day = models.DateField()
     last_value = models.PositiveIntegerField(default=0)
 

@@ -1,3 +1,4 @@
+
 from textwrap import dedent
 
 from django.core.exceptions import ValidationError
@@ -13,265 +14,361 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
-from backend.query_scopes import scope_bijouterie_q
-from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
+from backend.permissions import IsAdminOrManager
+from backend.query_scopes import BijouterieScopedQuerysetMixin
+from backend.roles import ROLE_MANAGER, get_role_name
 from stock.models import Stock
-from stock.serializers import StockSerializer
 from vendor.models import Vendor
 
 from .serializers import (MagasinProduitDisponibleSerializer,
-                          MagasinToVendorInSerializer,
-                          MagasinToVendorOutSerializer)
-from .services.magasin_to_vendor_service import transfer_magasin_to_vendor
+                          StockDisponiblePourVendeurSerializer,
+                          StockToVendorAssignmentInSerializer,
+                          StockToVendorAssignmentOutSerializer)
+from .services.magasin_to_vendor_service import assign_stock_to_vendor
 
 
-class MagasinProduitDisponibleListView(ListAPIView):
-    permission_classes = [IsAuthenticated]
+class MagasinProduitDisponibleListView(
+    BijouterieScopedQuerysetMixin,
+    ListAPIView,
+):
+    """
+    Liste des ProduitLine encore disponibles dans les magasins.
+
+    Accès :
+    - ADMIN : toutes les bijouteries
+    - MANAGER : uniquement les bijouteries qu'il gère
+
+    Filtre :
+    - ?bijouterie_id=<id>
+    """
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+
     serializer_class = MagasinProduitDisponibleSerializer
+    pagination_class = None
+
+    # Le modèle Stock possède directement bijouterie_id.
+    scope_field = "bijouterie_id"
+
+    queryset = (
+        Stock.objects
+        .select_related(
+            "bijouterie",
+            "produit_line",
+            "produit_line__lot",
+            "produit_line__produit",
+            "produit_line__produit__purete",
+            "produit_line__produit__marque",
+        )
+        .filter(
+            en_stock__gt=0,
+        )
+    )
 
     def get_queryset(self):
-        user = self.request.user
-        role = get_role_name(user)
+        """
+        Le super().get_queryset() applique automatiquement :
 
-        queryset = (
-            Stock.objects
-            .select_related(
-                "bijouterie",
-                "produit_line",
-                "produit_line__lot",
-                "produit_line__produit",
-                "produit_line__produit__purete",
-                "produit_line__produit__marque",
-            )
-            .filter(
-                is_reserve=False,
-                bijouterie__isnull=False,
-                en_stock__gt=0,
-            )
-            .order_by("bijouterie__nom", "produit_line__lot__numero_lot", "produit_line__produit__sku")
+        - admin : accès global ;
+        - manager : uniquement ses bijouteries ;
+        - profil manager désactivé : aucun résultat.
+        """
+
+        queryset = super().get_queryset()
+
+        bijouterie_id = self.request.query_params.get(
+            "bijouterie_id"
         )
 
-        bijouterie_id = self.request.query_params.get("bijouterie_id")
+        if bijouterie_id not in (None, ""):
+            try:
+                bijouterie_id = int(bijouterie_id)
+            except (TypeError, ValueError):
+                raise ValidationError({
+                    "bijouterie_id": (
+                        "bijouterie_id doit être un entier valide."
+                    )
+                })
 
-        if role == ROLE_ADMIN:
-            if bijouterie_id:
-                queryset = queryset.filter(bijouterie_id=bijouterie_id)
-            return queryset
+            if bijouterie_id <= 0:
+                raise ValidationError({
+                    "bijouterie_id": (
+                        "bijouterie_id doit être supérieur à zéro."
+                    )
+                })
 
-        if role == ROLE_MANAGER:
-            manager = getattr(user, "staff_manager_profile", None)
-            if not manager:
-                return Stock.objects.none()
+            queryset = queryset.filter(
+                bijouterie_id=bijouterie_id,
+            )
 
-            manager_bijouteries = manager.bijouteries.all()
+        return queryset.order_by(
+            "bijouterie__nom",
+            "produit_line__lot__numero_lot",
+            "produit_line__produit__sku",
+            "produit_line_id",
+        )
+            
+        
+class MagasinToVendorAssignmentView(APIView):
+    """
+    Affecte du stock disponible dans une bijouterie à un vendeur.
 
-            queryset = queryset.filter(bijouterie__in=manager_bijouteries)
+    Le vendeur doit obligatoirement appartenir à la bijouterie
+    depuis laquelle le stock est affecté.
+    """
 
-            if bijouterie_id:
-                queryset = queryset.filter(bijouterie_id=bijouterie_id)
-
-            return queryset
-
-        return Stock.objects.none()
-
-
-class MagasinToVendorTransferView(APIView):
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
     http_method_names = ["post"]
 
     @swagger_auto_schema(
-        operation_id="magasinToVendorTransfer",
-        operation_summary="Transférer du stock Magasin vers un vendeur",
-        operation_description=dedent("""
-            Effectue un transfert Magasin/Bijouterie → Vendeur.
+        operation_id="assignMagasinStockToVendor",
+        operation_summary=(
+            "Affecter du stock magasin à un vendeur"
+        ),
+        operation_description=dedent(
+            """
+            Affecte du stock disponible dans une bijouterie à un vendeur.
 
             Effets :
-            - Magasin : décrémente Stock(en_stock) et quantite_disponible
-            - Vendeur : incrémente VendorStock.quantite_allouee
-            - Audit : crée InventoryMovement(VENDOR_ASSIGN)
+            - Stock magasin :
+              décrémente uniquement `Stock.en_stock`
+            - Stock vendeur :
+              incrémente `VendorStock.quantite_allouee`
+            - Historique :
+              crée un `InventoryMovement(VENDOR_ASSIGN)`
+
+            `Stock.quantite_totale` reste inchangé, car il représente
+            la quantité historiquement reçue dans la bijouterie.
 
             Sécurité :
-            - admin : toutes bijouteries
-            - manager : uniquement vendeurs appartenant à ses bijouteries
-        """),
+            - ADMIN :
+              peut affecter du stock à tous les vendeurs
+            - MANAGER :
+              peut affecter du stock uniquement aux vendeurs appartenant
+              aux bijouteries qu'il gère
+
+            Toutes les lignes sont traitées dans une transaction unique.
+            Si une ligne échoue, toute l'affectation est annulée.
+            """
+        ),
         tags=["Stock"],
-        request_body=MagasinToVendorInSerializer,
+        request_body=StockToVendorAssignmentInSerializer,
         responses={
-            200: MagasinToVendorOutSerializer,
-            400: openapi.Response(description="ValidationError / stock insuffisant"),
-            403: openapi.Response(description="Forbidden"),
+            200: openapi.Response(
+                description="Stock affecté avec succès.",
+                schema=StockToVendorAssignmentOutSerializer,
+            ),
+            400: openapi.Response(
+                description=(
+                    "Données invalides, vendeur introuvable "
+                    "ou stock insuffisant."
+                ),
+            ),
+            403: openapi.Response(
+                description="Accès interdit.",
+            ),
         },
     )
     def post(self, request):
-        serializer = MagasinToVendorInSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
+        input_serializer = StockToVendorAssignmentInSerializer(
+            data=request.data
+        )
+        input_serializer.is_valid(raise_exception=True)
 
-        role = (get_role_name(request.user) or "").lower()
+        data = input_serializer.validated_data
+        vendor_email = data["vendor_email"]
+
+        role = get_role_name(request.user)
 
         vendor = (
             Vendor.objects
-            .select_related("bijouterie", "user")
-            .filter(user__email__iexact=data["vendor_email"])
+            .select_related(
+                "bijouterie",
+                "user",
+            )
+            .filter(
+                user__email__iexact=vendor_email,
+                verifie=True,
+            )
             .first()
         )
 
-        if not vendor:
+        if vendor is None:
             return Response(
-                {"detail": "Vendeur introuvable."},
+                {
+                    "vendor_email": (
+                        "Aucun vendeur n'a été trouvé avec cette adresse."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if not vendor.bijouterie_id:
             return Response(
-                {"detail": "Ce vendeur n'est rattaché à aucune bijouterie."},
+                {
+                    "vendor_email": (
+                        "Ce vendeur n'est rattaché à aucune bijouterie."
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if role == ROLE_MANAGER:
-            manager_profile = getattr(request.user, "staff_manager_profile", None)
+            manager_profile = getattr(
+                request.user,
+                "staff_manager_profile",
+                None,
+            )
 
-            if not manager_profile or (
-                hasattr(manager_profile, "verifie") and not manager_profile.verifie
+            if (
+                manager_profile is None
+                or not getattr(manager_profile, "verifie", True)
             ):
-                return Response(
-                    {"detail": "Profil manager invalide."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-            if not manager_profile.bijouteries.filter(id=vendor.bijouterie_id).exists():
                 return Response(
                     {
                         "detail": (
-                            "Vous ne pouvez pas affecter un vendeur "
-                            "hors de vos bijouteries."
+                            "Votre profil manager est invalide "
+                            "ou désactivé."
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            manager_has_access = (
+                manager_profile.bijouteries
+                .filter(pk=vendor.bijouterie_id)
+                .exists()
+            )
+
+            if not manager_has_access:
+                return Response(
+                    {
+                        "detail": (
+                            "Vous ne pouvez pas affecter du stock "
+                            "à un vendeur appartenant à une bijouterie "
+                            "que vous ne gérez pas."
                         )
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
         try:
-            result = transfer_magasin_to_vendor(
-                vendor_email=data["vendor_email"],
+            result = assign_stock_to_vendor(
+                vendor_email=vendor_email,
                 lignes=data["lignes"],
                 note=data.get("note", ""),
                 user=request.user,
             )
 
-        except (DjangoValidationError, DRFValidationError) as e:
-            detail = (
-                getattr(e, "message_dict", None)
-                or getattr(e, "detail", None)
-                or getattr(e, "messages", None)
-                or str(e)
-            )
+        except DjangoValidationError as exc:
+            if hasattr(exc, "message_dict"):
+                detail = exc.message_dict
+            elif hasattr(exc, "messages"):
+                detail = exc.messages
+            else:
+                detail = str(exc)
 
             return Response(
-                {"detail": detail},
+                detail,
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        except IntegrityError as e:
+        except DRFValidationError as exc:
             return Response(
-                {"detail": f"Erreur base de données: {str(e)}"},
+                exc.detail,
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        except Exception as e:
+        except IntegrityError:
             return Response(
-                {"detail": f"Erreur serveur: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {
+                    "detail": (
+                        "Une erreur d'intégrité est survenue pendant "
+                        "l'affectation du stock."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response(result, status=status.HTTP_200_OK)
-
-
-
-class StockDisponiblePourVendeurView(APIView):
-    """
-    GET /api/stocks/available-for-vendor/
-
-    Liste claire des ProduitLine disponibles en réserve pour affectation vendeur.
-    """
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-    http_method_names = ["get"]
-
-    @swagger_auto_schema(
-        operation_summary="Lister les ProduitLine disponibles à affecter à un vendeur",
-        manual_parameters=[
-            openapi.Parameter("q", openapi.IN_QUERY, type=openapi.TYPE_STRING, required=False),
-            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
-            openapi.Parameter("lot_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER, required=False),
-        ],
-        tags=["Stock"],
-        responses={200: openapi.Response("OK")},
-    )
-    def get(self, request):
-        q = (request.GET.get("q") or "").strip()
-        produit_id = request.GET.get("produit_id")
-        lot_id = request.GET.get("lot_id")
-
-        qs = (
-            Stock.objects
-            .select_related(
-                "produit_line",
-                "produit_line__produit",
-                "produit_line__lot",
-            )
-            .filter(
-                is_reserve=True,
-                bijouterie__isnull=True,
-                en_stock__gt=0,
-            )
-            .order_by(
-                "produit_line__lot__received_at",
-                "produit_line_id",
-            )
+        output_serializer = StockToVendorAssignmentOutSerializer(
+            result
         )
 
-        if produit_id:
-            qs = qs.filter(produit_line__produit_id=produit_id)
+        return Response(
+            output_serializer.data,
+            status=status.HTTP_200_OK,
+        )
 
-        if lot_id:
-            qs = qs.filter(produit_line__lot_id=lot_id)
 
-        if q:
-            qs = qs.filter(
-                Q(produit_line__produit__nom__icontains=q) |
-                Q(produit_line__produit__sku__icontains=q) |
-                Q(produit_line__lot__numero_lot__icontains=q) |
-                Q(produit_line__lot__lot_code__icontains=q)
+
+
+class StockDisponiblePourVendeurView(
+    BijouterieScopedQuerysetMixin,
+    ListAPIView,
+):
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+
+    serializer_class = StockDisponiblePourVendeurSerializer
+    pagination_class = None
+
+    scope_field = "bijouterie_id"
+
+    queryset = (
+        Stock.objects
+        .select_related(
+            "bijouterie",
+            "produit_line",
+            "produit_line__lot",
+            "produit_line__produit",
+            "produit_line__produit__purete",
+            "produit_line__produit__marque",
+        )
+        .filter(
+            en_stock__gt=0,
+        )
+    )
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        bijouterie_id = self.request.query_params.get(
+            "bijouterie_id"
+        )
+
+        if bijouterie_id not in (None, ""):
+            try:
+                bijouterie_id = int(bijouterie_id)
+            except (TypeError, ValueError):
+                raise ValidationError({
+                    "bijouterie_id": (
+                        "bijouterie_id doit être un entier valide."
+                    )
+                })
+
+            if bijouterie_id <= 0:
+                raise ValidationError({
+                    "bijouterie_id": (
+                        "bijouterie_id doit être supérieur à zéro."
+                    )
+                })
+
+            queryset = queryset.filter(
+                bijouterie_id=bijouterie_id,
             )
 
-        results = []
-
-        for stock in qs:
-            pl = stock.produit_line
-            produit = getattr(pl, "produit", None)
-            lot = getattr(pl, "lot", None)
-
-            results.append({
-                "produit_line_id": pl.id,
-                "produit_id": produit.id if produit else None,
-                "produit_nom": produit.nom if produit else None,
-                "sku": getattr(produit, "sku", None) if produit else None,
-
-                "lot_id": lot.id if lot else None,
-                "lot": (
-                    getattr(lot, "numero_lot", None)
-                    or getattr(lot, "lot_code", None)
-                ),
-
-                "stock_disponible": int(stock.en_stock or 0),
-                "stock_total": int(stock.quantite_disponible or 0),
-            })
-
-        return Response({
-            "count": len(results),
-            "results": results,
-        })
+        return queryset.order_by(
+            "bijouterie__nom",
+            "produit_line__lot__numero_lot",
+            "produit_line__produit__sku",
+        )
         
-
-
 

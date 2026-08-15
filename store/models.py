@@ -331,13 +331,14 @@ class MarquePuretePrixHistory(models.Model):
 
 class Produit(models.Model):
     # uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True,editable=False,db_index=True,)
+    # uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
     nom = models.CharField(max_length=100, blank=True, default="")
     image = models.ImageField(upload_to="produits/", blank=True, null=True)
     description = models.TextField(null=True, blank=True)
 
     # QR code sera généré via signal post_save (transaction.on_commit)
-    qr_code = models.ImageField(upload_to="qr_codes/", null=True, blank=True)
+    # qr_code = models.ImageField(upload_to="qr_codes/", null=True, blank=True)
 
     categorie = models.ForeignKey("Categorie", on_delete=models.SET_NULL, null=True, blank=True, related_name="categorie_produit")
     purete = models.ForeignKey("Purete", on_delete=models.SET_NULL, null=True, blank=True, related_name="purete_produit", default=get_default_purete)
@@ -416,34 +417,34 @@ class Produit(models.Model):
         return sku
 
     
-    @staticmethod
-    def generate_qr_code_image(*, produit, filename_hint: str | None = None) -> File:
-        """
-        Génère un QR code optimisé pour scan POS ultra rapide
-        """
+    # @staticmethod
+    # def generate_qr_code_image(*, produit, filename_hint: str | None = None) -> File:
+    #     """
+    #     Génère un QR code optimisé pour scan POS ultra rapide
+    #     """
 
-        # 🔥 contenu ultra rapide
-        qr_content = f"P:{produit.id}"
+    #     # 🔥 contenu ultra rapide
+    #     qr_content = f"P:{produit.id}"
 
-        qr = qrcode.QRCode(
-            version=None,          # auto
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=6,            # 🔥 plus petit = scan plus rapide
-            border=2               # 🔥 réduit pour étiquette
-        )
+    #     qr = qrcode.QRCode(
+    #         version=None,          # auto
+    #         error_correction=qrcode.constants.ERROR_CORRECT_L,
+    #         box_size=6,            # 🔥 plus petit = scan plus rapide
+    #         border=2               # 🔥 réduit pour étiquette
+    #     )
 
-        qr.add_data(qr_content)
-        qr.make(fit=True)
+    #     qr.add_data(qr_content)
+    #     qr.make(fit=True)
 
-        img = qr.make_image(fill_color="black", back_color="white")
+    #     img = qr.make_image(fill_color="black", back_color="white")
 
-        buffer = BytesIO()
-        img.save(buffer, format="PNG")
-        buffer.seek(0)
+    #     buffer = BytesIO()
+    #     img.save(buffer, format="PNG")
+    #     buffer.seek(0)
 
-        safe_name = slugify(filename_hint or "")[:40] or uuid.uuid4().hex[:10]
+    #     safe_name = slugify(filename_hint or "")[:40] or uuid.uuid4().hex[:10]
 
-        return File(buffer, name=f"qr_{safe_name}.png")
+    #     return File(buffer, name=f"qr_{safe_name}.png")
     
 
     def save(self, *args, **kwargs):
@@ -463,11 +464,11 @@ class Produit(models.Model):
 
         super().save(*args, **kwargs)
 
-    # Admin helper
-    def qr_code_url(self):
-        return self.qr_code.url if self.qr_code else "Aucun QR code"
+    # # Admin helper
+    # def qr_code_url(self):
+    #     return self.qr_code.url if self.qr_code else "Aucun QR code"
 
-    qr_code_url.short_description = "QR Code"
+    # qr_code_url.short_description = "QR Code"
 
 
 # Model for Product Gallery

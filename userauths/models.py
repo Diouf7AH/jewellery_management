@@ -4,36 +4,19 @@ import random
 import re
 import string
 import uuid
-from random import SystemRandom
 
-from django.apps import apps
 from django.conf import settings
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, models, transaction
-from django.db.models.signals import post_migrate, post_save
-from django.dispatch import receiver
-from django.template.loader import render_to_string
-from django.urls import reverse
+from django.db import models
 from django.utils import timezone
-from django.utils.html import mark_safe, strip_tags
-from django.utils.text import slugify
+from django.utils.html import mark_safe
 from django_rest_passwordreset.signals import reset_password_token_created
 
 from store.models import Bijouterie
 
 logger = logging.getLogger(__name__)
-
-# creation des roles
-@receiver(post_migrate)
-def create_default_instances(sender, **kwargs):
-    Role = apps.get_model("userauths", "Role")
-
-    Role.objects.get_or_create(role='admin')
-    Role.objects.get_or_create(role='manager')
-    Role.objects.get_or_create(role='vendor')
-    Role.objects.get_or_create(role='cashier')
 
 
 class UserManager(BaseUserManager):
@@ -96,10 +79,24 @@ class Role(models.Model):
         return self.role
 
 class User(AbstractUser):
-    email = models.EmailField(max_length=254, unique=True)
-    # username = models.CharField(max_length=30, unique=True, blank=True)
-    username = models.CharField(max_length=150,unique=True,null=True,blank=True,)
-    telephone = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    email = models.EmailField(
+        max_length=254,
+        unique=True,
+    )
+
+    username = models.CharField(
+        max_length=150,
+        unique=True,
+        null=True,
+        blank=True,
+    )
+
+    telephone = models.CharField(
+        max_length=20,
+        unique=True,
+        null=True,
+        blank=True,
+    )
 
     user_role = models.ForeignKey(
         Role,
@@ -111,8 +108,18 @@ class User(AbstractUser):
     )
 
     is_email_verified = models.BooleanField(default=False)
-    last_confirmation_email_sent = models.DateTimeField(null=True, blank=True)
-    slug = models.SlugField(max_length=20, unique=True, null=True, blank=True)
+
+    last_confirmation_email_sent = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    slug = models.SlugField(
+        max_length=20,
+        unique=True,
+        null=True,
+        blank=True,
+    )
 
     objects = UserManager()
 
@@ -129,8 +136,12 @@ class User(AbstractUser):
         verbose_name_plural = "Utilisateurs"
 
     def __str__(self):
-        role = getattr(self.user_role, "role", "Aucun rôle")
+        role = self.role_name or "aucun rôle"
         return f"{self.email} ({role})"
+
+    # ========================================================
+    # Informations générales
+    # ========================================================
 
     @property
     def nom(self):
@@ -142,46 +153,118 @@ class User(AbstractUser):
 
     @property
     def full_name(self):
-        return " ".join(filter(None, [self.first_name, self.last_name])).strip()
+        return " ".join(
+            filter(
+                None,
+                [
+                    self.first_name,
+                    self.last_name,
+                ],
+            )
+        ).strip()
 
     @property
     def display_name(self):
         return self.full_name or self.email
 
+    # ========================================================
+    # Rôle effectif
+    # ========================================================
+
     @property
     def role_name(self):
-        return (getattr(self.user_role, "role", "") or "").strip().lower()
+        """
+        Retourne le rôle effectif selon le nouveau cycle :
+
+        - superuser -> admin ;
+        - profil staff vérifié -> rôle staff ;
+        - user_role -> uniquement admin ;
+        - utilisateur désactivé -> aucun rôle.
+        """
+
+        from backend.roles import get_role_name
+
+        return get_role_name(self)
 
     @property
     def is_admin(self):
-        return self.role_name == "admin" or self.is_superuser
+        from backend.roles import ROLE_ADMIN
+
+        return self.role_name == ROLE_ADMIN
 
     @property
     def is_manager(self):
-        return self.role_name == "manager"
+        from backend.roles import ROLE_MANAGER
+
+        return self.role_name == ROLE_MANAGER
 
     @property
     def is_vendor(self):
-        return self.role_name == "vendor"
+        from backend.roles import ROLE_VENDOR
+
+        return self.role_name == ROLE_VENDOR
 
     @property
     def is_cashier(self):
-        return self.role_name == "cashier"
+        from backend.roles import ROLE_CASHIER
+
+        return self.role_name == ROLE_CASHIER
+
+    @property
+    def is_buyer(self):
+        from backend.roles import ROLE_BUYER
+
+        return self.role_name == ROLE_BUYER
+
+    @property
+    def is_customer(self):
+        """
+        Utilisateur public sans rôle administratif ou staff.
+        """
+
+        return (
+            self.is_active
+            and not self.is_superuser
+            and self.role_name is None
+        )
+
+    # ========================================================
+    # Slug
+    # ========================================================
 
     @staticmethod
     def random_slug(length=20):
         chars = string.ascii_lowercase + string.digits
-        return "".join(random.choices(chars, k=length))
+        return "".join(
+            random.choices(
+                chars,
+                k=length,
+            )
+        )
 
     @classmethod
-    def generate_unique_slug(cls, length=20, field_name="slug"):
+    def generate_unique_slug(
+        cls,
+        length=20,
+        field_name="slug",
+    ):
         for _ in range(20):
             value = cls.random_slug(length=length)
-            if not cls.objects.filter(**{field_name: value}).exists():
+
+            if not cls.objects.filter(
+                **{field_name: value}
+            ).exists():
                 return value
 
-        logger.warning("Slug unique difficile à générer")
+        logger.warning(
+            "Slug unique difficile à générer."
+        )
+
         return cls.random_slug(length=length)
+
+    # ========================================================
+    # Validation
+    # ========================================================
 
     def clean(self):
         super().clean()
@@ -190,19 +273,49 @@ class User(AbstractUser):
             self.email = self.email.strip().lower()
 
         if self.telephone:
-            t = self.telephone.strip().replace(" ", "")
-            if t.startswith("+"):
-                t = t[1:]
-            if not re.fullmatch(r"\d{9,15}", t):
+            telephone = (
+                self.telephone
+                .strip()
+                .replace(" ", "")
+            )
+
+            if telephone.startswith("+"):
+                telephone = telephone[1:]
+
+            if not re.fullmatch(r"\d{9,15}", telephone):
                 raise ValidationError({
-                    "telephone": "Le numéro doit contenir 9 à 15 chiffres."
+                    "telephone": (
+                        "Le numéro doit contenir "
+                        "entre 9 et 15 chiffres."
+                    )
                 })
-            self.telephone = t
+
+            self.telephone = telephone
         else:
             self.telephone = None
 
         if self.username:
             self.username = self.username.strip()
+
+        # Nouveau cycle :
+        # user_role est réservé à l'administrateur.
+        if self.user_role_id:
+            role_name = (
+                getattr(self.user_role, "role", "")
+                or ""
+            ).strip().lower()
+
+            if role_name != "admin":
+                raise ValidationError({
+                    "user_role": (
+                        "Les rôles manager, vendor, cashier et buyer "
+                        "doivent être attribués via leurs profils staff."
+                    )
+                })
+
+    # ========================================================
+    # Sauvegarde
+    # ========================================================
 
     def save(self, *args, **kwargs):
         if self.email:
@@ -212,39 +325,59 @@ class User(AbstractUser):
             self.username = self.username.strip()
 
         if self.telephone:
-            t = self.telephone.strip().replace(" ", "")
-            if t.startswith("+"):
-                t = t[1:]
-            self.telephone = t
+            telephone = (
+                self.telephone
+                .strip()
+                .replace(" ", "")
+            )
+
+            if telephone.startswith("+"):
+                telephone = telephone[1:]
+
+            self.telephone = telephone
         else:
             self.telephone = None
-            
-        if self.password is None or self.password == "":
+
+        if not self.password:
             self.set_unusable_password()
 
+        # Un superuser Django reçoit automatiquement
+        # le rôle administrateur applicatif.
         if self.is_superuser and self.user_role_id is None:
-            admin_role, _ = Role.objects.get_or_create(role="admin")
+            admin_role, _ = Role.objects.get_or_create(
+                role="admin"
+            )
             self.user_role = admin_role
 
-        if self.is_admin:
+        # Les administrateurs peuvent accéder à Django Admin.
+        # Ne jamais forcer is_active=True ici.
+        role_name = (
+            getattr(self.user_role, "role", "")
+            or ""
+        ).strip().lower()
+
+        if self.is_superuser or role_name == "admin":
             self.is_staff = True
-            self.is_active = True
 
         if not self.slug:
             self.slug = self.generate_unique_slug()
 
         super().save(*args, **kwargs)
+    # ========================================================
+    # Méthodes Django
+    # ========================================================
 
     def get_full_name(self):
         return self.full_name or self.email
 
     def get_short_name(self):
-        return self.first_name or (self.email.split("@")[0] if self.email else self.slug)
-    
-    # @property
-    # def is_customer(self):
-    #     return self.user_role is None and not self.is_superuser
+        if self.first_name:
+            return self.first_name
 
+        if self.email:
+            return self.email.split("@")[0]
+
+        return self.slug or ""
 # Profile
 
 def validate_image_size(img):
@@ -281,7 +414,10 @@ class Profile(models.Model):
         default="default/default-user.png",
         null=True,
         blank=True,
-        validators=[validate_image_size],
+        validators=[
+            validate_image_size,
+            validate_image_extension,
+        ],
     )
     bio = models.TextField(blank=True)
 
@@ -326,12 +462,6 @@ class Profile(models.Model):
         return "—"
 
     thumbnail.short_description = "Photo"
-
-
-@receiver(post_save, sender=User)
-def create_user_profile(sender, instance, created, **kwargs):
-    if created:
-        Profile.objects.get_or_create(user=instance)
 
 
 

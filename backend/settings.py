@@ -15,7 +15,6 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='127.0.0.1,localhost', cast=Csv())
 
 TIME_ZONE = config('TIME_ZONE', default='UTC')
-LANGUAGE_CODE = 'en-us'
 USE_I18N = True
 USE_TZ = True
 
@@ -35,7 +34,7 @@ DATABASES = {
 }
 
 
-ALLOWED_HOSTS = ['*']
+# ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -62,7 +61,7 @@ INSTALLED_APPS = [
     'api',
     'vendor',
     'person',
-    'purchase',
+    'purchase.apps.PurchaseConfig',
     'compte_depot',
     'order',
     'stock_matiere_premiere',
@@ -150,9 +149,6 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-SITE_URL = "https://www.rio-gold.com"
-
-# LANGUAGE_CODE = 'en-us'
 LANGUAGE_CODE = "fr-fr"
 
 # TIME_ZONE = 'UTC'
@@ -210,60 +206,51 @@ AUTHENTICATION_BACKENDS = [
 # }
 
 
+# SIMPLE_JWT = {
+#     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=120),
+#     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+#     'ROTATE_REFRESH_TOKENS': True,
+#     'BLACKLIST_AFTER_ROTATION': True,
+#     'AUTH_HEADER_TYPES': ('Bearer',),
+#     'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
+#     'USER_ID_FIELD': 'id',
+#     'USER_ID_CLAIM': 'user_id',
+# }
+
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=120),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
-    'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': True,
-    'AUTH_HEADER_TYPES': ('Bearer',),
-    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
-    'USER_ID_FIELD': 'id',
-    'USER_ID_CLAIM': 'user_id',
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=2),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    "AUTH_HEADER_NAME": "HTTP_AUTHORIZATION",
+    "USER_ID_FIELD": "id",
+    "USER_ID_CLAIM": "user_id",
 }
-
-
-
-# CORS_ALLOW_ALL_ORIGINS = True
-
-
-# CORS_ALLOWED_ORIGINS = [
-# 	"http://localhost:4200",
-# 	"http://127.0.0.1:4200",
-# 	"https://rio-gold.com",
-# 	"http://rio-gold.com",
-# ]
-
-# CORS_ALLOW_METHODS = [
-#     'GET',
-#     'POST',
-#     'PUT',
-#     'DELETE',
-#     'OPTIONS',
-# ]
-
-# CORS_ALLOW_HEADERS = [
-#     'content-type',
-#     'authorization',
-#     'x-requested-with',
-# ]
-
-
 
 CORS_ALLOW_ALL_ORIGINS = False
 
 CORS_ALLOWED_ORIGINS = config(
     "CORS_ALLOWED_ORIGINS",
-    default="http://localhost:4200,http://127.0.0.1:4200,https://rio-gold.com,https://www.rio-gold.com,https://admin.rio-gold.com,https://api.rio-gold.com",
+    default=(
+        "http://localhost:4200,"
+        "http://127.0.0.1:4200,"
+        "https://rio-gold.com,"
+        "https://www.rio-gold.com,"
+        "https://admin.rio-gold.com,"
+        "https://api.rio-gold.com"
+    ),
     cast=Csv(),
 )
 
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_METHODS = list(default_methods)
+
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "content-disposition",
 ]
-
 
 # --- Email ---
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
@@ -294,14 +281,33 @@ EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
 # PDF facture a-5
 CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
-# --- Frontend / URLs (pour tes emails) ---
-FRONTEND_BASE_URL = config('FRONTEND_BASE_URL', default='https://rio-gold.com')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', 'Rio Gold <no-reply@rio-gold.com>')
-FRONTEND_URL = config('FRONTEND_URL', default='https://rio-gold.com')
-EMAIL_TOKEN_EXPIRATION = config('EMAIL_TOKEN_EXPIRATION', default=60, cast=int)  # en secondes
+SITE_URL = "https://www.rio-gold.com"
+
+# --- Frontend / URLs (pour les emails) ---
+
+FRONTEND_BASE_URL = config(
+    "FRONTEND_BASE_URL",
+    default="https://rio-gold.com",
+)
+
+FRONTEND_URL = config(
+    "FRONTEND_URL",
+    default="https://rio-gold.com",
+)
+
+DEFAULT_FROM_EMAIL = config(
+    "DEFAULT_FROM_EMAIL",
+    default="Rio Gold <no-reply@rio-gold.com>",
+)
+
+EMAIL_TOKEN_EXPIRATION = config(
+    "EMAIL_TOKEN_EXPIRATION",
+    default=86400,
+    cast=int,
+)
 
 # send_confirmation_email
-# En dev, mets un backend sûr
+# En dev, mets un backend sûr   
 
 # password_reset
 # FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173/')

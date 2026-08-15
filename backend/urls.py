@@ -5,6 +5,7 @@ from django.urls import include, path
 from drf_yasg import openapi
 from drf_yasg.views import get_schema_view
 from rest_framework import permissions
+
 from userauths.views import (resend_confirmation_form,
                              resend_confirmation_submit)
 
@@ -48,3 +49,4 @@ if settings.DEBUG:
     
 
 
+# CREATE DATABASE jewellery_management CHARACTER set utf8 COLLATE utf8_general_ci;

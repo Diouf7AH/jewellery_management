@@ -1,18 +1,13 @@
-import datetime
 import random
 import uuid
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator
-from django.db import IntegrityError, models, transaction
+from django.db import IntegrityError, models
 from django.db.models import DecimalField, ExpressionWrapper, F, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
-from django.utils.text import slugify
-
-from store.models import Produit
 
 TWOPLACES = Decimal("0.01")
 
@@ -21,7 +16,7 @@ class Fournisseur(models.Model):
     nom = models.CharField(max_length=100, blank=True, null=True)
     prenom = models.CharField(max_length=100, blank=True, null=True)
     address = models.CharField(max_length=100, blank=True, null=True)
-    telephone = models.CharField(max_length=15, unique=True, blank=True, null=True)
+    telephone = models.CharField(max_length=30,unique=True,db_index=True,null=False, blank=False)
     slug = models.SlugField(max_length=30, unique=True, blank=True, null=True)  # <- important
     date_ajout = models.DateTimeField(auto_now_add=True)
     date_modification = models.DateTimeField(auto_now=True)
@@ -41,18 +36,17 @@ class Fournisseur(models.Model):
         return uuid.uuid4().hex[:MAX]
 
     def save(self, *args, **kwargs):
-        # normalise téléphone vide -> None (évite unique='' en base)
-        if self.telephone == "":
-            self.telephone = None
+        self.telephone = (self.telephone or "").strip()
+
+        if not self.telephone:
+            raise ValidationError({
+                "telephone": "Le téléphone du fournisseur est obligatoire."
+            })
 
         if not self.slug:
             self.slug = self._gen_unique_slug()
-        try:
-            super().save(*args, **kwargs)
-        except IntegrityError:
-            # collision concurrente rarissime : on regénère une fois
-            self.slug = self._gen_unique_slug()
-            super().save(*args, **kwargs)
+
+        super().save(*args, **kwargs)
 
 
 STATUS_CONFIRMED = "confirmed"
@@ -67,12 +61,15 @@ class Achat(models.Model):
     """
     Représente un achat fournisseur.
 
-    · Les totaux sont calculés à partir des L O T S rattachés à l'achat :
-      HT = Σ (quantite_total * produit.poids * prix_achat_gramme) + frais_transport + frais_douane
-      TAX = 0 (sauf si tu rajoutes des taxes sur Lot)
-      TTC = HT + TAX
+    Les totaux sont calculés à partir des ProduitLine des lots :
 
-    · Un numero_achat unique est généré si absent (ACH-YYYYMMDD-XXXX).
+    HT = Σ (
+        ProduitLine.quantite
+        × produit.poids
+        × prix_achat_gramme
+    ) + frais_transport + frais_douane
+
+    TTC = HT, car aucune TVA fournisseur n'est actuellement appliquée.
     """
     STATUS_CONFIRMED = STATUS_CONFIRMED
     STATUS_CANCELLED = STATUS_CANCELLED
@@ -80,9 +77,11 @@ class Achat(models.Model):
 
     fournisseur = models.ForeignKey(
         "Fournisseur",
-        on_delete=models.SET_NULL, null=True, blank=True,
-        related_name="achats", related_query_name="achat",
+        on_delete=models.PROTECT,
+        related_name="achats",
+        related_query_name="achat",
     )
+    bijouterie = models.ForeignKey("store.Bijouterie",on_delete=models.PROTECT,related_name="achats",related_query_name="achat",)
     created_at   = models.DateTimeField(auto_now_add=True)
     description  = models.TextField(null=True, blank=True, help_text="Note interne (motif, consignes, etc.)")
 
@@ -102,10 +101,7 @@ class Achat(models.Model):
     status        = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_CONFIRMED)
     cancel_reason = models.TextField(null=True, blank=True)
     cancelled_at  = models.DateTimeField(null=True, blank=True)
-    cancelled_by  = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="achats_annules"
-    )
+    cancelled_by  = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,on_delete=models.SET_NULL, related_name="achats_annules")
     
     reference_commande = models.CharField(max_length=40, null=True, blank=True, db_index=True,
         help_text="Référence logique de commande fournisseur (ex: CMD-2026-0001)"
@@ -146,11 +142,6 @@ class Achat(models.Model):
         return (self.montant_total_ttc or Decimal("0.00")) - (self.montant_total_ht or Decimal("0.00"))
 
     def update_total(self, save: bool = True):
-        from django.db.models import DecimalField, ExpressionWrapper, F, Sum
-        from django.db.models.functions import Coalesce
-
-        from purchase.models import ProduitLine
-
         expr_ht = ExpressionWrapper(
             F("quantite")
             * Coalesce(F("produit__poids"), Decimal("0.00"))
@@ -193,50 +184,27 @@ class Achat(models.Model):
 
     # ----------------- Persistance -----------------
     def save(self, *args, **kwargs):
-        # Générer un numéro lisible unique si absent
         if not self.numero_achat:
-            today = timezone.now().strftime("%Y%m%d")
+            today = timezone.localdate().strftime("%Y%m%d")
             prefix = f"ACH-{today}"
+
             for attempt in range(20):
                 suffix = "".join(random.choices("0123456789", k=4))
-                self.numero_achat = f"{prefix}-{suffix}"
-                try:
-                    super().save(*args, **kwargs)
+                candidate = f"{prefix}-{suffix}"
+
+                if not Achat.objects.filter(
+                    numero_achat=candidate
+                ).exists():
+                    self.numero_achat = candidate
                     break
-                except IntegrityError:
-                    if attempt == 19:
-                        raise ValidationError("Impossible de générer un numéro d'achat unique.")
-            return
+            else:
+                raise ValidationError({
+                    "numero_achat": (
+                        "Impossible de générer un numéro d'achat unique."
+                    )
+                })
+
         super().save(*args, **kwargs)
-        
-    
-    # @property
-    # def has_bijouterie_allocations(self) -> bool:
-    #     """
-    #     Retourne True si AU MOINS une ligne de cet achat est allouée
-    #     à une bijouterie (Stock avec bijouterie != None et quantite_allouee > 0).
-    #     """
-    #     from stock.models import Stock  # import local pour éviter les cycles
-
-    #     return Stock.objects.filter(
-    #         produit_line__lot__achat=self,
-    #         bijouterie__isnull=False,
-    #         quantite_allouee__gt=0,
-    #     ).exists()
-    
-    @property
-    def has_bijouterie_allocations(self) -> bool:
-        """
-        True si au moins une ligne de cet achat possède du stock en boutique
-        (Stock avec bijouterie != NULL et quantite_totale > 0).
-        """
-        from stock.models import Stock
-
-        return Stock.objects.filter(
-            produit_line__lot__achat=self,
-            bijouterie__isnull=False,
-            quantite_totale__gt=0,
-        ).exists()
 
 
 class Lot(models.Model):
@@ -257,11 +225,12 @@ class ProduitLine(models.Model):
     Une ligne produit dans un lot.
     On ne stocke que les QUANTITÉS. Les POIDS se déduisent : quantité × produit.poids.
     """
-    lot = models.ForeignKey(Lot, on_delete=models.CASCADE, related_name="lignes")
+    # lot = models.ForeignKey(Lot, on_delete=models.PROTECT, related_name="lignes")
+    lot = models.ForeignKey(Lot,on_delete=models.PROTECT,related_name="lignes",)
     produit = models.ForeignKey("store.Produit", on_delete=models.PROTECT, related_name="produit_lines")
 
     # coût d'achat par gramme (fourni dans le payload: prix_achat_gramme)
-    prix_achat_gramme = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    prix_achat_gramme = models.DecimalField(max_digits=14,decimal_places=2,)
 
     # quantités
     quantite = models.PositiveIntegerField()
@@ -271,8 +240,20 @@ class ProduitLine(models.Model):
             models.Index(fields=["lot"]),
             models.Index(fields=["produit"]),
         ]
+
         constraints = [
-            models.CheckConstraint(check=models.Q(quantite__gte=1), name="ck_pl_qty_gte1"),
+            models.CheckConstraint(
+                condition=Q(quantite__gte=1),
+                name="ck_pl_qty_gte1",
+            ),
+            models.CheckConstraint(
+                condition=Q(prix_achat_gramme__gte=0),
+                name="produit_line_prix_achat_gte_0",
+            ),
+            models.UniqueConstraint(
+                fields=["lot", "produit"],
+                name="uniq_produit_per_lot",
+            ),
         ]
 
     def __str__(self):

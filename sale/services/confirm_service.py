@@ -6,6 +6,7 @@ from typing import Dict, List
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
+from inventory.models import InventoryMovement, MovementType
 from purchase.models import ProduitLine
 from sale.models import Facture, VenteProduit
 from sale.services.inventory_audit_service import create_sale_out_consumption
@@ -15,105 +16,218 @@ from sale.services.vendor_stock_service import consume_vendor_stock
 @transaction.atomic
 def confirm_sale_out_from_vendor(*, facture: Facture, by_user) -> dict:
     """
-    Consomme le stock vendeur (FIFO) + crée les mouvements SALE_OUT
-    uniquement quand la facture devient PAYÉE.
+    Consomme le stock vendeur en FIFO et crée les mouvements SALE_OUT
+    uniquement lorsque la facture est totalement payée.
+
+    Cycle :
+        VENDOR -> SALE_OUT -> EXTERNAL
 
     Idempotence :
-    - si facture.stock_consumed = True -> ne refait rien
-    - create_sale_out_consumption gère aussi les doublons
+    - verrouillage de la facture ;
+    - facture.stock_consumed bloque une nouvelle consommation ;
+    - présence préalable de mouvements SALE_OUT bloque également
+      une nouvelle consommation.
     """
+
     facture = (
         Facture.objects
         .select_for_update()
-        .select_related("vente", "bijouterie")
+        .select_related(
+            "vente",
+            "vente__vendor",
+            "bijouterie",
+        )
         .get(pk=facture.pk)
     )
 
     vente = facture.vente
+
     if not vente:
         raise ValidationError("Facture sans vente liée.")
 
     if facture.status != Facture.STAT_PAYE:
-        raise ValidationError("Stock : consommation autorisée uniquement quand la facture est PAYÉE.")
+        raise ValidationError(
+            "La consommation du stock est autorisée uniquement "
+            "lorsque la facture est payée."
+        )
 
     if facture.stock_consumed:
-        return {"created": 0, "already": 0, "lines_done": 0}
+        return {
+            "created": 0,
+            "already": 0,
+            "lines_done": 0,
+        }
+
+    # Protection supplémentaire contre un état incohérent :
+    # mouvements déjà créés mais stock_consumed resté à False.
+    existing_sale_out = InventoryMovement.objects.filter(
+        facture=facture,
+        movement_type=MovementType.SALE_OUT,
+    ).exists()
+
+    if existing_sale_out:
+        raise ValidationError(
+            "Des mouvements SALE_OUT existent déjà pour cette facture, "
+            "mais stock_consumed est à False. Une vérification manuelle "
+            "de la cohérence du stock est nécessaire."
+        )
+    
+    lignes = list(
+        VenteProduit.objects
+        .select_related(
+            "produit",
+            "vendor",
+            "vendor__bijouterie",
+        )
+        .filter(vente_id=vente.id)
+        .order_by("id")
+    )
+
+    if not lignes:
+        raise ValidationError(
+            "La vente ne contient aucune ligne produit."
+        )
 
     created = 0
     already = 0
     lines_done = 0
 
-    lignes = (
-        VenteProduit.objects
-        .select_related("produit", "vendor")
-        .filter(vente_id=vente.id)
-        .order_by("id")
-    )
-
     all_pl_ids: List[int] = []
     consumptions_by_lp: Dict[int, List[dict]] = {}
 
-    # 1) Consommer le stock FIFO
-    for lp in lignes:
-        if not lp.vendor_id:
-            raise ValidationError(f"Ligne vente {lp.id}: vendor manquant.")
-        if not lp.produit_id:
-            raise ValidationError(f"Ligne vente {lp.id}: produit manquant.")
+    # =========================================================
+    # 1. Vérifications avant toute modification du stock
+    # =========================================================
+    for ligne in lignes:
+        if not ligne.vendor_id:
+            raise ValidationError(
+                f"Ligne de vente {ligne.id} : vendeur manquant."
+            )
 
-        qte = int(lp.quantite or 0)
-        if qte <= 0:
-            raise ValidationError(f"Ligne vente {lp.id}: quantité invalide.")
+        if not ligne.produit_id:
+            raise ValidationError(
+                f"Ligne de vente {ligne.id} : produit manquant."
+            )
 
+        if ligne.vendor.bijouterie_id != facture.bijouterie_id:
+            raise ValidationError(
+                f"Ligne de vente {ligne.id} : le vendeur n'appartient "
+                f"pas à la bijouterie de la facture."
+            )
+
+        if vente.vendor_id and ligne.vendor_id != vente.vendor_id:
+            raise ValidationError(
+                f"Ligne de vente {ligne.id} : le vendeur de la ligne "
+                f"est différent du vendeur de la vente."
+            )
+
+        quantite = int(ligne.quantite or 0)
+
+        if quantite <= 0:
+            raise ValidationError(
+                f"Ligne de vente {ligne.id} : quantité invalide."
+            )
+
+    # =========================================================
+    # 2. Consommer le VendorStock en FIFO
+    # =========================================================
+    for ligne in lignes:
         consumptions = consume_vendor_stock(
-            vendor=lp.vendor,
+            vendor=ligne.vendor,
             bijouterie=facture.bijouterie,
-            produit=lp.produit,
-            quantite=qte,
+            produit=ligne.produit,
+            quantite=int(ligne.quantite),
         )
 
-        consumptions_by_lp[lp.id] = consumptions
-        all_pl_ids.extend([m["produit_line_id"] for m in consumptions])
+        total_consumed = sum(
+            int(item.get("qty") or 0)
+            for item in consumptions
+        )
 
-    # Rien à faire
-    if not consumptions_by_lp:
-        facture.stock_consumed = True
-        facture.save(update_fields=["stock_consumed"])
-        return {"created": 0, "already": 0, "lines_done": 0}
+        if total_consumed != int(ligne.quantite):
+            raise ValidationError(
+                f"Ligne de vente {ligne.id} : quantité FIFO consommée "
+                f"incohérente. Attendu={ligne.quantite}, "
+                f"obtenu={total_consumed}."
+            )
 
-    # 2) Charger les ProduitLine
+        consumptions_by_lp[ligne.id] = consumptions
+
+        all_pl_ids.extend(
+            int(item["produit_line_id"])
+            for item in consumptions
+        )
+
+    if not all_pl_ids:
+        raise ValidationError(
+            "Aucun stock vendeur n'a été consommé."
+        )
+
+    # =========================================================
+    # 3. Charger les ProduitLine utilisées par le FIFO
+    # =========================================================
+    produit_lines = (
+        ProduitLine.objects
+        .select_related(
+            "produit",
+            "lot",
+            "lot__achat",
+        )
+        .filter(id__in=set(all_pl_ids))
+    )
+
     pl_map = {
-        pl.id: pl
-        for pl in ProduitLine.objects.select_related("lot").filter(id__in=set(all_pl_ids))
+        produit_line.id: produit_line
+        for produit_line in produit_lines
     }
 
-    # 3) Créer les mouvements SALE_OUT
-    for lp in lignes:
-        consumptions = consumptions_by_lp.get(lp.id)
-        if not consumptions:
-            continue
+    missing_ids = set(all_pl_ids) - set(pl_map.keys())
 
-        for m in consumptions:
-            pl = pl_map.get(m["produit_line_id"])
-            if not pl:
-                raise ValidationError(f"ProduitLine introuvable: {m['produit_line_id']}")
+    if missing_ids:
+        raise ValidationError(
+            "ProduitLine introuvable : "
+            + ", ".join(str(pk) for pk in sorted(missing_ids))
+        )
 
-            ok = create_sale_out_consumption(
+    # =========================================================
+    # 4. Créer SALE_OUT : VENDOR -> EXTERNAL
+    # =========================================================
+    for ligne in lignes:
+        consumptions = consumptions_by_lp.get(ligne.id, [])
+
+        for item in consumptions:
+            produit_line_id = int(item["produit_line_id"])
+            qty = int(item["qty"])
+
+            if qty <= 0:
+                raise ValidationError(
+                    f"Quantité SALE_OUT invalide pour la ProduitLine "
+                    f"{produit_line_id}."
+                )
+
+            produit_line = pl_map[produit_line_id]
+
+            movement_created = create_sale_out_consumption(
                 facture=facture,
                 vente=vente,
-                vente_ligne=lp,
-                produit_line=pl,
-                qty=int(m["qty"]),
+                vente_ligne=ligne,
+                produit_line=produit_line,
+                qty=qty,
                 by_user=by_user,
             )
 
-            if ok:
+            if movement_created:
                 created += 1
             else:
+                # En pratique ce cas ne devrait plus arriver grâce au
+                # contrôle global effectué avant la consommation.
                 already += 1
 
         lines_done += 1
 
-    # 4) Marquer facture consommée
+    # =========================================================
+    # 5. Marquer la facture consommée
+    # =========================================================
     facture.stock_consumed = True
     facture.save(update_fields=["stock_consumed"])
 
@@ -122,6 +236,3 @@ def confirm_sale_out_from_vendor(*, facture: Facture, by_user) -> dict:
         "already": already,
         "lines_done": lines_done,
     }
-    
-    
-

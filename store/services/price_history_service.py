@@ -31,7 +31,7 @@ def update_marque_purete_price(*, obj, new_price, user=None, bijouterie=None, so
         bijouterie=bijouterie,
         ancien_prix=old_price,
         nouveau_prix=new_price,
-        changed_by=user,
+        modifier_par=user,
         source=source,
         note=note,
     )

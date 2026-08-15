@@ -11,7 +11,6 @@ def get_ecommerce_products(*, bijouterie_id=None):
         "produit_line__produit__purete",
         "bijouterie",
     ).filter(
-        is_reserve=False,
         bijouterie__isnull=False,
         en_stock__gt=0,
     )
@@ -33,7 +32,6 @@ def get_ecommerce_product_by_uuid(*, uuid):
         "bijouterie",
     ).get(
         produit_line__produit__uuid=uuid,
-        is_reserve=False,
         bijouterie__isnull=False,
         en_stock__gt=0,
     )

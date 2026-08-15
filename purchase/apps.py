@@ -1,6 +1,13 @@
+# purchase/apps.py
+
 from django.apps import AppConfig
 
 
 class PurchaseConfig(AppConfig):
-    default_auto_field = 'django.db.models.BigAutoField'
-    name = 'purchase'
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "purchase"
+
+    def ready(self):
+        from . import signals  # noqa: F401
+        
+        

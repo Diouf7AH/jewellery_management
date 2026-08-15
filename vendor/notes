@@ -24,7 +24,7 @@ ProduitLine → VendorStock → Vendor
 Champ	Sens
 quantite_allouee	Quantité réservée au vendeur
 quantite_vendue	Quantité déjà sortie (livrée)
-quantite_disponible (calcul)	quantite_allouee - quantite_vendue
+quantite_totale (calcul)	quantite_allouee - quantite_vendue
 
 👉 Spécifique à un vendeur
 
@@ -51,7 +51,7 @@ quantite_allouee = 8
 
 quantite_vendue = 3
 
-quantite_disponible = 5
+quantite_totale = 5
 
 ProduitLine :
 
@@ -74,11 +74,11 @@ Contrôle manager/admin
 
 ⚠️ Attention
 
-Le vendeur ne peut pas vendre au-delà de sa quantite_disponible, même si quantite_restante est élevée.
+Le vendeur ne peut pas vendre au-delà de sa quantite_totale, même si quantite_restante est élevée.
 
 🔹 Résumé ultra-clair
 Champ	Niveau	Sert à
 quantite_restante	Lot global	Stock physique réel
 quantite_allouee	Vendeur	Réservation
 quantite_vendue	Vendeur	Déjà livré
-quantite_disponible	Calcul	Ce que le vendeur peut encore livrer
+quantite_totale	Calcul	Ce que le vendeur peut encore livrer

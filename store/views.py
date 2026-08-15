@@ -16,7 +16,6 @@ from drf_yasg.utils import swagger_auto_schema
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from PIL import Image
-from purchase.models import ProduitLine
 from rest_framework import status
 from rest_framework.generics import ListAPIView
 from rest_framework.parsers import (FileUploadParser, FormParser, JSONParser,
@@ -24,6 +23,12 @@ from rest_framework.parsers import (FileUploadParser, FormParser, JSONParser,
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
+from backend.renderers import UserRenderer
+from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
+                           get_role_name)
+from purchase.models import ProduitLine
 from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
                           MarquePuretePrixHistory, Modele, Produit, Purete)
 from store.serializers import (BijouterieSerializer, CategorieSerializer,
@@ -35,11 +40,6 @@ from store.serializers import (BijouterieSerializer, CategorieSerializer,
                                ModeleSerializer, ProduitSerializer,
                                ProduitWithGallerySerializer, PureteSerializer)
 from store.services.price_history_service import update_marque_purete_price
-
-from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
-from backend.renderers import UserRenderer
-from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
-                           get_role_name)
 
 from .serializers import MarquePuretePrixHistorySerializer
 

@@ -1,6 +1,6 @@
 import zipfile
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from io import BytesIO
 
 from django.db import IntegrityError, transaction
@@ -11,1744 +11,2308 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from inventory.models import Bucket, InventoryMovement, MovementType
 from openpyxl import Workbook
-from purchase.services.etiquettes import build_etiquette_bague_png
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from stock.models import Stock
-from store.models import Produit
 
 from backend.mixins import ExportXlsxMixin
 from backend.permissions import ROLE_ADMIN, ROLE_MANAGER, IsAdminOrManager
+from backend.query_scopes import scope_queryset_by_bijouterie
 from backend.renderers import UserRenderer
-from backend.roles import get_role_name
+from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
+from inventory.models import Bucket, InventoryMovement, MovementType
+from inventory.services import log_move
+from purchase.models import Achat, Fournisseur, Lot, ProduitLine
+from purchase.services.etiquettes import build_etiquette_bague_png
+from purchase.utils import generate_numero_lot
+from stock.models import Stock
+from store.models import Bijouterie, Produit
 
 from .models import Achat, Fournisseur, Lot, ProduitLine
-from .serializers import (AchatDetailSerializer, AchatSerializer,
-                          ArrivageAdjustmentsInSerializer,
+from .serializers import (AchatDetailSerializer, AchatOutSerializer,
                           ArrivageCreateInSerializer,
                           ArrivageCreateResponseSerializer,
                           ArrivageMetaUpdateInSerializer,
-                          FournisseurSerializer, LotDisplaySerializer,
-                          LotListSerializer, ProduitLineMiniSerializer)
+                          FournisseurSerializer, LotListSerializer,
+                          ProduitLineMiniSerializer)
 
 
 class AchatDashboardView(APIView):
-    permission_classes = [IsAuthenticated]
+    """
+    Dashboard des achats et arrivages sur les trois dernières années.
+
+    Règles temporelles :
+    - Achat.created_at pour les statistiques d'achats ;
+    - Lot.received_at pour les statistiques d'arrivages.
+
+    Périmètre :
+    - admin : toutes les bijouteries ;
+    - manager : uniquement ses bijouteries affectées.
+    """
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
 
     @swagger_auto_schema(
-        operation_summary="Dashboard des achats sur les 3 dernières années",
-        operation_description=(
-            "Retourne les statistiques globales des achats sur les 3 dernières années : "
-            "total achats, montant total, lots, quantités, poids, top fournisseurs, "
-            "répartition produits et statistiques par année."
+        operation_summary=(
+            "Dashboard des achats et arrivages "
+            "sur les 3 dernières années"
         ),
+        operation_description=(
+            "Retourne les statistiques des achats et des arrivages "
+            "des trois dernières années.\n\n"
+            "Périmètre :\n"
+            "- admin : toutes les bijouteries ;\n"
+            "- manager : uniquement ses bijouteries affectées.\n\n"
+            "Filtre optionnel : `bijouterie_id`.\n\n"
+            "Règles temporelles :\n"
+            "- achats : `Achat.created_at` ;\n"
+            "- lots et produits reçus : `Lot.received_at`."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description=(
+                    "Filtrer les statistiques par bijouterie."
+                ),
+            ),
+        ],
         tags=["Achats - Dashboard"],
         responses={
             200: openapi.Response(
-                description="Dashboard achats récupéré avec succès",
+                description=(
+                    "Dashboard des achats récupéré avec succès."
+                ),
                 schema=openapi.Schema(
                     type=openapi.TYPE_OBJECT,
                     properties={
-                        "periode": openapi.Schema(type=openapi.TYPE_OBJECT),
-                        "total_achats": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "montant_total": openapi.Schema(type=openapi.TYPE_STRING),
-                        "total_lots": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "total_quantite": openapi.Schema(type=openapi.TYPE_INTEGER),
-                        "total_poids": openapi.Schema(type=openapi.TYPE_STRING),
-                        "achats_par_annee": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
-                        "top_fournisseurs": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
-                        "repartition_produits": openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_OBJECT)),
+                        "periode": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                        ),
+                        "bijouterie_id": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                            nullable=True,
+                        ),
+                        "total_achats": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                        ),
+                        "montant_total": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "total_lots": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                        ),
+                        "total_quantite": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                        ),
+                        "total_poids": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "achats_par_annee": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Items(
+                                type=openapi.TYPE_OBJECT,
+                            ),
+                        ),
+                        "top_fournisseurs": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Items(
+                                type=openapi.TYPE_OBJECT,
+                            ),
+                        ),
+                        "repartition_produits": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Items(
+                                type=openapi.TYPE_OBJECT,
+                            ),
+                        ),
                     },
                 ),
             ),
-            403: "Accès refusé.",
+            400: openapi.Response(
+                description="Paramètres invalides.",
+            ),
+            403: openapi.Response(
+                description="Accès refusé.",
+            ),
         },
     )
     def get(self, request):
         role = get_role_name(request.user)
 
-        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-            return Response({"detail": "Accès refusé."}, status=403)
-
-        current_year = timezone.now().year
+        current_year = timezone.localdate().year
         start_year = current_year - 2
 
-        start_date = timezone.datetime(
-            start_year, 1, 1,
-            tzinfo=timezone.get_current_timezone()
+        start_date = timezone.make_aware(
+            datetime(start_year, 1, 1),
+            timezone.get_current_timezone(),
         )
 
-        achats = Achat.objects.filter(created_at__gte=start_date)
-        lots = Lot.objects.filter(achat__created_at__gte=start_date)
+        # =====================================================
+        # 1. Périmètre des bijouteries
+        # =====================================================
+
+        accessible_bijouterie_ids = None
+
+        if role == ROLE_MANAGER:
+            manager = getattr(
+                request.user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if (
+                not manager
+                or not getattr(manager, "verifie", False)
+            ):
+                accessible_bijouterie_ids = []
+            else:
+                bijouteries = getattr(
+                    manager,
+                    "bijouteries",
+                    None,
+                )
+
+                accessible_bijouterie_ids = (
+                    list(
+                        bijouteries.values_list(
+                            "id",
+                            flat=True,
+                        )
+                    )
+                    if bijouteries is not None
+                    else []
+                )
+
+        # =====================================================
+        # 2. Validation du filtre bijouterie_id
+        # =====================================================
+
+        raw_bijouterie_id = request.query_params.get(
+            "bijouterie_id"
+        )
+
+        bijouterie_id = None
+
+        if raw_bijouterie_id not in (None, ""):
+            try:
+                bijouterie_id = int(raw_bijouterie_id)
+            except (TypeError, ValueError):
+                raise ValidationError({
+                    "bijouterie_id": (
+                        "Ce paramètre doit être un entier."
+                    )
+                })
+
+            if bijouterie_id <= 0:
+                raise ValidationError({
+                    "bijouterie_id": (
+                        "Ce paramètre doit être supérieur à zéro."
+                    )
+                })
+
+            if not Bijouterie.objects.filter(
+                pk=bijouterie_id
+            ).exists():
+                raise ValidationError({
+                    "bijouterie_id": (
+                        "Bijouterie introuvable."
+                    )
+                })
+
+            if (
+                accessible_bijouterie_ids is not None
+                and bijouterie_id
+                not in accessible_bijouterie_ids
+            ):
+                raise ValidationError({
+                    "bijouterie_id": (
+                        "Vous n'avez pas accès à cette bijouterie."
+                    )
+                })
+
+        # =====================================================
+        # 3. Querysets de base
+        # =====================================================
+
+        # Statistiques d'achat :
+        # basées sur la date de création de l'achat.
+        achats = Achat.objects.filter(
+            created_at__gte=start_date,
+            status=Achat.STATUS_CONFIRMED,
+        )
+
+        # Statistiques d'arrivage :
+        # basées sur la date réelle de réception du lot.
+        lots = Lot.objects.filter(
+            received_at__gte=start_date,
+            achat__status=Achat.STATUS_CONFIRMED,
+        )
 
         lignes = (
             ProduitLine.objects
-            .select_related("produit", "lot__achat")
-            .filter(lot__achat__created_at__gte=start_date)
+            .filter(
+                lot__received_at__gte=start_date,
+                lot__achat__status=Achat.STATUS_CONFIRMED,
+            )
             .annotate(
                 poids_ligne=ExpressionWrapper(
-                    F("quantite") * Coalesce(F("produit__poids"), Decimal("0.00")),
-                    output_field=DecimalField(max_digits=18, decimal_places=3)
+                    F("quantite")
+                    * Coalesce(
+                        F("produit__poids"),
+                        Decimal("0.000"),
+                    ),
+                    output_field=DecimalField(
+                        max_digits=18,
+                        decimal_places=3,
+                    ),
                 )
             )
         )
 
+        # =====================================================
+        # 4. Application du périmètre manager
+        # =====================================================
+
+        if accessible_bijouterie_ids is not None:
+            achats = achats.filter(
+                bijouterie_id__in=(
+                    accessible_bijouterie_ids
+                )
+            )
+
+            lots = lots.filter(
+                achat__bijouterie_id__in=(
+                    accessible_bijouterie_ids
+                )
+            )
+
+            lignes = lignes.filter(
+                lot__achat__bijouterie_id__in=(
+                    accessible_bijouterie_ids
+                )
+            )
+
+        # =====================================================
+        # 5. Filtre par bijouterie demandé
+        # =====================================================
+
+        if bijouterie_id is not None:
+            achats = achats.filter(
+                bijouterie_id=bijouterie_id
+            )
+
+            lots = lots.filter(
+                achat__bijouterie_id=bijouterie_id
+            )
+
+            lignes = lignes.filter(
+                lot__achat__bijouterie_id=bijouterie_id
+            )
+
+        # =====================================================
+        # 6. Statistiques globales
+        # =====================================================
+
         total_achats = achats.count()
 
         montant_total = achats.aggregate(
-            total=Coalesce(Sum("montant_total_ht"), Decimal("0.00"))
+            total=Coalesce(
+                Sum("montant_total_ht"),
+                Decimal("0.00"),
+                output_field=DecimalField(
+                    max_digits=18,
+                    decimal_places=2,
+                ),
+            )
         )["total"]
 
         total_lots = lots.count()
 
         total_quantite = lignes.aggregate(
-            total=Coalesce(Sum("quantite"), 0)
+            total=Coalesce(
+                Sum("quantite"),
+                0,
+            )
         )["total"]
 
         total_poids = lignes.aggregate(
-            total=Coalesce(Sum("poids_ligne"), Decimal("0.00"))
+            total=Coalesce(
+                Sum("poids_ligne"),
+                Decimal("0.000"),
+                output_field=DecimalField(
+                    max_digits=18,
+                    decimal_places=3,
+                ),
+            )
         )["total"]
+
+        # =====================================================
+        # 7. Achats par année
+        # =====================================================
 
         achats_par_annee_qs = (
             achats
-            .annotate(annee=ExtractYear("created_at"))
+            .annotate(
+                annee=ExtractYear("created_at")
+            )
             .values("annee")
             .annotate(
                 total_achats=Count("id"),
-                montant_total=Coalesce(Sum("montant_total_ht"), Decimal("0.00")),
+                montant_total=Coalesce(
+                    Sum("montant_total_ht"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(
+                        max_digits=18,
+                        decimal_places=2,
+                    ),
+                ),
             )
             .order_by("annee")
         )
 
         achats_par_annee = [
             {
-                "annee": a["annee"],
-                "total_achats": a["total_achats"],
-                "montant_total": a["montant_total"],
+                "annee": row["annee"],
+                "total_achats": row["total_achats"],
+                "montant_total": row["montant_total"],
             }
-            for a in achats_par_annee_qs
+            for row in achats_par_annee_qs
         ]
+
+        # =====================================================
+        # 8. Top fournisseurs
+        # =====================================================
 
         top_fournisseurs_qs = (
-            achats.values("fournisseur__nom", "fournisseur__prenom")
+            achats
+            .values(
+                "fournisseur_id",
+                "fournisseur__nom",
+                "fournisseur__prenom",
+                "fournisseur__telephone",
+            )
             .annotate(
                 total_achats=Count("id"),
-                montant_total=Coalesce(Sum("montant_total_ht"), Decimal("0.00")),
+                montant_total=Coalesce(
+                    Sum("montant_total_ht"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(
+                        max_digits=18,
+                        decimal_places=2,
+                    ),
+                ),
             )
-            .order_by("-montant_total")[:5]
+            .order_by(
+                "-montant_total",
+                "-total_achats",
+            )[:5]
         )
 
-        top_fournisseurs = [
-            {
-                "fournisseur": f"{(f['fournisseur__prenom'] or '')} {(f['fournisseur__nom'] or '')}".strip() or "N/A",
-                "total_achats": f["total_achats"],
-                "montant_total": f["montant_total"],
-            }
-            for f in top_fournisseurs_qs
-        ]
+        top_fournisseurs = []
+
+        for row in top_fournisseurs_qs:
+            fournisseur_nom = " ".join(
+                part
+                for part in [
+                    row["fournisseur__prenom"],
+                    row["fournisseur__nom"],
+                ]
+                if part
+            )
+
+            if not fournisseur_nom:
+                fournisseur_nom = (
+                    row["fournisseur__telephone"]
+                    or "N/A"
+                )
+
+            top_fournisseurs.append({
+                "fournisseur_id": (
+                    row["fournisseur_id"]
+                ),
+                "fournisseur": fournisseur_nom,
+                "telephone": (
+                    row["fournisseur__telephone"]
+                ),
+                "total_achats": row["total_achats"],
+                "montant_total": row["montant_total"],
+            })
+
+        # =====================================================
+        # 9. Produits reçus
+        # =====================================================
 
         produits_qs = (
-            lignes.values("produit__nom")
-            .annotate(
-                quantite=Coalesce(Sum("quantite"), 0),
-                poids_total=Coalesce(Sum("poids_ligne"), Decimal("0.00")),
+            lignes
+            .values(
+                "produit_id",
+                "produit__nom",
+                "produit__sku",
             )
-            .order_by("-quantite")[:5]
+            .annotate(
+                quantite=Coalesce(
+                    Sum("quantite"),
+                    0,
+                ),
+                poids_total=Coalesce(
+                    Sum("poids_ligne"),
+                    Decimal("0.000"),
+                    output_field=DecimalField(
+                        max_digits=18,
+                        decimal_places=3,
+                    ),
+                ),
+            )
+            .order_by(
+                "-quantite",
+                "-poids_total",
+            )[:5]
         )
 
         repartition_produits = [
             {
-                "produit": p["produit__nom"] or "N/A",
-                "quantite": p["quantite"],
-                "poids_total": p["poids_total"],
+                "produit_id": row["produit_id"],
+                "produit": (
+                    row["produit__nom"] or "N/A"
+                ),
+                "sku": row["produit__sku"],
+                "quantite": row["quantite"],
+                "poids_total": row["poids_total"],
             }
-            for p in produits_qs
+            for row in produits_qs
         ]
 
-        return Response({
-            "periode": {
-                "start_year": start_year,
-                "end_year": current_year,
-                "label": f"{start_year}-{current_year}",
+        # =====================================================
+        # 10. Réponse
+        # =====================================================
+
+        return Response(
+            {
+                "periode": {
+                    "start_year": start_year,
+                    "end_year": current_year,
+                    "label": (
+                        f"{start_year}-{current_year}"
+                    ),
+                },
+                "bijouterie_id": bijouterie_id,
+                "total_achats": total_achats,
+                "montant_total": montant_total,
+                "total_lots": total_lots,
+                "total_quantite": total_quantite,
+                "total_poids": total_poids,
+                "achats_par_annee": (
+                    achats_par_annee
+                ),
+                "top_fournisseurs": (
+                    top_fournisseurs
+                ),
+                "repartition_produits": (
+                    repartition_produits
+                ),
             },
-            "total_achats": total_achats,
-            "montant_total": montant_total,
-            "total_lots": total_lots,
-            "total_quantite": total_quantite,
-            "total_poids": total_poids,
-            "achats_par_annee": achats_par_annee,
-            "top_fournisseurs": top_fournisseurs,
-            "repartition_produits": repartition_produits,
-        })
+            status=status.HTTP_200_OK,
+        )
 
 class FournisseurGetView(APIView):
     renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
 
     @swagger_auto_schema(
-        operation_description="Récupère les informations d'un fournisseur par son ID.",
+        operation_summary="Récupérer un fournisseur",
+        operation_description=(
+            "Récupère les informations d'un fournisseur par son ID. "
+            "Accès réservé aux administrateurs et managers."
+        ),
         responses={
             200: FournisseurSerializer(),
-            403: openapi.Response(description="Accès refusé"),
-            404: openapi.Response(description="Fournisseur introuvable"),
-        }
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+            404: openapi.Response(
+                description="Fournisseur introuvable."
+            ),
+        },
+        tags=["Fournisseurs"],
     )
     def get(self, request, pk, format=None):
-        user_role = getattr(request.user.user_role, 'role', None)
-        if user_role not in ['admin', 'manager']:
-            return Response({"message": "Access Denied"}, status=403)
+        fournisseur = get_object_or_404(
+            Fournisseur,
+            pk=pk,
+        )
 
-        try:
-            fournisseur = Fournisseur.objects.get(pk=pk)
-        except Fournisseur.DoesNotExist:
-            return Response({"detail": "Fournisseur not found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = FournisseurSerializer(
+            fournisseur
+        )
 
-        serializer = FournisseurSerializer(fournisseur)
-        return Response(serializer.data, status=200)
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
 
 
-
-# PUT: mise à jour complète (tous les champs doivent être fournis)
-# PATCH: mise à jour partielle (champs optionnels)
-# Swagger : la doc est affichée proprement pour chaque méthode
-# Contrôle des rôles (admin, manager)
 class FournisseurUpdateView(APIView):
     renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
 
     @swagger_auto_schema(
-        operation_description="Met à jour complètement un fournisseur (remplace tous les champs).",
+        operation_summary="Mettre à jour complètement un fournisseur",
+        operation_description=(
+            "Met à jour complètement un fournisseur. "
+            "Tous les champs requis doivent être fournis."
+        ),
         request_body=FournisseurSerializer,
         responses={
             200: FournisseurSerializer(),
-            400: "Requête invalide",
-            403: "Accès refusé",
-            404: "Fournisseur introuvable",
-        }
+            400: openapi.Response(
+                description="Requête invalide."
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+            404: openapi.Response(
+                description="Fournisseur introuvable."
+            ),
+        },
+        tags=["Fournisseurs"],
     )
     def put(self, request, pk, format=None):
-        return self.update_fournisseur(request, pk, partial=False)
+        return self._update_fournisseur(
+            request=request,
+            pk=pk,
+            partial=False,
+        )
 
     @swagger_auto_schema(
-        operation_description="Met à jour partiellement un fournisseur (seuls les champs fournis sont modifiés).",
+        operation_summary="Mettre à jour partiellement un fournisseur",
+        operation_description=(
+            "Met à jour uniquement les champs fournis."
+        ),
         request_body=FournisseurSerializer,
         responses={
             200: FournisseurSerializer(),
-            400: "Requête invalide",
-            403: "Accès refusé",
-            404: "Fournisseur introuvable",
-        }
+            400: openapi.Response(
+                description="Requête invalide."
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+            404: openapi.Response(
+                description="Fournisseur introuvable."
+            ),
+        },
+        tags=["Fournisseurs"],
     )
     def patch(self, request, pk, format=None):
-        return self.update_fournisseur(request, pk, partial=True)
+        return self._update_fournisseur(
+            request=request,
+            pk=pk,
+            partial=True,
+        )
 
-    def update_fournisseur(self, request, pk, partial):
-        user_role = getattr(request.user.user_role, 'role', None)
-        if user_role not in ['admin', 'manager']:
-            return Response({"message": "Access Denied"}, status=403)
+    def _update_fournisseur(
+        self,
+        *,
+        request,
+        pk,
+        partial,
+    ):
+        fournisseur = get_object_or_404(
+            Fournisseur,
+            pk=pk,
+        )
 
-        try:
-            fournisseur = Fournisseur.objects.get(pk=pk)
-        except Fournisseur.DoesNotExist:
-            return Response({"detail": "Fournisseur not found"}, status=404)
+        serializer = FournisseurSerializer(
+            fournisseur,
+            data=request.data,
+            partial=partial,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
 
-        serializer = FournisseurSerializer(fournisseur, data=request.data, partial=partial)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=200)
-        return Response(serializer.errors, status=400)
-
-
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+        
 
 class FournisseurListView(APIView):
     renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
 
     @swagger_auto_schema(
-        operation_description="Liste tous les fournisseurs, avec option de recherche par nom ou téléphone via le paramètre `search`.",
+        operation_summary="Lister les fournisseurs",
+        operation_description=(
+            "Liste les fournisseurs. "
+            "Le paramètre `search` permet une recherche par nom, "
+            "prénom ou téléphone."
+        ),
         manual_parameters=[
             openapi.Parameter(
-                'search', openapi.IN_QUERY,
-                description="Nom ou téléphone à rechercher",
-                type=openapi.TYPE_STRING
-            )
+                "search",
+                openapi.IN_QUERY,
+                description=(
+                    "Recherche par nom, prénom ou téléphone."
+                ),
+                type=openapi.TYPE_STRING,
+            ),
         ],
-        responses={200: FournisseurSerializer(many=True)}
+        responses={
+            200: FournisseurSerializer(many=True),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+        },
+        tags=["Fournisseurs"],
     )
     def get(self, request):
-        user_role = getattr(request.user.user_role, 'role', None)
-        if user_role not in ['admin', 'manager']:
-            return Response({"message": "Access Denied"}, status=403)
+        search = (
+            request.query_params.get("search") or ""
+        ).strip()
 
-        search = request.query_params.get('search', '')
         fournisseurs = Fournisseur.objects.all()
+
         if search:
             fournisseurs = fournisseurs.filter(
-                Q(nom__icontains=search) | Q(prenom__icontains=search) | Q(telephone__icontains=search)
+                Q(nom__icontains=search)
+                | Q(prenom__icontains=search)
+                | Q(telephone__icontains=search)
             )
 
-        serializer = FournisseurSerializer(fournisseurs, many=True)
-        return Response(serializer.data, status=200)
+        fournisseurs = fournisseurs.order_by(
+            "nom",
+            "prenom",
+            "id",
+        )
 
+        serializer = FournisseurSerializer(
+            fournisseurs,
+            many=True,
+        )
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
+        
 
 class AchatProduitGetOneView(APIView):
     renderer_classes = [UserRenderer]
-    permission_classes = [IsAdminOrManager]
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
 
     @swagger_auto_schema(
-        operation_description="Récupère un achat spécifique avec ses lots et produits associés.",
+        operation_summary="Récupérer un achat",
+        operation_description=(
+            "Récupère un achat spécifique avec son fournisseur, "
+            "sa bijouterie, ses lots et ses lignes produits.\n\n"
+            "Périmètre :\n"
+            "- admin : tous les achats ;\n"
+            "- manager : uniquement les achats de ses bijouteries."
+        ),
         responses={
-            200: openapi.Response("Achat trouvé", AchatDetailSerializer),
-            404: "Achat non trouvé",
-            403: "Accès refusé"
+            200: openapi.Response(
+                description="Achat trouvé.",
+                schema=AchatDetailSerializer,
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+            404: openapi.Response(
+                description="Achat introuvable."
+            ),
         },
         tags=["Achats / Arrivages"],
     )
-    @transaction.atomic
     def get(self, request, pk):
-        user_role = getattr(request.user.user_role, 'role', None)
-        if user_role not in ['admin', 'manager']:
-            return Response({"message": "Access Denied"}, status=403)
+        role = get_role_name(request.user)
 
-        try:
-            achat = (
-                Achat.objects
-                .select_related('fournisseur')
-                .prefetch_related(
-                    "lots",                  # tous les lots
-                    "lots__lignes",          # lignes de chaque lot
-                    "lots__lignes__produit", # produit de chaque ligne
-                )
-                .get(pk=pk)
+        queryset = (
+            Achat.objects
+            .select_related(
+                "fournisseur",
+                "bijouterie",
             )
-        except Achat.DoesNotExist:
-            return Response({"detail": "Achat not found."}, status=404)
-        except Exception as e:
-            return Response({"detail": f"Erreur interne : {str(e)}"}, status=500)
+            .prefetch_related(
+                "lots",
+                "lots__lignes",
+                "lots__lignes__produit",
+                "lots__lignes__produit__categorie",
+                "lots__lignes__produit__marque",
+                "lots__lignes__produit__purete",
+            )
+        )
 
-        serializer = AchatDetailSerializer(achat)
-        return Response(serializer.data, status=200)
+        # =====================================================
+        # Périmètre manager
+        # =====================================================
 
+        if role == ROLE_MANAGER:
+            manager = getattr(
+                request.user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if (
+                not manager
+                or not getattr(manager, "verifie", True)
+            ):
+                queryset = queryset.none()
+            else:
+                bijouteries = getattr(
+                    manager,
+                    "bijouteries",
+                    None,
+                )
+
+                if bijouteries is None:
+                    queryset = queryset.none()
+                else:
+                    queryset = queryset.filter(
+                        bijouterie_id__in=bijouteries.values(
+                            "id"
+                        )
+                    )
+
+        achat = get_object_or_404(
+            queryset,
+            pk=pk,
+        )
+
+        serializer = AchatDetailSerializer(
+            achat
+        )
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
 
 class LotDetailView(RetrieveAPIView):
     """
-    Détail d’un lot dans un format “affichage” :
-    - fournisseur
-    - frais
-    - numéro de lot
-    - lignes produits (produit_id, quantite, prix_achat_gramme)
+    Détail d’un lot :
+
+    - achat ;
+    - fournisseur ;
+    - bijouterie ;
+    - frais ;
+    - numéro du lot ;
+    - lignes produits ;
+    - quantité ;
+    - prix d'achat par gramme.
+
+    Périmètre :
+    - admin : tous les lots ;
+    - manager : uniquement les lots de ses bijouteries.
     """
-    queryset = (
-        Lot.objects
-        .select_related("achat", "achat__fournisseur")
-        .prefetch_related("lignes__produit")
-    )
-    serializer_class = LotDisplaySerializer
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-    lookup_field = "pk"  # facultatif, c’est le défaut
+
+    serializer_class = LotListSerializer
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+    lookup_field = "pk"
 
     @swagger_auto_schema(
-        operation_id="Details_lot",
-        operation_summary="Détail d’un lot (format affichage personnalisé)",
-        tags=["Achats / Arrivages"],
-    )
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
-
-
-
-
-def generate_numero_lot() -> str:
-    """Génère LOT-YYYYMMDD-XXXX ; XXXX repart à 0001 chaque jour."""
-    today = timezone.localdate().strftime("%Y%m%d")
-    prefix = f"LOT-{today}-"
-    last = (
-        Lot.objects
-        .filter(numero_lot__startswith=prefix)
-        .order_by("-numero_lot")
-        .values_list("numero_lot", flat=True)
-        .first()
-    )
-    if last:
-        try:
-            seq = int(last.rsplit("-", 1)[-1]) + 1
-        except ValueError:
-            seq = 1
-    else:
-        seq = 1
-    return f"{prefix}{seq:04d}"
-
-
-# class ArrivageCreateView(APIView):
-#     """
-#     Version 1 ACHAT → N LOTS (réceptions partielles possibles)
-
-#     - Crée 1 Achat (fournisseur + frais)
-#     - Crée N Lots rattachés à cet achat, chacun avec numero_lot auto (LOT-YYYYMMDD-XXXX)
-#     - Crée les ProduitLine (quantité achetée, prix_achat_gramme) pour chaque lot
-#     - Pousse 100% de la quantité en stock "Réserve" (Stock bijouterie=None) par ProduitLine
-#     - Crée un mouvement d’inventaire PURCHASE_IN (EXTERNAL -> RESERVED) par ligne
-#     - Calcule montant_total_ht et montant_total_ttc via achat.update_total()
-    
-#     - payload JSON complet pour un achat avec 3 produits différents
-#     {
-#     "fournisseur": {
-#         "nom": "DIALLO",
-#         "prenom": "Mamadou",
-#         "telephone": "771234567"
-#     },
-#     "description": "Commande bijoux or 18k – livraison complète",
-#     "frais_transport": 15000.00,
-#     "frais_douane": 5000.00,
-#     "lots": [
-#         {
-#         "received_at": "2026-01-30T10:30:00Z",
-#         "description": "Livraison principale",
-#         "lignes": [
-#             {
-#             "produit_id": 12,
-#             "quantite": 5,
-#             "prix_achat_gramme": 42000.00
-#             },
-#             {
-#             "produit_id": 18,
-#             "quantite": 3,
-#             "prix_achat_gramme": 41500.00
-#             },
-#             {
-#             "produit_id": 25,
-#             "quantite": 2,
-#             "prix_achat_gramme": 43000.00
-#             }
-#         ]
-#         }
-#     ]
-#     }
-    
-    
-#     """
-#     permission_classes = [IsAuthenticated, IsAdminOrManager]
-#     http_method_names = ["post"]
-
-#     @swagger_auto_schema(
-#         operation_id="createArrivage",
-#         operation_summary="Créer un arrivage (1 achat → N lots) et initialiser l’inventaire",
-#         operation_description=(
-#             "Crée un **Achat** puis crée **N Lots** rattachés à cet achat (réceptions partielles).\n\n"
-#             "Pour chaque lot :\n"
-#             "- Génère un `numero_lot` auto (LOT-YYYYMMDD-XXXX)\n"
-#             "- Crée les `ProduitLine` (quantité, prix_achat_gramme)\n"
-#             "- Ajoute 100% du stock en **Réserve** (Stock.bijouterie = null)\n"
-#             "- Crée un mouvement d’inventaire **PURCHASE_IN** (EXTERNAL → RESERVED) par ligne\n\n"
-#             "Enfin, recalcule les totaux de l’achat via `achat.update_total()`.\n"
-#         ),
-#         request_body=ArrivageCreateInSerializer,
-#         responses={
-#             201: openapi.Response(
-#                 description="Arrivage créé (achat + lots + lignes)",
-#                 schema=ArrivageCreateResponseSerializer,
-#             ),
-#             400: openapi.Response(description="Bad Request (validation payload / produits / lots)"),
-#             401: openapi.Response(description="Unauthorized"),
-#             403: openapi.Response(description="Forbidden"),
-#         },
-#         tags=["Achats / Arrivages"],
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         # ---------- Validation du payload ----------
-#         s = ArrivageCreateInSerializer(data=request.data)
-#         s.is_valid(raise_exception=True)
-#         v = s.validated_data
-
-#         lots_in = v["lots"]
-#         if not lots_in:
-#             return Response({"lots": "Au moins un lot est requis."}, status=400)
-
-#         # ---------- Collecte de tous les produit_id (tous lots/lignes) ----------
-#         pids = set()
-#         for lot_in in lots_in:
-#             lignes = lot_in.get("lignes") or []
-#             for row in lignes:
-#                 pids.add(row["produit_id"])
-
-#         if not pids:
-#             return Response({"lots": "Au moins une ligne produit est requise."}, status=400)
-
-#         # ---------- Validation produits existants ----------
-#         exists = set(Produit.objects.filter(id__in=pids).values_list("id", flat=True))
-#         missing = pids - exists
-#         if missing:
-#             return Response(
-#                 {"lots": f"Produit(s) introuvable(s): {sorted(missing)}."},
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
-
-#         # On exige un poids pour chaque produit
-#         missing_weight = list(
-#             Produit.objects.filter(id__in=pids, poids__isnull=True).values_list("id", flat=True)
-#         )
-#         if missing_weight:
-#             return Response(
-#                 {"lots": f"Produit(s) sans poids: {sorted(missing_weight)}."},
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
-
-#         # Cache produits
-#         produits_by_id = {
-#             p.id: p for p in Produit.objects.filter(id__in=pids).only("id", "poids", "nom")
-#         }
-
-#         # ---------- Fournisseur ----------
-#         f = v["fournisseur"]
-#         tel = (f.get("telephone") or "").strip() or None
-
-#         if tel:
-#             # ✅ évite collision NULL / améliore mise à jour des infos
-#             fournisseur, _ = Fournisseur.objects.update_or_create(
-#                 telephone=tel,
-#                 defaults={"nom": f["nom"], "prenom": f.get("prenom", "")},
-#             )
-#         else:
-#             # Pas de téléphone → on crée un nouveau fournisseur
-#             fournisseur = Fournisseur.objects.create(
-#                 nom=f["nom"], prenom=f.get("prenom", ""), telephone=None
-#             )
-
-#         # ---------- Achat ----------
-#         now = timezone.now()
-#         frais_transport = v.get("frais_transport") or Decimal("0.00")
-#         frais_douane = v.get("frais_douane") or Decimal("0.00")
-
-#         achat = Achat.objects.create(
-#             fournisseur=fournisseur,
-#             reference_commande=v.get("reference_commande"),
-#             description=v.get("description", ""),
-#             frais_transport=frais_transport,
-#             frais_douane=frais_douane,
-#             status=Achat.STATUS_CONFIRMED,
-#         )
-
-#         # ---------- Création lots + lignes + stock + mouvements ----------
-#         lots_created = []
-
-#         for lot_in in lots_in:
-#             lot_desc = lot_in.get("description") or v.get("description", "") or ""
-#             received_at = lot_in.get("received_at") or now
-#             lignes_in = lot_in.get("lignes") or []
-
-#             if not lignes_in:
-#                 return Response(
-#                     {"lots": "Chaque lot doit contenir au moins une ligne."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-
-#             # Générer numero_lot (retry collision)
-#             lot = None
-#             for _ in range(5):
-#                 numero_lot = generate_numero_lot()
-#                 try:
-#                     lot = Lot.objects.create(
-#                         achat=achat,
-#                         numero_lot=numero_lot,
-#                         description=lot_desc,
-#                         received_at=received_at,
-#                     )
-#                     break
-#                 except IntegrityError:
-#                     continue
-#             if lot is None:
-#                 return Response(
-#                     {"detail": "Impossible de générer un numéro de lot unique."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-
-#             # lignes du lot
-#             for row in lignes_in:
-#                 produit = produits_by_id[row["produit_id"]]
-
-#                 # Quantité
-#                 try:
-#                     qte = int(row["quantite"])
-#                 except (TypeError, ValueError):
-#                     return Response({"lots": "Quantité invalide."}, status=400)
-
-#                 if qte < 1:
-#                     return Response({"lots": "Quantité doit être >= 1."}, status=400)
-
-#                 prix_achat_gramme = row.get("prix_achat_gramme")
-
-#                 # ProduitLine
-#                 pl = ProduitLine.objects.create(
-#                     lot=lot,
-#                     produit=produit,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     quantite=qte,
-#                 )
-
-#                 # # Stock en Réserve (bijouterie=None)
-#                 # stock_reserve, created = Stock.objects.get_or_create(
-#                 #     produit_line=pl,
-#                 #     bijouterie=None,
-#                 #     defaults={"quantite_disponible": 0, "en_stock": qte},
-#                 # )
-                
-                
-#                 if not created:
-#                     # verrou row + update atomique
-#                     Stock.objects.select_for_update().filter(id=stock_reserve.id)
-#                     Stock.objects.filter(id=stock_reserve.id).update(
-#                         quantite_disponible=0,
-#                         en_stock=F("en_stock") + qte,
-#                         updated_at=timezone.now(),
-#                     )
-
-#                 # unit_cost (coût unitaire pièce)
-#                 unit_cost = None
-#                 if prix_achat_gramme is not None and produit.poids is not None:
-#                     try:
-#                         unit_cost = (
-#                             Decimal(str(prix_achat_gramme)) * Decimal(str(produit.poids))
-#                         ).quantize(Decimal("0.01"))
-#                     except (InvalidOperation, TypeError, ValueError):
-#                         unit_cost = None
-
-#                 # mouvement inventaire
-#                 InventoryMovement.objects.create(
-#                     produit=produit,
-#                     movement_type=MovementType.PURCHASE_IN,
-#                     qty=qte,
-#                     unit_cost=unit_cost,
-#                     lot=lot,
-#                     reason="Arrivage initial",
-#                     src_bucket=Bucket.EXTERNAL,
-#                     dst_bucket=Bucket.RESERVED,
-#                     achat=achat,
-#                     occurred_at=timezone.now(),
-#                     created_by=request.user,
-#                 )
-
-#             lots_created.append(lot)
-#         # ---------- CALCUL FINAL HT / TTC ----------
-#         # ---------- Totaux achat ----------
-#         # achat.montant_total_ht = base_ht + frais_transport + frais_douane
-#         # achat.montant_total_ttc = achat.montant_total_ht  # pas de TVA pour l'instant
-#         # achat.save(update_fields=["montant_total_ht", "montant_total_ttc"])
-#         achat.update_total(save=True)
-        
-        
-#         # ---------- Réponse ----------
-#         # ✅ Si ton serializer de réponse est centré Achat: renvoie achat.
-#         # Si tu veux renvoyer aussi la liste des lots créés, on peut faire un serializer dédié.
-#         lots_qs = (
-#             Lot.objects
-#             .filter(id__in=[l.id for l in lots_created])
-#             .select_related("achat", "achat__fournisseur")
-#             .prefetch_related("lignes__produit")
-#             .order_by("received_at", "id")
-#         )
-
-#         payload = {"achat": achat, "lots": list(lots_qs)}
-#         out = ArrivageCreateResponseSerializer(payload).data
-#         return Response(out, status=status.HTTP_201_CREATED)
-
-
-class ArrivageCreateView(APIView):
-    """
-    Version 1 ACHAT → N LOTS (réceptions partielles possibles)
-
-    - Crée 1 Achat (fournisseur + frais)
-    - Crée N Lots rattachés à cet achat
-    - Crée les ProduitLine (quantite, prix_achat_gramme) pour chaque lot
-    - Stocke 100% en Réserve (Stock.bijouterie=None) par ProduitLine
-      ✅ règle DB: quantite_totale >= en_stock
-    - Crée un mouvement PURCHASE_IN (EXTERNAL -> RESERVED) par ligne
-    - Recalcule les totaux via achat.update_total()
-    """
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-    http_method_names = ["post"]
-
-    @swagger_auto_schema(
-        operation_id="createArrivage",
-        operation_summary="Créer un arrivage (1 achat → N lots) et initialiser l’inventaire",
-        request_body=ArrivageCreateInSerializer,
+        operation_id="detailLot",
+        operation_summary="Afficher le détail d’un lot",
+        operation_description=(
+            "Retourne le détail d’un lot avec son achat, "
+            "son fournisseur, sa bijouterie et ses lignes produits.\n\n"
+            "L’administrateur peut consulter tous les lots. "
+            "Le manager peut uniquement consulter les lots "
+            "de ses bijouteries affectées."
+        ),
         responses={
-            201: openapi.Response("Arrivage créé", schema=ArrivageCreateResponseSerializer),
-            400: "Bad Request",
-            401: "Unauthorized",
-            403: "Forbidden",
+            200: LotListSerializer(),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+            404: openapi.Response(
+                description="Lot introuvable."
+            ),
         },
         tags=["Achats / Arrivages"],
     )
-    @transaction.atomic
-    def post(self, request):
-        s = ArrivageCreateInSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
-        v = s.validated_data
-
-        lots_in = v.get("lots") or []
-        if not lots_in:
-            return Response({"lots": "Au moins un lot est requis."}, status=400)
-
-        # -------- Collecte produit_id --------
-        pids = set()
-        for lot_in in lots_in:
-            for row in (lot_in.get("lignes") or []):
-                pids.add(row["produit_id"])
-
-        if not pids:
-            return Response({"lots": "Au moins une ligne produit est requise."}, status=400)
-
-        # -------- Validation produits --------
-        exists = set(Produit.objects.filter(id__in=pids).values_list("id", flat=True))
-        missing = pids - exists
-        if missing:
-            return Response({"lots": f"Produit(s) introuvable(s): {sorted(missing)}."}, status=400)
-
-        # poids obligatoire (si tu en as besoin ailleurs)
-        missing_weight = list(
-            Produit.objects.filter(id__in=pids, poids__isnull=True).values_list("id", flat=True)
-        )
-        if missing_weight:
-            return Response({"lots": f"Produit(s) sans poids: {sorted(missing_weight)}."}, status=400)
-
-        produits_by_id = {
-            p.id: p for p in Produit.objects.filter(id__in=pids).only("id", "poids", "nom")
-        }
-
-        # -------- Fournisseur --------
-        f = v["fournisseur"]
-        tel = (f.get("telephone") or "").strip() or None
-
-        if tel:
-            fournisseur, _ = Fournisseur.objects.update_or_create(
-                telephone=tel,
-                defaults={"nom": f["nom"], "prenom": f.get("prenom", "")},
-            )
-        else:
-            fournisseur = Fournisseur.objects.create(
-                nom=f["nom"], prenom=f.get("prenom", ""), telephone=None
-            )
-
-        # -------- Achat --------
-        now = timezone.now()
-        achat = Achat.objects.create(
-            fournisseur=fournisseur,
-            reference_commande=v.get("reference_commande"),
-            description=v.get("description", ""),
-            frais_transport=v.get("frais_transport") or Decimal("0.00"),
-            frais_douane=v.get("frais_douane") or Decimal("0.00"),
-            status=Achat.STATUS_CONFIRMED,
-        )
-
-        lots_created = []
-
-        # -------- Lots + lignes + stock + mouvements --------
-        for lot_in in lots_in:
-            lot_desc = lot_in.get("description") or v.get("description", "") or ""
-            received_at = lot_in.get("received_at") or now
-            lignes_in = lot_in.get("lignes") or []
-
-            if not lignes_in:
-                return Response({"lots": "Chaque lot doit contenir au moins une ligne."}, status=400)
-
-            lot = None
-            for _ in range(5):
-                try:
-                    lot = Lot.objects.create(
-                        achat=achat,
-                        numero_lot=generate_numero_lot(),
-                        description=lot_desc,
-                        received_at=received_at,
-                    )
-                    break
-                except IntegrityError:
-                    continue
-            if lot is None:
-                return Response({"detail": "Impossible de générer un numéro de lot unique."}, status=400)
-
-            for row in lignes_in:
-                produit = produits_by_id[row["produit_id"]]
-
-                try:
-                    qte = int(row["quantite"])
-                except (TypeError, ValueError):
-                    return Response({"lots": "Quantité invalide."}, status=400)
-                if qte < 1:
-                    return Response({"lots": "Quantité doit être >= 1."}, status=400)
-
-                prix_achat_gramme = row.get("prix_achat_gramme")
-
-                pl = ProduitLine.objects.create(
-                    lot=lot,
-                    produit=produit,
-                    prix_achat_gramme=prix_achat_gramme,
-                    quantite=qte,
-                )
-
-                # ✅ STOCK RÉSERVE: quantite_totale >= en_stock (on incrémente les deux)
-                stock_reserve, created = Stock.objects.get_or_create(
-                    produit_line=pl,
-                    bijouterie=None,
-                    defaults={"quantite_totale": qte, "en_stock": qte},
-                )
-                if not created:
-                    # lock réel (optionnel, mais propre)
-                    Stock.objects.select_for_update().get(pk=stock_reserve.pk)
-
-                    Stock.objects.filter(pk=stock_reserve.pk).update(
-                        quantite_totale=F("quantite_totale") + qte,
-                        en_stock=F("en_stock") + qte,
-                        updated_at=timezone.now(),
-                    )
-
-                # ✅ unit_cost = PRIX PAR GRAMME (comme tu l’as dit)
-                unit_cost = None
-                if prix_achat_gramme is not None:
-                    try:
-                        unit_cost = Decimal(str(prix_achat_gramme)).quantize(Decimal("0.01"))
-                    except (InvalidOperation, TypeError, ValueError):
-                        unit_cost = None
-
-                InventoryMovement.objects.create(
-                    produit=produit,
-                    movement_type=MovementType.PURCHASE_IN,
-                    qty=qte,
-                    unit_cost=unit_cost,      # ✅ prix/gramme
-                    lot=lot,
-                    reason="Arrivage initial",
-                    src_bucket=Bucket.EXTERNAL,
-                    dst_bucket=Bucket.RESERVED,
-                    achat=achat,
-                    achat_ligne=pl,            # ✅ bonus: trace la ligne d'achat
-                    occurred_at=timezone.now(),
-                    created_by=request.user,
-                )
-
-            lots_created.append(lot)
-
-        # -------- Totaux --------
-        achat.update_total(save=True)
-
-        # -------- Réponse --------
-        # lots_qs = (
-        #     Lot.objects
-        #     .filter(id__in=[l.id for l in lots_created])
-        #     .select_related("achat", "achat__fournisseur")
-        #     .prefetch_related("lignes__produit")
-        #     .order_by("received_at", "id")
-        # )
-        # out = ArrivageCreateResponseSerializer({"achat": achat, "lots": list(lots_qs)}).data
-        out = ArrivageCreateResponseSerializer({"achat": achat,}).data
-        return Response(out, status=201)
-
-
-
-# class LotListView(ListAPIView):
-#     """
-#     Liste des lots :
-#     - par défaut : année courante (sur received_at)
-#     - si date_from & date_to sont fournis : intervalle [date_from, date_to] (inclus)
-#     Filtres optionnels :
-#     - reference_commande (icontains)
-#     - numero_lot (icontains)
-#     - numero_achat (exact)
-#     - fournisseur_id
-#     """
-#     permission_classes = [IsAuthenticated, IsAdminOrManager]
-#     serializer_class = LotListSerializer
-
-#     @swagger_auto_schema(
-#         operation_id="listLots",
-#         operation_summary="Lister les lots avec filtres",
-#         operation_description=(
-#             "• Si `date_from` **et** `date_to` sont fournis → filtre inclusif sur `received_at`.\n"
-#             "• Sinon → lots de l’**année courante** (received_at).\n\n"
-#             "Filtres supplémentaires :\n"
-#             "- `reference_commande` (recherche partielle, icontains)\n"
-#             "- `numero_lot` (recherche partielle, icontains)\n"
-#             "- `numero_achat` (exact)\n"
-#             "- `fournisseur_id` (id du fournisseur de l'achat)\n\n"
-#             "Formats de date : `YYYY-MM-DD`."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "reference_commande",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Recherche partielle sur la référence commande (icontains).",
-#             ),
-#             openapi.Parameter(
-#                 "date_from",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Borne min incluse sur received_at (YYYY-MM-DD). Avec date_to.",
-#             ),
-#             openapi.Parameter(
-#                 "date_to",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Borne max incluse sur received_at (YYYY-MM-DD). Avec date_from.",
-#             ),
-#             openapi.Parameter(
-#                 "numero_lot",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Recherche partielle sur le numéro de lot (icontains).",
-#             ),
-#             openapi.Parameter(
-#                 "numero_achat",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Filtre exact sur le numéro d'achat.",
-#             ),
-#             openapi.Parameter(
-#                 "fournisseur_id",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="Filtre sur l'id du fournisseur.",
-#             ),
-#             openapi.Parameter(
-#                 "ordering",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Tri: -received_at (défaut), received_at, numero_lot, -numero_lot",
-#             ),
-#         ],
-#         responses={200: LotListSerializer(many=True)},
-#         tags=["Achats / Arrivages"],
-#     )
-#     def get(self, request, *args, **kwargs):
-#         def _check_date(label, val):
-#             if not val:
-#                 return
-#             try:
-#                 datetime.strptime(val, "%Y-%m-%d").date()
-#             except Exception:
-#                 raise ValidationError({label: "Format invalide. Utiliser YYYY-MM-DD."})
-
-#         qp = request.query_params
-#         _check_date("date_from", qp.get("date_from"))
-#         _check_date("date_to", qp.get("date_to"))
-
-#         # si un seul des deux est fourni → on force la règle
-#         if (qp.get("date_from") and not qp.get("date_to")) or (qp.get("date_to") and not qp.get("date_from")):
-#             raise ValidationError({"detail": "Fournir date_from ET date_to ensemble."})
-
-#         return super().get(request, *args, **kwargs)
-
-#     def get_queryset(self):
-#         params = self.request.query_params
-#         getf = params.get
-
-#         # --------- Tri ---------
-#         ordering = getf("ordering") or "-received_at"
-#         allowed = {"received_at", "-received_at", "numero_lot", "-numero_lot"}
-#         if ordering not in allowed:
-#             ordering = "-received_at"
-
-#         # --------- Base queryset + agrégats ---------
-#         qs = (
-#             Lot.objects
-#             .select_related("achat", "achat__fournisseur")
-#             .prefetch_related(
-#                 "lignes",
-#                 "lignes__produit",
-#                 "lignes__produit__categorie",
-#                 "lignes__produit__marque",
-#             )
-#             .annotate(
-#                 nb_lignes=Coalesce(Count("lignes", distinct=True), 0),
-#                 quantite_total=Coalesce(Sum("lignes__quantite"), 0),
-#             )
-#         )
-
-#         # --------- Filtre par dates (sur received_at) ---------
-#         date_from_s = getf("date_from")
-#         date_to_s = getf("date_to")
-
-#         if date_from_s and date_to_s:
-#             df = datetime.strptime(date_from_s, "%Y-%m-%d").date()
-#             dt = datetime.strptime(date_to_s, "%Y-%m-%d").date()
-#             if df > dt:
-#                 raise ValidationError({"detail": "date_from doit être ≤ date_to."})
-#             qs = qs.filter(received_at__date__gte=df, received_at__date__lte=dt)
-#         else:
-#             # année courante sur received_at
-#             y = timezone.localdate().year
-#             qs = qs.filter(received_at__year=y)
-
-#         # --------- Autres filtres ---------
-#         reference_commande = getf("reference_commande")
-#         if reference_commande:
-#             qs = qs.filter(achat__reference_commande__icontains=reference_commande)
-
-#         numero_lot = getf("numero_lot")
-#         if numero_lot:
-#             qs = qs.filter(numero_lot__icontains=numero_lot)
-
-#         numero_achat = getf("numero_achat")
-#         if numero_achat:
-#             qs = qs.filter(achat__numero_achat=numero_achat)
-
-#         fournisseur_id = getf("fournisseur_id")
-#         if fournisseur_id:
-#             try:
-#                 fid = int(fournisseur_id)
-#                 if fid > 0:
-#                     qs = qs.filter(achat__fournisseur_id=fid)
-#             except ValueError:
-#                 # on ignore un id non entier plutôt que lever une 500
-#                 pass
-
-#         return qs.order_by(ordering)
-
-
-class LotListView(ListAPIView):
-    """
-    Liste des lots :
-    - si date_from & date_to : intervalle inclusif sur received_at__date
-    - sinon : filtre par year (si fourni) sinon année courante
-
-    Filtres optionnels :
-    - year (int)
-    - reference_commande (icontains)
-    - numero_lot (icontains)
-    - numero_achat (exact)
-    - fournisseur_id
-    """
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-    serializer_class = LotListSerializer
-
-    @swagger_auto_schema(
-        operation_id="listLots",
-        operation_summary="Lister les lots avec filtres",
-        operation_description=(
-            "Priorité au filtre par dates :\n"
-            "• Si `date_from` **et** `date_to` sont fournis → filtre inclusif sur `received_at`.\n"
-            "• Sinon → filtre par `year` (si fourni), sinon année courante.\n\n"
-            "Formats : date `YYYY-MM-DD`, year `YYYY`."
-            "Exemples d’appels :"
-                " • Lots de 2026 : GET /api/lots/?year=2026"
-                " • Lots entre deux dates : GET /api/lots/?date_from=2026-01-01&date_to=2026-01-31"
-                " • Recherche commande : GET /api/lots/?reference_commande=CMD-2026"
-        ),
-        manual_parameters=[
-            openapi.Parameter("year", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Année sur received_at (ex: 2026). Ignoré si date_from/date_to."),
-            openapi.Parameter("reference_commande", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Recherche partielle (icontains) sur la référence commande."),
-            openapi.Parameter("date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Borne min incluse (YYYY-MM-DD). Avec date_to."),
-            openapi.Parameter("date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Borne max incluse (YYYY-MM-DD). Avec date_from."),
-            openapi.Parameter("numero_lot", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Recherche partielle (icontains) sur le numéro de lot."),
-            openapi.Parameter("numero_achat", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Filtre exact sur le numéro d'achat."),
-            openapi.Parameter("fournisseur_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Filtre sur l'id du fournisseur."),
-            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Tri: -received_at (défaut), received_at, numero_lot, -numero_lot"),
-        ],
-        responses={200: LotListSerializer(many=True)},
-        tags=["Achats / Arrivages"],
-    )
     def get(self, request, *args, **kwargs):
-        def _check_date(label, val):
-            if not val:
-                return
-            try:
-                datetime.strptime(val, "%Y-%m-%d").date()
-            except Exception:
-                raise ValidationError({label: "Format invalide. Utiliser YYYY-MM-DD."})
-
-        qp = request.query_params
-        date_from = qp.get("date_from")
-        date_to = qp.get("date_to")
-        year = qp.get("year")
-
-        _check_date("date_from", date_from)
-        _check_date("date_to", date_to)
-
-        # ✅ si un seul des deux est fourni
-        if (date_from and not date_to) or (date_to and not date_from):
-            raise ValidationError({"detail": "Fournir date_from ET date_to ensemble."})
-
-        # ✅ year doit être int si fourni (on valide juste pour swagger/UX)
-        if year:
-            try:
-                int(year)
-            except ValueError:
-                raise ValidationError({"year": "Année invalide. Exemple: 2026"})
-
-        return super().get(request, *args, **kwargs)
+        return super().get(
+            request,
+            *args,
+            **kwargs,
+        )
 
     def get_queryset(self):
-        getf = self.request.query_params.get
+        role = get_role_name(self.request.user)
 
-        # --------- Tri ---------
-        ordering = (getf("ordering") or "-received_at").strip()
-        allowed = {"received_at", "-received_at", "numero_lot", "-numero_lot"}
-        if ordering not in allowed:
-            ordering = "-received_at"
-
-        # --------- Base queryset + agrégats ---------
-        qs = (
+        queryset = (
             Lot.objects
-            .select_related("achat", "achat__fournisseur")
+            .select_related(
+                "achat",
+                "achat__fournisseur",
+                "achat__bijouterie",
+            )
             .prefetch_related(
                 "lignes",
                 "lignes__produit",
                 "lignes__produit__categorie",
                 "lignes__produit__marque",
-            )
-            .annotate(
-                nb_lignes=Coalesce(Count("lignes", distinct=True), 0),
-                quantite_total=Coalesce(Sum("lignes__quantite"), 0),
+                "lignes__produit__purete",
+                "lignes__produit__modele",
             )
         )
 
-        # --------- Filtre dates OU year ---------
-        date_from_s = getf("date_from")
-        date_to_s = getf("date_to")
+        if role == ROLE_ADMIN:
+            return queryset
 
-        if date_from_s and date_to_s:
-            df = datetime.strptime(date_from_s, "%Y-%m-%d").date()
-            dt = datetime.strptime(date_to_s, "%Y-%m-%d").date()
-            if df > dt:
-                raise ValidationError({"detail": "date_from doit être ≤ date_to."})
-            qs = qs.filter(received_at__date__gte=df, received_at__date__lte=dt)
+        if role == ROLE_MANAGER:
+            manager = getattr(
+                self.request.user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if (
+                not manager
+                or not getattr(manager, "verifie", True)
+            ):
+                return queryset.none()
+
+            bijouteries = getattr(
+                manager,
+                "bijouteries",
+                None,
+            )
+
+            if bijouteries is None:
+                return queryset.none()
+
+            return queryset.filter(
+                achat__bijouterie_id__in=(
+                    bijouteries.values_list(
+                        "id",
+                        flat=True,
+                    )
+                )
+            )
+
+        return queryset.none()
+    
+
+class ArrivageCreateView(APIView):
+    """
+    Crée un arrivage fournisseur.
+
+    Cycle :
+
+        Fournisseur
+            ↓
+        Achat
+            ↓
+        Lot
+            ↓
+        ProduitLine
+            ↓
+        Stock magasin
+            ↓
+        PURCHASE_IN : EXTERNAL → BIJOUTERIE
+
+    Cette vue ne crée jamais :
+    - de stock réserve ;
+    - de VendorStock ;
+    - de VENDOR_ASSIGN ;
+    - de SALE_OUT.
+
+    Périmètre :
+    - admin : toutes les bijouteries ;
+    - manager : uniquement ses bijouteries affectées.
+    """
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+
+    http_method_names = [
+        "post",
+        "options",
+    ]
+
+    @swagger_auto_schema(
+        operation_id="createArrivage",
+        operation_summary=(
+            "Créer un arrivage fournisseur et initialiser "
+            "le stock de la bijouterie"
+        ),
+        operation_description=(
+            "Crée un achat fournisseur avec un ou plusieurs lots.\n\n"
+            "Pour chaque ProduitLine créée :\n"
+            "- un Stock magasin est initialisé ;\n"
+            "- un mouvement PURCHASE_IN est enregistré ;\n"
+            "- le mouvement va de EXTERNAL vers BIJOUTERIE.\n\n"
+            "Aucun VendorStock ni stock réserve n'est créé."
+        ),
+        request_body=ArrivageCreateInSerializer,
+        responses={
+            201: openapi.Response(
+                description="Arrivage créé avec succès.",
+                schema=ArrivageCreateResponseSerializer,
+            ),
+            400: openapi.Response(
+                description="Données invalides.",
+            ),
+            401: openapi.Response(
+                description="Authentification requise.",
+            ),
+            403: openapi.Response(
+                description=(
+                    "Accès refusé ou bijouterie non autorisée."
+                ),
+            ),
+        },
+        tags=["Achats / Arrivages"],
+    )
+    @transaction.atomic
+    def post(self, request):
+        serializer = ArrivageCreateInSerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
+
+        data = serializer.validated_data
+        lots_in = data.get("lots") or []
+
+        # =====================================================
+        # 1. Bijouterie
+        # =====================================================
+
+        bijouterie_id = data["bijouterie_id"]
+
+        try:
+            bijouterie = Bijouterie.objects.get(
+                pk=bijouterie_id
+            )
+        except Bijouterie.DoesNotExist:
+            raise ValidationError({
+                "bijouterie_id": "Bijouterie introuvable."
+            })
+
+        # =====================================================
+        # 2. Périmètre utilisateur
+        # =====================================================
+
+        role = get_role_name(request.user)
+
+        if role == ROLE_MANAGER:
+            manager = getattr(
+                request.user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if (
+                not manager
+                or not getattr(manager, "verifie", False)
+            ):
+                raise PermissionDenied(
+                    "Profil manager introuvable ou désactivé."
+                )
+
+            bijouteries_manager = getattr(
+                manager,
+                "bijouteries",
+                None,
+            )
+
+            if (
+                bijouteries_manager is None
+                or not bijouteries_manager.filter(
+                    pk=bijouterie.pk
+                ).exists()
+            ):
+                raise PermissionDenied(
+                    "Vous ne pouvez pas créer un arrivage "
+                    "dans cette bijouterie."
+                )
+
+        elif role != ROLE_ADMIN:
+            raise PermissionDenied(
+                "Seuls les administrateurs et les managers "
+                "peuvent créer un arrivage."
+            )
+
+        # =====================================================
+        # 3. Validation des lots
+        # =====================================================
+
+        if not lots_in:
+            raise ValidationError({
+                "lots": "Au moins un lot est requis."
+            })
+
+        produit_ids = set()
+        lots_normalises = []
+
+        for lot_index, lot_in in enumerate(lots_in):
+            lignes_in = lot_in.get("lignes") or []
+
+            if not lignes_in:
+                raise ValidationError({
+                    f"lots[{lot_index}].lignes": (
+                        "Chaque lot doit contenir "
+                        "au moins une ligne."
+                    )
+                })
+
+            produits_du_lot = set()
+            lignes_normalisees = []
+
+            for ligne_index, ligne_in in enumerate(
+                lignes_in
+            ):
+                prefixe = (
+                    f"lots[{lot_index}]."
+                    f"lignes[{ligne_index}]"
+                )
+
+                produit_id = ligne_in.get("produit_id")
+
+                if not produit_id:
+                    raise ValidationError({
+                        f"{prefixe}.produit_id": (
+                            "produit_id est obligatoire."
+                        )
+                    })
+
+                if produit_id in produits_du_lot:
+                    raise ValidationError({
+                        f"{prefixe}.produit_id": (
+                            "Un produit ne peut apparaître "
+                            "qu'une seule fois dans un même lot."
+                        )
+                    })
+
+                produits_du_lot.add(produit_id)
+                produit_ids.add(produit_id)
+
+                try:
+                    quantite = int(
+                        ligne_in.get("quantite")
+                    )
+                except (TypeError, ValueError):
+                    raise ValidationError({
+                        f"{prefixe}.quantite": (
+                            "Quantité invalide."
+                        )
+                    })
+
+                if quantite < 1:
+                    raise ValidationError({
+                        f"{prefixe}.quantite": (
+                            "La quantité doit être supérieure "
+                            "ou égale à 1."
+                        )
+                    })
+
+                prix_brut = ligne_in.get(
+                    "prix_achat_gramme"
+                )
+
+                if prix_brut is None:
+                    raise ValidationError({
+                        f"{prefixe}.prix_achat_gramme": (
+                            "Le prix d'achat par gramme "
+                            "est obligatoire."
+                        )
+                    })
+
+                try:
+                    prix_achat_gramme = Decimal(
+                        str(prix_brut)
+                    ).quantize(
+                        Decimal("0.01"),
+                        rounding=ROUND_HALF_UP,
+                    )
+                except (
+                    InvalidOperation,
+                    TypeError,
+                    ValueError,
+                ):
+                    raise ValidationError({
+                        f"{prefixe}.prix_achat_gramme": (
+                            "Prix d'achat par gramme invalide."
+                        )
+                    })
+
+                if prix_achat_gramme < Decimal("0.00"):
+                    raise ValidationError({
+                        f"{prefixe}.prix_achat_gramme": (
+                            "Le prix d'achat par gramme "
+                            "ne peut pas être négatif."
+                        )
+                    })
+
+                lignes_normalisees.append({
+                    "produit_id": produit_id,
+                    "quantite": quantite,
+                    "prix_achat_gramme": (
+                        prix_achat_gramme
+                    ),
+                })
+
+            lots_normalises.append({
+                "description": (
+                    lot_in.get("description")
+                    or data.get("description")
+                    or ""
+                ),
+                "received_at": lot_in.get(
+                    "received_at"
+                ),
+                "lignes": lignes_normalisees,
+            })
+
+        # =====================================================
+        # 4. Validation des produits
+        # =====================================================
+
+        produits = (
+            Produit.objects
+            .filter(pk__in=produit_ids)
+            .only(
+                "id",
+                "poids",
+            )
+        )
+
+        produits_by_id = {
+            produit.id: produit
+            for produit in produits
+        }
+
+        produits_manquants = (
+            produit_ids - set(produits_by_id)
+        )
+
+        if produits_manquants:
+            raise ValidationError({
+                "lots": (
+                    "Produit(s) introuvable(s) : "
+                    f"{sorted(produits_manquants)}."
+                )
+            })
+
+        produits_sans_poids = [
+            produit.id
+            for produit in produits_by_id.values()
+            if produit.poids is None
+        ]
+
+        if produits_sans_poids:
+            raise ValidationError({
+                "lots": (
+                    "Produit(s) sans poids renseigné : "
+                    f"{sorted(produits_sans_poids)}."
+                )
+            })
+
+        # =====================================================
+        # 5. Fournisseur
+        # =====================================================
+
+        fournisseur_data = data["fournisseur"]
+
+        telephone = (
+            fournisseur_data["telephone"]
+            or ""
+        ).strip()
+
+        if not telephone:
+            raise ValidationError({
+                "fournisseur": {
+                    "telephone": (
+                        "Le téléphone du fournisseur "
+                        "est obligatoire."
+                    )
+                }
+            })
+
+        fournisseur, _ = (
+            Fournisseur.objects.update_or_create(
+                telephone=telephone,
+                defaults={
+                    "nom": (
+                        fournisseur_data.get("nom")
+                        or ""
+                    ),
+                    "prenom": (
+                        fournisseur_data.get("prenom")
+                        or ""
+                    ),
+                    "address": (
+                        fournisseur_data.get("address")
+                        or ""
+                    ),
+                },
+            )
+        )
+
+        # =====================================================
+        # 6. Création de l'achat
+        # =====================================================
+
+        achat = Achat.objects.create(
+            fournisseur=fournisseur,
+            bijouterie=bijouterie,
+            reference_commande=(
+                data.get("reference_commande")
+                or ""
+            ),
+            description=(
+                data.get("description")
+                or ""
+            ),
+            frais_transport=(
+                data.get("frais_transport")
+                or Decimal("0.00")
+            ),
+            frais_douane=(
+                data.get("frais_douane")
+                or Decimal("0.00")
+            ),
+            status=Achat.STATUS_CONFIRMED,
+        )
+
+        lots_created = []
+
+        # =====================================================
+        # 7. Lots, ProduitLine, Stock et PURCHASE_IN
+        # =====================================================
+
+        for lot_data in lots_normalises:
+            lot = None
+
+            for _ in range(5):
+                try:
+                    lot = Lot.objects.create(
+                        achat=achat,
+                        numero_lot=(
+                            generate_numero_lot()
+                        ),
+                        description=(
+                            lot_data["description"]
+                        ),
+                        received_at=(
+                            lot_data["received_at"]
+                            or timezone.now()
+                        ),
+                    )
+                    break
+
+                except IntegrityError:
+                    lot = None
+
+            if lot is None:
+                raise ValidationError({
+                    "numero_lot": (
+                        "Impossible de générer un "
+                        "numéro de lot unique."
+                    )
+                })
+
+            lots_created.append(lot)
+
+            for ligne in lot_data["lignes"]:
+                produit = produits_by_id[
+                    ligne["produit_id"]
+                ]
+
+                quantite = ligne["quantite"]
+                prix_achat_gramme = ligne[
+                    "prix_achat_gramme"
+                ]
+
+                produit_line = (
+                    ProduitLine.objects.create(
+                        lot=lot,
+                        produit=produit,
+                        quantite=quantite,
+                        prix_achat_gramme=(
+                            prix_achat_gramme
+                        ),
+                    )
+                )
+
+                Stock.objects.create(
+                    produit_line=produit_line,
+                    bijouterie=bijouterie,
+                    quantite_totale=quantite,
+                    en_stock=quantite,
+                )
+
+                log_move(
+                    produit=produit,
+                    qty=quantite,
+                    movement_type=(
+                        MovementType.PURCHASE_IN
+                    ),
+                    src_bucket=Bucket.EXTERNAL,
+                    dst_bucket=Bucket.BIJOUTERIE,
+                    dst_bijouterie_id=bijouterie.id,
+                    unit_cost=prix_achat_gramme,
+                    achat=achat,
+                    produit_line=produit_line,
+                    lot=lot,
+                    user=request.user,
+                    reason=(
+                        "Entrée fournisseur vers bijouterie"
+                    ),
+                )
+
+        # =====================================================
+        # 8. Totaux définitifs
+        # =====================================================
+
+        achat.update_total(save=True)
+
+        achat.refresh_from_db(
+            fields=[
+                "montant_total_ht",
+                "montant_total_ttc",
+            ]
+        )
+
+        # =====================================================
+        # 9. Réponse
+        # =====================================================
+
+        payload = {
+            "achat": achat,
+            "lots": lots_created,
+        }
+
+        output = ArrivageCreateResponseSerializer(
+            payload
+        ).data
+
+        return Response(
+            output,
+            status=status.HTTP_201_CREATED,
+        )
+        
+        
+
+
+class LotListView(ListAPIView):
+    """
+    Liste des lots.
+
+    Périmètre :
+    - admin : tous les lots ;
+    - manager : uniquement les lots de ses bijouteries.
+
+    Filtrage des dates :
+    - si date_from et date_to sont fournis :
+      intervalle inclusif sur received_at ;
+    - sinon :
+      filtre par year ou année courante.
+
+    Filtres :
+    - year ;
+    - date_from ;
+    - date_to ;
+    - reference_commande ;
+    - numero_lot ;
+    - numero_achat ;
+    - fournisseur_id ;
+    - ordering.
+    """
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+    serializer_class = LotListSerializer
+    pagination_class = None
+
+    @swagger_auto_schema(
+        operation_id="listLots",
+        operation_summary="Lister les lots avec filtres",
+        operation_description=(
+            "Liste les lots selon le périmètre de l'utilisateur.\n\n"
+            "Périmètre :\n"
+            "- admin : tous les lots ;\n"
+            "- manager : lots de ses bijouteries uniquement.\n\n"
+            "Priorité du filtre de période :\n"
+            "- si `date_from` et `date_to` sont fournis, "
+            "l'intervalle est appliqué sur `received_at` ;\n"
+            "- sinon, `year` est utilisé ;\n"
+            "- si `year` est absent, l'année courante est utilisée.\n\n"
+            "Formats :\n"
+            "- dates : `YYYY-MM-DD` ;\n"
+            "- année : `YYYY`.\n\n"
+            "Exemples :\n"
+            "- `/api/lots/?year=2026`\n"
+            "- `/api/lots/?date_from=2026-01-01&date_to=2026-01-31`\n"
+            "- `/api/lots/?reference_commande=CMD-2026`"
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "year",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description=(
+                    "Année de réception, par exemple 2026. "
+                    "Ignorée si date_from et date_to sont fournis."
+                ),
+            ),
+            openapi.Parameter(
+                "reference_commande",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Recherche partielle sur la référence de commande."
+                ),
+            ),
+            openapi.Parameter(
+                "date_from",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Date minimale incluse au format YYYY-MM-DD. "
+                    "Doit être utilisée avec date_to."
+                ),
+            ),
+            openapi.Parameter(
+                "date_to",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Date maximale incluse au format YYYY-MM-DD. "
+                    "Doit être utilisée avec date_from."
+                ),
+            ),
+            openapi.Parameter(
+                "numero_lot",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Recherche partielle sur le numéro du lot."
+                ),
+            ),
+            openapi.Parameter(
+                "numero_achat",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Filtre exact sur le numéro de l'achat."
+                ),
+            ),
+            openapi.Parameter(
+                "fournisseur_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description="Filtre par fournisseur.",
+            ),
+            openapi.Parameter(
+                "ordering",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Tri autorisé : -received_at, received_at, "
+                    "numero_lot, -numero_lot."
+                ),
+            ),
+        ],
+        responses={
+            200: LotListSerializer(many=True),
+            400: openapi.Response(
+                description="Paramètres de filtrage invalides."
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+        },
+        tags=["Achats / Arrivages"],
+    )
+    def get(self, request, *args, **kwargs):
+        self._validate_query_params()
+        return super().get(request, *args, **kwargs)
+
+    def _parse_date(self, field_name, value):
+        if not value:
+            return None
+
+        try:
+            return datetime.strptime(
+                value,
+                "%Y-%m-%d",
+            ).date()
+
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: (
+                    "Format invalide. Utiliser YYYY-MM-DD."
+                )
+            })
+
+    def _parse_positive_integer(
+        self,
+        *,
+        field_name,
+        value,
+        required=False,
+    ):
+        if value in (None, ""):
+            if required:
+                raise ValidationError({
+                    field_name: "Ce paramètre est obligatoire."
+                })
+
+            return None
+
+        try:
+            parsed_value = int(value)
+
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: "Une valeur entière est attendue."
+            })
+
+        if parsed_value < 1:
+            raise ValidationError({
+                field_name: (
+                    "La valeur doit être supérieure ou égale à 1."
+                )
+            })
+
+        return parsed_value
+
+    def _validate_query_params(self):
+        query_params = self.request.query_params
+
+        date_from_value = query_params.get("date_from")
+        date_to_value = query_params.get("date_to")
+
+        date_from = self._parse_date(
+            "date_from",
+            date_from_value,
+        )
+        date_to = self._parse_date(
+            "date_to",
+            date_to_value,
+        )
+
+        if bool(date_from) != bool(date_to):
+            raise ValidationError({
+                "detail": (
+                    "Fournir date_from et date_to ensemble."
+                )
+            })
+
+        if (
+            date_from
+            and date_to
+            and date_from > date_to
+        ):
+            raise ValidationError({
+                "detail": (
+                    "date_from doit être inférieure "
+                    "ou égale à date_to."
+                )
+            })
+
+        year_value = query_params.get("year")
+
+        if year_value:
+            year = self._parse_positive_integer(
+                field_name="year",
+                value=year_value,
+            )
+
+            if year < 1900 or year > 9999:
+                raise ValidationError({
+                    "year": "Année invalide."
+                })
+
+        fournisseur_id = query_params.get(
+            "fournisseur_id"
+        )
+
+        if fournisseur_id:
+            self._parse_positive_integer(
+                field_name="fournisseur_id",
+                value=fournisseur_id,
+            )
+
+    def get_queryset(self):
+        query_params = self.request.query_params
+
+        ordering = (
+            query_params.get("ordering")
+            or "-received_at"
+        ).strip()
+
+        allowed_ordering = {
+            "received_at",
+            "-received_at",
+            "numero_lot",
+            "-numero_lot",
+        }
+
+        if ordering not in allowed_ordering:
+            ordering = "-received_at"
+
+        queryset = (
+            Lot.objects
+            .select_related(
+                "achat",
+                "achat__fournisseur",
+                "achat__bijouterie",
+            )
+            .prefetch_related(
+                "lignes",
+                "lignes__produit",
+                "lignes__produit__categorie",
+                "lignes__produit__marque",
+                "lignes__produit__modele",
+                "lignes__produit__purete",
+            )
+            .annotate(
+                nb_lignes=Coalesce(
+                    Count(
+                        "lignes",
+                        distinct=True,
+                    ),
+                    0,
+                ),
+                quantite_totale=Coalesce(
+                    Sum("lignes__quantite"),
+                    0,
+                ),
+            )
+        )
+
+        # =====================================================
+        # Périmètre utilisateur
+        # Admin : tout
+        # Manager : uniquement ses bijouteries
+        # =====================================================
+
+        queryset = scope_queryset_by_bijouterie(
+            queryset,
+            user=self.request.user,
+            field="achat__bijouterie_id",
+        )
+
+        # =====================================================
+        # Filtre dates ou année
+        # =====================================================
+
+        date_from_value = query_params.get("date_from")
+        date_to_value = query_params.get("date_to")
+
+        if date_from_value and date_to_value:
+            date_from = self._parse_date(
+                "date_from",
+                date_from_value,
+            )
+            date_to = self._parse_date(
+                "date_to",
+                date_to_value,
+            )
+
+            queryset = queryset.filter(
+                received_at__date__range=(
+                    date_from,
+                    date_to,
+                )
+            )
+
         else:
-            year_s = getf("year")
-            if year_s:
-                year = int(year_s)
+            year_value = query_params.get("year")
+
+            if year_value:
+                year = int(year_value)
             else:
                 year = timezone.localdate().year
-            qs = qs.filter(received_at__year=year)
 
-        # --------- Autres filtres ---------
-        reference_commande = (getf("reference_commande") or "").strip()
+            queryset = queryset.filter(
+                received_at__year=year
+            )
+
+        # =====================================================
+        # Autres filtres
+        # =====================================================
+
+        reference_commande = (
+            query_params.get("reference_commande")
+            or ""
+        ).strip()
+
         if reference_commande:
-            qs = qs.filter(achat__reference_commande__icontains=reference_commande)
+            queryset = queryset.filter(
+                achat__reference_commande__icontains=(
+                    reference_commande
+                )
+            )
 
-        numero_lot = (getf("numero_lot") or "").strip()
+        numero_lot = (
+            query_params.get("numero_lot")
+            or ""
+        ).strip()
+
         if numero_lot:
-            qs = qs.filter(numero_lot__icontains=numero_lot)
+            queryset = queryset.filter(
+                numero_lot__icontains=numero_lot
+            )
 
-        numero_achat = (getf("numero_achat") or "").strip()
+        numero_achat = (
+            query_params.get("numero_achat")
+            or ""
+        ).strip()
+
         if numero_achat:
-            qs = qs.filter(achat__numero_achat=numero_achat)
+            queryset = queryset.filter(
+                achat__numero_achat=numero_achat
+            )
 
-        fournisseur_id = getf("fournisseur_id")
+        fournisseur_id = query_params.get(
+            "fournisseur_id"
+        )
+
         if fournisseur_id:
-            try:
-                fid = int(fournisseur_id)
-                if fid > 0:
-                    qs = qs.filter(achat__fournisseur_id=fid)
-            except ValueError:
-                pass
+            queryset = queryset.filter(
+                achat__fournisseur_id=int(
+                    fournisseur_id
+                )
+            )
 
-        return qs.order_by(ordering)
+        return queryset.order_by(ordering)
 
-
-
-# class AchatListView(ListAPIView):
-#     """
-#     Liste des achats :
-#     - par défaut : année courante (created_at)
-#     - si date_from & date_to sont fournis : intervalle [date_from, date_to] (inclus)
-
-#     Filtres optionnels :
-#     - reference_commande (icontains)
-#     - numero_achat (exact)
-#     - fournisseur_id
-#     - status
-#     """
-#     permission_classes = [IsAuthenticated, IsAdminOrManager]
-#     serializer_class = AchatSerializer
-#     # pagination_class = None
-
-#     @swagger_auto_schema(
-#         operation_id="listAchats",
-#         operation_summary="Lister les achats (année courante par défaut, sinon entre deux dates)",
-#         operation_description=(
-#             "• Si `date_from` **et** `date_to` sont fournis → filtre inclusif sur `created_at__date`.\n"
-#             "• Sinon → achats de l’**année courante**.\n\n"
-#             "Filtres :\n"
-#             "- `reference_commande` (recherche partielle, icontains)\n"
-#             "- `numero_achat` (exact)\n"
-#             "- `fournisseur_id`\n"
-#             "- `status` (confirmed / cancelled)\n\n"
-#             "Formats attendus : `YYYY-MM-DD`."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "reference_commande",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Recherche partielle sur la référence commande (icontains).",
-#             ),
-#             openapi.Parameter(
-#                 "numero_achat",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Filtre exact sur le numéro d'achat.",
-#             ),
-#             openapi.Parameter(
-#                 "fournisseur_id",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="Filtre sur l'id du fournisseur.",
-#             ),
-#             openapi.Parameter(
-#                 "status",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Filtre sur le status (confirmed / cancelled).",
-#             ),
-#             openapi.Parameter(
-#                 "date_from",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Borne min incluse (YYYY-MM-DD). Utiliser avec `date_to`.",
-#             ),
-#             openapi.Parameter(
-#                 "date_to",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Borne max incluse (YYYY-MM-DD). Utiliser avec `date_from`.",
-#             ),
-#             openapi.Parameter(
-#                 "ordering",
-#                 openapi.IN_QUERY,
-#                 type=openapi.TYPE_STRING,
-#                 description="Tri: -created_at (défaut), created_at, numero_achat, -numero_achat",
-#             ),
-#         ],
-#         responses={200: AchatSerializer(many=True)},
-#         tags=["Achats / Arrivages"],
-#     )
-#     def get(self, request, *args, **kwargs):
-#         def _check_date(label, val):
-#             if not val:
-#                 return
-#             try:
-#                 datetime.strptime(val, "%Y-%m-%d").date()
-#             except Exception:
-#                 raise ValidationError({label: "Format invalide. Utiliser YYYY-MM-DD."})
-
-#         qp = request.query_params
-#         _check_date("date_from", qp.get("date_from"))
-#         _check_date("date_to", qp.get("date_to"))
-
-#         # ✅ impose date_from + date_to ensemble (évite ambiguïtés)
-#         if (qp.get("date_from") and not qp.get("date_to")) or (qp.get("date_to") and not qp.get("date_from")):
-#             raise ValidationError({"detail": "Fournir date_from ET date_to ensemble."})
-
-#         return super().get(request, *args, **kwargs)
-
-#     def get_queryset(self):
-#         params = self.request.query_params
-#         getf = params.get
-
-#         # -------- Tri --------
-#         ordering = getf("ordering") or "-created_at"
-#         allowed = {"created_at", "-created_at", "numero_achat", "-numero_achat"}
-#         if ordering not in allowed:
-#             ordering = "-created_at"
-
-#         # -------- Base queryset --------
-#         qs = (
-#             Achat.objects
-#             .select_related("fournisseur")
-#             .prefetch_related(
-#                 "lots",
-#                 "lots__lignes",
-#                 "lots__lignes__produit",
-#             )
-#         )
-
-#         # -------- Filtre dates --------
-#         date_from_s = getf("date_from")
-#         date_to_s = getf("date_to")
-
-#         if date_from_s and date_to_s:
-#             df = datetime.strptime(date_from_s, "%Y-%m-%d").date()
-#             dt = datetime.strptime(date_to_s, "%Y-%m-%d").date()
-#             if df > dt:
-#                 raise ValidationError({"detail": "date_from doit être ≤ date_to."})
-#             qs = qs.filter(created_at__date__gte=df, created_at__date__lte=dt)
-#         else:
-#             year = timezone.localdate().year
-#             qs = qs.filter(created_at__year=year)
-
-#         # -------- Filtres optionnels --------
-#         reference_commande = getf("reference_commande")
-#         if reference_commande:
-#             qs = qs.filter(reference_commande__icontains=reference_commande)
-
-#         numero_achat = getf("numero_achat")
-#         if numero_achat:
-#             qs = qs.filter(numero_achat=numero_achat)
-
-#         fournisseur_id = getf("fournisseur_id")
-#         if fournisseur_id:
-#             try:
-#                 fid = int(fournisseur_id)
-#                 if fid > 0:
-#                     qs = qs.filter(fournisseur_id=fid)
-#             except ValueError:
-#                 pass
-
-#         status_ = getf("status")
-#         if status_:
-#             status_ = status_.strip().lower()
-#             # ✅ sécurité : on accepte seulement les valeurs prévues
-#             if status_ in {"confirmed", "cancelled"}:
-#                 qs = qs.filter(status=status_)
-
-#         return qs.order_by(ordering)
 
 
 class AchatListView(ListAPIView):
     """
-    Liste des achats :
-    - si date_from & date_to : intervalle inclusif sur created_at__date
-    - sinon : filtre par year (si fourni) sinon année courante
+    Liste des achats.
 
-    Filtres optionnels :
-    - year (int)
-    - reference_commande (icontains)
-    - numero_achat (exact)
-    - fournisseur_id
-    - status
+    Périmètre :
+    - admin : tous les achats ;
+    - manager : uniquement les achats de ses bijouteries.
+
+    Filtrage des dates :
+    - si date_from et date_to sont fournis :
+      intervalle inclusif sur created_at ;
+    - sinon :
+      filtre par year ou année courante.
+
+    Filtres :
+    - year ;
+    - date_from ;
+    - date_to ;
+    - reference_commande ;
+    - numero_achat ;
+    - fournisseur_id ;
+    - status ;
+    - ordering.
     """
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-    serializer_class = AchatSerializer
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+    serializer_class = AchatOutSerializer
+    pagination_class = None
 
     @swagger_auto_schema(
         operation_id="listAchats",
-        operation_summary="Lister les achats (par année ou entre deux dates)",
+        operation_summary=(
+            "Lister les achats par année ou entre deux dates"
+        ),
         operation_description=(
-            "Priorité au filtre par dates :\n"
-            "• Si `date_from` **et** `date_to` sont fournis → filtre inclusif sur `created_at__date`.\n"
-            "• Sinon → filtre par `year` (si fourni), sinon année courante.\n\n"
-            "Filtres : reference_commande (icontains), numero_achat (exact), fournisseur_id, status.\n"
-            "Formats : date `YYYY-MM-DD`, year `YYYY`."
+            "Liste les achats selon le périmètre de l'utilisateur.\n\n"
+            "Périmètre :\n"
+            "- admin : tous les achats ;\n"
+            "- manager : achats de ses bijouteries uniquement.\n\n"
+            "Priorité du filtre de période :\n"
+            "- si `date_from` et `date_to` sont fournis, "
+            "l'intervalle est appliqué sur `created_at` ;\n"
+            "- sinon, `year` est utilisé ;\n"
+            "- si `year` est absent, l'année courante est utilisée.\n\n"
+            "Formats :\n"
+            "- dates : `YYYY-MM-DD` ;\n"
+            "- année : `YYYY`."
         ),
         manual_parameters=[
             openapi.Parameter(
-                "year", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                description="Année sur created_at (ex: 2026). Ignoré si date_from/date_to."
+                "year",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description=(
+                    "Année de création, par exemple 2026. "
+                    "Ignorée si date_from et date_to sont fournis."
+                ),
             ),
             openapi.Parameter(
-                "reference_commande", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                description="Recherche partielle sur la référence commande (icontains)."
+                "reference_commande",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Recherche partielle sur la référence de commande."
+                ),
             ),
             openapi.Parameter(
-                "numero_achat", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                description="Filtre exact sur le numéro d'achat."
+                "numero_achat",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Filtre exact sur le numéro de l'achat."
+                ),
             ),
             openapi.Parameter(
-                "fournisseur_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                description="Filtre sur l'id du fournisseur."
+                "fournisseur_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description="Filtre par fournisseur.",
             ),
             openapi.Parameter(
-                "status", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                description="Filtre sur le status (ex: confirmed / cancelled)."
+                "status",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Statut de l'achat, par exemple "
+                    "`confirmed` ou `cancelled`."
+                ),
             ),
             openapi.Parameter(
-                "date_from", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                description="Borne min incluse (YYYY-MM-DD). Utiliser avec date_to."
+                "date_from",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Date minimale incluse au format YYYY-MM-DD. "
+                    "Doit être utilisée avec date_to."
+                ),
             ),
             openapi.Parameter(
-                "date_to", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                description="Borne max incluse (YYYY-MM-DD). Utiliser avec date_from."
+                "date_to",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Date maximale incluse au format YYYY-MM-DD. "
+                    "Doit être utilisée avec date_from."
+                ),
             ),
             openapi.Parameter(
-                "ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                description="Tri: -created_at (défaut), created_at, numero_achat, -numero_achat"
+                "ordering",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Tri autorisé : -created_at, created_at, "
+                    "numero_achat, -numero_achat."
+                ),
             ),
         ],
-        responses={200: AchatSerializer(many=True)},
+        responses={
+            200: AchatOutSerializer(many=True),
+            400: openapi.Response(
+                description="Paramètres de filtrage invalides."
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+        },
         tags=["Achats / Arrivages"],
     )
     def get(self, request, *args, **kwargs):
-        def _check_date(label, val):
-            if not val:
-                return
-            try:
-                datetime.strptime(val, "%Y-%m-%d").date()
-            except Exception:
-                raise ValidationError({label: "Format invalide. Utiliser YYYY-MM-DD."})
-
-        qp = request.query_params
-        date_from = qp.get("date_from")
-        date_to = qp.get("date_to")
-        year = qp.get("year")
-
-        _check_date("date_from", date_from)
-        _check_date("date_to", date_to)
-
-        # ✅ impose date_from + date_to ensemble
-        if (date_from and not date_to) or (date_to and not date_from):
-            raise ValidationError({"detail": "Fournir date_from ET date_to ensemble."})
-
-        # ✅ year doit être int si fourni
-        if year:
-            try:
-                int(year)
-            except ValueError:
-                raise ValidationError({"year": "Année invalide. Exemple: 2026"})
-
+        self._validate_query_params()
         return super().get(request, *args, **kwargs)
 
-    def get_queryset(self):
-        getf = self.request.query_params.get
+    def _parse_date(self, field_name, value):
+        if not value:
+            return None
 
-        # -------- Tri --------
-        ordering = (getf("ordering") or "-created_at").strip()
-        allowed = {"created_at", "-created_at", "numero_achat", "-numero_achat"}
-        if ordering not in allowed:
+        try:
+            return datetime.strptime(
+                value,
+                "%Y-%m-%d",
+            ).date()
+
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: (
+                    "Format invalide. Utiliser YYYY-MM-DD."
+                )
+            })
+
+    def _parse_positive_integer(
+        self,
+        *,
+        field_name,
+        value,
+    ):
+        if value in (None, ""):
+            return None
+
+        try:
+            parsed_value = int(value)
+
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: "Une valeur entière est attendue."
+            })
+
+        if parsed_value < 1:
+            raise ValidationError({
+                field_name: (
+                    "La valeur doit être supérieure ou égale à 1."
+                )
+            })
+
+        return parsed_value
+
+    def _allowed_statuses(self):
+        """
+        Récupère les statuts directement depuis le modèle si possible.
+
+        Compatible avec :
+        - Achat.STATUS_CONFIRMED ;
+        - Achat.STATUS_CANCELLED ;
+        - Achat.STATUS_CHOICES ;
+        - un champ utilisant TextChoices.
+        """
+
+        model_field = Achat._meta.get_field("status")
+
+        if model_field.choices:
+            return {
+                str(value)
+                for value, _label in model_field.choices
+            }
+
+        allowed = set()
+
+        confirmed = getattr(
+            Achat,
+            "STATUS_CONFIRMED",
+            None,
+        )
+        cancelled = getattr(
+            Achat,
+            "STATUS_CANCELLED",
+            None,
+        )
+
+        if confirmed:
+            allowed.add(str(confirmed))
+
+        if cancelled:
+            allowed.add(str(cancelled))
+
+        return allowed
+
+    def _validate_query_params(self):
+        query_params = self.request.query_params
+
+        date_from_value = query_params.get("date_from")
+        date_to_value = query_params.get("date_to")
+
+        date_from = self._parse_date(
+            "date_from",
+            date_from_value,
+        )
+        date_to = self._parse_date(
+            "date_to",
+            date_to_value,
+        )
+
+        if bool(date_from) != bool(date_to):
+            raise ValidationError({
+                "detail": (
+                    "Fournir date_from et date_to ensemble."
+                )
+            })
+
+        if (
+            date_from
+            and date_to
+            and date_from > date_to
+        ):
+            raise ValidationError({
+                "detail": (
+                    "date_from doit être inférieure "
+                    "ou égale à date_to."
+                )
+            })
+
+        year_value = query_params.get("year")
+
+        if year_value:
+            year = self._parse_positive_integer(
+                field_name="year",
+                value=year_value,
+            )
+
+            if year < 1900 or year > 9999:
+                raise ValidationError({
+                    "year": "Année invalide."
+                })
+
+        fournisseur_id = query_params.get(
+            "fournisseur_id"
+        )
+
+        if fournisseur_id:
+            self._parse_positive_integer(
+                field_name="fournisseur_id",
+                value=fournisseur_id,
+            )
+
+        status_value = (
+            query_params.get("status")
+            or ""
+        ).strip()
+
+        if status_value:
+            allowed_statuses = self._allowed_statuses()
+
+            if (
+                allowed_statuses
+                and status_value not in allowed_statuses
+            ):
+                raise ValidationError({
+                    "status": (
+                        "Statut invalide. Valeurs autorisées : "
+                        f"{sorted(allowed_statuses)}."
+                    )
+                })
+
+    def get_queryset(self):
+        query_params = self.request.query_params
+
+        # =====================================================
+        # Tri
+        # =====================================================
+
+        ordering = (
+            query_params.get("ordering")
+            or "-created_at"
+        ).strip()
+
+        allowed_ordering = {
+            "created_at",
+            "-created_at",
+            "numero_achat",
+            "-numero_achat",
+        }
+
+        if ordering not in allowed_ordering:
             ordering = "-created_at"
 
-        # -------- Base queryset --------
-        qs = (
+        # =====================================================
+        # Base queryset
+        # =====================================================
+
+        queryset = (
             Achat.objects
-            .select_related("fournisseur")
+            .select_related(
+                "fournisseur",
+                "bijouterie",
+            )
             .prefetch_related(
                 "lots",
                 "lots__lignes",
                 "lots__lignes__produit",
+                "lots__lignes__produit__categorie",
+                "lots__lignes__produit__marque",
+                "lots__lignes__produit__modele",
+                "lots__lignes__produit__purete",
             )
         )
 
-        # -------- Filtre dates OU year --------
-        date_from_s = getf("date_from")
-        date_to_s = getf("date_to")
+        # =====================================================
+        # Périmètre utilisateur
+        # Admin : tout
+        # Manager : uniquement ses bijouteries
+        # =====================================================
 
-        if date_from_s and date_to_s:
-            df = datetime.strptime(date_from_s, "%Y-%m-%d").date()
-            dt = datetime.strptime(date_to_s, "%Y-%m-%d").date()
-            if df > dt:
-                raise ValidationError({"detail": "date_from doit être ≤ date_to."})
-            qs = qs.filter(created_at__date__gte=df, created_at__date__lte=dt)
+        queryset = scope_queryset_by_bijouterie(
+            queryset,
+            user=self.request.user,
+            field="bijouterie_id",
+        )
+
+        # =====================================================
+        # Filtre dates ou année
+        # =====================================================
+
+        date_from_value = query_params.get("date_from")
+        date_to_value = query_params.get("date_to")
+
+        if date_from_value and date_to_value:
+            date_from = self._parse_date(
+                "date_from",
+                date_from_value,
+            )
+            date_to = self._parse_date(
+                "date_to",
+                date_to_value,
+            )
+
+            queryset = queryset.filter(
+                created_at__date__range=(
+                    date_from,
+                    date_to,
+                )
+            )
+
         else:
-            year_s = getf("year")
-            year = int(year_s) if year_s else timezone.localdate().year
-            qs = qs.filter(created_at__year=year)
+            year_value = query_params.get("year")
 
-        # -------- Filtres optionnels --------
-        reference_commande = (getf("reference_commande") or "").strip()
+            if year_value:
+                year = int(year_value)
+            else:
+                year = timezone.localdate().year
+
+            queryset = queryset.filter(
+                created_at__year=year
+            )
+
+        # =====================================================
+        # Filtres optionnels
+        # =====================================================
+
+        reference_commande = (
+            query_params.get("reference_commande")
+            or ""
+        ).strip()
+
         if reference_commande:
-            qs = qs.filter(reference_commande__icontains=reference_commande)
+            queryset = queryset.filter(
+                reference_commande__icontains=(
+                    reference_commande
+                )
+            )
 
-        numero_achat = (getf("numero_achat") or "").strip()
+        numero_achat = (
+            query_params.get("numero_achat")
+            or ""
+        ).strip()
+
         if numero_achat:
-            qs = qs.filter(numero_achat=numero_achat)  # exact
+            queryset = queryset.filter(
+                numero_achat=numero_achat
+            )
 
-        fournisseur_id = getf("fournisseur_id")
+        fournisseur_id = query_params.get(
+            "fournisseur_id"
+        )
+
         if fournisseur_id:
-            try:
-                fid = int(fournisseur_id)
-                if fid > 0:
-                    qs = qs.filter(fournisseur_id=fid)
-            except ValueError:
-                pass
+            queryset = queryset.filter(
+                fournisseur_id=int(
+                    fournisseur_id
+                )
+            )
 
-        status_ = (getf("status") or "").strip().lower()
-        if status_:
-            # ✅ adapte aux constantes si tu les as
-            allowed_status = {"confirmed", "cancelled"}
-            if status_ in allowed_status:
-                qs = qs.filter(status=status_)
+        status_value = (
+            query_params.get("status")
+            or ""
+        ).strip()
 
-        return qs.order_by(ordering)
+        if status_value:
+            queryset = queryset.filter(
+                status=status_value
+            )
 
-
-
-# class ArrivageMetaUpdateView(APIView):
-#     """
-#     PATCH /api/achat/arrivage/{lot_id}/meta/
-
-#     Met à jour UNIQUEMENT les informations documentaires :
-#     - côté Achat : description, frais_transport, frais_douane, fournisseur
-#     - côté Lot   : description, received_at
-
-#     ❌ Aucun impact sur le stock ou les mouvements d'inventaire.
-#     """
-#     permission_classes = [IsAuthenticated, IsAdminOrManager]
-#     http_method_names = ["patch"]
-
-#     @swagger_auto_schema(
-#         operation_id="arrivageMetaUpdate",
-#         operation_summary="Mettre à jour les métadonnées d’un arrivage (Achat + Lot)",
-#         operation_description=(
-#             "Permet de corriger / compléter les infos documentaires d’un arrivage :\n"
-#             "- `achat`: description, frais_transport, frais_douane, fournisseur (ref ou upsert par téléphone)\n"
-#             "- `lot`: description, received_at\n\n"
-#             "Ne touche ni au stock ni aux mouvements d’inventaire."
-#         ),
-#         request_body=ArrivageMetaUpdateInSerializer,
-#         responses={
-#             200: AchatCreateResponseSerializer,
-#             400: "Bad Request",
-#             401: "Unauthorized",
-#             403: "Forbidden",
-#             404: "Not Found",
-#         },
-#         tags=["Achats / Arrivages"],
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "lot_id",
-#                 in_=openapi.IN_PATH,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="ID du lot concerné",
-#                 required=True,
-#             ),
-#         ],
-#     )
-#     @transaction.atomic
-#     def patch(self, request, lot_id: int):
-#         # ----- Récup lot + achat -----
-#         lot = get_object_or_404(
-#             Lot.objects.select_related("achat", "achat__fournisseur"),
-#             pk=lot_id,
-#         )
-#         achat = lot.achat
-
-#         # ----- Validation payload -----
-#         s = ArrivageMetaUpdateInSerializer(data=request.data)
-#         s.is_valid(raise_exception=True)
-#         data = s.validated_data
-
-#         # ====================
-#         #  MAJ côté Achat
-#         # ====================
-#         achat_data = data.get("achat")
-#         if achat_data:
-#             # description
-#             if "description" in achat_data:
-#                 achat.description = achat_data.get("description") or ""
-
-#             # frais
-#             if "frais_transport" in achat_data:
-#                 achat.frais_transport = achat_data["frais_transport"]
-#             if "frais_douane" in achat_data:
-#                 achat.frais_douane = achat_data["frais_douane"]
-
-#             # fournisseur (ref / upsert)
-#             fournisseur_data = achat_data.get("fournisseur")
-#             if fournisseur_data:
-#                 fournisseur_obj = None
-
-#                 # 1) on privilégie l'id s'il est fourni
-#                 fid = fournisseur_data.get("id")
-#                 if fid:
-#                     fournisseur_obj = get_object_or_404(Fournisseur, pk=fid)
-#                 else:
-#                     # 2) sinon upsert par téléphone
-#                     tel = (fournisseur_data.get("telephone") or "").strip() or None
-#                     if tel:
-#                         fournisseur_obj, _ = Fournisseur.objects.get_or_create(
-#                             telephone=tel,
-#                             defaults={
-#                                 "nom": fournisseur_data.get("nom") or "",
-#                                 "prenom": fournisseur_data.get("prenom") or "",
-#                                 "address": "",
-#                             },
-#                         )
-
-#                 if fournisseur_obj:
-#                     achat.fournisseur = fournisseur_obj
-
-#             # on recalculera les totaux plus bas
-#             achat.save()
-
-#         # ====================
-#         #  MAJ côté Lot
-#         # ====================
-#         lot_data = data.get("lot")
-#         if lot_data:
-#             update_fields = []
-#             if "description" in lot_data:
-#                 lot.description = lot_data.get("description") or ""
-#                 update_fields.append("description")
-#             if "received_at" in lot_data:
-#                 lot.received_at = lot_data["received_at"]
-#                 update_fields.append("received_at")
-
-#             if update_fields:
-#                 lot.save(update_fields=update_fields)
-
-#         # Recalcul des totaux achat (car frais peuvent avoir changé)
-#         if achat_data:
-#             achat.update_total(save=True)
-
-#         # ----- Réponse : même format que ArrivageCreateView -----
-#         out = AchatCreateResponseSerializer(lot).data
-#         return Response(out, status=status.HTTP_200_OK)
-    
-
-# class ArrivageMetaUpdateView(APIView):
-#     """
-#     PATCH /api/achat/arrivage/{lot_id}/meta/
-
-#     Met à jour UNIQUEMENT les informations documentaires :
-#     - côté Achat : description, frais_transport, frais_douane, fournisseur
-#     - côté Lot   : description, received_at
-
-#     ❌ Aucun impact sur le stock ou les mouvements d'inventaire.
-#     """
-#     permission_classes = [IsAuthenticated, IsAdminOrManager]
-#     http_method_names = ["patch"]
-
-#     @swagger_auto_schema(
-#         operation_id="arrivageMetaUpdate",
-#         operation_summary="Mettre à jour les métadonnées d’un arrivage (Achat + Lot)",
-#         operation_description=(
-#             "Permet de corriger / compléter les infos documentaires d’un arrivage :\n"
-#             "- `achat`: description, frais_transport, frais_douane, fournisseur (ref ou upsert par téléphone)\n"
-#             "- `lot`: description, received_at\n\n"
-#             "Ne touche ni au stock ni aux mouvements d’inventaire."
-#         ),
-#         request_body=ArrivageMetaUpdateInSerializer,
-#         responses={
-#             200: ArrivageCreateResponseSerializer,
-#             400: "Bad Request",
-#             401: "Unauthorized",
-#             403: "Forbidden",
-#             404: "Not Found",
-#         },
-#         tags=["Achats / Arrivages"],
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "lot_id",
-#                 in_=openapi.IN_PATH,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="ID du lot concerné",
-#                 required=True,
-#             ),
-#         ],
-#     )
-#     @transaction.atomic
-#     def patch(self, request, lot_id: int):
-#         # ----- Récup lot + achat -----
-#         lot = get_object_or_404(
-#             Lot.objects.select_related("achat", "achat__fournisseur").prefetch_related("lignes__produit"),
-#             pk=lot_id,
-#         )
-#         achat = lot.achat
-
-#         # ----- Validation payload -----
-#         s = ArrivageMetaUpdateInSerializer(data=request.data)
-#         s.is_valid(raise_exception=True)
-#         data = s.validated_data
-
-#         achat_data = data.get("achat")
-#         lot_data = data.get("lot")
-
-#         # ====================
-#         #  MAJ côté Achat
-#         # ====================
-#         if achat_data:
-#             if "description" in achat_data:
-#                 achat.description = achat_data.get("description") or ""
-
-#             if "frais_transport" in achat_data:
-#                 achat.frais_transport = achat_data["frais_transport"]
-
-#             if "frais_douane" in achat_data:
-#                 achat.frais_douane = achat_data["frais_douane"]
-
-#             # fournisseur (ref / upsert)
-#             fournisseur_data = achat_data.get("fournisseur")
-#             if fournisseur_data:
-#                 fournisseur_obj = None
-
-#                 fid = fournisseur_data.get("id")
-#                 if fid:
-#                     fournisseur_obj = get_object_or_404(Fournisseur, pk=fid)
-#                 else:
-#                     tel = (fournisseur_data.get("telephone") or "").strip() or None
-#                     if tel:
-#                         fournisseur_obj, _ = Fournisseur.objects.update_or_create(
-#                             telephone=tel,
-#                             defaults={
-#                                 "nom": fournisseur_data.get("nom") or "",
-#                                 "prenom": fournisseur_data.get("prenom") or "",
-#                                 "address": fournisseur_data.get("address") or "",
-#                             },
-#                         )
-
-#                 if fournisseur_obj:
-#                     achat.fournisseur = fournisseur_obj
-
-#             achat.save()
-
-#         # ====================
-#         #  MAJ côté Lot
-#         # ====================
-#         if lot_data:
-#             update_fields = []
-#             if "description" in lot_data:
-#                 lot.description = lot_data.get("description") or ""
-#                 update_fields.append("description")
-
-#             if "received_at" in lot_data:
-#                 lot.received_at = lot_data["received_at"]
-#                 update_fields.append("received_at")
-
-#             if update_fields:
-#                 lot.save(update_fields=update_fields)
-
-#         # Recalcul des totaux achat (car frais peuvent avoir changé)
-#         if achat_data:
-#             achat.update_total(save=True)
-
-#         # ✅ Réponse cohérente avec ton wrapper : achat + [lot]
-#         payload = {"achat": achat, "lots": [lot]}
-#         out = ArrivageCreateResponseSerializer(payload).data
-#         return Response(out, status=status.HTTP_200_OK)
+        return queryset.order_by(ordering)
     
 
 
 class ArrivageMetaUpdateView(APIView):
     """
-    PATCH /api/achat/arrivage/{lot_id}/meta/
+    Met à jour uniquement les informations documentaires
+    d'un arrivage.
 
-    Met à jour UNIQUEMENT les infos documentaires :
-    - Achat : description, frais_transport, frais_douane, fournisseur
-    - Lot   : description, received_at
+    Achat :
+    - description ;
+    - frais_transport ;
+    - frais_douane ;
+    - fournisseur.
 
-    ❌ Aucun impact stock / inventaire.
+    Lot :
+    - description ;
+    - received_at.
+
+    Cette vue ne modifie jamais :
+    - Stock ;
+    - VendorStock ;
+    - InventoryMovement ;
+    - les quantités des ProduitLine.
     """
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-    http_method_names = ["patch"]
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+    http_method_names = [
+        "patch",
+        "options",
+    ]
 
     @swagger_auto_schema(
         operation_id="arrivageMetaUpdate",
-        operation_summary="Mettre à jour les métadonnées d’un arrivage (Achat + Lot)",
+        operation_summary=(
+            "Mettre à jour les métadonnées d'un arrivage"
+        ),
         operation_description=(
-            "Permet de corriger / compléter les infos documentaires d’un arrivage :\n"
-            "- `achat`: description, frais_transport, frais_douane, fournisseur (ref ou upsert par téléphone)\n"
-            "- `lot`: description, received_at\n\n"
-            "Ne touche ni au stock ni aux mouvements d’inventaire."
+            "Permet de corriger ou compléter les informations "
+            "documentaires d'un arrivage.\n\n"
+            "Champs modifiables côté achat :\n"
+            "- `description` ;\n"
+            "- `frais_transport` ;\n"
+            "- `frais_douane` ;\n"
+            "- `fournisseur` par identifiant ou téléphone.\n\n"
+            "Champs modifiables côté lot :\n"
+            "- `description` ;\n"
+            "- `received_at`.\n\n"
+            "Cette opération ne modifie ni le stock ni les "
+            "mouvements d'inventaire."
         ),
         request_body=ArrivageMetaUpdateInSerializer,
         responses={
             200: ArrivageCreateResponseSerializer,
-            400: "Bad Request",
-            401: "Unauthorized",
-            403: "Forbidden",
-            404: "Not Found",
+            400: openapi.Response(
+                description="Données invalides."
+            ),
+            401: openapi.Response(
+                description="Authentification requise."
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+            404: openapi.Response(
+                description="Lot ou fournisseur introuvable."
+            ),
         },
         tags=["Achats / Arrivages"],
         manual_parameters=[
@@ -1756,92 +2320,121 @@ class ArrivageMetaUpdateView(APIView):
                 "lot_id",
                 in_=openapi.IN_PATH,
                 type=openapi.TYPE_INTEGER,
-                description="ID du lot concerné",
+                description="Identifiant du lot concerné.",
                 required=True,
             ),
         ],
     )
     @transaction.atomic
-    def patch(self, request, lot_id: int):
-        # ----- Récup lot + achat -----
-        lot = get_object_or_404(
+    def patch(self, request, lot_id: int, *args, **kwargs):
+        # =====================================================
+        # Périmètre utilisateur
+        # Admin : tous les lots
+        # Manager : lots de ses bijouteries uniquement
+        # =====================================================
+
+        queryset = (
             Lot.objects
-            .select_related("achat", "achat__fournisseur")
-            .prefetch_related("lignes__produit"),
+            .select_related(
+                "achat",
+                "achat__fournisseur",
+                "achat__bijouterie",
+            )
+            .prefetch_related(
+                "lignes",
+                "lignes__produit",
+            )
+        )
+
+        queryset = scope_queryset_by_bijouterie(
+            queryset,
+            user=request.user,
+            field="achat__bijouterie_id",
+        )
+
+        lot = get_object_or_404(
+            queryset,
             pk=lot_id,
         )
+
         achat: Achat = lot.achat
 
-        # ----- Validation payload -----
-        s = ArrivageMetaUpdateInSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
-        data = s.validated_data
+        # =====================================================
+        # Validation
+        # =====================================================
 
-        achat_data = data.get("achat") or None
-        lot_data = data.get("lot") or None
+        serializer = ArrivageMetaUpdateInSerializer(
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
 
-        # ====================
-        #  MAJ côté Achat
-        # ====================
-        if achat_data:
-            update_achat_fields = []
+        validated_data = serializer.validated_data
 
+        achat_data = validated_data.get("achat")
+        lot_data = validated_data.get("lot")
+
+        # =====================================================
+        # Mise à jour Achat
+        # =====================================================
+
+        update_achat_fields = []
+
+        if achat_data is not None:
             if "description" in achat_data:
-                achat.description = achat_data.get("description") or ""
+                achat.description = (
+                    achat_data.get("description") or ""
+                )
                 update_achat_fields.append("description")
 
             if "frais_transport" in achat_data:
-                achat.frais_transport = achat_data["frais_transport"]
+                achat.frais_transport = achat_data[
+                    "frais_transport"
+                ]
                 update_achat_fields.append("frais_transport")
 
             if "frais_douane" in achat_data:
-                achat.frais_douane = achat_data["frais_douane"]
+                achat.frais_douane = achat_data[
+                    "frais_douane"
+                ]
                 update_achat_fields.append("frais_douane")
 
-            # fournisseur (ref / upsert / create)
-            fournisseur_data = achat_data.get("fournisseur") or None
-            if fournisseur_data:
-                fournisseur_obj = None
+            if "fournisseur" in achat_data:
+                fournisseur_data = (
+                    achat_data.get("fournisseur")
+                )
 
-                fid = fournisseur_data.get("id")
-                if fid:
-                    fournisseur_obj = get_object_or_404(Fournisseur, pk=fid)
-                else:
-                    tel = (fournisseur_data.get("telephone") or "").strip() or None
-                    if tel:
-                        fournisseur_obj, _ = Fournisseur.objects.update_or_create(
-                            telephone=tel,
-                            defaults={
-                                "nom": fournisseur_data.get("nom") or "",
-                                "prenom": fournisseur_data.get("prenom") or "",
-                                "address": fournisseur_data.get("address") or "",
-                            },
-                        )
-                    else:
-                        # pas d'id, pas de tel => nouveau fournisseur
-                        fournisseur_obj = Fournisseur.objects.create(
-                            nom=fournisseur_data.get("nom") or "",
-                            prenom=fournisseur_data.get("prenom") or "",
-                            telephone=None,
-                            address=fournisseur_data.get("address") or "",
-                        )
+                if fournisseur_data:
+                    fournisseur = self._resolve_fournisseur(
+                        fournisseur_data
+                    )
 
-                if fournisseur_obj and achat.fournisseur_id != fournisseur_obj.id:
-                    achat.fournisseur = fournisseur_obj
-                    update_achat_fields.append("fournisseur")
+                    if achat.fournisseur_id != fournisseur.id:
+                        achat.fournisseur = fournisseur
+                        update_achat_fields.append(
+                            "fournisseur"
+                        )
 
             if update_achat_fields:
                 achat.full_clean()
-                achat.save(update_fields=list(set(update_achat_fields)))
 
-        # ====================
-        #  MAJ côté Lot
-        # ====================
-        if lot_data:
-            update_lot_fields = []
+                achat.save(
+                    update_fields=list(
+                        dict.fromkeys(update_achat_fields)
+                    )
+                )
 
+        # =====================================================
+        # Mise à jour Lot
+        # =====================================================
+
+        update_lot_fields = []
+
+        if lot_data is not None:
             if "description" in lot_data:
-                lot.description = lot_data.get("description") or ""
+                lot.description = (
+                    lot_data.get("description") or ""
+                )
                 update_lot_fields.append("description")
 
             if "received_at" in lot_data:
@@ -1850,819 +2443,859 @@ class ArrivageMetaUpdateView(APIView):
 
             if update_lot_fields:
                 lot.full_clean()
-                lot.save(update_fields=list(set(update_lot_fields)))
 
-        # 🔁 Recalcul des totaux achat (uniquement si achat touché)
-        if achat_data:
+                lot.save(
+                    update_fields=list(
+                        dict.fromkeys(update_lot_fields)
+                    )
+                )
+
+        # =====================================================
+        # Recalcul financier
+        # Seulement si les frais de l'achat ont changé
+        # =====================================================
+
+        financial_fields = {
+            "frais_transport",
+            "frais_douane",
+        }
+
+        if financial_fields.intersection(
+            update_achat_fields
+        ):
             achat.update_total(save=True)
 
-        # ✅ Réponse cohérente avec ton wrapper : achat + [lot]
-        payload = {"achat": achat, "lots": [lot]}
-        out = ArrivageCreateResponseSerializer(payload).data
-        return Response(out, status=status.HTTP_200_OK)
-    
+        # =====================================================
+        # Réponse actualisée
+        # =====================================================
 
-# ---------------------------Adjustement-----------------------------
-# class ArrivageAdjustmentsView(APIView):
-#     """
-#     POST /api/achat/arrivage/<lot_id>/adjustments/
+        lot.refresh_from_db()
+        achat.refresh_from_db()
 
-#     Ajustements d’un arrivage (lot) :
-#     - PURCHASE_IN  : ajout d’une ProduitLine + crédit réserve + mouvement PURCHASE_IN
-#     - CANCEL_PURCHASE : retrait partiel d’une ProduitLine + débit réserve + mouvement CANCEL_PURCHASE
-#       + supprime automatiquement la ProduitLine (et son stock réserve) si quantite == 0
+        payload = {
+            "achat": achat,
+            "lots": [lot],
+        }
 
-#     Règles fortes :
-#     - Si l'achat a déjà des allocations bijouterie (n'importe quel lot), on bloque tout ajustement.
-#     - CANCEL_PURCHASE interdit si la ProduitLine a une allocation bijouterie (stock bijouterie != None, quantite_disponible > 0)
-#     - CANCEL_PURCHASE n'autorise jamais un retrait > stock réserve disponible.
-#     """
-#     permission_classes = [IsAuthenticated, IsAdminOrManager]
-#     http_method_names = ["post"]
+        output = ArrivageCreateResponseSerializer(
+            payload
+        )
 
-#     @swagger_auto_schema(
-#         operation_id="arrivageAdjustments",
-#         operation_summary="Ajuster un arrivage (ajouts / retraits sur un lot)",
-#         operation_description=(
-#             "Permet d'ajouter des lignes (PURCHASE_IN) ou de réduire des lignes existantes "
-#             "(CANCEL_PURCHASE) pour un lot donné.\n\n"
-#             "**Types d'actions :**\n"
-#             "- `PURCHASE_IN` : `produit_id`, `quantite`, `prix_achat_gramme`\n"
-#             "- `CANCEL_PURCHASE` : `produit_line_id`, `quantite`\n\n"
-#             "**Règles :**\n"
-#             "- Les ajouts vont en bucket RÉSERVE (bijouterie=None).\n"
-#             "- Les retraits ne peuvent porter que sur la quantité disponible en RÉSERVE.\n"
-#             "- Si des allocations bijouterie existent pour la ligne, le retrait est refusé.\n"
-#             "- Si l'achat a déjà des allocations bijouterie (peu importe le lot), aucun ajustement n'est autorisé.\n"
-#             "- Nettoyage : si une ligne arrive à 0, on supprime la ProduitLine + son stock réserve."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "lot_id",
-#                 in_=openapi.IN_PATH,
-#                 type=openapi.TYPE_INTEGER,
-#                 description="ID du lot concerné",
-#                 required=True,
-#             ),
-#         ],
-#         request_body=ArrivageAdjustmentsInSerializer,
-#         responses={
-#             200: openapi.Response(
-#                 description="Ajustements appliqués + réponse complète achat+lots",
-#                 schema=ArrivageCreateResponseSerializer,
-#             ),
-#             400: "Bad Request",
-#             401: "Unauthorized",
-#             403: "Forbidden",
-#             404: "Not Found",
-#             409: "Conflict",
-#         },
-#         tags=["Achats / Arrivages"],
-#     )
-#     @transaction.atomic
-#     def post(self, request, lot_id: int):
-#         # --------- Lock lot + achat ----------
-#         lot = get_object_or_404(
-#             Lot.objects.select_related("achat"),
-#             pk=lot_id
-#         )
-#         achat = lot.achat
+        return Response(
+            output.data,
+            status=status.HTTP_200_OK,
+        )
 
-#         # 🔒 Si l'achat a déjà des allocations bijouterie, on bloque TOUT ajustement
-#         if achat.has_bijouterie_allocations:
-#             return Response(
-#                 {
-#                     "detail": (
-#                         "Ajustement impossible : au moins une partie de cet achat "
-#                         "est déjà allouée à une bijouterie."
-#                     )
-#                 },
-#                 status=status.HTTP_409_CONFLICT,
-#             )
+    def _resolve_fournisseur(
+            self,
+            fournisseur_data,
+        ) -> Fournisseur:
+            """
+            Résout le fournisseur selon les règles suivantes :
 
-#         s = ArrivageAdjustmentsInSerializer(data=request.data)
-#         s.is_valid(raise_exception=True)
-#         actions = s.validated_data["actions"]
+            - si `id` est fourni : récupère le fournisseur existant ;
+            - sinon : le téléphone est obligatoire ;
+            - le téléphone sert de clé métier ;
+            - si le téléphone existe déjà, le fournisseur est mis à jour ;
+            - sinon, un nouveau fournisseur est créé.
+            """
 
-#         now = timezone.now()
+            fournisseur_id = fournisseur_data.get("id")
 
-#         for idx, act in enumerate(actions):
-#             t = act["type"]
-#             q = int(act["quantite"] or 0)
-#             if q < 1:
-#                 return Response(
-#                     {f"actions[{idx}]": "quantite doit être >= 1."},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
+            if fournisseur_id:
+                return get_object_or_404(
+                    Fournisseur,
+                    pk=fournisseur_id,
+                )
 
-#             reason = (act.get("reason") or "").strip()
+            telephone = (
+                fournisseur_data.get("telephone")
+                or ""
+            ).strip()
 
-#             # =======================
-#             # PURCHASE_IN (ajout ligne)
-#             # =======================
-#             if t == "PURCHASE_IN":
-#                 pid = act.get("produit_id")
-#                 if not pid:
-#                     return Response(
-#                         {f"actions[{idx}]": "produit_id est obligatoire (PURCHASE_IN)."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
+            if not telephone:
+                raise ValidationError({
+                    "fournisseur": {
+                        "telephone": (
+                            "Le téléphone du fournisseur est obligatoire."
+                        )
+                    }
+                })
 
-#                 produit = get_object_or_404(
-#                     Produit.objects.only("id", "poids", "nom"),
-#                     pk=int(pid),
-#                 )
+            nom = (
+                fournisseur_data.get("nom")
+                or ""
+            ).strip()
 
-#                 prix_achat_gramme = act.get("prix_achat_gramme")
-#                 if prix_achat_gramme is None:
-#                     return Response(
-#                         {f"actions[{idx}]": "prix_achat_gramme est obligatoire (PURCHASE_IN)."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
+            if not nom:
+                raise ValidationError({
+                    "fournisseur": {
+                        "nom": (
+                            "Le nom du fournisseur est obligatoire."
+                        )
+                    }
+                })
 
-#                 # Create ProduitLine
-#                 pl = ProduitLine.objects.create(
-#                     lot=lot,
-#                     produit=produit,
-#                     prix_achat_gramme=prix_achat_gramme,
-#                     quantite=q,
-#                 )
+            defaults = {
+                "nom": nom,
+                "prenom": (
+                    fournisseur_data.get("prenom")
+                    or ""
+                ).strip(),
+                "address": (
+                    fournisseur_data.get("address")
+                    or ""
+                ).strip(),
+            }
 
-#                 # Stock réserve : allouée=0, dispo=q
-#                 Stock.objects.create(
-#                     produit_line=pl,
-#                     bijouterie=None,
-#                     quantite_disponible=0,
-#                     en_stock=q,
-#                 )
-
-#                 # unit_cost = prix_gramme * poids
-#                 unit_cost = None
-#                 if produit.poids is not None:
-#                     try:
-#                         unit_cost = (
-#                             Decimal(str(prix_achat_gramme)) * Decimal(str(produit.poids))
-#                         ).quantize(Decimal("0.01"))
-#                     except (InvalidOperation, TypeError, ValueError):
-#                         unit_cost = None
-
-#                 InventoryMovement.objects.create(
-#                     produit=produit,
-#                     movement_type=MovementType.PURCHASE_IN,
-#                     qty=q,
-#                     unit_cost=unit_cost,
-#                     lot=lot,
-#                     reason=reason or "Ajout ligne (arrivage)",
-#                     src_bucket=Bucket.EXTERNAL,
-#                     dst_bucket=Bucket.RESERVED,
-#                     achat=achat,
-#                     occurred_at=now,
-#                     created_by=request.user,
-#                 )
-
-#             # ============================
-#             # CANCEL_PURCHASE (retrait)
-#             # ============================
-#             elif t == "CANCEL_PURCHASE":
-#                 pl_id = act.get("produit_line_id")
-#                 if not pl_id:
-#                     return Response(
-#                         {f"actions[{idx}]": "produit_line_id est obligatoire (CANCEL_PURCHASE)."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#                 pl = get_object_or_404(
-#                     ProduitLine.objects.select_related("produit", "lot"),
-#                     pk=int(pl_id),
-#                 )
-
-#                 # La ligne doit appartenir au lot
-#                 if pl.lot_id != lot.id:
-#                     return Response(
-#                         {f"actions[{idx}]": f"ProduitLine {pl.id} n'appartient pas au lot {lot.id}."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#                 # Interdit si allocations bijouterie existent pour cette ligne
-#                 has_alloc = Stock.objects.filter(
-#                     produit_line=pl,
-#                     bijouterie__isnull=False,
-#                     quantite_disponible__gt=0,
-#                 ).exists()
-#                 if has_alloc:
-#                     return Response(
-#                         {f"actions[{idx}]": f"Ligne {pl.id}: allocations bijouterie existantes, retrait interdit."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#                 # 🔒 Lock stock réserve
-#                 try:
-#                     reserve = (
-#                         Stock.objects
-#                         .select_for_update()
-#                         .get(produit_line=pl, bijouterie__isnull=True)
-#                     )
-#                 except Stock.DoesNotExist:
-#                     return Response(
-#                         {f"actions[{idx}]": f"Ligne {pl.id}: stock réserve introuvable."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#                 disponible = int(reserve.en_stock or 0)
-#                 if q > disponible:
-#                     return Response(
-#                         {f"actions[{idx}]": f"Réduction {q} > disponible en réserve ({disponible}) pour la ligne {pl.id}."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#                 # On réduit la ligne
-#                 old_pl_qty = int(pl.quantite or 0)
-#                 new_pl_qty = old_pl_qty - q
-#                 if new_pl_qty < 0:
-#                     # garde-fou (normalement impossible si stock cohérent)
-#                     return Response(
-#                         {f"actions[{idx}]": f"Réduction {q} > quantite de la ligne ({old_pl_qty}) pour ProduitLine {pl.id}."},
-#                         status=status.HTTP_400_BAD_REQUEST,
-#                     )
-
-#                 # MAJ stock réserve
-#                 reserve.quantite_disponible = 0
-#                 reserve.en_stock = disponible - q
-#                 reserve.save(update_fields=["quantite_disponible", "en_stock"])
-
-#                 # Mouvement d’inventaire (historique)
-#                 InventoryMovement.objects.create(
-#                     produit=pl.produit,
-#                     movement_type=MovementType.CANCEL_PURCHASE,
-#                     qty=q,
-#                     unit_cost=None,
-#                     lot=lot,
-#                     reason=reason or "Retrait partiel (arrivage)",
-#                     src_bucket=Bucket.RESERVED,
-#                     dst_bucket=Bucket.EXTERNAL,
-#                     achat=achat,
-#                     occurred_at=now,
-#                     created_by=request.user,
-#                 )
-
-#                 # Si la ligne tombe à 0 -> delete propre (stock puis ligne)
-#                 if new_pl_qty == 0:
-#                     # supprime stock réserve si 0
-#                     if int(reserve.en_stock or 0) == 0:
-#                         reserve.delete()
-#                     pl.delete()
-#                 else:
-#                     pl.quantite = new_pl_qty
-#                     pl.save(update_fields=["quantite"])
-
-#             else:
-#                 return Response(
-#                     {f"actions[{idx}]": f"Type inconnu: {t}"},
-#                     status=status.HTTP_400_BAD_REQUEST,
-#                 )
-
-#         # 🔁 Recalcule totaux via le modèle (plus fiable que recalcul manuel)
-#         achat.update_total(save=True)
-
-#         # ✅ Réponse complète achat + lots (tous les lots de l'achat)
-#         lots_qs = (
-#             Lot.objects
-#             .filter(achat=achat)
-#             .select_related("achat", "achat__fournisseur")
-#             .prefetch_related("lignes__produit")
-#             .order_by("received_at", "id")
-#         )
-
-#         payload = {"achat": achat, "lots": list(lots_qs)}
-#         out = ArrivageCreateResponseSerializer(payload).data
-#         return Response(out, status=status.HTTP_200_OK)
-
-
-def _to_decimal(v):
-    if v in (None, "", "null"):
-        return None
-    try:
-        return Decimal(str(v))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-
-
-class ArrivageAdjustmentsView(APIView):
-    """
-    POST /api/achat/arrivage/<lot_id>/adjustments/
-
-    Ajustements d’un arrivage (lot) :
-    - PURCHASE_IN     : ajout d’une ProduitLine + crédit réserve + mouvement PURCHASE_IN
-    - CANCEL_PURCHASE : retrait partiel d’une ProduitLine + débit réserve + mouvement CANCEL_PURCHASE
-                        + supprime automatiquement la ProduitLine (+ stock réserve) si quantite == 0
-
-    Règles fortes :
-    - Si l'achat a déjà des allocations bijouterie (n'importe quel lot), on bloque tout ajustement.
-    - CANCEL_PURCHASE interdit si la ProduitLine a une allocation bijouterie (stock bijouterie != None et en_stock > 0).
-    - CANCEL_PURCHASE n'autorise jamais un retrait > stock réserve disponible.
-    """
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
-    http_method_names = ["post"]
-
-    @swagger_auto_schema(
-        operation_id="arrivageAdjustments",
-        operation_summary="Ajuster un arrivage (ajouts / retraits sur un lot)",
-        operation_description=(
-            "Permet d'ajouter des lignes (PURCHASE_IN) ou de réduire des lignes existantes "
-            "(CANCEL_PURCHASE) pour un lot donné.\n\n"
-            "**Types d'actions :**\n"
-            "- `PURCHASE_IN` : `produit_id`, `quantite`, `prix_achat_gramme`\n"
-            "- `CANCEL_PURCHASE` : `produit_line_id`, `quantite`\n\n"
-            "**Règles :**\n"
-            "- Les ajouts vont en bucket RÉSERVE (bijouterie=None).\n"
-            "- Les retraits ne peuvent porter que sur la quantité disponible en RÉSERVE.\n"
-            "- Si des allocations bijouterie existent pour la ligne, le retrait est refusé.\n"
-            "- Si l'achat a déjà des allocations bijouterie (peu importe le lot), aucun ajustement n'est autorisé.\n"
-            "- Nettoyage : si une ligne arrive à 0, on supprime la ProduitLine + son stock réserve."
-        ),
-        manual_parameters=[
-            openapi.Parameter(
-                "lot_id",
-                in_=openapi.IN_PATH,
-                type=openapi.TYPE_INTEGER,
-                description="ID du lot concerné",
-                required=True,
-            ),
-        ],
-        request_body=ArrivageAdjustmentsInSerializer,
-        responses={
-            200: openapi.Response(
-                description="Ajustements appliqués + réponse complète achat+lots",
-                schema=ArrivageCreateResponseSerializer,
-            ),
-            400: "Bad Request",
-            401: "Unauthorized",
-            403: "Forbidden",
-            404: "Not Found",
-            409: "Conflict",
-        },
-        tags=["Achats / Arrivages"],
-    )
-    @transaction.atomic
-    def post(self, request, lot_id: int):
-        # --------- Lot + achat ----------
-        lot = get_object_or_404(Lot.objects.select_related("achat"), pk=lot_id)
-        achat = lot.achat
-
-        # 🔒 blocage si allocations bijouterie déjà faites sur l'achat
-        if getattr(achat, "has_bijouterie_allocations", False):
-            return Response(
-                {
-                    "detail": (
-                        "Ajustement impossible : au moins une partie de cet achat "
-                        "est déjà allouée à une bijouterie."
-                    )
-                },
-                status=status.HTTP_409_CONFLICT,
+            fournisseur, _created = (
+                Fournisseur.objects.update_or_create(
+                    telephone=telephone,
+                    defaults=defaults,
+                )
             )
 
-        s = ArrivageAdjustmentsInSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
-        actions = s.validated_data["actions"]
-        now = timezone.now()
-
-        for idx, act in enumerate(actions):
-            t = (act.get("type") or "").strip().upper()
-            q = int(act.get("quantite") or 0)
-
-            if q < 1:
-                return Response(
-                    {f"actions[{idx}]": "quantite doit être >= 1."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            reason = (act.get("reason") or "").strip()
-
-            # =======================
-            # PURCHASE_IN (ajout)
-            # =======================
-            if t == "PURCHASE_IN":
-                pid = act.get("produit_id")
-                if not pid:
-                    return Response(
-                        {f"actions[{idx}]": "produit_id est obligatoire (PURCHASE_IN)."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                prix_achat_gramme = _to_decimal(act.get("prix_achat_gramme"))
-                if prix_achat_gramme is None:
-                    return Response(
-                        {f"actions[{idx}]": "prix_achat_gramme est obligatoire et doit être un nombre."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                produit = get_object_or_404(
-                    Produit.objects.only("id", "poids", "nom"),
-                    pk=int(pid),
-                )
-
-                pl = ProduitLine.objects.create(
-                    lot=lot,
-                    produit=produit,
-                    prix_achat_gramme=prix_achat_gramme,
-                    quantite=q,
-                )
-
-                # ✅ Stock réserve: disponible = en_stock
-                Stock.objects.create(
-                    produit_line=pl,
-                    bijouterie=None,
-                    en_stock=q,
-                    quantite_totale=q,
-                )
-
-                # unit_cost = prix_gramme * poids
-                unit_cost = None
-                if produit.poids is not None:
-                    try:
-                        unit_cost = (prix_achat_gramme * Decimal(str(produit.poids))).quantize(Decimal("0.01"))
-                    except (InvalidOperation, TypeError, ValueError):
-                        unit_cost = None
-
-                InventoryMovement.objects.create(
-                    produit=produit,
-                    movement_type=MovementType.PURCHASE_IN,
-                    qty=q,
-                    unit_cost=unit_cost,
-                    lot=lot,
-                    achat=achat,
-                    reason=reason or "Ajout ligne (arrivage)",
-                    src_bucket=Bucket.EXTERNAL,
-                    dst_bucket=Bucket.RESERVED,
-                    occurred_at=now,
-                    created_by=request.user,
-                )
-
-            # ==========================
-            # CANCEL_PURCHASE (retrait)
-            # ==========================
-            elif t == "CANCEL_PURCHASE":
-                pl_id = act.get("produit_line_id")
-                if not pl_id:
-                    return Response(
-                        {f"actions[{idx}]": "produit_line_id est obligatoire (CANCEL_PURCHASE)."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                pl = get_object_or_404(
-                    ProduitLine.objects.select_related("produit", "lot"),
-                    pk=int(pl_id),
-                )
-
-                if pl.lot_id != lot.id:
-                    return Response(
-                        {f"actions[{idx}]": f"ProduitLine {pl.id} n'appartient pas au lot {lot.id}."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                # ❌ interdit si la ligne a déjà un stock en bijouterie (allocation)
-                has_alloc = Stock.objects.filter(
-                    produit_line=pl,
-                    bijouterie__isnull=False,
-                    en_stock__gt=0,
-                ).exists()
-                if has_alloc:
-                    return Response(
-                        {f"actions[{idx}]": f"Ligne {pl.id}: allocations bijouterie existantes, retrait interdit."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                # 🔒 lock stock réserve
-                try:
-                    reserve = (
-                        Stock.objects
-                        .select_for_update()
-                        .get(produit_line=pl, bijouterie__isnull=True)
-                    )
-                except Stock.DoesNotExist:
-                    return Response(
-                        {f"actions[{idx}]": f"Ligne {pl.id}: stock réserve introuvable."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                dispo = int(reserve.quantite_totale or 0)
-                if q > dispo:
-                    return Response(
-                        {f"actions[{idx}]": f"Réduction {q} > disponible en réserve ({dispo}) pour la ligne {pl.id}."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                old_pl_qty = int(pl.quantite or 0)
-                if q > old_pl_qty:
-                    return Response(
-                        {f"actions[{idx}]": f"Réduction {q} > quantite de la ligne ({old_pl_qty}) pour ProduitLine {pl.id}."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                # MAJ ProduitLine
-                new_pl_qty = old_pl_qty - q
-                pl.quantite = new_pl_qty
-                pl.save(update_fields=["quantite"])
-
-                # MAJ Stock réserve (retire sur les deux)
-                reserve.en_stock = max(0, int(reserve.en_stock or 0) - q)
-                reserve.quantite_totale = max(0, int(reserve.quantite_totale or 0) - q)
-                reserve.save(update_fields=["en_stock", "quantite_totale"])
-
-                InventoryMovement.objects.create(
-                    produit=pl.produit,
-                    movement_type=MovementType.CANCEL_PURCHASE,
-                    qty=q,
-                    unit_cost=None,
-                    lot=lot,
-                    achat=achat,
-                    reason=reason or "Retrait partiel (arrivage)",
-                    src_bucket=Bucket.RESERVED,
-                    dst_bucket=Bucket.EXTERNAL,
-                    occurred_at=now,
-                    created_by=request.user,
-                )
-
-                # ✅ nettoyage si tout à zéro
-                if new_pl_qty == 0:
-                    reserve.delete()
-                    pl.delete()
-
-            else:
-                return Response(
-                    {f"actions[{idx}]": f"Type inconnu: {t}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        # 🔁 Totaux
-        achat.update_total(save=True)
-
-        # ✅ Réponse complète achat + lots de l'achat
-        lots_qs = (
-            Lot.objects
-            .filter(achat=achat)
-            .select_related("achat", "achat__fournisseur")
-            .prefetch_related("lignes__produit")
-            .order_by("received_at", "id")
-        )
-        payload = {"achat": achat, "lots": list(lots_qs)}
-        out = ArrivageCreateResponseSerializer(payload).data
-        return Response(out, status=status.HTTP_200_OK)
+            return fournisseur
 
 
-# -------------------------InventoryPhotoView---------------------
+# ------------------------- InventoryPhotoView -------------------------
 class InventoryPhotoView(ExportXlsxMixin, ListAPIView):
     """
-    Inventaire "photo" : ProduitLine (lot+produit) + agrégats Stock.
-    + filtre reference_commande (icontains)
-    + export Excel (?export=xlsx)
-    
-    Exemple d’appels utiles
+    Photo instantanée du stock présent dans les bijouteries.
 
-        Inventaire global année courante :
-        GET /api/inventaire/photo/
+    Cette vue affiche, pour chaque ProduitLine :
 
-        Filtrer par référence commande :
-        GET /api/inventaire/photo/?reference_commande=CMD-2026
+    - l'achat fournisseur ;
+    - le lot ;
+    - le produit ;
+    - la bijouterie de réception ;
+    - la quantité initialement reçue ;
+    - la quantité totale rattachée au stock magasin ;
+    - la quantité actuellement disponible en magasin.
 
-        Inventaire uniquement réserve :
-        GET /api/inventaire/photo/?reserve_only=1
+    Nouveau cycle respecté :
 
-        Inventaire d’une bijouterie :
-        GET /api/inventaire/photo/?bijouterie_id=2
+        PURCHASE_IN
+        EXTERNAL → BIJOUTERIE
 
-        Export Excel :
-        GET /api/inventaire/photo/?export=xlsx&reference_commande=CMD-2026
+    Cette vue ne gère jamais :
+
+    - de stock réserve ;
+    - de Stock avec bijouterie=None ;
+    - de VendorStock ;
+    - les quantités actuellement chez les vendeurs.
     """
-    permission_classes = [IsAuthenticated, IsAdminOrManager]
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+
     serializer_class = ProduitLineMiniSerializer
     pagination_class = None
 
     @swagger_auto_schema(
-        operation_id="listProduitLinesInventory",
-        operation_summary="Inventaire par lot + produit (ProduitLine) avec agrégats Stock + export Excel",
+        operation_id="listProduitLinesInventoryPhoto",
+        operation_summary=(
+            "Afficher la photo instantanée du stock des bijouteries"
+        ),
         operation_description=(
-            "Retourne les ProduitLine (lot+produit) avec agrégats Stock.\n\n"
-            "• Par défaut : année courante (`lot.received_at`).\n"
-            "• `reference_commande` : recherche partielle sur Achat.reference_commande.\n"
-            "• `bijouterie_id` : agrège uniquement le stock de cette bijouterie.\n"
-            "• `reserve_only=1` : agrège uniquement le stock de réserve (bijouterie=NULL).\n"
-            "⚠️ `reserve_only=1` et `bijouterie_id` ne peuvent pas être utilisés ensemble.\n\n"
-            "Export Excel : `?export=xlsx`"
+            "Retourne les ProduitLine avec leur achat, leur lot, "
+            "leur produit et les quantités actuellement présentes "
+            "dans les stocks des bijouteries.\n\n"
+            "Cette vue respecte le cycle :\n"
+            "`PURCHASE_IN : EXTERNAL → BIJOUTERIE`.\n\n"
+            "Elle ne contient aucune logique de réserve.\n\n"
+            "Filtres disponibles :\n"
+            "- `year`\n"
+            "- `bijouterie_id`\n"
+            "- `reference_commande`\n"
+            "- `lot_id`\n"
+            "- `produit_id`\n"
+            "- `numero_lot`\n"
+            "- `numero_achat`\n"
+            "- `fournisseur_id`\n"
+            "- `en_stock_only`\n"
+            "- `ordering`\n\n"
+            "Export Excel : `?export=xlsx`."
         ),
         manual_parameters=[
-            openapi.Parameter("year", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Année (ex: 2026). Défaut : année courante."),
-            openapi.Parameter("reference_commande", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Recherche partielle sur la référence commande (icontains)."),
-            openapi.Parameter("lot_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Filtre exact sur le lot_id."),
-            openapi.Parameter("produit_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Filtre exact sur le produit_id."),
-            openapi.Parameter("numero_lot", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Recherche partielle sur numero_lot (icontains)."),
-            openapi.Parameter("numero_achat", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Filtre exact sur numero_achat."),
-            openapi.Parameter("fournisseur_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Filtre exact sur fournisseur_id."),
-            openapi.Parameter("bijouterie_id", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="Si fourni, agrège uniquement le stock de cette bijouterie."),
-            openapi.Parameter("reserve_only", openapi.IN_QUERY, type=openapi.TYPE_INTEGER,
-                              description="1 = seulement réserve (bijouterie=NULL)."),
-            openapi.Parameter("ordering", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="Tri: -received_at (défaut), received_at, id, -id"),
-            openapi.Parameter("export", openapi.IN_QUERY, type=openapi.TYPE_STRING,
-                              description="xlsx pour exporter (ex: export=xlsx)."),
+            openapi.Parameter(
+                "year",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description=(
+                    "Année de réception du lot. "
+                    "Par défaut : année courante."
+                ),
+            ),
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description=(
+                    "Filtre le stock d'une bijouterie précise."
+                ),
+            ),
+            openapi.Parameter(
+                "reference_commande",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Recherche partielle sur la référence "
+                    "de commande."
+                ),
+            ),
+            openapi.Parameter(
+                "lot_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description="Filtre exact sur le lot.",
+            ),
+            openapi.Parameter(
+                "produit_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description="Filtre exact sur le produit.",
+            ),
+            openapi.Parameter(
+                "numero_lot",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Recherche partielle sur le numéro du lot."
+                ),
+            ),
+            openapi.Parameter(
+                "numero_achat",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Filtre exact sur le numéro d'achat."
+                ),
+            ),
+            openapi.Parameter(
+                "fournisseur_id",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description="Filtre exact sur le fournisseur.",
+            ),
+            openapi.Parameter(
+                "en_stock_only",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description=(
+                    "1 = afficher uniquement les lignes ayant "
+                    "encore du stock disponible en magasin."
+                ),
+            ),
+            openapi.Parameter(
+                "ordering",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description=(
+                    "Tri autorisé : received_at, -received_at, "
+                    "id, -id, en_stock, -en_stock."
+                ),
+            ),
+            openapi.Parameter(
+                "export",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                description="Utiliser xlsx pour exporter.",
+            ),
         ],
-        responses={200: ProduitLineMiniSerializer(many=True)},
-        tags=["Achats / Arrivages"],
+        responses={
+            200: ProduitLineMiniSerializer(many=True),
+            400: openapi.Response(
+                description="Paramètres invalides."
+            ),
+            401: openapi.Response(
+                description="Non authentifié."
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+        },
+        tags=["Inventaire"],
     )
     def get(self, request, *args, **kwargs):
-        # sécurise year
-        y = request.query_params.get("year")
-        if y:
-            try:
-                int(y)
-            except ValueError:
-                raise ValidationError({"year": "Doit être un entier (ex: 2026)."})
-        return super().get(request, *args, **kwargs)
+        self._validate_query_params(request)
+
+        return super().get(
+            request,
+            *args,
+            **kwargs,
+        )
+
+    # ============================================================
+    # Validation
+    # ============================================================
+
+    def _parse_positive_integer(
+        self,
+        *,
+        value,
+        field_name,
+    ):
+        if value in (None, ""):
+            return None
+
+        try:
+            parsed_value = int(value)
+
+        except (TypeError, ValueError):
+            raise ValidationError({
+                field_name: (
+                    "Ce paramètre doit être un entier."
+                )
+            })
+
+        if parsed_value <= 0:
+            raise ValidationError({
+                field_name: (
+                    "Ce paramètre doit être supérieur à zéro."
+                )
+            })
+
+        return parsed_value
+
+    def _parse_year(self, value):
+        if value in (None, ""):
+            return timezone.localdate().year
+
+        try:
+            year = int(value)
+
+        except (TypeError, ValueError):
+            raise ValidationError({
+                "year": "Année invalide. Exemple : 2026."
+            })
+
+        if year < 2000 or year > 2100:
+            raise ValidationError({
+                "year": (
+                    "L'année doit être comprise entre "
+                    "2000 et 2100."
+                )
+            })
+
+        return year
+
+    def _validate_query_params(self, request):
+        query_params = request.query_params
+
+        self._parse_year(
+            query_params.get("year")
+        )
+
+        integer_fields = (
+            "bijouterie_id",
+            "lot_id",
+            "produit_id",
+            "fournisseur_id",
+        )
+
+        for field_name in integer_fields:
+            self._parse_positive_integer(
+                value=query_params.get(field_name),
+                field_name=field_name,
+            )
+
+        en_stock_only = query_params.get(
+            "en_stock_only"
+        )
+
+        if en_stock_only not in (
+            None,
+            "",
+            "0",
+            "1",
+        ):
+            raise ValidationError({
+                "en_stock_only": (
+                    "Utiliser 1 pour oui ou 0 pour non."
+                )
+            })
+
+        ordering = (
+            query_params.get("ordering")
+            or "-received_at"
+        ).strip()
+
+        allowed_ordering = {
+            "received_at",
+            "-received_at",
+            "id",
+            "-id",
+            "en_stock",
+            "-en_stock",
+        }
+
+        if ordering not in allowed_ordering:
+            raise ValidationError({
+                "ordering": (
+                    "Tri invalide. Valeurs autorisées : "
+                    "received_at, -received_at, id, -id, "
+                    "en_stock, -en_stock."
+                )
+            })
+
+        export_format = (
+            query_params.get("export")
+            or ""
+        ).strip().lower()
+
+        if export_format not in ("", "xlsx"):
+            raise ValidationError({
+                "export": (
+                    "Format invalide. Utiliser xlsx."
+                )
+            })
+
+    # ============================================================
+    # Périmètre accessible
+    # ============================================================
+
+    def _get_accessible_bijouteries(self):
+        """
+        Retourne le queryset des bijouteries accessibles :
+
+        - admin : toutes les bijouteries ;
+        - manager : uniquement ses bijouteries ;
+        - autre rôle : queryset vide.
+        """
+
+        queryset = Bijouterie.objects.all()
+
+        queryset = scope_queryset_by_bijouterie(
+            queryset,
+            user=self.request.user,
+            field="lot__achat__bijouterie_id",
+        )
+
+    def _resolve_bijouterie_id(self):
+        """
+        Vérifie que la bijouterie demandée existe
+        et appartient au périmètre de l'utilisateur.
+        """
+
+        bijouterie_id = self._parse_positive_integer(
+            value=self.request.query_params.get(
+                "bijouterie_id"
+            ),
+            field_name="bijouterie_id",
+        )
+
+        if bijouterie_id is None:
+            return None
+
+        accessible_bijouteries = (
+            self._get_accessible_bijouteries()
+        )
+
+        if not accessible_bijouteries.filter(
+            pk=bijouterie_id
+        ).exists():
+            raise ValidationError({
+                "bijouterie_id": (
+                    "Bijouterie introuvable ou non accessible."
+                )
+            })
+
+        return bijouterie_id
+
+    # ============================================================
+    # Queryset
+    # ============================================================
 
     def get_queryset(self):
-        qp = self.request.query_params
-        getf = qp.get
+        query_params = self.request.query_params
+        get_param = query_params.get
 
-        # ---- year ----
-        year = getf("year")
-        try:
-            year = int(year) if year else timezone.localdate().year
-        except ValueError:
-            year = timezone.localdate().year
+        year = self._parse_year(
+            get_param("year")
+        )
 
-        # ---- ordering ----
-        ordering = (getf("ordering") or "-received_at").strip()
-        allowed_order = {"-received_at", "received_at", "id", "-id"}
-        if ordering not in allowed_order:
-            ordering = "-received_at"
+        bijouterie_id = self._resolve_bijouterie_id()
 
-        # ---- filtres stock ----
-        bijouterie_id = getf("bijouterie_id")
-        reserve_only = getf("reserve_only")
+        # ========================================================
+        # Queryset principal
+        # ========================================================
 
-        if reserve_only == "1" and bijouterie_id:
-            raise ValidationError({"detail": "Utilise soit reserve_only=1 soit bijouterie_id, pas les deux."})
-
-        bijouterie_id_int = None
-        if bijouterie_id:
-            try:
-                bijouterie_id_int = int(bijouterie_id)
-            except ValueError:
-                raise ValidationError({"bijouterie_id": "Doit être un entier."})
-
-        # ---- base ----
-        qs = (
+        queryset = (
             ProduitLine.objects
             .select_related(
                 "lot",
                 "lot__achat",
+                "lot__achat__bijouterie",
                 "lot__achat__fournisseur",
                 "produit",
                 "produit__categorie",
                 "produit__marque",
+                "produit__modele",
                 "produit__purete",
             )
-            .filter(lot__received_at__year=year)
+            .filter(
+                lot__received_at__year=year,
+                lot__achat__status=Achat.STATUS_CONFIRMED,
+            )
         )
 
-        # ---- filtres simples ----
-        reference_commande = (getf("reference_commande") or "").strip()
+        # ========================================================
+        # Périmètre utilisateur
+        #
+        # Admin :
+        #     toutes les ProduitLine.
+        #
+        # Manager :
+        #     uniquement les ProduitLine reçues dans
+        #     ses bijouteries.
+        # ========================================================
+
+        queryset = scope_queryset_by_bijouterie(
+            queryset,
+            self.request.user,
+            field="lot__achat__bijouterie_id",
+        )
+
+        # ========================================================
+        # Filtre explicite de bijouterie
+        # ========================================================
+
+        if bijouterie_id is not None:
+            queryset = queryset.filter(
+                lot__achat__bijouterie_id=bijouterie_id
+            )
+
+        # ========================================================
+        # Filtres documentaires
+        # ========================================================
+
+        reference_commande = (
+            get_param("reference_commande")
+            or ""
+        ).strip()
+
         if reference_commande:
-            qs = qs.filter(lot__achat__reference_commande__icontains=reference_commande)
+            queryset = queryset.filter(
+                lot__achat__reference_commande__icontains=(
+                    reference_commande
+                )
+            )
 
-        lot_id = getf("lot_id")
-        if lot_id:
-            try:
-                qs = qs.filter(lot_id=int(lot_id))
-            except ValueError:
-                raise ValidationError({"lot_id": "Doit être un entier."})
+        numero_lot = (
+            get_param("numero_lot")
+            or ""
+        ).strip()
 
-        produit_id = getf("produit_id")
-        if produit_id:
-            try:
-                qs = qs.filter(produit_id=int(produit_id))
-            except ValueError:
-                raise ValidationError({"produit_id": "Doit être un entier."})
-
-        numero_lot = (getf("numero_lot") or "").strip()
         if numero_lot:
-            qs = qs.filter(lot__numero_lot__icontains=numero_lot)
+            queryset = queryset.filter(
+                lot__numero_lot__icontains=numero_lot
+            )
 
-        numero_achat = (getf("numero_achat") or "").strip()
+        numero_achat = (
+            get_param("numero_achat")
+            or ""
+        ).strip()
+
         if numero_achat:
-            qs = qs.filter(lot__achat__numero_achat=numero_achat)
-
-        fournisseur_id = getf("fournisseur_id")
-        if fournisseur_id:
-            try:
-                qs = qs.filter(lot__achat__fournisseur_id=int(fournisseur_id))
-            except ValueError:
-                raise ValidationError({"fournisseur_id": "Doit être un entier."})
-
-        # ---- agrégats stock propres (SUM conditionnels) ----
-        if reserve_only == "1":
-            qs = qs.annotate(
-                quantite_totale_total=Coalesce(
-                    Sum("stocks__quantite_totale", filter=Q(stocks__bijouterie__isnull=True)),
-                    0
-                ),
-                en_stock_total=Coalesce(
-                    Sum("stocks__en_stock", filter=Q(stocks__bijouterie__isnull=True)),
-                    0
-                ),
-            )
-        elif bijouterie_id_int is not None:
-            qs = qs.annotate(
-                quantite_totale_total=Coalesce(
-                    Sum("stocks__quantite_totale", filter=Q(stocks__bijouterie_id=bijouterie_id_int)),
-                    0
-                ),
-                en_stock_total=Coalesce(
-                    Sum("stocks__en_stock", filter=Q(stocks__bijouterie_id=bijouterie_id_int)),
-                    0
-                ),
-            )
-        else:
-            qs = qs.annotate(
-                quantite_totale_total=Coalesce(Sum("stocks__quantite_totale"), 0),
-                en_stock_total=Coalesce(Sum("stocks__en_stock"), 0),
+            queryset = queryset.filter(
+                lot__achat__numero_achat=numero_achat
             )
 
-        # ---- ordering final ----
-        if ordering in {"received_at", "-received_at"}:
-            return qs.order_by(
-                "lot__received_at" if ordering == "received_at" else "-lot__received_at",
-                "lot__numero_lot",
+        lot_id = self._parse_positive_integer(
+            value=get_param("lot_id"),
+            field_name="lot_id",
+        )
+
+        if lot_id is not None:
+            queryset = queryset.filter(
+                lot_id=lot_id
+            )
+
+        produit_id = self._parse_positive_integer(
+            value=get_param("produit_id"),
+            field_name="produit_id",
+        )
+
+        if produit_id is not None:
+            queryset = queryset.filter(
+                produit_id=produit_id
+            )
+
+        fournisseur_id = self._parse_positive_integer(
+            value=get_param("fournisseur_id"),
+            field_name="fournisseur_id",
+        )
+
+        if fournisseur_id is not None:
+            queryset = queryset.filter(
+                lot__achat__fournisseur_id=(
+                    fournisseur_id
+                )
+            )
+
+        # ========================================================
+        # Périmètre des agrégats Stock
+        # ========================================================
+
+        accessible_bijouterie_ids = (
+            self._get_accessible_bijouteries()
+            .values_list(
                 "id",
+                flat=True,
             )
-        return qs.order_by(ordering)
+        )
+
+        stock_filter = Q(
+            stocks__bijouterie_id__in=(
+                accessible_bijouterie_ids
+            )
+        )
+
+        if bijouterie_id is not None:
+            stock_filter &= Q(
+                stocks__bijouterie_id=bijouterie_id
+            )
+
+        # ========================================================
+        # Agrégats du stock magasin
+        # ========================================================
+
+        queryset = queryset.annotate(
+            quantite_totale_total=Coalesce(
+                Sum(
+                    "stocks__quantite_totale",
+                    filter=stock_filter,
+                ),
+                0,
+            ),
+            en_stock_total=Coalesce(
+                Sum(
+                    "stocks__en_stock",
+                    filter=stock_filter,
+                ),
+                0,
+            ),
+        )
+
+        # ========================================================
+        # Uniquement les lignes disponibles en magasin
+        # ========================================================
+
+        if get_param("en_stock_only") == "1":
+            queryset = queryset.filter(
+                en_stock_total__gt=0
+            )
+
+        # ========================================================
+        # Tri
+        # ========================================================
+
+        ordering = (
+            get_param("ordering")
+            or "-received_at"
+        ).strip()
+
+        ordering_map = {
+            "received_at": "lot__received_at",
+            "-received_at": "-lot__received_at",
+            "id": "id",
+            "-id": "-id",
+            "en_stock": "en_stock_total",
+            "-en_stock": "-en_stock_total",
+        }
+
+        ordering_field = ordering_map[ordering]
+
+        return queryset.order_by(
+            ordering_field,
+            "lot__numero_lot",
+            "id",
+        )
+
+    # ============================================================
+    # JSON ou export Excel
+    # ============================================================
 
     def list(self, request, *args, **kwargs):
-        """
-        Si ?export=xlsx => Excel
-        Sinon => JSON normal DRF
-        """
-        export = (request.query_params.get("export") or "").strip().lower()
-        if export != "xlsx":
-            return super().list(request, *args, **kwargs)
+        export_format = (
+            request.query_params.get("export")
+            or ""
+        ).strip().lower()
 
-        qs = self.filter_queryset(self.get_queryset())
+        if export_format != "xlsx":
+            return super().list(
+                request,
+                *args,
+                **kwargs,
+            )
 
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Inventaire"
+        queryset = self.filter_queryset(
+            self.get_queryset()
+        )
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Inventaire bijouteries"
 
         headers = [
             "produit_line_id",
-            "lot_id", "numero_lot", "received_at",
-            "numero_achat", "reference_commande",
+            "bijouterie_id",
+            "bijouterie",
+            "lot_id",
+            "numero_lot",
+            "date_reception",
+            "achat_id",
+            "numero_achat",
+            "reference_commande",
             "fournisseur",
-            "produit_id", "produit_nom",
-            "categorie", "marque", "purete",
+            "produit_id",
+            "produit",
+            "categorie",
+            "marque",
+            "modele",
+            "purete",
+            "poids_unitaire",
             "prix_achat_gramme",
-            "quantite_ligne",
-            "en_stock_total",
-            "quantite_totale_total",
+            "quantite_recue",
+            "quantite_totale_magasin",
+            "en_stock_magasin",
         ]
-        ws.append(headers)
 
-        for pl in qs:
-            lot = pl.lot
-            achat = lot.achat if lot else None
-            fournisseur = achat.fournisseur if achat else None
-            produit = pl.produit
+        worksheet.append(headers)
 
-            ws.append([
-                pl.id,
-                lot.id if lot else None,
-                getattr(lot, "numero_lot", None),
-                lot.received_at.isoformat() if getattr(lot, "received_at", None) else None,
-                getattr(achat, "numero_achat", None),
-                getattr(achat, "reference_commande", None),
-                f"{getattr(fournisseur,'nom','')} {getattr(fournisseur,'prenom','')}".strip() if fournisseur else None,
-                produit.id if produit else None,
-                getattr(produit, "nom", None),
-                getattr(getattr(produit, "categorie", None), "nom", None),
-                getattr(getattr(produit, "marque", None), "nom", None),
-                getattr(getattr(produit, "purete", None), "nom", None),
-                str(pl.prix_achat_gramme) if pl.prix_achat_gramme is not None else None,
-                int(pl.quantite or 0),
-                int(getattr(pl, "en_stock_total", 0) or 0),
-                int(getattr(pl, "quantite_totale_total", 0) or 0),
+        for produit_line in queryset.iterator():
+            lot = produit_line.lot
+            achat = lot.achat
+            fournisseur = achat.fournisseur
+            bijouterie = achat.bijouterie
+            produit = produit_line.produit
+
+            fournisseur_nom = None
+
+            if fournisseur:
+                fournisseur_nom = " ".join(
+                    part
+                    for part in (
+                        fournisseur.prenom,
+                        fournisseur.nom,
+                    )
+                    if part
+                ) or str(fournisseur)
+
+            categorie = getattr(
+                produit,
+                "categorie",
+                None,
+            )
+            marque = getattr(
+                produit,
+                "marque",
+                None,
+            )
+            modele = getattr(
+                produit,
+                "modele",
+                None,
+            )
+            purete = getattr(
+                produit,
+                "purete",
+                None,
+            )
+
+            worksheet.append([
+                produit_line.id,
+
+                (
+                    bijouterie.id
+                    if bijouterie
+                    else None
+                ),
+                (
+                    bijouterie.nom
+                    if bijouterie
+                    else None
+                ),
+
+                lot.id,
+                lot.numero_lot,
+                (
+                    lot.received_at.isoformat()
+                    if lot.received_at
+                    else None
+                ),
+
+                achat.id,
+                achat.numero_achat,
+                achat.reference_commande,
+
+                fournisseur_nom,
+
+                produit.id,
+                produit.nom,
+
+                (
+                    getattr(categorie, "nom", None)
+                    or getattr(categorie, "title", None)
+                ),
+                (
+                    getattr(marque, "nom", None)
+                    or getattr(marque, "title", None)
+                ),
+                (
+                    getattr(modele, "nom", None)
+                    or getattr(modele, "title", None)
+                ),
+                str(purete or ""),
+
+                (
+                    str(produit.poids)
+                    if produit.poids is not None
+                    else None
+                ),
+                (
+                    str(
+                        produit_line.prix_achat_gramme
+                    )
+                    if (
+                        produit_line.prix_achat_gramme
+                        is not None
+                    )
+                    else None
+                ),
+
+                int(
+                    produit_line.quantite
+                    or 0
+                ),
+                int(
+                    getattr(
+                        produit_line,
+                        "quantite_totale_total",
+                        0,
+                    )
+                    or 0
+                ),
+                int(
+                    getattr(
+                        produit_line,
+                        "en_stock_total",
+                        0,
+                    )
+                    or 0
+                ),
             ])
 
-        self._autosize(ws)
-        return self._xlsx_response(wb, "inventaire_photo.xlsx")
-# -------------------------End InventoryPhotoView---------------------
+        self._autosize(worksheet)
 
+        return self._xlsx_response(
+            workbook,
+            "inventaire_bijouteries.xlsx",
+        )
+# ----------------------- End InventoryPhotoView -----------------------    
 
 
 

@@ -8,299 +8,834 @@ from rest_framework.permissions import BasePermission
 from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
                            ROLE_VENDOR, get_role_name)
 
-# ============================================================
-# Helpers locaux
-# ============================================================
 
 def _verified(profile) -> bool:
-    return bool(profile and getattr(profile, "verifie", True))
+    """
+    Retourne True uniquement lorsque le profil existe
+    et possède verifie=True.
+    """
+
+    return bool(
+        profile
+        and getattr(profile, "verifie", False)
+    )
 
 
 def _manager_profile(user):
-    p = getattr(user, "staff_manager_profile", None)
-    return p if _verified(p) else None
+    """
+    Retourne le profil manager vérifié.
+    """
+
+    profile = getattr(
+        user,
+        "staff_manager_profile",
+        None,
+    )
+
+    return profile if _verified(profile) else None
 
 
 def _vendor_profile(user):
-    p = getattr(user, "staff_vendor_profile", None)
-    return p if _verified(p) else None
+    """
+    Retourne le profil vendeur vérifié.
+    """
+
+    profile = getattr(
+        user,
+        "staff_vendor_profile",
+        None,
+    )
+
+    return profile if _verified(profile) else None
 
 
 def _cashier_profile(user):
-    p = getattr(user, "staff_cashier_profile", None)
-    return p if _verified(p) else None
+    """
+    Retourne le profil caissier vérifié.
+    """
+
+    profile = getattr(
+        user,
+        "staff_cashier_profile",
+        None,
+    )
+
+    return profile if _verified(profile) else None
+
 
 def _buyer_profile(user):
-    p = getattr(user, "staff_buyer_profile", None)
-    return p if _verified(p) else None
+    """
+    Retourne le profil responsable rachat vérifié.
+    """
+
+    profile = getattr(
+        user,
+        "staff_buyer_profile",
+        None,
+    )
+
+    return profile if _verified(profile) else None
+
 
 def _obj_bijouterie_id(obj) -> Optional[int]:
     """
-    Essaie d'obtenir bijouterie_id depuis différents objets.
-    Compatible avec Vente, Facture, Paiement, VendorStock, etc.
+    Essaie d'obtenir l'identifiant de la bijouterie
+    depuis différents types d'objets.
+
+    Compatible notamment avec :
+    - Bijouterie ;
+    - Vente ;
+    - Facture ;
+    - Paiement ;
+    - VendorStock ;
+    - InventoryMovement ;
+    - objets liés à une vente ou une facture.
     """
-    bj_id = getattr(obj, "bijouterie_id", None)
-    if bj_id:
-        return bj_id
 
-    bj = getattr(obj, "bijouterie", None)
-    if bj and getattr(bj, "id", None):
-        return bj.id
+    if obj is None:
+        return None
 
-    vente = getattr(obj, "vente", None)
-    if vente and getattr(vente, "bijouterie_id", None):
-        return vente.bijouterie_id
+    direct_id = getattr(
+        obj,
+        "bijouterie_id",
+        None,
+    )
 
-    facture = getattr(obj, "facture", None)
-    if facture and getattr(facture, "bijouterie_id", None):
-        return facture.bijouterie_id
+    if direct_id:
+        return direct_id
 
-    vendor = getattr(obj, "vendor", None)
-    if vendor and getattr(vendor, "bijouterie_id", None):
-        return vendor.bijouterie_id
+    bijouterie = getattr(
+        obj,
+        "bijouterie",
+        None,
+    )
 
-    return None
+    if bijouterie and getattr(
+        bijouterie,
+        "pk",
+        None,
+    ):
+        return bijouterie.pk
+
+    vente = getattr(
+        obj,
+        "vente",
+        None,
+    )
+
+    if vente:
+        vente_bijouterie_id = getattr(
+            vente,
+            "bijouterie_id",
+            None,
+        )
+
+        if vente_bijouterie_id:
+            return vente_bijouterie_id
+
+    facture = getattr(
+        obj,
+        "facture",
+        None,
+    )
+
+    if facture:
+        facture_bijouterie_id = getattr(
+            facture,
+            "bijouterie_id",
+            None,
+        )
+
+        if facture_bijouterie_id:
+            return facture_bijouterie_id
+
+        facture_vente = getattr(
+            facture,
+            "vente",
+            None,
+        )
+
+        if facture_vente:
+            facture_vente_bijouterie_id = getattr(
+                facture_vente,
+                "bijouterie_id",
+                None,
+            )
+
+            if facture_vente_bijouterie_id:
+                return facture_vente_bijouterie_id
+
+    vendor = getattr(
+        obj,
+        "vendor",
+        None,
+    )
+
+    if vendor:
+        vendor_bijouterie_id = getattr(
+            vendor,
+            "bijouterie_id",
+            None,
+        )
+
+        if vendor_bijouterie_id:
+            return vendor_bijouterie_id
+
+    src_bijouterie_id = getattr(
+        obj,
+        "src_bijouterie_id",
+        None,
+    )
+
+    dst_bijouterie_id = getattr(
+        obj,
+        "dst_bijouterie_id",
+        None,
+    )
+
+    if src_bijouterie_id and dst_bijouterie_id:
+        if src_bijouterie_id == dst_bijouterie_id:
+            return src_bijouterie_id
+
+    return (
+        src_bijouterie_id
+        or dst_bijouterie_id
+        or None
+    )
 
 
 def _obj_owner_user_id(obj) -> Optional[int]:
     """
-    Essaie de retrouver le user propriétaire de l'objet.
-    Utile pour limiter un vendor à ses propres données.
+    Essaie de retrouver l'utilisateur propriétaire
+    d'un objet.
+
+    Cette fonction est principalement utilisée pour
+    limiter un vendeur à ses propres données.
     """
-    uid = getattr(obj, "user_id", None)
-    if uid:
-        return uid
 
-    u = getattr(obj, "user", None)
-    if u and getattr(u, "id", None):
-        return u.id
+    if obj is None:
+        return None
 
-    v = getattr(obj, "vendor", None)
-    if v and getattr(v, "user_id", None):
-        return v.user_id
-    if v and getattr(getattr(v, "user", None), "id", None):
-        return v.user.id
+    direct_user_id = getattr(
+        obj,
+        "user_id",
+        None,
+    )
 
-    vente = getattr(obj, "vente", None)
+    if direct_user_id:
+        return direct_user_id
+
+    direct_user = getattr(
+        obj,
+        "user",
+        None,
+    )
+
+    if direct_user and getattr(
+        direct_user,
+        "pk",
+        None,
+    ):
+        return direct_user.pk
+
+    vendor = getattr(
+        obj,
+        "vendor",
+        None,
+    )
+
+    if vendor:
+        vendor_user_id = getattr(
+            vendor,
+            "user_id",
+            None,
+        )
+
+        if vendor_user_id:
+            return vendor_user_id
+
+        vendor_user = getattr(
+            vendor,
+            "user",
+            None,
+        )
+
+        if vendor_user and getattr(
+            vendor_user,
+            "pk",
+            None,
+        ):
+            return vendor_user.pk
+
+    vente = getattr(
+        obj,
+        "vente",
+        None,
+    )
+
     if vente:
-        vv = getattr(vente, "vendor", None)
-        if vv and getattr(vv, "user_id", None):
-            return vv.user_id
-        if vv and getattr(getattr(vv, "user", None), "id", None):
-            return vv.user.id
+        vente_vendor = getattr(
+            vente,
+            "vendor",
+            None,
+        )
 
-    facture = getattr(obj, "facture", None)
+        if vente_vendor:
+            vente_vendor_user_id = getattr(
+                vente_vendor,
+                "user_id",
+                None,
+            )
+
+            if vente_vendor_user_id:
+                return vente_vendor_user_id
+
+            vente_vendor_user = getattr(
+                vente_vendor,
+                "user",
+                None,
+            )
+
+            if vente_vendor_user and getattr(
+                vente_vendor_user,
+                "pk",
+                None,
+            ):
+                return vente_vendor_user.pk
+
+    facture = getattr(
+        obj,
+        "facture",
+        None,
+    )
+
     if facture:
-        vente = getattr(facture, "vente", None)
-        if vente:
-            vv = getattr(vente, "vendor", None)
-            if vv and getattr(vv, "user_id", None):
-                return vv.user_id
-            if vv and getattr(getattr(vv, "user", None), "id", None):
-                return vv.user.id
+        facture_vente = getattr(
+            facture,
+            "vente",
+            None,
+        )
+
+        if facture_vente:
+            facture_vendor = getattr(
+                facture_vente,
+                "vendor",
+                None,
+            )
+
+            if facture_vendor:
+                facture_vendor_user_id = getattr(
+                    facture_vendor,
+                    "user_id",
+                    None,
+                )
+
+                if facture_vendor_user_id:
+                    return facture_vendor_user_id
+
+                facture_vendor_user = getattr(
+                    facture_vendor,
+                    "user",
+                    None,
+                )
+
+                if facture_vendor_user and getattr(
+                    facture_vendor_user,
+                    "pk",
+                    None,
+                ):
+                    return facture_vendor_user.pk
 
     return None
 
 
-def _manager_has_bijouterie(user, bijouterie_id: int) -> bool:
+def _manager_has_bijouterie(
+    user,
+    bijouterie_id: int,
+) -> bool:
     """
-    Manager -> ManyToMany bijouteries
+    Vérifie qu'un manager vérifié gère la bijouterie.
     """
-    mp = _manager_profile(user)
-    if not mp:
+
+    if not bijouterie_id:
         return False
-    return mp.bijouteries.filter(id=bijouterie_id).exists()
+
+    manager = _manager_profile(user)
+
+    if manager is None:
+        return False
+
+    return manager.bijouteries.filter(
+        pk=bijouterie_id
+    ).exists()
+
+
+def _user_is_authenticated(user) -> bool:
+    """
+    Vérifie proprement l'authentification.
+    """
+
+    return bool(
+        user
+        and getattr(user, "is_authenticated", False)
+    )
 
 
 # ============================================================
 # Permissions simples
 # ============================================================
 
-class IsAdmin(BasePermission):
+def _role_is(
+    user,
+    *roles: str,
+) -> bool:
+    if not _user_is_authenticated(user):
+        return False
+
+    return get_role_name(user) in roles
+
+class IsAdminOnly(BasePermission):
+    """
+    Accès réservé à l'administrateur.
+    """
+
     message = "Accès réservé au rôle admin."
 
     def has_permission(self, request, view):
-        return get_role_name(request.user) == ROLE_ADMIN
+        return _role_is(
+            request.user,
+            ROLE_ADMIN,
+        )
+
 
 
 class IsManager(BasePermission):
+    """
+    Accès réservé au manager.
+    """
+
     message = "Accès réservé au rôle manager."
 
     def has_permission(self, request, view):
-        return get_role_name(request.user) == ROLE_MANAGER
+        return _role_is(
+            request.user,
+            ROLE_MANAGER,
+        )
 
 
 class IsVendor(BasePermission):
+    """
+    Accès réservé au vendeur.
+    """
+
     message = "Accès réservé au rôle vendeur."
 
     def has_permission(self, request, view):
-        return get_role_name(request.user) == ROLE_VENDOR
-
+        return _role_is(
+            request.user,
+            ROLE_VENDOR,
+        )
+        
 
 class IsCashierOnly(BasePermission):
-    message = "Seul un caissier peut effectuer un paiement."
+    """
+    Accès strictement réservé au caissier.
+    """
+
+    message = "Accès réservé au rôle caissier."
 
     def has_permission(self, request, view):
-        user = request.user
-        return bool(user and user.is_authenticated and get_role_name(user) == ROLE_CASHIER)
-
+        return _role_is(
+            request.user,
+            ROLE_CASHIER,
+        )
 
 class IsBuyer(BasePermission):
+    """
+    Accès réservé au responsable des rachats.
+    """
+
     message = "Accès réservé au responsable des rachats."
 
     def has_permission(self, request, view):
-        return get_role_name(request.user) == ROLE_BUYER
-    
+        return _role_is(
+            request.user,
+            ROLE_BUYER,
+        )
+
 
 class IsAdminOrManager(BasePermission):
-    message = "Accès réservé aux rôles admin/manager."
+    """
+    Accès réservé à l'admin ou au manager.
+    """
+
+    message = "Accès réservé aux rôles admin ou manager."
 
     def has_permission(self, request, view):
-        return get_role_name(request.user) in {ROLE_ADMIN, ROLE_MANAGER}
+        return _role_is(
+            request.user,
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+        )
 
+
+class IsAdminManagerVendor(BasePermission):
+    """
+    Accès réservé à :
+    - admin ;
+    - manager ;
+    - vendor.
+    """
+
+    message = (
+        "Accès réservé aux rôles "
+        "admin, manager ou vendeur."
+    )
+
+    def has_permission(self, request, view):
+        return _role_is(
+            request.user,
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_VENDOR,
+        )
 
 class IsAdminManagerVendorCashier(BasePermission):
-    message = "Accès réservé (admin/manager/vendor/cashier)."
+    """
+    Accès réservé à :
+    - admin ;
+    - manager ;
+    - vendor ;
+    - cashier.
+    """
+
+    message = (
+        "Accès réservé aux rôles admin, manager, "
+        "vendeur ou caissier."
+    )
 
     def has_permission(self, request, view):
-        return get_role_name(request.user) in {
-            ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER
-        }
+        return _role_is(
+            request.user,
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_VENDOR,
+            ROLE_CASHIER,
+        )
 
 
 class IsAdminManagerBuyer(BasePermission):
-    message = "Accès réservé aux rôles admin, manager ou responsable rachat."
+    """
+    Accès réservé à :
+    - admin ;
+    - manager ;
+    - buyer.
+    """
+
+    message = (
+        "Accès réservé aux rôles admin, manager "
+        "ou responsable rachat."
+    )
 
     def has_permission(self, request, view):
-        return get_role_name(request.user) in {
+        return _role_is(
+            request.user,
             ROLE_ADMIN,
             ROLE_MANAGER,
             ROLE_BUYER,
-        }
+        )
         
 
 class CanCreateSale(BasePermission):
-    message = "Seuls admin, manager ou vendor peuvent créer une vente."
+    """
+    Autorise la création d'une vente à :
+    - admin ;
+    - manager ;
+    - vendor.
+    """
+
+    message = (
+        "Seuls admin, manager ou vendeur "
+        "peuvent créer une vente."
+    )
 
     def has_permission(self, request, view):
-        user = request.user
-        if not user or not user.is_authenticated:
-            return False
-        return get_role_name(user) in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR}
+        return _role_is(
+            request.user,
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_VENDOR,
+        )
+        
 
+class CanProcessInvoicePayment(BasePermission):
+    """
+    Autorise le paiement d'une facture.
+
+    Rôles autorisés :
+    - manager ;
+    - cashier.
+    """
+
+    message = (
+        "Seuls le manager ou le caissier "
+        "peuvent réaliser un paiement."
+    )
+
+    def has_permission(self, request, view):
+        return _role_is(
+            request.user,
+            ROLE_MANAGER,
+            ROLE_CASHIER,
+        )
+# ============================================================
 
 # ============================================================
-# Object-level : ownership vendor
+# Object-level : vendeur propriétaire
 # ============================================================
 
 class IsAdminOrManagerOrVendor(BasePermission):
     """
-    - Admin/Manager : accès total
-    - Vendor : uniquement si l'objet appartient à son user
+    Permission générale :
+
+    - Admin :
+        accès autorisé.
+
+    - Manager :
+        accès autorisé uniquement aux objets appartenant
+        à ses bijouteries.
+
+    - Vendor :
+        accès autorisé uniquement aux objets qui lui
+        appartiennent.
+
+    Important :
+    Cette permission ne filtre pas automatiquement
+    les listes. Le queryset doit également être limité.
     """
-    message = "Accès réservé aux admin/manager ou au vendeur propriétaire."
+
+    message = (
+        "Accès réservé aux administrateurs, managers "
+        "ou au vendeur propriétaire."
+    )
 
     def has_permission(self, request, view):
-        role = get_role_name(request.user)
-        return role in {ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR}
+        return _role_is(
+            request.user,
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_VENDOR,
+        )
 
-    def has_object_permission(self, request, view, obj):
+    def has_object_permission(
+        self,
+        request,
+        view,
+        obj,
+    ):
         role = get_role_name(request.user)
 
-        if role in {ROLE_ADMIN, ROLE_MANAGER}:
+        if role == ROLE_ADMIN:
             return True
+
+        if role == ROLE_MANAGER:
+            bijouterie_id = _obj_bijouterie_id(obj)
+
+            return bool(
+                bijouterie_id
+                and _manager_has_bijouterie(
+                    request.user,
+                    bijouterie_id,
+                )
+            )
 
         if role == ROLE_VENDOR:
             owner_user_id = _obj_owner_user_id(obj)
-            return bool(owner_user_id and owner_user_id == request.user.id)
+
+            return bool(
+                owner_user_id
+                and owner_user_id == request.user.id
+            )
 
         return False
 
 
 # ============================================================
-# Object-level : scope bijouterie
+# Object-level : scope bijouterie générique
 # ============================================================
 
 class IsSameBijouterieOrAdmin(BasePermission):
     """
-    Autorise si l'objet est dans le scope bijouterie du user :
-    - Admin   : toujours OK
-    - Manager : obj.bijouterie_id ∈ manager.bijouteries
-    - Vendor  : obj.bijouterie_id == vendor.bijouterie_id
-    - Cashier : obj.bijouterie_id == cashier.bijouterie_id
+    Autorise l'accès si l'objet appartient au périmètre
+    de l'utilisateur.
+
+    - Admin :
+        toutes les bijouteries.
+
+    - Manager :
+        une des bijouteries gérées.
+
+    - Vendor :
+        sa bijouterie.
+
+    - Cashier :
+        sa bijouterie.
+
+    - Buyer :
+        sa bijouterie.
+
+    Cette permission est générique et ne doit pas vérifier
+    le propriétaire d'une Vente.
     """
-    message = "Objet hors de votre bijouterie."
+
+    message = "Objet hors de votre périmètre de bijouterie."
 
     def has_permission(self, request, view):
-        return get_role_name(request.user) in {
-            ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER, ROLE_BUYER
-        }
+        return _role_is(
+            request.user,
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_VENDOR,
+            ROLE_CASHIER,
+            ROLE_BUYER,
+        )
 
-    def has_object_permission(self, request, view, obj):
+    def has_object_permission(
+        self,
+        request,
+        view,
+        obj,
+    ):
         role = get_role_name(request.user)
 
         if role == ROLE_ADMIN:
             return True
 
-        obj_bj_id = _obj_bijouterie_id(obj)
-        if not obj_bj_id:
+        bijouterie_id = _obj_bijouterie_id(obj)
+
+        if not bijouterie_id:
             return False
 
         if role == ROLE_MANAGER:
-            return _manager_has_bijouterie(request.user, obj_bj_id)
+            return _manager_has_bijouterie(
+                request.user,
+                bijouterie_id,
+            )
 
         if role == ROLE_VENDOR:
-            vp = _vendor_profile(request.user)
-            return bool(vp and vp.bijouterie_id == obj_bj_id)
+            vendor = _vendor_profile(
+                request.user
+            )
+
+            return bool(
+                vendor
+                and vendor.bijouterie_id
+                == bijouterie_id
+            )
 
         if role == ROLE_CASHIER:
-            cp = _cashier_profile(request.user)
-            return bool(cp and cp.bijouterie_id == obj_bj_id)
-        
+            cashier = _cashier_profile(
+                request.user
+            )
+
+            return bool(
+                cashier
+                and cashier.bijouterie_id
+                == bijouterie_id
+            )
+
         if role == ROLE_BUYER:
-            bp = _buyer_profile(request.user)
-            return bool(bp and bp.bijouterie_id == obj_bj_id)
+            buyer = _buyer_profile(
+                request.user
+            )
+
+            return bool(
+                buyer
+                and buyer.bijouterie_id
+                == bijouterie_id
+            )
 
         return False
 
 
+# ============================================================
+# Object-level : ventes
+# ============================================================
 class IsSameBijouterieForVenteOrAdmin(BasePermission):
     """
-    Variante optimisée pour Vente, où vente.bijouterie_id est direct.
+    Permission destinée aux objets Vente.
+
+    Règles :
+    - admin : toutes les ventes ;
+    - manager : ventes de ses bijouteries ;
+    - vendor : uniquement ses propres ventes ;
+    - cashier : ventes de sa bijouterie ;
+    - buyer : aucun accès.
     """
-    message = "⛔ Vente hors de votre bijouterie."
+
+    message = "Vente hors de votre périmètre."
 
     def has_permission(self, request, view):
-        return get_role_name(request.user) in {
-            ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, ROLE_CASHIER
-        }
+        return _role_is(
+            request.user,
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_VENDOR,
+            ROLE_CASHIER,
+        )
 
-    def has_object_permission(self, request, view, vente):
+    def has_object_permission(
+        self,
+        request,
+        view,
+        vente,
+    ):
         role = get_role_name(request.user)
 
         if role == ROLE_ADMIN:
             return True
 
-        vente_bj_id = getattr(vente, "bijouterie_id", None)
-        if not vente_bj_id:
+        bijouterie_id = getattr(
+            vente,
+            "bijouterie_id",
+            None,
+        )
+
+        if not bijouterie_id:
             return False
 
         if role == ROLE_MANAGER:
-            return _manager_has_bijouterie(request.user, vente_bj_id)
+            return _manager_has_bijouterie(
+                request.user,
+                bijouterie_id,
+            )
 
         if role == ROLE_VENDOR:
-            vp = _vendor_profile(request.user)
-            return bool(vp and vp.bijouterie_id == vente_bj_id)
+            vendor = _vendor_profile(
+                request.user
+            )
+
+            return bool(
+                vendor
+                and vendor.bijouterie_id == bijouterie_id
+                and getattr(
+                    vente,
+                    "vendor_id",
+                    None,
+                ) == vendor.id
+            )
 
         if role == ROLE_CASHIER:
-            cp = _cashier_profile(request.user)
-            return bool(cp and cp.bijouterie_id == vente_bj_id)
-        
-        if role == ROLE_BUYER:
-            bp = _buyer_profile(request.user)
-            return bool(bp and bp.bijouterie_id == vente_bj_id)
+            cashier = _cashier_profile(
+                request.user
+            )
+
+            return bool(
+                cashier
+                and cashier.bijouterie_id == bijouterie_id
+            )
 
         return False
     
-    
+
 

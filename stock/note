@@ -2,7 +2,7 @@ Et là on est dans le cœur logique de ton ERP Rio-Gold 🔥
 Tu as 3 notions différentes :
 
 1. Stock.en_stock
-2. Stock.quantite_disponible
+2. Stock.quantite_totale
 3. VendorStock.quantite_allouee
 Elles ne veulent pas du tout dire la même chose.
 
@@ -18,32 +18,32 @@ Dans ton cas :
 💡 Exemple
 Tu fais un arrivage de 10 pièces :
     en_stock = 10
-    quantite_disponible = 10
+    quantite_totale = 10
 
 
 Si plus tard tu réserves 4 pièces pour une bijouterie :
     en_stock = 10   (toujours 10 physiquement)
-    quantite_disponible = 6
+    quantite_totale = 6
 
 
 👉 Donc :
     en_stock = quantité physique totale présente
 
-🟡 2️⃣ Stock.quantite_disponible
+🟡 2️⃣ Stock.quantite_totale
 👉 C’est la quantité encore libre dans ce bucket.
 Formule logique :
-    quantite_disponible = en_stock - quantité déjà transférée / réservée
+    quantite_totale = en_stock - quantité déjà transférée / réservée
 
 
 Dans le bucket RÉSERVE :
 
-en_stock  |	quantite_disponible	  |  Signification
+en_stock  |	quantite_totale	  |  Signification
  10	      |      10	              |   rien n’est alloué
  10	      |      6	              |   4 ont été transférés
  10	      |      0	              |   tout a été alloué
 
 👉 Donc :
-    quantite_disponible = ce que tu peux encore bouger
+    quantite_totale = ce que tu peux encore bouger
 
 🔵 3️⃣ VendorStock.quantite_allouee
 Ça c’est encore autre chose.
@@ -59,7 +59,7 @@ Alors :
 
 Stock (réserve)
     en_stock = 10
-    quantite_disponible = 5
+    quantite_totale = 5
 
 VendorStock :
     A → 3
@@ -72,7 +72,7 @@ VendorStock.quantite_allouee = ce qu’un vendeur a dans son stock personnel
 🎯 Résumé clair
     Champ	            |    Où	         |       Signification
   en_stock	            |   Stock	     |   Total physique dans ce bucket
-  quantite_disponible	|   Stock	     |   Ce qui reste libre
+  quantite_totale	|   Stock	     |   Ce qui reste libre
   quantite_allouee	    |  VendorStock	 |   Ce qu’un vendeur détient
 
 
@@ -80,10 +80,10 @@ VendorStock.quantite_allouee = ce qu’un vendeur a dans son stock personnel
 Arrivage
     Réserve:
     - en_stock += qte
-    - quantite_disponible += qte
+    - quantite_totale += qte
 
 Allocation vers vendeur
-    Réserve.quantite_disponible -= qte
+    Réserve.quantite_totale -= qte
     VendorStock.quantite_allouee += qte
 
 Vente confirmée
@@ -117,7 +117,7 @@ Effet :
 
 Stock (Réserve : bijouterie=None)
     en_stock += qte
-    quantite_disponible += qte
+    quantite_totale += qte
 
 InventoryMovement
     PURCHASE_IN : EXTERNAL → RESERVED
@@ -125,13 +125,13 @@ InventoryMovement
 2) ALLOCATION vers une BIJOUTERIE
 But : déplacer une partie de la réserve vers une bijouterie.
 RÉSERVE (bijouterie=None)
-    quantite_disponible -= qte
+    quantite_totale -= qte
     en_stock ne change pas si tu considères “en_stock réserve” comme total réserve
     (mais si tu fais un vrai transfert, tu diminues en_stock réserve aussi)
 
 BIJOUTERIE (bijouterie=X)
     en_stock += qte
-    quantite_disponible += qte
+    quantite_totale += qte
 
 InventoryMovement
     ALLOCATE : RESERVED → BIJOUTERIE
@@ -143,7 +143,7 @@ InventoryMovement
 But : donner au vendeur un stock personnel pour vendre.
 
 Stock BIJOUTERIE
-    quantite_disponible -= qte
+    quantite_totale -= qte
 
 VendorStock
     quantite_allouee += qte
@@ -207,7 +207,7 @@ Là, c’est différent.
 Un développeur frontend qui voit :
 {
   "en_stock": 3,
-  "quantite_disponible": 10
+  "quantite_totale": 10
 }
 Il va poser la question :
 “c’est quoi la différence ?”
@@ -274,3 +274,20 @@ Stock alloué au vendeur par produit_line
 Donc chaque ligne vendeur correspond déjà à un lot précis.
 
 👉 C’est ça qui te donne le FIFO par lot.
+
+
+
+
+Stock.quantite_totale
+= quantité historique reçue dans la bijouterie
+
+Stock.en_stock
+= quantité disponible dans le magasin
+
+VendorStock.en_stock
+= quantité encore détenue par le vendeur
+
+
+Stock.en_stock diminue
+Stock.quantite_totale reste inchangée
+VendorStock.quantite_allouee augmente
