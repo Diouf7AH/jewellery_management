@@ -282,12 +282,118 @@ class CreateStaffView(APIView):
         )
 
 class CreateAdminView(APIView):
+    """
+    Attribue le rôle administrateur à un utilisateur existant.
+
+    Règles :
+    - Seul un admin peut créer un autre admin.
+    - L'utilisateur doit déjà avoir un compte.
+    - Le compte doit être actif.
+    - L'email doit être confirmé.
+    - L'utilisateur ne doit pas déjà avoir un profil staff.
+    """
+
     permission_classes = [IsAdminOrManager]
 
+    @swagger_auto_schema(
+        operation_id="createAdmin",
+        operation_summary="Créer un administrateur",
+        operation_description=(
+            "Attribue le rôle `admin` à un utilisateur existant.\n\n"
+            "### Règles\n"
+            "- L'utilisateur doit déjà avoir créé son compte.\n"
+            "- Le compte utilisateur doit être actif.\n"
+            "- L'adresse email doit être confirmée.\n"
+            "- L'utilisateur ne doit pas déjà posséder un profil "
+            "`manager`, `vendor`, `cashier` ou `buyer`.\n"
+            "- Seul un administrateur peut attribuer le rôle `admin`.\n\n"
+            "### Important\n"
+            "Aucun profil `Manager`, `Vendor`, `Cashier` ou `Buyer` "
+            "n'est créé.\n"
+            "Le rôle `admin` est directement affecté au compte utilisateur."
+        ),
+
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["email"],
+            properties={
+                "email": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    format=openapi.FORMAT_EMAIL,
+                    description=(
+                        "Adresse email de l'utilisateur "
+                        "à promouvoir administrateur."
+                    ),
+                    example="admin@example.com",
+                ),
+            },
+        ),
+
+        responses={
+            200: openapi.Response(
+                description="Administrateur créé avec succès",
+                examples={
+                    "application/json": {
+                        "message": (
+                            "Administrateur créé avec succès."
+                        ),
+                        "user": {
+                            "id": 12,
+                            "email": "admin@example.com",
+                            "role": "admin",
+                        },
+                    }
+                },
+            ),
+
+            400: openapi.Response(
+                description="Erreur de validation",
+                examples={
+                    "application/json": {
+                        "detail": "Utilisateur introuvable."
+                    }
+                },
+            ),
+
+            403: openapi.Response(
+                description="Accès refusé",
+                examples={
+                    "application/json": {
+                        "detail": (
+                            "Seul un administrateur peut créer "
+                            "un autre administrateur."
+                        )
+                    }
+                },
+            ),
+
+            409: openapi.Response(
+                description="Conflit métier",
+                examples={
+                    "application/json": {
+                        "detail": (
+                            "Cet utilisateur possède déjà "
+                            "un profil staff."
+                        )
+                    }
+                },
+            ),
+        },
+
+        tags=["Staff"],
+    )
     def post(self, request):
         email = (
             request.data.get("email") or ""
         ).strip().lower()
+
+        if not email:
+            return Response(
+                {
+                    "detail": "L'adresse email est obligatoire."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             user = promote_user_to_admin(
@@ -297,19 +403,36 @@ class CreateAdminView(APIView):
 
         except PermissionError as exc:
             return Response(
-                {"detail": str(exc)},
+                {
+                    "detail": str(exc),
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         except ValueError as exc:
+            message = str(exc)
+
+            if "profil staff" in message.lower():
+                response_status = (
+                    status.HTTP_409_CONFLICT
+                )
+            else:
+                response_status = (
+                    status.HTTP_400_BAD_REQUEST
+                )
+
             return Response(
-                {"detail": str(exc)},
-                status=status.HTTP_400_BAD_REQUEST,
+                {
+                    "detail": message,
+                },
+                status=response_status,
             )
 
         return Response(
             {
-                "message": "Administrateur créé avec succès.",
+                "message": (
+                    "Administrateur créé avec succès."
+                ),
                 "user": {
                     "id": user.id,
                     "email": user.email,
