@@ -281,6 +281,47 @@ class CreateStaffView(APIView):
         )
 
 
+class PromoteAdminView(APIView):
+    permission_classes = [IsAdminOrManager]
+
+    def post(self, request):
+        email = (
+            request.data.get("email") or ""
+        ).strip().lower()
+
+        try:
+            user = promote_user_to_admin(
+                caller_user=request.user,
+                email=email,
+            )
+
+        except PermissionError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        except ValueError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "message": (
+                    "Utilisateur promu administrateur avec succès."
+                ),
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "role": ROLE_ADMIN,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+
 class UpdateStaffView(APIView):
     """
     API unique de mise à jour de staff.

@@ -491,3 +491,56 @@ def update_staff_member(
         user=user,
     )
 
+
+@transaction.atomic
+def promote_user_to_admin(
+    *,
+    caller_user,
+    email: str,
+):
+    caller_role = get_role_name(caller_user)
+
+    if caller_role != ROLE_ADMIN:
+        raise PermissionError(
+            "Seul un administrateur peut promouvoir "
+            "un utilisateur en administrateur."
+        )
+
+    email = (email or "").strip().lower()
+
+    user = (
+        User.objects
+        .select_for_update()
+        .filter(email__iexact=email)
+        .first()
+    )
+
+    if user is None:
+        raise ValueError(
+            "Utilisateur introuvable."
+        )
+
+    if not user.is_active:
+        raise ValueError(
+            "Le compte utilisateur n'est pas actif."
+        )
+
+    existing_staff = _get_existing_staff_flags(user)
+
+    if any(existing_staff.values()):
+        raise ValueError(
+            "Cet utilisateur possède déjà un profil staff."
+        )
+
+    role_obj, _ = Role.objects.get_or_create(
+        role=ROLE_ADMIN,
+    )
+
+    user.user_role = role_obj
+    user.save(
+        update_fields=[
+            "user_role",
+        ]
+    )
+
+    return user

@@ -108,6 +108,14 @@ class CreateStaffSerializer(serializers.Serializer):
 
         return attrs
     
+
+
+class PromoteAdminSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        return value.strip().lower()
+    
 # ============================================================
 # Réponse après création
 # ============================================================
