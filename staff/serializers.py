@@ -1,7 +1,8 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from backend.roles import ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR
+from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
+                           ROLE_VENDOR)
 from store.models import Bijouterie
 
 User = get_user_model()
@@ -13,6 +14,7 @@ User = get_user_model()
 class CreateStaffSerializer(serializers.Serializer):
     role = serializers.ChoiceField(
         choices=[
+            (ROLE_ADMIN, "Administrateur"),
             (ROLE_MANAGER, "Manager"),
             (ROLE_VENDOR, "Vendeur"),
             (ROLE_CASHIER, "Caissier"),
