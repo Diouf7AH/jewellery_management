@@ -22,16 +22,17 @@ class CreateStaffSerializer(serializers.Serializer):
 
     email = serializers.EmailField()
 
-    bijouterie_nom = serializers.SlugRelatedField(
+    # Vendor / Cashier / Buyer : une seule bijouterie
+    bijouterie_id = serializers.PrimaryKeyRelatedField(
         queryset=Bijouterie.objects.all(),
-        slug_field="nom",
         required=False,
         allow_null=True,
         help_text=(
-            "Nom de la bijouterie pour vendor, cashier ou buyer."
+            "ID de la bijouterie pour vendor, cashier ou buyer."
         ),
     )
 
+    # Manager : plusieurs bijouteries
     bijouteries = serializers.PrimaryKeyRelatedField(
         queryset=Bijouterie.objects.all(),
         many=True,
@@ -58,6 +59,10 @@ class CreateStaffSerializer(serializers.Serializer):
                 )
             })
 
+        # ====================================================
+        # Manager
+        # ====================================================
+
         if role == ROLE_MANAGER:
             if not attrs.get("bijouteries"):
                 raise serializers.ValidationError({
@@ -67,21 +72,25 @@ class CreateStaffSerializer(serializers.Serializer):
                     )
                 })
 
-            if attrs.get("bijouterie_nom"):
+            if attrs.get("bijouterie_id"):
                 raise serializers.ValidationError({
-                    "bijouterie_nom": (
+                    "bijouterie_id": (
                         "Utilisez 'bijouteries' pour un manager."
                     )
                 })
+
+        # ====================================================
+        # Vendor / Cashier / Buyer
+        # ====================================================
 
         if role in {
             ROLE_VENDOR,
             ROLE_CASHIER,
             ROLE_BUYER,
         }:
-            if not attrs.get("bijouterie_nom"):
+            if not attrs.get("bijouterie_id"):
                 raise serializers.ValidationError({
-                    "bijouterie_nom": (
+                    "bijouterie_id": (
                         "La bijouterie est obligatoire pour "
                         "vendor, cashier et buyer."
                     )
@@ -90,14 +99,13 @@ class CreateStaffSerializer(serializers.Serializer):
             if attrs.get("bijouteries"):
                 raise serializers.ValidationError({
                     "bijouteries": (
-                        "Utilisez 'bijouterie_nom' pour vendor, "
+                        "Utilisez 'bijouterie_id' pour vendor, "
                         "cashier et buyer."
                     )
                 })
 
         return attrs
-
-
+    
 # ============================================================
 # Réponse après création
 # ============================================================
