@@ -502,8 +502,7 @@ def promote_user_to_admin(
 
     if caller_role != ROLE_ADMIN:
         raise PermissionError(
-            "Seul un administrateur peut promouvoir "
-            "un utilisateur en administrateur."
+            "Seul un administrateur peut créer un autre administrateur."
         )
 
     email = (email or "").strip().lower()
@@ -525,6 +524,11 @@ def promote_user_to_admin(
             "Le compte utilisateur n'est pas actif."
         )
 
+    if not user.is_email_verified:
+        raise ValueError(
+            "L'utilisateur doit confirmer son email."
+        )
+
     existing_staff = _get_existing_staff_flags(user)
 
     if any(existing_staff.values()):
@@ -538,9 +542,8 @@ def promote_user_to_admin(
 
     user.user_role = role_obj
     user.save(
-        update_fields=[
-            "user_role",
-        ]
+        update_fields=["user_role"]
     )
 
     return user
+

@@ -15,7 +15,8 @@ from staff.serializers import (CreateStaffSerializer,
                                StaffDashboardResponseSerializer,
                                StaffDetailSerializer, StaffListItemSerializer,
                                UpdateStaffSerializer)
-from staff.services import create_staff_member, update_staff_member
+from staff.services import (create_staff_member, promote_user_to_admin,
+                            update_staff_member)
 from vendor.models import Vendor
 
 SINGLE_BIJOUTERIE_ROLES = {
@@ -280,8 +281,7 @@ class CreateStaffView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
-
-class PromoteAdminView(APIView):
+class CreateAdminView(APIView):
     permission_classes = [IsAdminOrManager]
 
     def post(self, request):
@@ -309,9 +309,7 @@ class PromoteAdminView(APIView):
 
         return Response(
             {
-                "message": (
-                    "Utilisateur promu administrateur avec succès."
-                ),
+                "message": "Administrateur créé avec succès.",
                 "user": {
                     "id": user.id,
                     "email": user.email,
@@ -320,7 +318,6 @@ class PromoteAdminView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-        
 
 class UpdateStaffView(APIView):
     """
