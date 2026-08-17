@@ -394,19 +394,33 @@ def _role_is(
 
     return get_role_name(user) in roles
 
-class IsAdminOnly(BasePermission):
+# class IsAdminOnly(BasePermission):
+#     """
+#     Accès réservé à l'administrateur.
+#     """
+
+#     message = "Accès réservé au rôle admin."
+
+#     def has_permission(self, request, view):
+#         return _role_is(
+#             request.user,
+#             ROLE_ADMIN,
+#         )
+
+class IsAdmin(BasePermission):
     """
-    Accès réservé à l'administrateur.
+    Autorise uniquement les administrateurs.
     """
 
-    message = "Accès réservé au rôle admin."
+    message = "Accès réservé aux administrateurs."
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_ADMIN,
-        )
+        user = request.user
 
+        if not user or not user.is_authenticated:
+            return False
+
+        return get_role_name(user) == ROLE_ADMIN
 
 
 class IsManager(BasePermission):

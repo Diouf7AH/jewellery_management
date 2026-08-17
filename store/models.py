@@ -148,7 +148,7 @@ class Categorie(models.Model):
 # Type model
 # class Type(models.Model):
 #     type = models.CharField(max_length = 55, unique=True, null=True)
-#     categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="type_categorie")
+#     categorie = models.ForeignKey(Categorie, on_delete=models.PROTECT, null=True, blank=True, related_name="type_categorie")
     
     
 #     class Meta:
@@ -161,7 +161,7 @@ class Categorie(models.Model):
 # Type model
 class Modele(models.Model):
     modele = models.CharField(max_length=55, unique=True, null=True)
-    categorie = models.ForeignKey(Categorie, on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_categorie")
+    categorie = models.ForeignKey(Categorie, on_delete=models.PROTECT, null=True, blank=True, related_name="modele_categorie")
     
     
     def __str__(self):
@@ -187,7 +187,6 @@ class Purete(models.Model):
 # Brand model
 # class Marque(models.Model):
 #     marque = models.CharField(unique=True, max_length=25, null=True, blank=True)
-#     purete = models.ForeignKey(Purete, on_delete=models.SET_NULL, null=True, blank=True, related_name="purete_marque", default=get_default_purete)
 #     prix = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
 #     creation_date = models.DateTimeField(auto_now_add=True)
 #     modification_date = models.DateTimeField(auto_now=True)
@@ -291,7 +290,7 @@ class MarquePuretePrixHistory(models.Model):
         settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
-        on_delete=models.SET_NULL,
+        on_delete=models.PROTECT,
         related_name="changements_prix_marque_purete",
     )
 
@@ -340,20 +339,20 @@ class Produit(models.Model):
     # QR code sera généré via signal post_save (transaction.on_commit)
     # qr_code = models.ImageField(upload_to="qr_codes/", null=True, blank=True)
 
-    categorie = models.ForeignKey("Categorie", on_delete=models.SET_NULL, null=True, blank=True, related_name="categorie_produit")
-    purete = models.ForeignKey("Purete", on_delete=models.SET_NULL, null=True, blank=True, related_name="purete_produit", default=get_default_purete)
-    marque = models.ForeignKey("Marque", on_delete=models.SET_NULL, null=True, blank=True, related_name="marque_produit")
-    matiere = models.CharField(choices=MATIERE, max_length=50, default="or", null=True, blank=True)
-    modele = models.ForeignKey("Modele", on_delete=models.SET_NULL, null=True, blank=True, related_name="modele_produit")
+    categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit",)
+    purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit",)
+    marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",)
+    modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",)
 
-    poids = models.DecimalField(default=Decimal("0.00"), decimal_places=2, max_digits=12)
-    taille = models.DecimalField(blank=True, null=True, default=Decimal("0.00"), decimal_places=2, max_digits=12)
+    matiere = models.CharField(choices=MATIERE,max_length=50,default="or",)
+    poids = models.DecimalField(decimal_places=2, max_digits=12)
+    taille = models.DecimalField(blank=True, null=True, decimal_places=2, max_digits=12)
 
-    genre = models.CharField(choices=GENRE, default="F", max_length=10, blank=True, null=True)
-    etat = models.CharField(choices=ETAT, max_length=10, default="N", null=True, blank=True)
+    genre = models.CharField(choices=GENRE, default="F", max_length=10)
+    etat = models.CharField(choices=ETAT, max_length=10, default="N")
 
-    sku = models.SlugField(unique=True, max_length=120, null=True, blank=True)
-    slug = models.SlugField(max_length=120, unique=True, blank=True, null=True)
+    sku = models.SlugField(unique=True,max_length=120,null=True,blank=True,)
+    slug = models.SlugField(max_length=120,unique=True,null=True,blank=True,)
 
     date_ajout = models.DateTimeField(auto_now_add=True)
     date_modification = models.DateTimeField(auto_now=True)
@@ -371,31 +370,31 @@ class Produit(models.Model):
         return f"{base_url}/produit/{self.slug}" if self.slug else None
 
     def clean(self):
-        if self.poids is not None and self.poids < 0:
-            raise ValidationError("Le poids ne peut pas être négatif.")
+        super().clean()
+
+        if self.poids is None or self.poids <= 0:
+            raise ValidationError({
+                "poids": "Le poids doit être supérieur à zéro."
+            })
+
         if self.taille is not None and self.taille < 0:
-            raise ValidationError("La taille ne peut pas être négative.")
+            raise ValidationError({
+                "taille": "La taille ne peut pas être négative."
+            })
 
 
     def skuGet(self):
-        if not (self.categorie and self.modele and self.marque and self.purete and self.etat):
-            return None
+        poids_str = f"{self.poids:.2f}".replace(".", "-")
 
-        poids = self.poids if self.poids is not None else Decimal("0.00")
-        taille = self.taille if self.taille is not None else Decimal("0.00")
-
-        # 🔥 format exact que tu veux
-        poids_str = f"{poids:.2f}".replace(".", "-")
+        taille = self.taille or Decimal("0.00")
         taille_str = f"{taille:.2f}".replace(".", "-")
 
         return (
-            # f"{(self.categorie.nom or '')[:4].upper()}-"
-            f"{(self.categorie.nom or '')[:3].upper()}-"
-            # f"{(self.modele.modele or '')[:4].upper()}-"
-            f"{(self.modele.modele or '')[:3].upper()}-"
+            f"{self.categorie.nom[:3].upper()}-"
+            f"{self.modele.modele[:3].upper()}-"
             f"{self.etat}-"
             f"{self.purete.purete}-"
-            f"{(self.marque.marque or '')[:3].upper()}-"
+            f"{self.marque.marque[:3].upper()}-"
             f"P{poids_str}-T{taille_str}"
         )
 
@@ -417,10 +416,12 @@ class Produit(models.Model):
         return sku
 
     def save(self, *args, **kwargs):
-        self.full_clean()
-
         if not self.nom and self.categorie and self.modele and self.marque:
-            self.nom = f"{self.categorie} {self.modele} {self.marque}"
+            self.nom = (
+                f"{self.categorie.nom} "
+                f"{self.modele.modele} "
+                f"{self.marque.marque}"
+            )
 
         if not self.slug:
             base_slug = slugify(self.nom or "produit")
@@ -431,6 +432,7 @@ class Produit(models.Model):
             if sku:
                 self.sku = self._make_unique_sku(sku)
 
+        self.full_clean()
         super().save(*args, **kwargs)
 
     # # Admin helper
@@ -443,23 +445,33 @@ class Produit(models.Model):
 # Model for Product Gallery
 class Gallery(models.Model):
     produit = models.ForeignKey(
-        Produit, on_delete=models.CASCADE, null=True, related_name="produit_gallery"
+        Produit,
+        on_delete=models.CASCADE,
+        related_name="produit_gallery",
     )
-    image = models.ImageField(upload_to='produit_gallery/')
-    active = models.BooleanField(default=True)
-    date = models.DateTimeField(auto_now_add=True)
+
+    image = models.ImageField(
+        upload_to="produit_gallery/"
+    )
+
+    active = models.BooleanField(
+        default=True,
+        db_index=True,
+    )
+
+    date = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    class Meta:
+        verbose_name_plural = "Galerie"
+        ordering = ["-date"]
 
     def __str__(self):
         return f"Image de {self.produit.nom}"
 
+    @property
     def image_url(self):
         if self.image:
-            return self.image.url  # <== retourne l'URL utilisable
-
+            return self.image.url
         return None
-
-    class Meta:
-        verbose_name_plural = "Galerie"
-        ordering = ['-date']
-        
-

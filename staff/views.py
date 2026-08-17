@@ -3,17 +3,16 @@ from django.db.models import Count
 # staff/views.py
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from rest_framework import permissions, status
+from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
+from backend.permissions import IsAdmin, IsAdminOrManager
 from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
                            ROLE_VENDOR, get_role_name)
 from staff.models import Buyer, Cashier, Manager
 from staff.serializers import (CreateStaffSerializer,
                                StaffDashboardResponseSerializer,
-                               StaffDetailSerializer, StaffListItemSerializer,
                                UpdateStaffSerializer)
 from staff.services import (create_staff_member, promote_user_to_admin,
                             update_staff_member)
@@ -291,9 +290,10 @@ class CreateAdminView(APIView):
     - Le compte doit être actif.
     - L'email doit être confirmé.
     - L'utilisateur ne doit pas déjà avoir un profil staff.
+    - Le nouvel admin devient également super-utilisateur Django.
     """
 
-    permission_classes = [IsAdminOrManager]
+    permission_classes = [IsAdmin]
 
     @swagger_auto_schema(
         operation_id="createAdmin",
@@ -306,13 +306,18 @@ class CreateAdminView(APIView):
             "- L'adresse email doit être confirmée.\n"
             "- L'utilisateur ne doit pas déjà posséder un profil "
             "`manager`, `vendor`, `cashier` ou `buyer`.\n"
-            "- Seul un administrateur peut attribuer le rôle `admin`.\n\n"
+            "- Seul un administrateur peut créer un autre administrateur.\n\n"
+
+            "### Droits attribués\n"
+            "- `user_role = admin`\n"
+            "- `is_staff = true`\n"
+            "- `is_superuser = true`\n"
+            "- `is_active = true`\n\n"
+
             "### Important\n"
             "Aucun profil `Manager`, `Vendor`, `Cashier` ou `Buyer` "
-            "n'est créé.\n"
-            "Le rôle `admin` est directement affecté au compte utilisateur."
+            "n'est créé."
         ),
-
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
             required=["email"],
@@ -322,30 +327,29 @@ class CreateAdminView(APIView):
                     format=openapi.FORMAT_EMAIL,
                     description=(
                         "Adresse email de l'utilisateur "
-                        "à promouvoir administrateur."
+                        "à transformer en administrateur."
                     ),
                     example="admin@example.com",
                 ),
             },
         ),
-
         responses={
             200: openapi.Response(
                 description="Administrateur créé avec succès",
                 examples={
                     "application/json": {
-                        "message": (
-                            "Administrateur créé avec succès."
-                        ),
+                        "message": "Administrateur créé avec succès.",
                         "user": {
                             "id": 12,
                             "email": "admin@example.com",
                             "role": "admin",
+                            "is_staff": True,
+                            "is_superuser": True,
+                            "is_active": True,
                         },
                     }
                 },
             ),
-
             400: openapi.Response(
                 description="Erreur de validation",
                 examples={
@@ -354,7 +358,6 @@ class CreateAdminView(APIView):
                     }
                 },
             ),
-
             403: openapi.Response(
                 description="Accès refusé",
                 examples={
@@ -366,7 +369,6 @@ class CreateAdminView(APIView):
                     }
                 },
             ),
-
             409: openapi.Response(
                 description="Conflit métier",
                 examples={
@@ -379,7 +381,6 @@ class CreateAdminView(APIView):
                 },
             ),
         },
-
         tags=["Staff"],
     )
     def post(self, request):
@@ -390,7 +391,9 @@ class CreateAdminView(APIView):
         if not email:
             return Response(
                 {
-                    "detail": "L'adresse email est obligatoire."
+                    "detail": (
+                        "L'adresse email est obligatoire."
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -437,10 +440,14 @@ class CreateAdminView(APIView):
                     "id": user.id,
                     "email": user.email,
                     "role": ROLE_ADMIN,
+                    "is_staff": user.is_staff,
+                    "is_superuser": user.is_superuser,
+                    "is_active": user.is_active,
                 },
             },
             status=status.HTTP_200_OK,
         )
+        
 
 class UpdateStaffView(APIView):
     """

@@ -43,7 +43,12 @@ from .serializers import (AchatDetailSerializer, AchatOutSerializer,
 
 class AchatDashboardView(APIView):
     """
-    Dashboard des achats et arrivages sur les trois dernières années.
+    Dashboard des achats et arrivages.
+
+    Périodes disponibles :
+    - current_year : année en cours uniquement ;
+    - 3_years      : trois dernières années,
+                     année en cours incluse.
 
     Règles temporelles :
     - Achat.created_at pour les statistiques d'achats ;
@@ -61,21 +66,38 @@ class AchatDashboardView(APIView):
 
     @swagger_auto_schema(
         operation_summary=(
-            "Dashboard des achats et arrivages "
-            "sur les 3 dernières années"
+            "Dashboard des achats et arrivages"
         ),
         operation_description=(
-            "Retourne les statistiques des achats et des arrivages "
-            "des trois dernières années.\n\n"
+            "Retourne les statistiques des achats et arrivages.\n\n"
+            "Périodes disponibles :\n"
+            "- `current_year` : année en cours uniquement ;\n"
+            "- `3_years` : trois dernières années, "
+            "année en cours incluse.\n\n"
+            "Par défaut : `current_year`.\n\n"
             "Périmètre :\n"
             "- admin : toutes les bijouteries ;\n"
             "- manager : uniquement ses bijouteries affectées.\n\n"
-            "Filtre optionnel : `bijouterie_id`.\n\n"
             "Règles temporelles :\n"
             "- achats : `Achat.created_at` ;\n"
             "- lots et produits reçus : `Lot.received_at`."
         ),
         manual_parameters=[
+            openapi.Parameter(
+                "periode",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_STRING,
+                enum=[
+                    "current_year",
+                    "3_years",
+                ],
+                description=(
+                    "Période du dashboard. "
+                    "`current_year` = année en cours ; "
+                    "`3_years` = trois dernières années. "
+                    "Défaut : current_year."
+                ),
+            ),
             openapi.Parameter(
                 "bijouterie_id",
                 openapi.IN_QUERY,
@@ -148,16 +170,46 @@ class AchatDashboardView(APIView):
     def get(self, request):
         role = get_role_name(request.user)
 
+        # =====================================================
+        # 1. Période
+        # =====================================================
+
         current_year = timezone.localdate().year
-        start_year = current_year - 2
+
+        periode = (
+            request.query_params.get("periode")
+            or "current_year"
+        ).strip().lower()
+
+        allowed_periodes = {
+            "current_year",
+            "3_years",
+        }
+
+        if periode not in allowed_periodes:
+            raise ValidationError({
+                "periode": (
+                    "Valeur invalide. "
+                    "Utiliser 'current_year' ou '3_years'."
+                )
+            })
+
+        if periode == "current_year":
+            start_year = current_year
+        else:
+            start_year = current_year - 2
 
         start_date = timezone.make_aware(
-            datetime(start_year, 1, 1),
+            datetime(
+                start_year,
+                1,
+                1,
+            ),
             timezone.get_current_timezone(),
         )
 
         # =====================================================
-        # 1. Périmètre des bijouteries
+        # 2. Périmètre des bijouteries
         # =====================================================
 
         accessible_bijouterie_ids = None
@@ -171,9 +223,14 @@ class AchatDashboardView(APIView):
 
             if (
                 not manager
-                or not getattr(manager, "verifie", False)
+                or not getattr(
+                    manager,
+                    "verifie",
+                    False,
+                )
             ):
                 accessible_bijouterie_ids = []
+
             else:
                 bijouteries = getattr(
                     manager,
@@ -193,19 +250,30 @@ class AchatDashboardView(APIView):
                 )
 
         # =====================================================
-        # 2. Validation du filtre bijouterie_id
+        # 3. Validation bijouterie_id
         # =====================================================
 
-        raw_bijouterie_id = request.query_params.get(
-            "bijouterie_id"
+        raw_bijouterie_id = (
+            request.query_params.get(
+                "bijouterie_id"
+            )
         )
 
         bijouterie_id = None
 
-        if raw_bijouterie_id not in (None, ""):
+        if raw_bijouterie_id not in (
+            None,
+            "",
+        ):
             try:
-                bijouterie_id = int(raw_bijouterie_id)
-            except (TypeError, ValueError):
+                bijouterie_id = int(
+                    raw_bijouterie_id
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
                 raise ValidationError({
                     "bijouterie_id": (
                         "Ce paramètre doit être un entier."
@@ -215,7 +283,8 @@ class AchatDashboardView(APIView):
             if bijouterie_id <= 0:
                 raise ValidationError({
                     "bijouterie_id": (
-                        "Ce paramètre doit être supérieur à zéro."
+                        "Ce paramètre doit être "
+                        "supérieur à zéro."
                     )
                 })
 
@@ -229,39 +298,45 @@ class AchatDashboardView(APIView):
                 })
 
             if (
-                accessible_bijouterie_ids is not None
+                accessible_bijouterie_ids
+                is not None
                 and bijouterie_id
                 not in accessible_bijouterie_ids
             ):
                 raise ValidationError({
                     "bijouterie_id": (
-                        "Vous n'avez pas accès à cette bijouterie."
+                        "Vous n'avez pas accès "
+                        "à cette bijouterie."
                     )
                 })
 
         # =====================================================
-        # 3. Querysets de base
+        # 4. Querysets de base
         # =====================================================
 
-        # Statistiques d'achat :
-        # basées sur la date de création de l'achat.
+        # Achats :
+        # période basée sur Achat.created_at.
         achats = Achat.objects.filter(
             created_at__gte=start_date,
             status=Achat.STATUS_CONFIRMED,
         )
 
-        # Statistiques d'arrivage :
-        # basées sur la date réelle de réception du lot.
+        # Lots :
+        # période basée sur Lot.received_at.
         lots = Lot.objects.filter(
             received_at__gte=start_date,
             achat__status=Achat.STATUS_CONFIRMED,
         )
 
+        # ProduitLine :
+        # période basée sur Lot.received_at.
         lignes = (
             ProduitLine.objects
             .filter(
                 lot__received_at__gte=start_date,
-                lot__achat__status=Achat.STATUS_CONFIRMED,
+                lot__achat__status=(
+                    Achat.STATUS_CONFIRMED
+                ),
             )
             .annotate(
                 poids_ligne=ExpressionWrapper(
@@ -279,7 +354,7 @@ class AchatDashboardView(APIView):
         )
 
         # =====================================================
-        # 4. Application du périmètre manager
+        # 5. Périmètre manager
         # =====================================================
 
         if accessible_bijouterie_ids is not None:
@@ -302,7 +377,7 @@ class AchatDashboardView(APIView):
             )
 
         # =====================================================
-        # 5. Filtre par bijouterie demandé
+        # 6. Filtre bijouterie
         # =====================================================
 
         if bijouterie_id is not None:
@@ -315,11 +390,13 @@ class AchatDashboardView(APIView):
             )
 
             lignes = lignes.filter(
-                lot__achat__bijouterie_id=bijouterie_id
+                lot__achat__bijouterie_id=(
+                    bijouterie_id
+                )
             )
 
         # =====================================================
-        # 6. Statistiques globales
+        # 7. Statistiques globales
         # =====================================================
 
         total_achats = achats.count()
@@ -356,19 +433,27 @@ class AchatDashboardView(APIView):
         )["total"]
 
         # =====================================================
-        # 7. Achats par année
+        # 8. Achats par année
         # =====================================================
 
         achats_par_annee_qs = (
             achats
             .annotate(
-                annee=ExtractYear("created_at")
+                annee=ExtractYear(
+                    "created_at"
+                )
             )
-            .values("annee")
+            .values(
+                "annee"
+            )
             .annotate(
-                total_achats=Count("id"),
+                total_achats=Count(
+                    "id"
+                ),
                 montant_total=Coalesce(
-                    Sum("montant_total_ht"),
+                    Sum(
+                        "montant_total_ht"
+                    ),
                     Decimal("0.00"),
                     output_field=DecimalField(
                         max_digits=18,
@@ -376,20 +461,85 @@ class AchatDashboardView(APIView):
                     ),
                 ),
             )
-            .order_by("annee")
+            .order_by(
+                "annee"
+            )
         )
 
-        achats_par_annee = [
-            {
-                "annee": row["annee"],
-                "total_achats": row["total_achats"],
-                "montant_total": row["montant_total"],
-            }
-            for row in achats_par_annee_qs
-        ]
+        # =====================================================
+        # 9. Quantités reçues par année
+        # =====================================================
+
+        quantites_par_annee_qs = (
+            lignes
+            .annotate(
+                annee=ExtractYear(
+                    "lot__received_at"
+                )
+            )
+            .values(
+                "annee"
+            )
+            .annotate(
+                total_quantite=Coalesce(
+                    Sum("quantite"),
+                    0,
+                ),
+                total_poids=Coalesce(
+                    Sum("poids_ligne"),
+                    Decimal("0.000"),
+                    output_field=DecimalField(
+                        max_digits=18,
+                        decimal_places=3,
+                    ),
+                ),
+            )
+            .order_by(
+                "annee"
+            )
+        )
+
+        quantites_by_year = {
+            row["annee"]: row
+            for row in quantites_par_annee_qs
+        }
+
+        achats_par_annee = []
+
+        for row in achats_par_annee_qs:
+            annee = row["annee"]
+
+            quantite_row = (
+                quantites_by_year.get(
+                    annee,
+                    {},
+                )
+            )
+
+            achats_par_annee.append({
+                "annee": annee,
+                "total_achats": (
+                    row["total_achats"]
+                ),
+                "montant_total": (
+                    row["montant_total"]
+                ),
+                "total_quantite": (
+                    quantite_row.get(
+                        "total_quantite",
+                        0,
+                    )
+                ),
+                "total_poids": (
+                    quantite_row.get(
+                        "total_poids",
+                        Decimal("0.000"),
+                    )
+                ),
+            })
 
         # =====================================================
-        # 8. Top fournisseurs
+        # 10. Top fournisseurs
         # =====================================================
 
         top_fournisseurs_qs = (
@@ -401,9 +551,13 @@ class AchatDashboardView(APIView):
                 "fournisseur__telephone",
             )
             .annotate(
-                total_achats=Count("id"),
+                total_achats=Count(
+                    "id"
+                ),
                 montant_total=Coalesce(
-                    Sum("montant_total_ht"),
+                    Sum(
+                        "montant_total_ht"
+                    ),
                     Decimal("0.00"),
                     output_field=DecimalField(
                         max_digits=18,
@@ -423,15 +577,21 @@ class AchatDashboardView(APIView):
             fournisseur_nom = " ".join(
                 part
                 for part in [
-                    row["fournisseur__prenom"],
-                    row["fournisseur__nom"],
+                    row[
+                        "fournisseur__prenom"
+                    ],
+                    row[
+                        "fournisseur__nom"
+                    ],
                 ]
                 if part
             )
 
             if not fournisseur_nom:
                 fournisseur_nom = (
-                    row["fournisseur__telephone"]
+                    row[
+                        "fournisseur__telephone"
+                    ]
                     or "N/A"
                 )
 
@@ -439,16 +599,24 @@ class AchatDashboardView(APIView):
                 "fournisseur_id": (
                     row["fournisseur_id"]
                 ),
-                "fournisseur": fournisseur_nom,
-                "telephone": (
-                    row["fournisseur__telephone"]
+                "fournisseur": (
+                    fournisseur_nom
                 ),
-                "total_achats": row["total_achats"],
-                "montant_total": row["montant_total"],
+                "telephone": (
+                    row[
+                        "fournisseur__telephone"
+                    ]
+                ),
+                "total_achats": (
+                    row["total_achats"]
+                ),
+                "montant_total": (
+                    row["montant_total"]
+                ),
             })
 
         # =====================================================
-        # 9. Produits reçus
+        # 11. Produits reçus
         # =====================================================
 
         produits_qs = (
@@ -480,48 +648,85 @@ class AchatDashboardView(APIView):
 
         repartition_produits = [
             {
-                "produit_id": row["produit_id"],
-                "produit": (
-                    row["produit__nom"] or "N/A"
+                "produit_id": (
+                    row["produit_id"]
                 ),
-                "sku": row["produit__sku"],
-                "quantite": row["quantite"],
-                "poids_total": row["poids_total"],
+                "produit": (
+                    row["produit__nom"]
+                    or "N/A"
+                ),
+                "sku": (
+                    row["produit__sku"]
+                ),
+                "quantite": (
+                    row["quantite"]
+                ),
+                "poids_total": (
+                    row["poids_total"]
+                ),
             }
             for row in produits_qs
         ]
 
         # =====================================================
-        # 10. Réponse
+        # 12. Réponse
         # =====================================================
 
         return Response(
             {
                 "periode": {
+                    "type": periode,
                     "start_year": start_year,
                     "end_year": current_year,
                     "label": (
-                        f"{start_year}-{current_year}"
+                        str(current_year)
+                        if periode == "current_year"
+                        else (
+                            f"{start_year}-"
+                            f"{current_year}"
+                        )
                     ),
                 },
-                "bijouterie_id": bijouterie_id,
-                "total_achats": total_achats,
-                "montant_total": montant_total,
-                "total_lots": total_lots,
-                "total_quantite": total_quantite,
-                "total_poids": total_poids,
+
+                "bijouterie_id": (
+                    bijouterie_id
+                ),
+
+                "total_achats": (
+                    total_achats
+                ),
+
+                "montant_total": (
+                    montant_total
+                ),
+
+                "total_lots": (
+                    total_lots
+                ),
+
+                "total_quantite": (
+                    total_quantite
+                ),
+
+                "total_poids": (
+                    total_poids
+                ),
+
                 "achats_par_annee": (
                     achats_par_annee
                 ),
+
                 "top_fournisseurs": (
                     top_fournisseurs
                 ),
+
                 "repartition_produits": (
                     repartition_produits
                 ),
             },
             status=status.HTTP_200_OK,
         )
+        
 
 class FournisseurGetView(APIView):
     renderer_classes = [UserRenderer]
