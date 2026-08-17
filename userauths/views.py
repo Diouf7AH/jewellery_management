@@ -25,7 +25,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
-from backend.permissions import IsAdminOnly, IsAdminOrManager
+from backend.permissions import IsAdmin, IsAdminOrManager
 from backend.renderers import UserRenderer
 from backend.roles import SYSTEM_ROLES, get_role_name
 
@@ -1023,7 +1023,7 @@ class CreateRoleAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [
         IsAuthenticated,
-        IsAdminOnly,
+        IsAdmin,
     ]
 
     @swagger_auto_schema(
@@ -1114,7 +1114,7 @@ class UpdateRoleAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [
         IsAuthenticated,
-        IsAdminOnly,
+        IsAdmin,
     ]
 
     def get_role(self, pk):
@@ -1241,7 +1241,7 @@ class DeleteRoleAPIView(APIView):
     renderer_classes = [UserRenderer]
     permission_classes = [
         IsAuthenticated,
-        IsAdminOnly,
+        IsAdmin,
     ]
 
     @swagger_auto_schema(
