@@ -131,7 +131,7 @@ urlpatterns = [
     path("achat/arrivage", achat_views.ArrivageCreateView.as_view(), name="arrivage-create"),
     path("achat/lots", achat_views.LotListView.as_view(), name="lot-list"),
     path("achat/arrivage/<int:lot_id>/meta", achat_views.ArrivageMetaUpdateView.as_view(), name="arrivage-meta-update"),
-    path("achat/produit-lines", achat_views.InventoryPhotoView.as_view(),name="produitline-list",),
+    # path("achat/produit-lines", achat_views.InventoryPhotoView.as_view(),name="produitline-list",),
     path("achat/etiquettes-png/", achat_views.ProduitLineEtiquettesZIPView.as_view(),name="produits-etiquettes-png",),
     path("achat/dashboard", achat_views.AchatDashboardView.as_view(), name="achat-dashboard"),
     

@@ -67,7 +67,7 @@ class CreateStaffView(APIView):
             "- Manager : `vendor`, `cashier`\n\n"
             "### Affectation aux bijouteries\n"
             "- Manager : utiliser `bijouteries` avec une liste d'IDs.\n"
-            "- Vendor / Cashier / Buyer : utiliser `bijouterie_nom`.\n\n"
+            "- Vendor / Cashier / Buyer : utiliser `bijouterie_id`.\n\n"
             "### Statut\n"
             "- Le staff est toujours créé avec `verifie=true`.\n"
             "- La désactivation se fait via l'API de mise à jour du staff."

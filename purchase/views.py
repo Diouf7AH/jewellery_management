@@ -2764,742 +2764,742 @@ class ArrivageMetaUpdateView(APIView):
 
 
 # ------------------------- InventoryPhotoView -------------------------
-class InventoryPhotoView(ExportXlsxMixin, ListAPIView):
-    """
-    Photo instantanée du stock présent dans les bijouteries.
-
-    Cette vue affiche, pour chaque ProduitLine :
-
-    - l'achat fournisseur ;
-    - le lot ;
-    - le produit ;
-    - la bijouterie de réception ;
-    - la quantité initialement reçue ;
-    - la quantité totale rattachée au stock magasin ;
-    - la quantité actuellement disponible en magasin.
-
-    Nouveau cycle respecté :
-
-        PURCHASE_IN
-        EXTERNAL → BIJOUTERIE
-
-    Cette vue ne gère jamais :
-
-    - de stock réserve ;
-    - de Stock avec bijouterie=None ;
-    - de VendorStock ;
-    - les quantités actuellement chez les vendeurs.
-    """
-
-    permission_classes = [
-        IsAuthenticated,
-        IsAdminOrManager,
-    ]
-
-    serializer_class = ProduitLineMiniSerializer
-    pagination_class = None
-
-    @swagger_auto_schema(
-        operation_id="listProduitLinesInventoryPhoto",
-        operation_summary=(
-            "Afficher la photo instantanée du stock des bijouteries"
-        ),
-        operation_description=(
-            "Retourne les ProduitLine avec leur achat, leur lot, "
-            "leur produit et les quantités actuellement présentes "
-            "dans les stocks des bijouteries.\n\n"
-            "Cette vue respecte le cycle :\n"
-            "`PURCHASE_IN : EXTERNAL → BIJOUTERIE`.\n\n"
-            "Elle ne contient aucune logique de réserve.\n\n"
-            "Filtres disponibles :\n"
-            "- `year`\n"
-            "- `bijouterie_id`\n"
-            "- `reference_commande`\n"
-            "- `lot_id`\n"
-            "- `produit_id`\n"
-            "- `numero_lot`\n"
-            "- `numero_achat`\n"
-            "- `fournisseur_id`\n"
-            "- `en_stock_only`\n"
-            "- `ordering`\n\n"
-            "Export Excel : `?export=xlsx`."
-        ),
-        manual_parameters=[
-            openapi.Parameter(
-                "year",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description=(
-                    "Année de réception du lot. "
-                    "Par défaut : année courante."
-                ),
-            ),
-            openapi.Parameter(
-                "bijouterie_id",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description=(
-                    "Filtre le stock d'une bijouterie précise."
-                ),
-            ),
-            openapi.Parameter(
-                "reference_commande",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                description=(
-                    "Recherche partielle sur la référence "
-                    "de commande."
-                ),
-            ),
-            openapi.Parameter(
-                "lot_id",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description="Filtre exact sur le lot.",
-            ),
-            openapi.Parameter(
-                "produit_id",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description="Filtre exact sur le produit.",
-            ),
-            openapi.Parameter(
-                "numero_lot",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                description=(
-                    "Recherche partielle sur le numéro du lot."
-                ),
-            ),
-            openapi.Parameter(
-                "numero_achat",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                description=(
-                    "Filtre exact sur le numéro d'achat."
-                ),
-            ),
-            openapi.Parameter(
-                "fournisseur_id",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description="Filtre exact sur le fournisseur.",
-            ),
-            openapi.Parameter(
-                "en_stock_only",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description=(
-                    "1 = afficher uniquement les lignes ayant "
-                    "encore du stock disponible en magasin."
-                ),
-            ),
-            openapi.Parameter(
-                "ordering",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                description=(
-                    "Tri autorisé : received_at, -received_at, "
-                    "id, -id, en_stock, -en_stock."
-                ),
-            ),
-            openapi.Parameter(
-                "export",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                description="Utiliser xlsx pour exporter.",
-            ),
-        ],
-        responses={
-            200: ProduitLineMiniSerializer(many=True),
-            400: openapi.Response(
-                description="Paramètres invalides."
-            ),
-            401: openapi.Response(
-                description="Non authentifié."
-            ),
-            403: openapi.Response(
-                description="Accès refusé."
-            ),
-        },
-        tags=["Inventaire"],
-    )
-    def get(self, request, *args, **kwargs):
-        self._validate_query_params(request)
-
-        return super().get(
-            request,
-            *args,
-            **kwargs,
-        )
-
-    # ============================================================
-    # Validation
-    # ============================================================
-
-    def _parse_positive_integer(
-        self,
-        *,
-        value,
-        field_name,
-    ):
-        if value in (None, ""):
-            return None
-
-        try:
-            parsed_value = int(value)
-
-        except (TypeError, ValueError):
-            raise ValidationError({
-                field_name: (
-                    "Ce paramètre doit être un entier."
-                )
-            })
-
-        if parsed_value <= 0:
-            raise ValidationError({
-                field_name: (
-                    "Ce paramètre doit être supérieur à zéro."
-                )
-            })
-
-        return parsed_value
-
-    def _parse_year(self, value):
-        if value in (None, ""):
-            return timezone.localdate().year
-
-        try:
-            year = int(value)
-
-        except (TypeError, ValueError):
-            raise ValidationError({
-                "year": "Année invalide. Exemple : 2026."
-            })
-
-        if year < 2000 or year > 2100:
-            raise ValidationError({
-                "year": (
-                    "L'année doit être comprise entre "
-                    "2000 et 2100."
-                )
-            })
-
-        return year
-
-    def _validate_query_params(self, request):
-        query_params = request.query_params
-
-        self._parse_year(
-            query_params.get("year")
-        )
-
-        integer_fields = (
-            "bijouterie_id",
-            "lot_id",
-            "produit_id",
-            "fournisseur_id",
-        )
-
-        for field_name in integer_fields:
-            self._parse_positive_integer(
-                value=query_params.get(field_name),
-                field_name=field_name,
-            )
-
-        en_stock_only = query_params.get(
-            "en_stock_only"
-        )
-
-        if en_stock_only not in (
-            None,
-            "",
-            "0",
-            "1",
-        ):
-            raise ValidationError({
-                "en_stock_only": (
-                    "Utiliser 1 pour oui ou 0 pour non."
-                )
-            })
-
-        ordering = (
-            query_params.get("ordering")
-            or "-received_at"
-        ).strip()
-
-        allowed_ordering = {
-            "received_at",
-            "-received_at",
-            "id",
-            "-id",
-            "en_stock",
-            "-en_stock",
-        }
-
-        if ordering not in allowed_ordering:
-            raise ValidationError({
-                "ordering": (
-                    "Tri invalide. Valeurs autorisées : "
-                    "received_at, -received_at, id, -id, "
-                    "en_stock, -en_stock."
-                )
-            })
-
-        export_format = (
-            query_params.get("export")
-            or ""
-        ).strip().lower()
-
-        if export_format not in ("", "xlsx"):
-            raise ValidationError({
-                "export": (
-                    "Format invalide. Utiliser xlsx."
-                )
-            })
-
-    # ============================================================
-    # Périmètre accessible
-    # ============================================================
-
-    def _get_accessible_bijouteries(self):
-        """
-        Retourne le queryset des bijouteries accessibles :
-
-        - admin : toutes les bijouteries ;
-        - manager : uniquement ses bijouteries ;
-        - autre rôle : queryset vide.
-        """
-
-        queryset = Bijouterie.objects.all()
-
-        queryset = scope_queryset_by_bijouterie(
-            queryset,
-            user=self.request.user,
-            field="lot__achat__bijouterie_id",
-        )
-
-    def _resolve_bijouterie_id(self):
-        """
-        Vérifie que la bijouterie demandée existe
-        et appartient au périmètre de l'utilisateur.
-        """
-
-        bijouterie_id = self._parse_positive_integer(
-            value=self.request.query_params.get(
-                "bijouterie_id"
-            ),
-            field_name="bijouterie_id",
-        )
-
-        if bijouterie_id is None:
-            return None
-
-        accessible_bijouteries = (
-            self._get_accessible_bijouteries()
-        )
-
-        if not accessible_bijouteries.filter(
-            pk=bijouterie_id
-        ).exists():
-            raise ValidationError({
-                "bijouterie_id": (
-                    "Bijouterie introuvable ou non accessible."
-                )
-            })
-
-        return bijouterie_id
-
-    # ============================================================
-    # Queryset
-    # ============================================================
-
-    def get_queryset(self):
-        query_params = self.request.query_params
-        get_param = query_params.get
-
-        year = self._parse_year(
-            get_param("year")
-        )
-
-        bijouterie_id = self._resolve_bijouterie_id()
-
-        # ========================================================
-        # Queryset principal
-        # ========================================================
-
-        queryset = (
-            ProduitLine.objects
-            .select_related(
-                "lot",
-                "lot__achat",
-                "lot__achat__bijouterie",
-                "lot__achat__fournisseur",
-                "produit",
-                "produit__categorie",
-                "produit__marque",
-                "produit__modele",
-                "produit__purete",
-            )
-            .filter(
-                lot__received_at__year=year,
-                lot__achat__status=Achat.STATUS_CONFIRMED,
-            )
-        )
-
-        # ========================================================
-        # Périmètre utilisateur
-        #
-        # Admin :
-        #     toutes les ProduitLine.
-        #
-        # Manager :
-        #     uniquement les ProduitLine reçues dans
-        #     ses bijouteries.
-        # ========================================================
-
-        queryset = scope_queryset_by_bijouterie(
-            queryset,
-            self.request.user,
-            field="lot__achat__bijouterie_id",
-        )
-
-        # ========================================================
-        # Filtre explicite de bijouterie
-        # ========================================================
-
-        if bijouterie_id is not None:
-            queryset = queryset.filter(
-                lot__achat__bijouterie_id=bijouterie_id
-            )
-
-        # ========================================================
-        # Filtres documentaires
-        # ========================================================
-
-        reference_commande = (
-            get_param("reference_commande")
-            or ""
-        ).strip()
-
-        if reference_commande:
-            queryset = queryset.filter(
-                lot__achat__reference_commande__icontains=(
-                    reference_commande
-                )
-            )
-
-        numero_lot = (
-            get_param("numero_lot")
-            or ""
-        ).strip()
-
-        if numero_lot:
-            queryset = queryset.filter(
-                lot__numero_lot__icontains=numero_lot
-            )
-
-        numero_achat = (
-            get_param("numero_achat")
-            or ""
-        ).strip()
-
-        if numero_achat:
-            queryset = queryset.filter(
-                lot__achat__numero_achat=numero_achat
-            )
-
-        lot_id = self._parse_positive_integer(
-            value=get_param("lot_id"),
-            field_name="lot_id",
-        )
-
-        if lot_id is not None:
-            queryset = queryset.filter(
-                lot_id=lot_id
-            )
-
-        produit_id = self._parse_positive_integer(
-            value=get_param("produit_id"),
-            field_name="produit_id",
-        )
-
-        if produit_id is not None:
-            queryset = queryset.filter(
-                produit_id=produit_id
-            )
-
-        fournisseur_id = self._parse_positive_integer(
-            value=get_param("fournisseur_id"),
-            field_name="fournisseur_id",
-        )
-
-        if fournisseur_id is not None:
-            queryset = queryset.filter(
-                lot__achat__fournisseur_id=(
-                    fournisseur_id
-                )
-            )
-
-        # ========================================================
-        # Périmètre des agrégats Stock
-        # ========================================================
-
-        accessible_bijouterie_ids = (
-            self._get_accessible_bijouteries()
-            .values_list(
-                "id",
-                flat=True,
-            )
-        )
-
-        stock_filter = Q(
-            stocks__bijouterie_id__in=(
-                accessible_bijouterie_ids
-            )
-        )
-
-        if bijouterie_id is not None:
-            stock_filter &= Q(
-                stocks__bijouterie_id=bijouterie_id
-            )
-
-        # ========================================================
-        # Agrégats du stock magasin
-        # ========================================================
-
-        queryset = queryset.annotate(
-            quantite_totale_total=Coalesce(
-                Sum(
-                    "stocks__quantite_totale",
-                    filter=stock_filter,
-                ),
-                0,
-            ),
-            en_stock_total=Coalesce(
-                Sum(
-                    "stocks__en_stock",
-                    filter=stock_filter,
-                ),
-                0,
-            ),
-        )
-
-        # ========================================================
-        # Uniquement les lignes disponibles en magasin
-        # ========================================================
-
-        if get_param("en_stock_only") == "1":
-            queryset = queryset.filter(
-                en_stock_total__gt=0
-            )
-
-        # ========================================================
-        # Tri
-        # ========================================================
-
-        ordering = (
-            get_param("ordering")
-            or "-received_at"
-        ).strip()
-
-        ordering_map = {
-            "received_at": "lot__received_at",
-            "-received_at": "-lot__received_at",
-            "id": "id",
-            "-id": "-id",
-            "en_stock": "en_stock_total",
-            "-en_stock": "-en_stock_total",
-        }
-
-        ordering_field = ordering_map[ordering]
-
-        return queryset.order_by(
-            ordering_field,
-            "lot__numero_lot",
-            "id",
-        )
-
-    # ============================================================
-    # JSON ou export Excel
-    # ============================================================
-
-    def list(self, request, *args, **kwargs):
-        export_format = (
-            request.query_params.get("export")
-            or ""
-        ).strip().lower()
-
-        if export_format != "xlsx":
-            return super().list(
-                request,
-                *args,
-                **kwargs,
-            )
-
-        queryset = self.filter_queryset(
-            self.get_queryset()
-        )
-
-        workbook = Workbook()
-        worksheet = workbook.active
-        worksheet.title = "Inventaire bijouteries"
-
-        headers = [
-            "produit_line_id",
-            "bijouterie_id",
-            "bijouterie",
-            "lot_id",
-            "numero_lot",
-            "date_reception",
-            "achat_id",
-            "numero_achat",
-            "reference_commande",
-            "fournisseur",
-            "produit_id",
-            "produit",
-            "categorie",
-            "marque",
-            "modele",
-            "purete",
-            "poids_unitaire",
-            "prix_achat_gramme",
-            "quantite_recue",
-            "quantite_totale_magasin",
-            "en_stock_magasin",
-        ]
-
-        worksheet.append(headers)
-
-        for produit_line in queryset.iterator():
-            lot = produit_line.lot
-            achat = lot.achat
-            fournisseur = achat.fournisseur
-            bijouterie = achat.bijouterie
-            produit = produit_line.produit
-
-            fournisseur_nom = None
-
-            if fournisseur:
-                fournisseur_nom = " ".join(
-                    part
-                    for part in (
-                        fournisseur.prenom,
-                        fournisseur.nom,
-                    )
-                    if part
-                ) or str(fournisseur)
-
-            categorie = getattr(
-                produit,
-                "categorie",
-                None,
-            )
-            marque = getattr(
-                produit,
-                "marque",
-                None,
-            )
-            modele = getattr(
-                produit,
-                "modele",
-                None,
-            )
-            purete = getattr(
-                produit,
-                "purete",
-                None,
-            )
-
-            worksheet.append([
-                produit_line.id,
-
-                (
-                    bijouterie.id
-                    if bijouterie
-                    else None
-                ),
-                (
-                    bijouterie.nom
-                    if bijouterie
-                    else None
-                ),
-
-                lot.id,
-                lot.numero_lot,
-                (
-                    lot.received_at.isoformat()
-                    if lot.received_at
-                    else None
-                ),
-
-                achat.id,
-                achat.numero_achat,
-                achat.reference_commande,
-
-                fournisseur_nom,
-
-                produit.id,
-                produit.nom,
-
-                (
-                    getattr(categorie, "nom", None)
-                    or getattr(categorie, "title", None)
-                ),
-                (
-                    getattr(marque, "nom", None)
-                    or getattr(marque, "title", None)
-                ),
-                (
-                    getattr(modele, "nom", None)
-                    or getattr(modele, "title", None)
-                ),
-                str(purete or ""),
-
-                (
-                    str(produit.poids)
-                    if produit.poids is not None
-                    else None
-                ),
-                (
-                    str(
-                        produit_line.prix_achat_gramme
-                    )
-                    if (
-                        produit_line.prix_achat_gramme
-                        is not None
-                    )
-                    else None
-                ),
-
-                int(
-                    produit_line.quantite
-                    or 0
-                ),
-                int(
-                    getattr(
-                        produit_line,
-                        "quantite_totale_total",
-                        0,
-                    )
-                    or 0
-                ),
-                int(
-                    getattr(
-                        produit_line,
-                        "en_stock_total",
-                        0,
-                    )
-                    or 0
-                ),
-            ])
-
-        self._autosize(worksheet)
-
-        return self._xlsx_response(
-            workbook,
-            "inventaire_bijouteries.xlsx",
-        )
+# class InventoryPhotoView(ExportXlsxMixin, ListAPIView):
+#     """
+#     Photo instantanée du stock présent dans les bijouteries.
+
+#     Cette vue affiche, pour chaque ProduitLine :
+
+#     - l'achat fournisseur ;
+#     - le lot ;
+#     - le produit ;
+#     - la bijouterie de réception ;
+#     - la quantité initialement reçue ;
+#     - la quantité totale rattachée au stock magasin ;
+#     - la quantité actuellement disponible en magasin.
+
+#     Nouveau cycle respecté :
+
+#         PURCHASE_IN
+#         EXTERNAL → BIJOUTERIE
+
+#     Cette vue ne gère jamais :
+
+#     - de stock réserve ;
+#     - de Stock avec bijouterie=None ;
+#     - de VendorStock ;
+#     - les quantités actuellement chez les vendeurs.
+#     """
+
+#     permission_classes = [
+#         IsAuthenticated,
+#         IsAdminOrManager,
+#     ]
+
+#     serializer_class = ProduitLineMiniSerializer
+#     pagination_class = None
+
+#     @swagger_auto_schema(
+#         operation_id="listProduitLinesInventoryPhoto",
+#         operation_summary=(
+#             "Afficher la photo instantanée du stock des bijouteries"
+#         ),
+#         operation_description=(
+#             "Retourne les ProduitLine avec leur achat, leur lot, "
+#             "leur produit et les quantités actuellement présentes "
+#             "dans les stocks des bijouteries.\n\n"
+#             "Cette vue respecte le cycle :\n"
+#             "`PURCHASE_IN : EXTERNAL → BIJOUTERIE`.\n\n"
+#             "Elle ne contient aucune logique de réserve.\n\n"
+#             "Filtres disponibles :\n"
+#             "- `year`\n"
+#             "- `bijouterie_id`\n"
+#             "- `reference_commande`\n"
+#             "- `lot_id`\n"
+#             "- `produit_id`\n"
+#             "- `numero_lot`\n"
+#             "- `numero_achat`\n"
+#             "- `fournisseur_id`\n"
+#             "- `en_stock_only`\n"
+#             "- `ordering`\n\n"
+#             "Export Excel : `?export=xlsx`."
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "year",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description=(
+#                     "Année de réception du lot. "
+#                     "Par défaut : année courante."
+#                 ),
+#             ),
+#             openapi.Parameter(
+#                 "bijouterie_id",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description=(
+#                     "Filtre le stock d'une bijouterie précise."
+#                 ),
+#             ),
+#             openapi.Parameter(
+#                 "reference_commande",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description=(
+#                     "Recherche partielle sur la référence "
+#                     "de commande."
+#                 ),
+#             ),
+#             openapi.Parameter(
+#                 "lot_id",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description="Filtre exact sur le lot.",
+#             ),
+#             openapi.Parameter(
+#                 "produit_id",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description="Filtre exact sur le produit.",
+#             ),
+#             openapi.Parameter(
+#                 "numero_lot",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description=(
+#                     "Recherche partielle sur le numéro du lot."
+#                 ),
+#             ),
+#             openapi.Parameter(
+#                 "numero_achat",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description=(
+#                     "Filtre exact sur le numéro d'achat."
+#                 ),
+#             ),
+#             openapi.Parameter(
+#                 "fournisseur_id",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description="Filtre exact sur le fournisseur.",
+#             ),
+#             openapi.Parameter(
+#                 "en_stock_only",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description=(
+#                     "1 = afficher uniquement les lignes ayant "
+#                     "encore du stock disponible en magasin."
+#                 ),
+#             ),
+#             openapi.Parameter(
+#                 "ordering",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description=(
+#                     "Tri autorisé : received_at, -received_at, "
+#                     "id, -id, en_stock, -en_stock."
+#                 ),
+#             ),
+#             openapi.Parameter(
+#                 "export",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 description="Utiliser xlsx pour exporter.",
+#             ),
+#         ],
+#         responses={
+#             200: ProduitLineMiniSerializer(many=True),
+#             400: openapi.Response(
+#                 description="Paramètres invalides."
+#             ),
+#             401: openapi.Response(
+#                 description="Non authentifié."
+#             ),
+#             403: openapi.Response(
+#                 description="Accès refusé."
+#             ),
+#         },
+#         tags=["Inventaire"],
+#     )
+#     def get(self, request, *args, **kwargs):
+#         self._validate_query_params(request)
+
+#         return super().get(
+#             request,
+#             *args,
+#             **kwargs,
+#         )
+
+#     # ============================================================
+#     # Validation
+#     # ============================================================
+
+#     def _parse_positive_integer(
+#         self,
+#         *,
+#         value,
+#         field_name,
+#     ):
+#         if value in (None, ""):
+#             return None
+
+#         try:
+#             parsed_value = int(value)
+
+#         except (TypeError, ValueError):
+#             raise ValidationError({
+#                 field_name: (
+#                     "Ce paramètre doit être un entier."
+#                 )
+#             })
+
+#         if parsed_value <= 0:
+#             raise ValidationError({
+#                 field_name: (
+#                     "Ce paramètre doit être supérieur à zéro."
+#                 )
+#             })
+
+#         return parsed_value
+
+#     def _parse_year(self, value):
+#         if value in (None, ""):
+#             return timezone.localdate().year
+
+#         try:
+#             year = int(value)
+
+#         except (TypeError, ValueError):
+#             raise ValidationError({
+#                 "year": "Année invalide. Exemple : 2026."
+#             })
+
+#         if year < 2000 or year > 2100:
+#             raise ValidationError({
+#                 "year": (
+#                     "L'année doit être comprise entre "
+#                     "2000 et 2100."
+#                 )
+#             })
+
+#         return year
+
+#     def _validate_query_params(self, request):
+#         query_params = request.query_params
+
+#         self._parse_year(
+#             query_params.get("year")
+#         )
+
+#         integer_fields = (
+#             "bijouterie_id",
+#             "lot_id",
+#             "produit_id",
+#             "fournisseur_id",
+#         )
+
+#         for field_name in integer_fields:
+#             self._parse_positive_integer(
+#                 value=query_params.get(field_name),
+#                 field_name=field_name,
+#             )
+
+#         en_stock_only = query_params.get(
+#             "en_stock_only"
+#         )
+
+#         if en_stock_only not in (
+#             None,
+#             "",
+#             "0",
+#             "1",
+#         ):
+#             raise ValidationError({
+#                 "en_stock_only": (
+#                     "Utiliser 1 pour oui ou 0 pour non."
+#                 )
+#             })
+
+#         ordering = (
+#             query_params.get("ordering")
+#             or "-received_at"
+#         ).strip()
+
+#         allowed_ordering = {
+#             "received_at",
+#             "-received_at",
+#             "id",
+#             "-id",
+#             "en_stock",
+#             "-en_stock",
+#         }
+
+#         if ordering not in allowed_ordering:
+#             raise ValidationError({
+#                 "ordering": (
+#                     "Tri invalide. Valeurs autorisées : "
+#                     "received_at, -received_at, id, -id, "
+#                     "en_stock, -en_stock."
+#                 )
+#             })
+
+#         export_format = (
+#             query_params.get("export")
+#             or ""
+#         ).strip().lower()
+
+#         if export_format not in ("", "xlsx"):
+#             raise ValidationError({
+#                 "export": (
+#                     "Format invalide. Utiliser xlsx."
+#                 )
+#             })
+
+#     # ============================================================
+#     # Périmètre accessible
+#     # ============================================================
+
+#     def _get_accessible_bijouteries(self):
+#         """
+#         Retourne le queryset des bijouteries accessibles :
+
+#         - admin : toutes les bijouteries ;
+#         - manager : uniquement ses bijouteries ;
+#         - autre rôle : queryset vide.
+#         """
+
+#         queryset = Bijouterie.objects.all()
+
+#         queryset = scope_queryset_by_bijouterie(
+#             queryset,
+#             user=self.request.user,
+#             field="lot__achat__bijouterie_id",
+#         )
+
+#     def _resolve_bijouterie_id(self):
+#         """
+#         Vérifie que la bijouterie demandée existe
+#         et appartient au périmètre de l'utilisateur.
+#         """
+
+#         bijouterie_id = self._parse_positive_integer(
+#             value=self.request.query_params.get(
+#                 "bijouterie_id"
+#             ),
+#             field_name="bijouterie_id",
+#         )
+
+#         if bijouterie_id is None:
+#             return None
+
+#         accessible_bijouteries = (
+#             self._get_accessible_bijouteries()
+#         )
+
+#         if not accessible_bijouteries.filter(
+#             pk=bijouterie_id
+#         ).exists():
+#             raise ValidationError({
+#                 "bijouterie_id": (
+#                     "Bijouterie introuvable ou non accessible."
+#                 )
+#             })
+
+#         return bijouterie_id
+
+#     # ============================================================
+#     # Queryset
+#     # ============================================================
+
+#     def get_queryset(self):
+#         query_params = self.request.query_params
+#         get_param = query_params.get
+
+#         year = self._parse_year(
+#             get_param("year")
+#         )
+
+#         bijouterie_id = self._resolve_bijouterie_id()
+
+#         # ========================================================
+#         # Queryset principal
+#         # ========================================================
+
+#         queryset = (
+#             ProduitLine.objects
+#             .select_related(
+#                 "lot",
+#                 "lot__achat",
+#                 "lot__achat__bijouterie",
+#                 "lot__achat__fournisseur",
+#                 "produit",
+#                 "produit__categorie",
+#                 "produit__marque",
+#                 "produit__modele",
+#                 "produit__purete",
+#             )
+#             .filter(
+#                 lot__received_at__year=year,
+#                 lot__achat__status=Achat.STATUS_CONFIRMED,
+#             )
+#         )
+
+#         # ========================================================
+#         # Périmètre utilisateur
+#         #
+#         # Admin :
+#         #     toutes les ProduitLine.
+#         #
+#         # Manager :
+#         #     uniquement les ProduitLine reçues dans
+#         #     ses bijouteries.
+#         # ========================================================
+
+#         queryset = scope_queryset_by_bijouterie(
+#             queryset,
+#             self.request.user,
+#             field="lot__achat__bijouterie_id",
+#         )
+
+#         # ========================================================
+#         # Filtre explicite de bijouterie
+#         # ========================================================
+
+#         if bijouterie_id is not None:
+#             queryset = queryset.filter(
+#                 lot__achat__bijouterie_id=bijouterie_id
+#             )
+
+#         # ========================================================
+#         # Filtres documentaires
+#         # ========================================================
+
+#         reference_commande = (
+#             get_param("reference_commande")
+#             or ""
+#         ).strip()
+
+#         if reference_commande:
+#             queryset = queryset.filter(
+#                 lot__achat__reference_commande__icontains=(
+#                     reference_commande
+#                 )
+#             )
+
+#         numero_lot = (
+#             get_param("numero_lot")
+#             or ""
+#         ).strip()
+
+#         if numero_lot:
+#             queryset = queryset.filter(
+#                 lot__numero_lot__icontains=numero_lot
+#             )
+
+#         numero_achat = (
+#             get_param("numero_achat")
+#             or ""
+#         ).strip()
+
+#         if numero_achat:
+#             queryset = queryset.filter(
+#                 lot__achat__numero_achat=numero_achat
+#             )
+
+#         lot_id = self._parse_positive_integer(
+#             value=get_param("lot_id"),
+#             field_name="lot_id",
+#         )
+
+#         if lot_id is not None:
+#             queryset = queryset.filter(
+#                 lot_id=lot_id
+#             )
+
+#         produit_id = self._parse_positive_integer(
+#             value=get_param("produit_id"),
+#             field_name="produit_id",
+#         )
+
+#         if produit_id is not None:
+#             queryset = queryset.filter(
+#                 produit_id=produit_id
+#             )
+
+#         fournisseur_id = self._parse_positive_integer(
+#             value=get_param("fournisseur_id"),
+#             field_name="fournisseur_id",
+#         )
+
+#         if fournisseur_id is not None:
+#             queryset = queryset.filter(
+#                 lot__achat__fournisseur_id=(
+#                     fournisseur_id
+#                 )
+#             )
+
+#         # ========================================================
+#         # Périmètre des agrégats Stock
+#         # ========================================================
+
+#         accessible_bijouterie_ids = (
+#             self._get_accessible_bijouteries()
+#             .values_list(
+#                 "id",
+#                 flat=True,
+#             )
+#         )
+
+#         stock_filter = Q(
+#             stocks__bijouterie_id__in=(
+#                 accessible_bijouterie_ids
+#             )
+#         )
+
+#         if bijouterie_id is not None:
+#             stock_filter &= Q(
+#                 stocks__bijouterie_id=bijouterie_id
+#             )
+
+#         # ========================================================
+#         # Agrégats du stock magasin
+#         # ========================================================
+
+#         queryset = queryset.annotate(
+#             quantite_totale_total=Coalesce(
+#                 Sum(
+#                     "stocks__quantite_totale",
+#                     filter=stock_filter,
+#                 ),
+#                 0,
+#             ),
+#             en_stock_total=Coalesce(
+#                 Sum(
+#                     "stocks__en_stock",
+#                     filter=stock_filter,
+#                 ),
+#                 0,
+#             ),
+#         )
+
+#         # ========================================================
+#         # Uniquement les lignes disponibles en magasin
+#         # ========================================================
+
+#         if get_param("en_stock_only") == "1":
+#             queryset = queryset.filter(
+#                 en_stock_total__gt=0
+#             )
+
+#         # ========================================================
+#         # Tri
+#         # ========================================================
+
+#         ordering = (
+#             get_param("ordering")
+#             or "-received_at"
+#         ).strip()
+
+#         ordering_map = {
+#             "received_at": "lot__received_at",
+#             "-received_at": "-lot__received_at",
+#             "id": "id",
+#             "-id": "-id",
+#             "en_stock": "en_stock_total",
+#             "-en_stock": "-en_stock_total",
+#         }
+
+#         ordering_field = ordering_map[ordering]
+
+#         return queryset.order_by(
+#             ordering_field,
+#             "lot__numero_lot",
+#             "id",
+#         )
+
+#     # ============================================================
+#     # JSON ou export Excel
+#     # ============================================================
+
+#     def list(self, request, *args, **kwargs):
+#         export_format = (
+#             request.query_params.get("export")
+#             or ""
+#         ).strip().lower()
+
+#         if export_format != "xlsx":
+#             return super().list(
+#                 request,
+#                 *args,
+#                 **kwargs,
+#             )
+
+#         queryset = self.filter_queryset(
+#             self.get_queryset()
+#         )
+
+#         workbook = Workbook()
+#         worksheet = workbook.active
+#         worksheet.title = "Inventaire bijouteries"
+
+#         headers = [
+#             "produit_line_id",
+#             "bijouterie_id",
+#             "bijouterie",
+#             "lot_id",
+#             "numero_lot",
+#             "date_reception",
+#             "achat_id",
+#             "numero_achat",
+#             "reference_commande",
+#             "fournisseur",
+#             "produit_id",
+#             "produit",
+#             "categorie",
+#             "marque",
+#             "modele",
+#             "purete",
+#             "poids_unitaire",
+#             "prix_achat_gramme",
+#             "quantite_recue",
+#             "quantite_totale_magasin",
+#             "en_stock_magasin",
+#         ]
+
+#         worksheet.append(headers)
+
+#         for produit_line in queryset.iterator():
+#             lot = produit_line.lot
+#             achat = lot.achat
+#             fournisseur = achat.fournisseur
+#             bijouterie = achat.bijouterie
+#             produit = produit_line.produit
+
+#             fournisseur_nom = None
+
+#             if fournisseur:
+#                 fournisseur_nom = " ".join(
+#                     part
+#                     for part in (
+#                         fournisseur.prenom,
+#                         fournisseur.nom,
+#                     )
+#                     if part
+#                 ) or str(fournisseur)
+
+#             categorie = getattr(
+#                 produit,
+#                 "categorie",
+#                 None,
+#             )
+#             marque = getattr(
+#                 produit,
+#                 "marque",
+#                 None,
+#             )
+#             modele = getattr(
+#                 produit,
+#                 "modele",
+#                 None,
+#             )
+#             purete = getattr(
+#                 produit,
+#                 "purete",
+#                 None,
+#             )
+
+#             worksheet.append([
+#                 produit_line.id,
+
+#                 (
+#                     bijouterie.id
+#                     if bijouterie
+#                     else None
+#                 ),
+#                 (
+#                     bijouterie.nom
+#                     if bijouterie
+#                     else None
+#                 ),
+
+#                 lot.id,
+#                 lot.numero_lot,
+#                 (
+#                     lot.received_at.isoformat()
+#                     if lot.received_at
+#                     else None
+#                 ),
+
+#                 achat.id,
+#                 achat.numero_achat,
+#                 achat.reference_commande,
+
+#                 fournisseur_nom,
+
+#                 produit.id,
+#                 produit.nom,
+
+#                 (
+#                     getattr(categorie, "nom", None)
+#                     or getattr(categorie, "title", None)
+#                 ),
+#                 (
+#                     getattr(marque, "nom", None)
+#                     or getattr(marque, "title", None)
+#                 ),
+#                 (
+#                     getattr(modele, "nom", None)
+#                     or getattr(modele, "title", None)
+#                 ),
+#                 str(purete or ""),
+
+#                 (
+#                     str(produit.poids)
+#                     if produit.poids is not None
+#                     else None
+#                 ),
+#                 (
+#                     str(
+#                         produit_line.prix_achat_gramme
+#                     )
+#                     if (
+#                         produit_line.prix_achat_gramme
+#                         is not None
+#                     )
+#                     else None
+#                 ),
+
+#                 int(
+#                     produit_line.quantite
+#                     or 0
+#                 ),
+#                 int(
+#                     getattr(
+#                         produit_line,
+#                         "quantite_totale_total",
+#                         0,
+#                     )
+#                     or 0
+#                 ),
+#                 int(
+#                     getattr(
+#                         produit_line,
+#                         "en_stock_total",
+#                         0,
+#                     )
+#                     or 0
+#                 ),
+#             ])
+
+#         self._autosize(worksheet)
+
+#         return self._xlsx_response(
+#             workbook,
+#             "inventaire_bijouteries.xlsx",
+#         )
 # ----------------------- End InventoryPhotoView -----------------------    
 
 
