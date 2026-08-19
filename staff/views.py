@@ -153,7 +153,7 @@ class CreateStaffView(APIView):
                 caller_user=request.user,
                 target_role=data["role"],
                 email=data["email"],
-                bijouterie=data.get("bijouterie_nom"),
+                bijouterie=data.get("bijouterie_id"),
                 bijouteries=data.get(
                     "bijouteries",
                     [],
