@@ -3,7 +3,7 @@ from django.urls import include, path
 
 from api import views as api_views
 from compte_depot import views as compte_depot_views
-from e_commerce import views as e_commerce_views
+# from e_commerce import views as e_commerce_views
 from finance import views as finance_views
 from inventory import views as inv_views
 from order import views as order_views

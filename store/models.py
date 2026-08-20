@@ -339,11 +339,17 @@ class Produit(models.Model):
     # QR code sera généré via signal post_save (transaction.on_commit)
     # qr_code = models.ImageField(upload_to="qr_codes/", null=True, blank=True)
 
-    categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit",)
-    purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit",)
-    marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",)
-    modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",)
+    categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit", null=True, blank=True)
+    purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit",null=True, blank=True)
+    marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",null=True, blank=True)
+    modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True, blank=True)
 
+    # categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit", null=True, blank=True)
+    # purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit",null=True, blank=True)
+    # marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",null=True, blank=True)
+    # modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True, blank=True)
+    
+    
     matiere = models.CharField(choices=MATIERE,max_length=50,default="or",)
     poids = models.DecimalField(decimal_places=2, max_digits=12)
     taille = models.DecimalField(blank=True, null=True, decimal_places=2, max_digits=12)
@@ -444,11 +450,27 @@ class Produit(models.Model):
 
 # Model for Product Gallery
 class Gallery(models.Model):
+    # produit = models.ForeignKey(
+    #     Produit,
+    #     on_delete=models.CASCADE,
+    #     related_name="produit_gallery",
+    # )
+    
     produit = models.ForeignKey(
         Produit,
         on_delete=models.CASCADE,
         related_name="produit_gallery",
+        null=True,
+        blank=True,
     )
+    
+    # produit = models.ForeignKey(
+    #     Produit,
+    #     on_delete=models.CASCADE,
+    #     related_name="produit_gallery",
+    #     null=False,
+    #     blank=False,
+    # )
 
     image = models.ImageField(
         upload_to="produit_gallery/"
