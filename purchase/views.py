@@ -27,6 +27,8 @@ from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
 from inventory.models import Bucket, InventoryMovement, MovementType
 from inventory.services import log_move
 from purchase.models import Achat, Fournisseur, Lot, ProduitLine
+from purchase.services.arrivage import (create_arrivage,
+                                        resolve_arrivage_bijouterie)
 from purchase.services.etiquettes import build_etiquette_bague_png
 from purchase.utils import generate_numero_lot
 from stock.models import Stock
@@ -1124,33 +1126,525 @@ class LotDetailView(RetrieveAPIView):
         return queryset.none()
     
 
+# class ArrivageCreateView(APIView):
+#     """
+#     Crée un arrivage fournisseur.
+
+#     Cycle :
+
+#         Fournisseur
+#             ↓
+#         Achat
+#             ↓
+#         Lot
+#             ↓
+#         ProduitLine
+#             ↓
+#         Stock magasin
+#             ↓
+#         PURCHASE_IN : EXTERNAL → BIJOUTERIE
+
+#     Cette vue ne crée jamais :
+#     - de stock réserve ;
+#     - de VendorStock ;
+#     - de VENDOR_ASSIGN ;
+#     - de SALE_OUT.
+
+#     Périmètre :
+#     - admin : toutes les bijouteries ;
+#     - manager : uniquement ses bijouteries affectées.
+#     """
+
+#     permission_classes = [
+#         IsAuthenticated,
+#         IsAdminOrManager,
+#     ]
+
+#     http_method_names = [
+#         "post",
+#         "options",
+#     ]
+
+#     @swagger_auto_schema(
+#         operation_id="createArrivage",
+#         operation_summary=(
+#             "Créer un arrivage fournisseur et initialiser "
+#             "le stock de la bijouterie"
+#         ),
+#         operation_description=(
+#             "Crée un achat fournisseur avec un ou plusieurs lots.\n\n"
+#             "Pour chaque ProduitLine créée :\n"
+#             "- un Stock magasin est initialisé ;\n"
+#             "- un mouvement PURCHASE_IN est enregistré ;\n"
+#             "- le mouvement va de EXTERNAL vers BIJOUTERIE.\n\n"
+#             "Aucun VendorStock ni stock réserve n'est créé."
+#         ),
+#         request_body=ArrivageCreateInSerializer,
+#         responses={
+#             201: openapi.Response(
+#                 description="Arrivage créé avec succès.",
+#                 schema=ArrivageCreateResponseSerializer,
+#             ),
+#             400: openapi.Response(
+#                 description="Données invalides.",
+#             ),
+#             401: openapi.Response(
+#                 description="Authentification requise.",
+#             ),
+#             403: openapi.Response(
+#                 description=(
+#                     "Accès refusé ou bijouterie non autorisée."
+#                 ),
+#             ),
+#         },
+#         tags=["Achats / Arrivages"],
+#     )
+#     @transaction.atomic
+#     def post(self, request):
+#         serializer = ArrivageCreateInSerializer(
+#             data=request.data
+#         )
+#         serializer.is_valid(raise_exception=True)
+
+#         data = serializer.validated_data
+#         lots_in = data.get("lots") or []
+
+#         # =====================================================
+#         # 1. Bijouterie
+#         # =====================================================
+
+#         bijouterie_id = data["bijouterie_id"]
+
+#         try:
+#             bijouterie = Bijouterie.objects.get(
+#                 pk=bijouterie_id
+#             )
+#         except Bijouterie.DoesNotExist:
+#             raise ValidationError({
+#                 "bijouterie_id": "Bijouterie introuvable."
+#             })
+
+#         # =====================================================
+#         # 2. Périmètre utilisateur
+#         # =====================================================
+
+#         role = get_role_name(request.user)
+
+#         if role == ROLE_MANAGER:
+#             manager = getattr(
+#                 request.user,
+#                 "staff_manager_profile",
+#                 None,
+#             )
+
+#             if (
+#                 not manager
+#                 or not getattr(manager, "verifie", False)
+#             ):
+#                 raise PermissionDenied(
+#                     "Profil manager introuvable ou désactivé."
+#                 )
+
+#             bijouteries_manager = getattr(
+#                 manager,
+#                 "bijouteries",
+#                 None,
+#             )
+
+#             if (
+#                 bijouteries_manager is None
+#                 or not bijouteries_manager.filter(
+#                     pk=bijouterie.pk
+#                 ).exists()
+#             ):
+#                 raise PermissionDenied(
+#                     "Vous ne pouvez pas créer un arrivage "
+#                     "dans cette bijouterie."
+#                 )
+
+#         elif role != ROLE_ADMIN:
+#             raise PermissionDenied(
+#                 "Seuls les administrateurs et les managers "
+#                 "peuvent créer un arrivage."
+#             )
+
+#         # =====================================================
+#         # 3. Validation des lots
+#         # =====================================================
+
+#         if not lots_in:
+#             raise ValidationError({
+#                 "lots": "Au moins un lot est requis."
+#             })
+
+#         produit_ids = set()
+#         lots_normalises = []
+
+#         for lot_index, lot_in in enumerate(lots_in):
+#             lignes_in = lot_in.get("lignes") or []
+
+#             if not lignes_in:
+#                 raise ValidationError({
+#                     f"lots[{lot_index}].lignes": (
+#                         "Chaque lot doit contenir "
+#                         "au moins une ligne."
+#                     )
+#                 })
+
+#             produits_du_lot = set()
+#             lignes_normalisees = []
+
+#             for ligne_index, ligne_in in enumerate(
+#                 lignes_in
+#             ):
+#                 prefixe = (
+#                     f"lots[{lot_index}]."
+#                     f"lignes[{ligne_index}]"
+#                 )
+
+#                 produit_id = ligne_in.get("produit_id")
+
+#                 if not produit_id:
+#                     raise ValidationError({
+#                         f"{prefixe}.produit_id": (
+#                             "produit_id est obligatoire."
+#                         )
+#                     })
+
+#                 if produit_id in produits_du_lot:
+#                     raise ValidationError({
+#                         f"{prefixe}.produit_id": (
+#                             "Un produit ne peut apparaître "
+#                             "qu'une seule fois dans un même lot."
+#                         )
+#                     })
+
+#                 produits_du_lot.add(produit_id)
+#                 produit_ids.add(produit_id)
+
+#                 try:
+#                     quantite = int(
+#                         ligne_in.get("quantite")
+#                     )
+#                 except (TypeError, ValueError):
+#                     raise ValidationError({
+#                         f"{prefixe}.quantite": (
+#                             "Quantité invalide."
+#                         )
+#                     })
+
+#                 if quantite < 1:
+#                     raise ValidationError({
+#                         f"{prefixe}.quantite": (
+#                             "La quantité doit être supérieure "
+#                             "ou égale à 1."
+#                         )
+#                     })
+
+#                 prix_brut = ligne_in.get(
+#                     "prix_achat_gramme"
+#                 )
+
+#                 if prix_brut is None:
+#                     raise ValidationError({
+#                         f"{prefixe}.prix_achat_gramme": (
+#                             "Le prix d'achat par gramme "
+#                             "est obligatoire."
+#                         )
+#                     })
+
+#                 try:
+#                     prix_achat_gramme = Decimal(
+#                         str(prix_brut)
+#                     ).quantize(
+#                         Decimal("0.01"),
+#                         rounding=ROUND_HALF_UP,
+#                     )
+#                 except (
+#                     InvalidOperation,
+#                     TypeError,
+#                     ValueError,
+#                 ):
+#                     raise ValidationError({
+#                         f"{prefixe}.prix_achat_gramme": (
+#                             "Prix d'achat par gramme invalide."
+#                         )
+#                     })
+
+#                 if prix_achat_gramme < Decimal("0.00"):
+#                     raise ValidationError({
+#                         f"{prefixe}.prix_achat_gramme": (
+#                             "Le prix d'achat par gramme "
+#                             "ne peut pas être négatif."
+#                         )
+#                     })
+
+#                 lignes_normalisees.append({
+#                     "produit_id": produit_id,
+#                     "quantite": quantite,
+#                     "prix_achat_gramme": (
+#                         prix_achat_gramme
+#                     ),
+#                 })
+
+#             lots_normalises.append({
+#                 "description": (
+#                     lot_in.get("description")
+#                     or data.get("description")
+#                     or ""
+#                 ),
+#                 "received_at": lot_in.get(
+#                     "received_at"
+#                 ),
+#                 "lignes": lignes_normalisees,
+#             })
+
+#         # =====================================================
+#         # 4. Validation des produits
+#         # =====================================================
+
+#         produits = (
+#             Produit.objects
+#             .filter(pk__in=produit_ids)
+#             .only(
+#                 "id",
+#                 "poids",
+#             )
+#         )
+
+#         produits_by_id = {
+#             produit.id: produit
+#             for produit in produits
+#         }
+
+#         produits_manquants = (
+#             produit_ids - set(produits_by_id)
+#         )
+
+#         if produits_manquants:
+#             raise ValidationError({
+#                 "lots": (
+#                     "Produit(s) introuvable(s) : "
+#                     f"{sorted(produits_manquants)}."
+#                 )
+#             })
+
+#         produits_sans_poids = [
+#             produit.id
+#             for produit in produits_by_id.values()
+#             if produit.poids is None
+#         ]
+
+#         if produits_sans_poids:
+#             raise ValidationError({
+#                 "lots": (
+#                     "Produit(s) sans poids renseigné : "
+#                     f"{sorted(produits_sans_poids)}."
+#                 )
+#             })
+
+#         # =====================================================
+#         # 5. Fournisseur
+#         # =====================================================
+
+#         fournisseur_data = data["fournisseur"]
+
+#         telephone = (
+#             fournisseur_data["telephone"]
+#             or ""
+#         ).strip()
+
+#         if not telephone:
+#             raise ValidationError({
+#                 "fournisseur": {
+#                     "telephone": (
+#                         "Le téléphone du fournisseur "
+#                         "est obligatoire."
+#                     )
+#                 }
+#             })
+
+#         fournisseur, _ = (
+#             Fournisseur.objects.update_or_create(
+#                 telephone=telephone,
+#                 defaults={
+#                     "nom": (
+#                         fournisseur_data.get("nom")
+#                         or ""
+#                     ),
+#                     "prenom": (
+#                         fournisseur_data.get("prenom")
+#                         or ""
+#                     ),
+#                     "address": (
+#                         fournisseur_data.get("address")
+#                         or ""
+#                     ),
+#                 },
+#             )
+#         )
+
+#         # =====================================================
+#         # 6. Création de l'achat
+#         # =====================================================
+
+#         achat = Achat.objects.create(
+#             fournisseur=fournisseur,
+#             bijouterie=bijouterie,
+#             reference_commande=(
+#                 data.get("reference_commande")
+#                 or ""
+#             ),
+#             description=(
+#                 data.get("description")
+#                 or ""
+#             ),
+#             frais_transport=(
+#                 data.get("frais_transport")
+#                 or Decimal("0.00")
+#             ),
+#             frais_douane=(
+#                 data.get("frais_douane")
+#                 or Decimal("0.00")
+#             ),
+#             status=Achat.STATUS_CONFIRMED,
+#         )
+
+#         lots_created = []
+
+#         # =====================================================
+#         # 7. Lots, ProduitLine, Stock et PURCHASE_IN
+#         # =====================================================
+
+#         for lot_data in lots_normalises:
+#             lot = None
+
+#             for _ in range(5):
+#                 try:
+#                     lot = Lot.objects.create(
+#                         achat=achat,
+#                         numero_lot=(
+#                             generate_numero_lot()
+#                         ),
+#                         description=(
+#                             lot_data["description"]
+#                         ),
+#                         received_at=(
+#                             lot_data["received_at"]
+#                             or timezone.now()
+#                         ),
+#                     )
+#                     break
+
+#                 except IntegrityError:
+#                     lot = None
+
+#             if lot is None:
+#                 raise ValidationError({
+#                     "numero_lot": (
+#                         "Impossible de générer un "
+#                         "numéro de lot unique."
+#                     )
+#                 })
+
+#             lots_created.append(lot)
+
+#             for ligne in lot_data["lignes"]:
+#                 produit = produits_by_id[
+#                     ligne["produit_id"]
+#                 ]
+
+#                 quantite = ligne["quantite"]
+#                 prix_achat_gramme = ligne[
+#                     "prix_achat_gramme"
+#                 ]
+
+#                 produit_line = (
+#                     ProduitLine.objects.create(
+#                         lot=lot,
+#                         produit=produit,
+#                         quantite=quantite,
+#                         prix_achat_gramme=(
+#                             prix_achat_gramme
+#                         ),
+#                     )
+#                 )
+
+#                 Stock.objects.create(
+#                     produit_line=produit_line,
+#                     bijouterie=bijouterie,
+#                     quantite_totale=quantite,
+#                     en_stock=quantite,
+#                 )
+
+#                 log_move(
+#                     produit=produit,
+#                     qty=quantite,
+#                     movement_type=(
+#                         MovementType.PURCHASE_IN
+#                     ),
+#                     src_bucket=Bucket.EXTERNAL,
+#                     dst_bucket=Bucket.BIJOUTERIE,
+#                     dst_bijouterie_id=bijouterie.id,
+#                     unit_cost=prix_achat_gramme,
+#                     achat=achat,
+#                     produit_line=produit_line,
+#                     lot=lot,
+#                     user=request.user,
+#                     reason=(
+#                         "Entrée fournisseur vers bijouterie"
+#                     ),
+#                 )
+
+#         # =====================================================
+#         # 8. Totaux définitifs
+#         # =====================================================
+
+#         achat.update_total(save=True)
+
+#         achat.refresh_from_db(
+#             fields=[
+#                 "montant_total_ht",
+#                 "montant_total_ttc",
+#             ]
+#         )
+
+#         # =====================================================
+#         # 9. Réponse
+#         # =====================================================
+
+#         payload = {
+#             "achat": achat,
+#             "lots": lots_created,
+#         }
+
+#         output = ArrivageCreateResponseSerializer(
+#             payload
+#         ).data
+
+#         return Response(
+#             output,
+#             status=status.HTTP_201_CREATED,
+#         )
+        
+
+
+
 class ArrivageCreateView(APIView):
     """
-    Crée un arrivage fournisseur.
+    Création d'un arrivage fournisseur.
 
     Cycle :
 
-        Fournisseur
-            ↓
         Achat
-            ↓
+        ↓
         Lot
-            ↓
+        ↓
         ProduitLine
-            ↓
-        Stock magasin
-            ↓
+        ↓
+        Stock bijouterie
+        ↓
         PURCHASE_IN : EXTERNAL → BIJOUTERIE
-
-    Cette vue ne crée jamais :
-    - de stock réserve ;
-    - de VendorStock ;
-    - de VENDOR_ASSIGN ;
-    - de SALE_OUT.
-
-    Périmètre :
-    - admin : toutes les bijouteries ;
-    - manager : uniquement ses bijouteries affectées.
     """
 
     permission_classes = [
@@ -1166,466 +1660,73 @@ class ArrivageCreateView(APIView):
     @swagger_auto_schema(
         operation_id="createArrivage",
         operation_summary=(
-            "Créer un arrivage fournisseur et initialiser "
-            "le stock de la bijouterie"
+            "Créer un arrivage fournisseur"
         ),
         operation_description=(
             "Crée un achat fournisseur avec un ou plusieurs lots.\n\n"
-            "Pour chaque ProduitLine créée :\n"
-            "- un Stock magasin est initialisé ;\n"
-            "- un mouvement PURCHASE_IN est enregistré ;\n"
-            "- le mouvement va de EXTERNAL vers BIJOUTERIE.\n\n"
-            "Aucun VendorStock ni stock réserve n'est créé."
+            "Règles de bijouterie :\n"
+            "- une seule bijouterie accessible : sélection automatique ;\n"
+            "- plusieurs bijouteries : `bijouterie_id` obligatoire.\n\n"
+            "Pour chaque ProduitLine :\n"
+            "- création du Stock magasin ;\n"
+            "- création d'un mouvement PURCHASE_IN ;\n"
+            "- flux EXTERNAL → BIJOUTERIE.\n\n"
+            "Aucun VendorStock ni système de réserve n'est créé."
         ),
         request_body=ArrivageCreateInSerializer,
         responses={
             201: openapi.Response(
-                description="Arrivage créé avec succès.",
-                schema=ArrivageCreateResponseSerializer,
+                description=(
+                    "Arrivage créé avec succès."
+                ),
+                schema=(
+                    ArrivageCreateResponseSerializer
+                ),
             ),
             400: openapi.Response(
                 description="Données invalides.",
             ),
             401: openapi.Response(
-                description="Authentification requise.",
+                description=(
+                    "Authentification requise."
+                ),
             ),
             403: openapi.Response(
-                description=(
-                    "Accès refusé ou bijouterie non autorisée."
-                ),
+                description="Accès refusé.",
             ),
         },
-        tags=["Achats / Arrivages"],
+        tags=[
+            "Achats / Arrivages"
+        ],
     )
-    @transaction.atomic
     def post(self, request):
-        serializer = ArrivageCreateInSerializer(
-            data=request.data
-        )
-        serializer.is_valid(raise_exception=True)
-
-        data = serializer.validated_data
-        lots_in = data.get("lots") or []
-
-        # =====================================================
-        # 1. Bijouterie
-        # =====================================================
-
-        bijouterie_id = data["bijouterie_id"]
-
-        try:
-            bijouterie = Bijouterie.objects.get(
-                pk=bijouterie_id
-            )
-        except Bijouterie.DoesNotExist:
-            raise ValidationError({
-                "bijouterie_id": "Bijouterie introuvable."
-            })
-
-        # =====================================================
-        # 2. Périmètre utilisateur
-        # =====================================================
-
-        role = get_role_name(request.user)
-
-        if role == ROLE_MANAGER:
-            manager = getattr(
-                request.user,
-                "staff_manager_profile",
-                None,
-            )
-
-            if (
-                not manager
-                or not getattr(manager, "verifie", False)
-            ):
-                raise PermissionDenied(
-                    "Profil manager introuvable ou désactivé."
-                )
-
-            bijouteries_manager = getattr(
-                manager,
-                "bijouteries",
-                None,
-            )
-
-            if (
-                bijouteries_manager is None
-                or not bijouteries_manager.filter(
-                    pk=bijouterie.pk
-                ).exists()
-            ):
-                raise PermissionDenied(
-                    "Vous ne pouvez pas créer un arrivage "
-                    "dans cette bijouterie."
-                )
-
-        elif role != ROLE_ADMIN:
-            raise PermissionDenied(
-                "Seuls les administrateurs et les managers "
-                "peuvent créer un arrivage."
-            )
-
-        # =====================================================
-        # 3. Validation des lots
-        # =====================================================
-
-        if not lots_in:
-            raise ValidationError({
-                "lots": "Au moins un lot est requis."
-            })
-
-        produit_ids = set()
-        lots_normalises = []
-
-        for lot_index, lot_in in enumerate(lots_in):
-            lignes_in = lot_in.get("lignes") or []
-
-            if not lignes_in:
-                raise ValidationError({
-                    f"lots[{lot_index}].lignes": (
-                        "Chaque lot doit contenir "
-                        "au moins une ligne."
-                    )
-                })
-
-            produits_du_lot = set()
-            lignes_normalisees = []
-
-            for ligne_index, ligne_in in enumerate(
-                lignes_in
-            ):
-                prefixe = (
-                    f"lots[{lot_index}]."
-                    f"lignes[{ligne_index}]"
-                )
-
-                produit_id = ligne_in.get("produit_id")
-
-                if not produit_id:
-                    raise ValidationError({
-                        f"{prefixe}.produit_id": (
-                            "produit_id est obligatoire."
-                        )
-                    })
-
-                if produit_id in produits_du_lot:
-                    raise ValidationError({
-                        f"{prefixe}.produit_id": (
-                            "Un produit ne peut apparaître "
-                            "qu'une seule fois dans un même lot."
-                        )
-                    })
-
-                produits_du_lot.add(produit_id)
-                produit_ids.add(produit_id)
-
-                try:
-                    quantite = int(
-                        ligne_in.get("quantite")
-                    )
-                except (TypeError, ValueError):
-                    raise ValidationError({
-                        f"{prefixe}.quantite": (
-                            "Quantité invalide."
-                        )
-                    })
-
-                if quantite < 1:
-                    raise ValidationError({
-                        f"{prefixe}.quantite": (
-                            "La quantité doit être supérieure "
-                            "ou égale à 1."
-                        )
-                    })
-
-                prix_brut = ligne_in.get(
-                    "prix_achat_gramme"
-                )
-
-                if prix_brut is None:
-                    raise ValidationError({
-                        f"{prefixe}.prix_achat_gramme": (
-                            "Le prix d'achat par gramme "
-                            "est obligatoire."
-                        )
-                    })
-
-                try:
-                    prix_achat_gramme = Decimal(
-                        str(prix_brut)
-                    ).quantize(
-                        Decimal("0.01"),
-                        rounding=ROUND_HALF_UP,
-                    )
-                except (
-                    InvalidOperation,
-                    TypeError,
-                    ValueError,
-                ):
-                    raise ValidationError({
-                        f"{prefixe}.prix_achat_gramme": (
-                            "Prix d'achat par gramme invalide."
-                        )
-                    })
-
-                if prix_achat_gramme < Decimal("0.00"):
-                    raise ValidationError({
-                        f"{prefixe}.prix_achat_gramme": (
-                            "Le prix d'achat par gramme "
-                            "ne peut pas être négatif."
-                        )
-                    })
-
-                lignes_normalisees.append({
-                    "produit_id": produit_id,
-                    "quantite": quantite,
-                    "prix_achat_gramme": (
-                        prix_achat_gramme
-                    ),
-                })
-
-            lots_normalises.append({
-                "description": (
-                    lot_in.get("description")
-                    or data.get("description")
-                    or ""
-                ),
-                "received_at": lot_in.get(
-                    "received_at"
-                ),
-                "lignes": lignes_normalisees,
-            })
-
-        # =====================================================
-        # 4. Validation des produits
-        # =====================================================
-
-        produits = (
-            Produit.objects
-            .filter(pk__in=produit_ids)
-            .only(
-                "id",
-                "poids",
+        serializer = (
+            ArrivageCreateInSerializer(
+                data=request.data
             )
         )
 
-        produits_by_id = {
-            produit.id: produit
-            for produit in produits
-        }
-
-        produits_manquants = (
-            produit_ids - set(produits_by_id)
+        serializer.is_valid(
+            raise_exception=True
         )
 
-        if produits_manquants:
-            raise ValidationError({
-                "lots": (
-                    "Produit(s) introuvable(s) : "
-                    f"{sorted(produits_manquants)}."
-                )
-            })
-
-        produits_sans_poids = [
-            produit.id
-            for produit in produits_by_id.values()
-            if produit.poids is None
-        ]
-
-        if produits_sans_poids:
-            raise ValidationError({
-                "lots": (
-                    "Produit(s) sans poids renseigné : "
-                    f"{sorted(produits_sans_poids)}."
-                )
-            })
-
-        # =====================================================
-        # 5. Fournisseur
-        # =====================================================
-
-        fournisseur_data = data["fournisseur"]
-
-        telephone = (
-            fournisseur_data["telephone"]
-            or ""
-        ).strip()
-
-        if not telephone:
-            raise ValidationError({
-                "fournisseur": {
-                    "telephone": (
-                        "Le téléphone du fournisseur "
-                        "est obligatoire."
-                    )
-                }
-            })
-
-        fournisseur, _ = (
-            Fournisseur.objects.update_or_create(
-                telephone=telephone,
-                defaults={
-                    "nom": (
-                        fournisseur_data.get("nom")
-                        or ""
-                    ),
-                    "prenom": (
-                        fournisseur_data.get("prenom")
-                        or ""
-                    ),
-                    "address": (
-                        fournisseur_data.get("address")
-                        or ""
-                    ),
-                },
-            )
-        )
-
-        # =====================================================
-        # 6. Création de l'achat
-        # =====================================================
-
-        achat = Achat.objects.create(
-            fournisseur=fournisseur,
-            bijouterie=bijouterie,
-            reference_commande=(
-                data.get("reference_commande")
-                or ""
+        result = create_arrivage(
+            user=request.user,
+            validated_data=(
+                serializer.validated_data
             ),
-            description=(
-                data.get("description")
-                or ""
-            ),
-            frais_transport=(
-                data.get("frais_transport")
-                or Decimal("0.00")
-            ),
-            frais_douane=(
-                data.get("frais_douane")
-                or Decimal("0.00")
-            ),
-            status=Achat.STATUS_CONFIRMED,
         )
 
-        lots_created = []
-
-        # =====================================================
-        # 7. Lots, ProduitLine, Stock et PURCHASE_IN
-        # =====================================================
-
-        for lot_data in lots_normalises:
-            lot = None
-
-            for _ in range(5):
-                try:
-                    lot = Lot.objects.create(
-                        achat=achat,
-                        numero_lot=(
-                            generate_numero_lot()
-                        ),
-                        description=(
-                            lot_data["description"]
-                        ),
-                        received_at=(
-                            lot_data["received_at"]
-                            or timezone.now()
-                        ),
-                    )
-                    break
-
-                except IntegrityError:
-                    lot = None
-
-            if lot is None:
-                raise ValidationError({
-                    "numero_lot": (
-                        "Impossible de générer un "
-                        "numéro de lot unique."
-                    )
-                })
-
-            lots_created.append(lot)
-
-            for ligne in lot_data["lignes"]:
-                produit = produits_by_id[
-                    ligne["produit_id"]
-                ]
-
-                quantite = ligne["quantite"]
-                prix_achat_gramme = ligne[
-                    "prix_achat_gramme"
-                ]
-
-                produit_line = (
-                    ProduitLine.objects.create(
-                        lot=lot,
-                        produit=produit,
-                        quantite=quantite,
-                        prix_achat_gramme=(
-                            prix_achat_gramme
-                        ),
-                    )
-                )
-
-                Stock.objects.create(
-                    produit_line=produit_line,
-                    bijouterie=bijouterie,
-                    quantite_totale=quantite,
-                    en_stock=quantite,
-                )
-
-                log_move(
-                    produit=produit,
-                    qty=quantite,
-                    movement_type=(
-                        MovementType.PURCHASE_IN
-                    ),
-                    src_bucket=Bucket.EXTERNAL,
-                    dst_bucket=Bucket.BIJOUTERIE,
-                    dst_bijouterie_id=bijouterie.id,
-                    unit_cost=prix_achat_gramme,
-                    achat=achat,
-                    produit_line=produit_line,
-                    lot=lot,
-                    user=request.user,
-                    reason=(
-                        "Entrée fournisseur vers bijouterie"
-                    ),
-                )
-
-        # =====================================================
-        # 8. Totaux définitifs
-        # =====================================================
-
-        achat.update_total(save=True)
-
-        achat.refresh_from_db(
-            fields=[
-                "montant_total_ht",
-                "montant_total_ttc",
-            ]
+        output = (
+            ArrivageCreateResponseSerializer(
+                result
+            )
         )
-
-        # =====================================================
-        # 9. Réponse
-        # =====================================================
-
-        payload = {
-            "achat": achat,
-            "lots": lots_created,
-        }
-
-        output = ArrivageCreateResponseSerializer(
-            payload
-        ).data
 
         return Response(
-            output,
+            output.data,
             status=status.HTTP_201_CREATED,
         )
-        
-        
 
 
 class LotListView(ListAPIView):

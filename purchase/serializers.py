@@ -864,6 +864,52 @@ class ArrivageCreateInSerializer(serializers.Serializer):
         )
 
 
+class ArrivageCreateInSerializer(serializers.Serializer):
+    bijouterie_id = serializers.IntegerField(
+        min_value=1,
+        required=False,
+    )
+
+    fournisseur = FournisseurInlineSerializer()
+
+    reference_commande = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=True,
+        default="",
+    )
+
+    description = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=True,
+        default="",
+    )
+
+    frais_transport = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        required=False,
+        min_value=Decimal("0.00"),
+        default=Decimal("0.00"),
+    )
+
+    frais_douane = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        required=False,
+        min_value=Decimal("0.00"),
+        default=Decimal("0.00"),
+    )
+
+    lots = LotInSerializer(
+        many=True,
+        allow_empty=False,
+    )
+    
+
 
 # ============================================================
 # PATCH Arrivage (métadonnées uniquement)

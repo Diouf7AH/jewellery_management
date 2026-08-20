@@ -365,6 +365,12 @@ class Facture(models.Model):
         blank=True,
         default=None
     )
+    
+    frais_transaction = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+    )
 
     montant_total = models.DecimalField(
         max_digits=14,

@@ -14,7 +14,6 @@ User = get_user_model()
 class CreateStaffSerializer(serializers.Serializer):
     role = serializers.ChoiceField(
         choices=[
-            (ROLE_ADMIN, "Administrateur"),
             (ROLE_MANAGER, "Manager"),
             (ROLE_VENDOR, "Vendeur"),
             (ROLE_CASHIER, "Caissier"),

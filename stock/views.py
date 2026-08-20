@@ -112,7 +112,7 @@ class MagasinProduitDisponibleListView(
         )
             
         
-class MagasinToVendorAssignmentView(APIView):
+class BijouterieToVendorAssignmentView(APIView):
     """
     Affecte du stock disponible dans une bijouterie à un vendeur.
 

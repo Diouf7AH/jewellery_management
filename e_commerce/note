@@ -138,3 +138,47 @@ les étapes du e-commerce :
 7. Livraison
 8. Notifications WhatsApp
 9. Application mobile
+
+
+
+ACHAT / ARRIVAGE
+        ↓
+Bijouterie choisie
+        ↓
+Stock(produit_line, bijouterie)
+        ↓
+        ├──────────────→ Affectation vendeur
+        │                  ↓
+        │              VendorStock
+        │
+        └──────────────→ E-commerce
+                           ↓
+                       Stock.en_stock
+
+
+Nouveau cycle e-commerce corrigé
+Produit publié
+        +
+Stock.en_stock > 0
+        +
+Stock.bijouterie définie
+        ↓
+Catalogue e-commerce
+        ↓
+CommandeEcommerce = pending
+        ↓
+Paiement
+Wave / Orange Money / Carte
+        ↓
+Paiement confirmé
+        ↓
+Vente créée
+source_vente = ecommerce
+        ↓
+Facture créée
+        ↓
+Stock.en_stock diminué
+        ↓
+InventoryMovement SALE_OUT
+        ↓
+CommandeEcommerce = paid

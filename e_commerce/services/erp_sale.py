@@ -1,3 +1,4 @@
+# services/erp_sale.py
 from e_commerce.services.vendor import get_or_create_ecommerce_vendor
 from sale.models import (Facture, ModePaiement, Paiement, PaiementLigne, Vente,
                          VenteProduit)
@@ -37,7 +38,8 @@ def create_erp_sale_from_ecommerce(*, commande, paiement_ecommerce):
     facture = Facture.objects.create(
         vente=vente,
         bijouterie=commande.bijouterie,
-        montant_ht=vente.montant_total,
+        montant_ht=commande.montant_total,
+        frais_transaction=commande.frais_transaction,
         type_facture=Facture.TYPE_FACTURE,
         status=Facture.STAT_PAYE,
     )
