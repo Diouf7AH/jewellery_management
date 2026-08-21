@@ -6,7 +6,7 @@ from io import BytesIO
 
 import qrcode
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.http import Http404, HttpResponse
 from django.utils.dateparse import parse_datetime
 from django_filters.rest_framework import DjangoFilterBackend
@@ -1206,19 +1206,52 @@ class ModeleDeleteAPIView(APIView):
         modele_instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+# class ProduitListAPIView(ListAPIView):
+#     serializer_class = ProduitSerializer
+#     permission_classes = [IsAuthenticated]
+
+#     def get_queryset(self):
+#         role = get_role_name(self.request.user)
+
+#         if role not in {
+#             ROLE_ADMIN,
+#             ROLE_MANAGER,
+#             ROLE_VENDOR,
+#         }:
+#             return Produit.objects.none()
+
+#         queryset = (
+#             Produit.objects
+#             .select_related(
+#                 "categorie",
+#                 "marque",
+#                 "modele",
+#                 "purete",
+#             )
+#             .prefetch_related(
+#                 "produit_gallery",
+#             )
+#             .order_by("-id")
+#         )
+
+#         search = self.request.query_params.get("search")
+
+#         if search:
+#             queryset = queryset.filter(
+#                 sku__icontains=search
+#             )
+
+#         return queryset
+
+    
+
 class ProduitListAPIView(ListAPIView):
     serializer_class = ProduitSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        role = get_role_name(self.request.user)
-
-        if role not in {
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_VENDOR,
-        }:
-            return Produit.objects.none()
+        user = self.request.user
+        role = get_role_name(user)
 
         queryset = (
             Produit.objects
@@ -1231,8 +1264,116 @@ class ProduitListAPIView(ListAPIView):
             .prefetch_related(
                 "produit_gallery",
             )
-            .order_by("-id")
         )
+
+        # ====================================================
+        # ADMIN
+        # ====================================================
+
+        if role == ROLE_ADMIN:
+            """
+            Admin :
+            - peut voir les produits ayant du stock
+              dans les bijouteries.
+            - possibilité de filtrer par bijouterie_id.
+            """
+
+            bijouterie_id = self.request.query_params.get(
+                "bijouterie_id"
+            )
+
+            if bijouterie_id:
+                queryset = queryset.filter(
+                    produit_lines__stocks__bijouterie_id=bijouterie_id,
+                    produit_lines__stocks__en_stock__gt=0,
+                )
+            else:
+                queryset = queryset.filter(
+                    produit_lines__stocks__en_stock__gt=0,
+                )
+
+        # ====================================================
+        # MANAGER
+        # ====================================================
+
+        elif role == ROLE_MANAGER:
+            """
+            Manager :
+            voit uniquement les produits disponibles
+            dans ses bijouteries.
+            """
+
+            manager = getattr(
+                user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if not manager or not manager.verifie:
+                return Produit.objects.none()
+
+            bijouterie_ids = manager.bijouteries.values_list(
+                "id",
+                flat=True,
+            )
+
+            queryset = queryset.filter(
+                produit_lines__stocks__bijouterie_id__in=bijouterie_ids,
+                produit_lines__stocks__en_stock__gt=0,
+            )
+
+            # Filtre facultatif sur une de ses bijouteries
+            bijouterie_id = self.request.query_params.get(
+                "bijouterie_id"
+            )
+
+            if bijouterie_id:
+                if not manager.bijouteries.filter(
+                    id=bijouterie_id
+                ).exists():
+                    return Produit.objects.none()
+
+                queryset = queryset.filter(
+                    produit_lines__stocks__bijouterie_id=bijouterie_id
+                )
+
+        # ====================================================
+        # VENDOR
+        # ====================================================
+
+        elif role == ROLE_VENDOR:
+            """
+            Vendor :
+            uniquement les produits qui lui sont réellement
+            affectés et dont il reste du stock vendeur.
+            """
+
+            vendor = getattr(
+                user,
+                "staff_vendor_profile",
+                None,
+            )
+
+            if not vendor or not vendor.verifie:
+                return Produit.objects.none()
+
+            queryset = queryset.filter(
+                produit_lines__vendor_stocks__vendor=vendor,
+                produit_lines__vendor_stocks__quantite_allouee__gt=(
+                    F("produit_lines__vendor_stocks__quantite_vendue")
+                ),
+            )
+
+        # ====================================================
+        # AUTRES ROLES
+        # ====================================================
+
+        else:
+            return Produit.objects.none()
+
+        # ====================================================
+        # RECHERCHE
+        # ====================================================
 
         search = self.request.query_params.get("search")
 
@@ -1241,8 +1382,7 @@ class ProduitListAPIView(ListAPIView):
                 sku__icontains=search
             )
 
-        return queryset
-
+        return queryset.distinct().order_by("-id")
     
     
 
