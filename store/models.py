@@ -344,10 +344,10 @@ class Produit(models.Model):
     marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",null=True, blank=True)
     modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True, blank=True)
 
-    # categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit", null=True, blank=True)
-    # purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit",null=True, blank=True)
-    # marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",null=True, blank=True)
-    # modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True, blank=True)
+    # categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit")
+    # purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit")
+    # marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit")
+    # modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit")
     
     
     matiere = models.CharField(choices=MATIERE,max_length=50,default="or",)
@@ -472,18 +472,9 @@ class Gallery(models.Model):
     #     blank=False,
     # )
 
-    image = models.ImageField(
-        upload_to="produit_gallery/"
-    )
-
-    active = models.BooleanField(
-        default=True,
-        db_index=True,
-    )
-
-    date = models.DateTimeField(
-        auto_now_add=True
-    )
+    image = models.ImageField(upload_to="produit_gallery/")
+    active = models.BooleanField(default=True,db_index=True,)
+    date = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         verbose_name_plural = "Galerie"
