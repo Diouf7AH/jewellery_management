@@ -228,6 +228,7 @@ class ProduitSerializer(serializers.ModelSerializer):
         slug_field="marque",
         write_only=True,
     )
+    prix_vente_gramme = serializers.SerializerMethodField()
     marque_detail = serializers.SerializerMethodField(read_only=True)
 
     modele = serializers.SlugRelatedField(
@@ -270,7 +271,7 @@ class ProduitSerializer(serializers.ModelSerializer):
             "nom",
             "produit_url",
             "sku",
-
+            "prix_vente_gramme",
             # Image principale
             "image",
 
@@ -294,6 +295,27 @@ class ProduitSerializer(serializers.ModelSerializer):
             "taille",
             "etat",
         )
+
+    def get_prix_vente_gramme(self, obj):
+        if not obj.marque or not obj.purete:
+            return None
+
+        marque_purete = (
+            MarquePurete.objects
+            .filter(
+                marque=obj.marque,
+                purete=obj.purete,
+                prix__gt=0,
+            )
+            .only("prix")
+            .first()
+        )
+
+        if not marque_purete:
+            return None
+
+        return str(marque_purete.prix)
+
 
     def get_categorie_detail(self, obj):
         if not obj.categorie:
