@@ -1687,13 +1687,16 @@ class StaffDashboardView(APIView):
         
 
 
-
 class ManagerDashboardView(APIView):
     """
     Dashboard du manager connecté.
 
-    Le manager ne voit que les données appartenant
-    aux bijouteries qui lui sont attribuées.
+    Règles :
+    - uniquement un manager actif ;
+    - uniquement les bijouteries attribuées au manager ;
+    - statistiques cumulées sur ses bijouteries ;
+    - détail par bijouterie ;
+    - historique complet par année/mois.
     """
 
     permission_classes = [IsAuthenticated]
@@ -1704,16 +1707,16 @@ class ManagerDashboardView(APIView):
     # ============================================================
 
     @staticmethod
-    def _decimal(value) -> Decimal:
+    def _decimal(value):
         return value or Decimal("0.00")
 
     @staticmethod
-    def _int(value) -> int:
+    def _int(value):
         return int(value or 0)
 
     def _get_manager(self, user):
         """
-        Retourne le profil Manager actif du user.
+        Retourne le profil manager actif du user connecté.
         """
 
         if get_role_name(user) != ROLE_MANAGER:
@@ -1738,27 +1741,32 @@ class ManagerDashboardView(APIView):
         operation_summary="Dashboard manager connecté",
         operation_description=(
             "Retourne le tableau de bord du manager connecté.\n\n"
-            "### Scope\n"
-            "- Le manager voit uniquement ses bijouteries.\n\n"
-            "### Contenu\n"
+            "### Accès\n"
+            "- Manager connecté uniquement\n"
+            "- Manager actif uniquement\n"
+            "- Données limitées à ses bijouteries\n\n"
+            "### Données retournées\n"
             "- chiffre d'affaires semaine / mois / année\n"
             "- ventes aujourd'hui / semaine / mois / année\n"
             "- stock magasin\n"
             "- stock vendeurs\n"
+            "- quantité totale disponible\n"
+            "- poids total disponible\n"
+            "- produits en stock faible\n"
             "- performances vendeurs\n"
-            "- top produits\n"
+            "- top produits vendus\n"
             "- achats du mois\n"
             "- derniers arrivages\n"
-            "- état des factures\n"
+            "- factures\n"
             "- statistiques par bijouterie\n"
             "- historique annuel et mensuel"
         ),
         responses={
             200: openapi.Response(
-                description="Dashboard manager",
+                description="Dashboard manager retourné avec succès."
             ),
             403: openapi.Response(
-                description="Utilisateur non manager ou manager désactivé",
+                description="Accès refusé."
             ),
         },
         tags=["Dashboard Manager"],
@@ -1781,7 +1789,12 @@ class ManagerDashboardView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        # ========================================================
+        # Bijouteries du manager
+        # ========================================================
+
         bijouteries = manager.bijouteries.all()
+
         bijouterie_ids = list(
             bijouteries.values_list(
                 "id",
@@ -1807,8 +1820,11 @@ class ManagerDashboardView(APIView):
         now = timezone.localtime()
         today = now.date()
 
-        start_week = today - timezone.timedelta(
-            days=today.weekday()
+        start_week = (
+            today
+            - timezone.timedelta(
+                days=today.weekday(),
+            )
         )
 
         start_month = today.replace(
@@ -1885,7 +1901,7 @@ class ManagerDashboardView(APIView):
         )
 
         # ========================================================
-        # CA / Ventes
+        # Ventes : périodes
         # ========================================================
 
         ventes_today = ventes.filter(
@@ -1907,17 +1923,28 @@ class ManagerDashboardView(APIView):
             created_at__date__lte=today,
         )
 
+        # ========================================================
+        # CA semaine
+        # ========================================================
+
         ca_week = self._decimal(
             ventes_week.aggregate(
                 total=Coalesce(
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=2,
+                        ),
                     ),
                 )
             )["total"]
         )
+
+        # ========================================================
+        # CA mois
+        # ========================================================
 
         ca_month = self._decimal(
             ventes_month.aggregate(
@@ -1925,11 +1952,18 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=2,
+                        ),
                     ),
                 )
             )["total"]
         )
+
+        # ========================================================
+        # CA année
+        # ========================================================
 
         ca_year = self._decimal(
             ventes_year.aggregate(
@@ -1937,14 +1971,17 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=2,
+                        ),
                     ),
                 )
             )["total"]
         )
 
         # ========================================================
-        # Stock
+        # STOCK MAGASIN
         # ========================================================
 
         stock_magasin = stocks.aggregate(
@@ -1954,7 +1991,11 @@ class ManagerDashboardView(APIView):
             )
         )["total"]
 
-        stock_vendor = vendor_stocks.aggregate(
+        # ========================================================
+        # STOCK VENDEURS
+        # ========================================================
+
+        stock_vendor_data = vendor_stocks.aggregate(
             allouee=Coalesce(
                 Sum("quantite_allouee"),
                 Value(0),
@@ -1966,31 +2007,40 @@ class ManagerDashboardView(APIView):
         )
 
         stock_vendeurs = (
-            self._int(stock_vendor["allouee"])
-            - self._int(stock_vendor["vendue"])
+            self._int(
+                stock_vendor_data["allouee"]
+            )
+            - self._int(
+                stock_vendor_data["vendue"]
+            )
         )
+
+        # ========================================================
+        # Quantité globale restante
+        # ========================================================
 
         quantite_totale = (
             self._int(stock_magasin)
             + stock_vendeurs
         )
 
-        # --------------------------------------------------------
-        # Poids total restant
+        # ========================================================
+        # POIDS MAGASIN
         #
-        # Hypothèse :
-        # ProduitLine possède "poids".
-        #
-        # Si ton champ s'appelle poids_grammes,
-        # remplace produit_line__poids.
-        # --------------------------------------------------------
+        # Stock
+        # -> produit_line
+        # -> produit
+        # -> poids
+        # ========================================================
 
         poids_magasin = stocks.aggregate(
             total=Coalesce(
                 Sum(
                     ExpressionWrapper(
                         F("en_stock")
-                        * F("produit_line__poids"),
+                        * F(
+                            "produit_line__produit__poids"
+                        ),
                         output_field=DecimalField(
                             max_digits=20,
                             decimal_places=3,
@@ -1999,10 +2049,17 @@ class ManagerDashboardView(APIView):
                 ),
                 Value(
                     Decimal("0.000"),
-                    output_field=DecimalField(),
+                    output_field=DecimalField(
+                        max_digits=20,
+                        decimal_places=3,
+                    ),
                 ),
             )
         )["total"]
+
+        # ========================================================
+        # POIDS VENDEURS
+        # ========================================================
 
         poids_vendor = vendor_stocks.aggregate(
             total=Coalesce(
@@ -2012,7 +2069,9 @@ class ManagerDashboardView(APIView):
                             F("quantite_allouee")
                             - F("quantite_vendue")
                         )
-                        * F("produit_line__poids"),
+                        * F(
+                            "produit_line__produit__poids"
+                        ),
                         output_field=DecimalField(
                             max_digits=20,
                             decimal_places=3,
@@ -2021,7 +2080,10 @@ class ManagerDashboardView(APIView):
                 ),
                 Value(
                     Decimal("0.000"),
-                    output_field=DecimalField(),
+                    output_field=DecimalField(
+                        max_digits=20,
+                        decimal_places=3,
+                    ),
                 ),
             )
         )["total"]
@@ -2031,11 +2093,11 @@ class ManagerDashboardView(APIView):
             + self._decimal(poids_vendor)
         )
 
-        # --------------------------------------------------------
-        # Stock faible
+        # ========================================================
+        # Produits stock faible
         #
-        # Ici seuil = 2 unités.
-        # --------------------------------------------------------
+        # Seuil actuel : <= 2
+        # ========================================================
 
         produits_stock_faible = []
 
@@ -2050,29 +2112,46 @@ class ManagerDashboardView(APIView):
                 "produit_line",
                 "produit_line__produit",
             )
-            .order_by("en_stock")[:10]
+            .order_by(
+                "en_stock",
+                "id",
+            )[:10]
         )
 
         for stock_item in low_stocks:
+
+            produit = stock_item.produit_line.produit
+
             produits_stock_faible.append(
                 {
                     "stock_id": stock_item.id,
+
                     "produit_line_id": (
                         stock_item.produit_line_id
                     ),
-                    "produit_id": (
-                        stock_item.produit_line.produit_id
+
+                    "produit_id": produit.id,
+
+                    "produit": produit.nom,
+
+                    "sku": produit.sku,
+
+                    "bijouterie_id": (
+                        stock_item.bijouterie_id
                     ),
-                    "produit": (
-                        stock_item.produit_line.produit.nom
+
+                    "bijouterie": (
+                        stock_item.bijouterie.nom
                     ),
-                    "bijouterie": stock_item.bijouterie.nom,
-                    "quantite": stock_item.en_stock,
+
+                    "quantite": (
+                        stock_item.en_stock
+                    ),
                 }
             )
 
         # ========================================================
-        # Vendeurs
+        # VENDEURS
         # ========================================================
 
         nombre_vendeurs = vendors.count()
@@ -2080,6 +2159,10 @@ class ManagerDashboardView(APIView):
         vendeurs_actifs = vendors.filter(
             verifie=True,
         ).count()
+
+        # ========================================================
+        # Performance vendeurs du mois
+        # ========================================================
 
         performance_vendeurs = []
 
@@ -2102,62 +2185,105 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=2,
+                        ),
                     ),
                 ),
+
                 nombre_ventes=Count(
                     "id",
                     distinct=True,
                 ),
             )
-            .order_by("-chiffre_affaires")
+            .order_by(
+                "-chiffre_affaires"
+            )
+        )
+
+        # ========================================================
+        # Quantités vendues par vendeur
+        # ========================================================
+
+        vendor_quantities_qs = (
+            ventes_produits
+            .filter(
+                vendor__isnull=False,
+                vente__created_at__date__gte=start_month,
+                vente__created_at__date__lte=today,
+            )
+            .values(
+                "vendor_id",
+            )
+            .annotate(
+                quantite=Coalesce(
+                    Sum("quantite"),
+                    Value(0),
+                )
+            )
         )
 
         quantites_vendor = {
-            row["vendor_id"]: row["quantite"]
-            for row in (
-                ventes_produits
-                .filter(
-                    vendor__isnull=False,
-                    vente__created_at__date__gte=start_month,
-                    vente__created_at__date__lte=today,
-                )
-                .values("vendor_id")
-                .annotate(
-                    quantite=Coalesce(
-                        Sum("quantite"),
-                        Value(0),
-                    )
-                )
+            row["vendor_id"]: self._int(
+                row["quantite"]
             )
+            for row in vendor_quantities_qs
         }
 
         for item in vendor_stats:
 
+            first_name = (
+                item[
+                    "vendor__user__first_name"
+                ]
+                or ""
+            )
+
+            last_name = (
+                item[
+                    "vendor__user__last_name"
+                ]
+                or ""
+            )
+
             full_name = (
-                f"{item['vendor__user__first_name'] or ''} "
-                f"{item['vendor__user__last_name'] or ''}"
+                f"{first_name} {last_name}"
             ).strip()
+
+            email = item[
+                "vendor__user__email"
+            ]
 
             performance_vendeurs.append(
                 {
-                    "vendor_id": item["vendor_id"],
+                    "vendor_id": (
+                        item["vendor_id"]
+                    ),
+
                     "vendor": (
                         full_name
-                        or item["vendor__user__email"]
+                        or email
                     ),
-                    "email": item[
-                        "vendor__user__email"
-                    ],
+
+                    "email": email,
+
                     "bijouterie": item[
                         "vendor__bijouterie__nom"
                     ],
-                    "chiffre_affaires": item[
-                        "chiffre_affaires"
-                    ],
-                    "nombre_ventes": item[
-                        "nombre_ventes"
-                    ],
+
+                    "chiffre_affaires": (
+                        item[
+                            "chiffre_affaires"
+                        ]
+                    ),
+
+                    "nombre_ventes": (
+                        item[
+                            "nombre_ventes"
+                        ]
+                    ),
+
                     "quantite_vendue": (
                         quantites_vendor.get(
                             item["vendor_id"],
@@ -2168,7 +2294,9 @@ class ManagerDashboardView(APIView):
             )
 
         # ========================================================
-        # Top produits réellement vendus
+        # TOP PRODUITS
+        #
+        # Mois courant
         # ========================================================
 
         top_produits_qs = (
@@ -2187,11 +2315,15 @@ class ManagerDashboardView(APIView):
                     Sum("quantite"),
                     Value(0),
                 ),
+
                 chiffre_affaires=Coalesce(
                     Sum("total_ligne"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=2,
+                        ),
                     ),
                 ),
             )
@@ -2201,23 +2333,42 @@ class ManagerDashboardView(APIView):
             )[:10]
         )
 
-        top_produits = [
-            {
-                "produit_id": item["produit_id"],
-                "produit": item["produit__nom"],
-                "sku": item["produit__sku"],
-                "quantite_vendue": (
-                    item["quantite_vendue"]
-                ),
-                "chiffre_affaires": (
-                    item["chiffre_affaires"]
-                ),
-            }
-            for item in top_produits_qs
-        ]
+        top_produits = []
+
+        for item in top_produits_qs:
+
+            top_produits.append(
+                {
+                    "produit_id": (
+                        item["produit_id"]
+                    ),
+
+                    "produit": (
+                        item["produit__nom"]
+                    ),
+
+                    "sku": (
+                        item["produit__sku"]
+                    ),
+
+                    "quantite_vendue": (
+                        self._int(
+                            item[
+                                "quantite_vendue"
+                            ]
+                        )
+                    ),
+
+                    "chiffre_affaires": (
+                        item[
+                            "chiffre_affaires"
+                        ]
+                    ),
+                }
+            )
 
         # ========================================================
-        # Achats
+        # ACHATS MOIS
         # ========================================================
 
         achats_month = achats.filter(
@@ -2231,11 +2382,18 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=2,
+                        ),
                     ),
                 )
             )["total"]
         )
+
+        # ========================================================
+        # DERNIERS ARRIVAGES
+        # ========================================================
 
         derniers_arrivages = []
 
@@ -2245,71 +2403,110 @@ class ManagerDashboardView(APIView):
                 "achat",
                 "achat__fournisseur",
             )
-            .order_by("-received_at")[:10]
+            .order_by(
+                "-received_at",
+                "-id",
+            )[:10]
         )
 
         for lot in lots_qs:
+
+            fournisseur = None
+
+            if (
+                lot.achat
+                and lot.achat.fournisseur
+            ):
+                fournisseur = str(
+                    lot.achat.fournisseur
+                )
+
             derniers_arrivages.append(
                 {
                     "id": lot.id,
-                    "numero_lot": lot.numero_lot,
+
+                    "numero_lot": (
+                        lot.numero_lot
+                    ),
+
                     "numero_achat": (
                         lot.achat.numero_achat
                         if lot.achat
                         else None
                     ),
-                    "fournisseur": (
-                        str(lot.achat.fournisseur)
-                        if (
-                            lot.achat
-                            and lot.achat.fournisseur
-                        )
-                        else None
+
+                    "fournisseur": fournisseur,
+
+                    "date_arrivage": (
+                        lot.received_at
                     ),
-                    "date_arrivage": lot.received_at,
                 }
             )
 
         # ========================================================
-        # Factures
+        # FACTURES
         # ========================================================
 
-        factures_non_payees = factures.filter(
-            status="non_paye",
-        ).count()
+        factures_non_payees = (
+            factures
+            .filter(
+                status="non_paye",
+            )
+            .count()
+        )
 
-        factures_partielles = factures.filter(
-            status="partiel",
-        ).count()
+        factures_partielles = (
+            factures
+            .filter(
+                status="partiel",
+            )
+            .count()
+        )
 
-        factures_payees = factures.filter(
-            status="paye",
-        ).count()
+        factures_payees = (
+            factures
+            .filter(
+                status="paye",
+            )
+            .count()
+        )
 
         reste_a_encaisser = self._decimal(
-            factures.exclude(
+            factures
+            .exclude(
                 status="paye",
-            ).aggregate(
+            )
+            .aggregate(
                 total=Coalesce(
                     Sum("reste_a_payer"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=2,
+                        ),
                     ),
                 )
             )["total"]
         )
 
         # ========================================================
-        # Par bijouterie
+        # PAR BIJOUTERIE
         # ========================================================
 
         par_bijouterie = []
 
         for bijouterie in bijouteries:
 
-            ventes_bijouterie = ventes_year.filter(
-                bijouterie=bijouterie,
+            # ----------------------------------------------------
+            # Ventes année de la bijouterie
+            # ----------------------------------------------------
+
+            ventes_bijouterie = (
+                ventes_year
+                .filter(
+                    bijouterie=bijouterie,
+                )
             )
 
             ca_bijouterie = self._decimal(
@@ -2318,22 +2515,35 @@ class ManagerDashboardView(APIView):
                         Sum("montant_total"),
                         Value(
                             Decimal("0.00"),
-                            output_field=DecimalField(),
+                            output_field=DecimalField(
+                                max_digits=20,
+                                decimal_places=2,
+                            ),
                         ),
                     )
                 )["total"]
             )
 
+            # ----------------------------------------------------
+            # Stock magasin
+            # ----------------------------------------------------
+
             stock_bijouterie = self._int(
-                stocks.filter(
+                stocks
+                .filter(
                     bijouterie=bijouterie,
-                ).aggregate(
+                )
+                .aggregate(
                     total=Coalesce(
                         Sum("en_stock"),
                         Value(0),
                     )
                 )["total"]
             )
+
+            # ----------------------------------------------------
+            # Stock vendeurs
+            # ----------------------------------------------------
 
             vendor_stock_bijouterie = (
                 vendor_stocks
@@ -2342,11 +2552,16 @@ class ManagerDashboardView(APIView):
                 )
                 .aggregate(
                     allouee=Coalesce(
-                        Sum("quantite_allouee"),
+                        Sum(
+                            "quantite_allouee"
+                        ),
                         Value(0),
                     ),
+
                     vendue=Coalesce(
-                        Sum("quantite_vendue"),
+                        Sum(
+                            "quantite_vendue"
+                        ),
                         Value(0),
                     ),
                 )
@@ -2354,35 +2569,66 @@ class ManagerDashboardView(APIView):
 
             stock_vendor_bijouterie = (
                 self._int(
-                    vendor_stock_bijouterie["allouee"]
+                    vendor_stock_bijouterie[
+                        "allouee"
+                    ]
                 )
                 - self._int(
-                    vendor_stock_bijouterie["vendue"]
+                    vendor_stock_bijouterie[
+                        "vendue"
+                    ]
                 )
             )
 
             par_bijouterie.append(
                 {
-                    "bijouterie_id": bijouterie.id,
-                    "bijouterie": bijouterie.nom,
-                    "chiffre_affaires": ca_bijouterie,
-                    "ventes": ventes_bijouterie.count(),
-                    "stock_magasin": stock_bijouterie,
+                    "bijouterie_id": (
+                        bijouterie.id
+                    ),
+
+                    "bijouterie": (
+                        bijouterie.nom
+                    ),
+
+                    "chiffre_affaires": (
+                        ca_bijouterie
+                    ),
+
+                    "ventes": (
+                        ventes_bijouterie.count()
+                    ),
+
+                    "stock_magasin": (
+                        stock_bijouterie
+                    ),
+
                     "stock_vendeur": (
                         stock_vendor_bijouterie
+                    ),
+
+                    "stock_total": (
+                        stock_bijouterie
+                        + stock_vendor_bijouterie
                     ),
                 }
             )
 
         # ========================================================
-        # Historique
+        # HISTORIQUE COMPLET
+        #
+        # Toutes les années disponibles.
         # ========================================================
 
         historique_qs = (
             ventes
             .annotate(
-                year=ExtractYear("created_at"),
-                month=TruncMonth("created_at"),
+                year=ExtractYear(
+                    "created_at"
+                ),
+
+                month=TruncMonth(
+                    "created_at"
+                ),
             )
             .values(
                 "year",
@@ -2393,9 +2639,13 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=2,
+                        ),
                     ),
                 ),
+
                 nombre_ventes=Count(
                     "id",
                     distinct=True,
@@ -2406,8 +2656,6 @@ class ManagerDashboardView(APIView):
                 "month",
             )
         )
-
-        historique_map = {}
 
         month_names = {
             1: "janvier",
@@ -2424,17 +2672,39 @@ class ManagerDashboardView(APIView):
             12: "décembre",
         }
 
+        historique_map = {}
+
         for row in historique_qs:
 
-            year = int(row["year"])
-            month_date = row["month"]
-            month_number = month_date.month
+            if not row["year"]:
+                continue
+
+            year = int(
+                row["year"]
+            )
+
+            month_date = row[
+                "month"
+            ]
+
+            if not month_date:
+                continue
+
+            month_number = (
+                month_date.month
+            )
 
             if year not in historique_map:
+
                 historique_map[year] = {
                     "annee": year,
-                    "chiffre_affaires": Decimal("0.00"),
+
+                    "chiffre_affaires": (
+                        Decimal("0.00")
+                    ),
+
                     "nombre_ventes": 0,
+
                     "mois": [],
                 }
 
@@ -2450,18 +2720,33 @@ class ManagerDashboardView(APIView):
                 row["nombre_ventes"]
             )
 
-            historique_map[year]["mois"].append(
+            historique_map[
+                year
+            ]["mois"].append(
                 {
-                    "numero": month_number,
-                    "mois": month_names[
+                    "numero": (
                         month_number
-                    ],
-                    "chiffre_affaires": row[
-                        "chiffre_affaires"
-                    ],
-                    "nombre_ventes": row[
-                        "nombre_ventes"
-                    ],
+                    ),
+
+                    "mois": (
+                        month_names[
+                            month_number
+                        ]
+                    ),
+
+                    "chiffre_affaires": (
+                        row[
+                            "chiffre_affaires"
+                        ]
+                    ),
+
+                    "nombre_ventes": (
+                        self._int(
+                            row[
+                                "nombre_ventes"
+                            ]
+                        )
+                    ),
                 }
             )
 
@@ -2470,95 +2755,216 @@ class ManagerDashboardView(APIView):
         )
 
         historique.sort(
-            key=lambda x: x["annee"],
+            key=lambda item: (
+                item["annee"]
+            ),
             reverse=True,
         )
 
         # ========================================================
-        # Response
+        # RESPONSE
         # ========================================================
 
         return Response(
             {
+                # =================================================
+                # Manager
+                # =================================================
+
                 "manager": {
                     "id": manager.id,
-                    "email": request.user.email,
-                    "first_name": request.user.first_name,
-                    "last_name": request.user.last_name,
+
+                    "email": (
+                        request.user.email
+                    ),
+
+                    "first_name": (
+                        request.user.first_name
+                    ),
+
+                    "last_name": (
+                        request.user.last_name
+                    ),
                 },
+
+                # =================================================
+                # Résumé
+                # =================================================
 
                 "resume": {
-                    "chiffre_affaires_semaine": ca_week,
-                    "chiffre_affaires_mois": ca_month,
-                    "chiffre_affaires_annee": ca_year,
+                    "chiffre_affaires_semaine": (
+                        ca_week
+                    ),
 
-                    "ventes_semaine": ventes_week.count(),
-                    "ventes_mois": ventes_month.count(),
-                    "ventes_annee": ventes_year.count(),
+                    "chiffre_affaires_mois": (
+                        ca_month
+                    ),
 
-                    "nombre_bijouteries": len(
-                        bijouterie_ids
+                    "chiffre_affaires_annee": (
+                        ca_year
+                    ),
+
+                    "ventes_semaine": (
+                        ventes_week.count()
+                    ),
+
+                    "ventes_mois": (
+                        ventes_month.count()
+                    ),
+
+                    "ventes_annee": (
+                        ventes_year.count()
+                    ),
+
+                    "nombre_bijouteries": (
+                        len(
+                            bijouterie_ids
+                        )
                     ),
                 },
+
+                # =================================================
+                # Ventes
+                # =================================================
 
                 "ventes": {
-                    "aujourd_hui": ventes_today.count(),
-                    "semaine": ventes_week.count(),
-                    "mois": ventes_month.count(),
-                    "annee": ventes_year.count(),
+                    "aujourd_hui": (
+                        ventes_today.count()
+                    ),
+
+                    "semaine": (
+                        ventes_week.count()
+                    ),
+
+                    "mois": (
+                        ventes_month.count()
+                    ),
+
+                    "annee": (
+                        ventes_year.count()
+                    ),
                 },
 
+                # =================================================
+                # Stock
+                # =================================================
+
                 "stock": {
-                    "stock_magasin": self._int(
-                        stock_magasin
+                    "stock_magasin": (
+                        self._int(
+                            stock_magasin
+                        )
                     ),
-                    "stock_vendeurs": stock_vendeurs,
-                    "quantite_totale": quantite_totale,
-                    "poids_total": poids_total,
+
+                    "stock_vendeurs": (
+                        stock_vendeurs
+                    ),
+
+                    "quantite_totale": (
+                        quantite_totale
+                    ),
+
+                    "poids_magasin": (
+                        poids_magasin
+                    ),
+
+                    "poids_vendeurs": (
+                        poids_vendor
+                    ),
+
+                    "poids_total": (
+                        poids_total
+                    ),
+
                     "produits_stock_faible": (
                         produits_stock_faible
                     ),
                 },
 
+                # =================================================
+                # Vendeurs
+                # =================================================
+
                 "vendeurs": {
-                    "nombre_vendeurs": nombre_vendeurs,
-                    "vendeurs_actifs": vendeurs_actifs,
+                    "nombre_vendeurs": (
+                        nombre_vendeurs
+                    ),
+
+                    "vendeurs_actifs": (
+                        vendeurs_actifs
+                    ),
+
                     "performance_vendeurs": (
                         performance_vendeurs
                     ),
                 },
 
-                "top_produits": top_produits,
+                # =================================================
+                # Top produits
+                # =================================================
+
+                "top_produits": (
+                    top_produits
+                ),
+
+                # =================================================
+                # Achats
+                # =================================================
 
                 "achats": {
                     "achats_mois": (
                         achats_month.count()
                     ),
+
                     "montant_achats_mois": (
                         montant_achats_mois
                     ),
+
                     "derniers_arrivages": (
                         derniers_arrivages
                     ),
                 },
 
+                # =================================================
+                # Factures
+                # =================================================
+
                 "factures": {
-                    "non_payees": factures_non_payees,
-                    "partielles": factures_partielles,
-                    "payees": factures_payees,
+                    "non_payees": (
+                        factures_non_payees
+                    ),
+
+                    "partielles": (
+                        factures_partielles
+                    ),
+
+                    "payees": (
+                        factures_payees
+                    ),
+
                     "reste_a_encaisser": (
                         reste_a_encaisser
                     ),
                 },
 
-                "par_bijouterie": par_bijouterie,
+                # =================================================
+                # Bijouteries
+                # =================================================
 
-                "historique": historique,
+                "par_bijouterie": (
+                    par_bijouterie
+                ),
+
+                # =================================================
+                # Historique
+                # =================================================
+
+                "historique": (
+                    historique
+                ),
             },
             status=status.HTTP_200_OK,
         )
-        
-
 
 
 # ///////////////////Caissier dshboard
