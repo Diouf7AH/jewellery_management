@@ -2,6 +2,7 @@
 # import weasyprint
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -12,7 +13,9 @@ from django.core.exceptions import ValidationError
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.paginator import EmptyPage, Paginator
 from django.db import transaction
-from django.db.models import Count, Exists, F, OuterRef, Q, Sum
+from django.db.models import (Count, DecimalField, Exists, ExpressionWrapper,
+                              F, Min, OuterRef, Q, Sum, Value)
+from django.db.models.functions import Coalesce
 from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
@@ -76,6 +79,7 @@ MAX_PAGE_SIZE = getattr(settings, "MAX_PAGE_SIZE", 100)
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
+ZERO = Decimal("0.00")
 
 class VenteProduitCreateView(APIView):
     permission_classes = [CanCreateSale]
@@ -2946,21 +2950,385 @@ class CashierDashboardView(APIView):
         operation_summary="Dashboard du caissier connecté",
         operation_description=(
             "Retourne le tableau de bord du caissier connecté.\n\n"
+            "### Règles d'accès\n"
+            "- utilisateur authentifié ;\n"
+            "- rôle `cashier` obligatoire ;\n"
+            "- profil Cashier vérifié ;\n"
+            "- données limitées à la bijouterie du caissier.\n\n"
             "### Données retournées\n"
-            "- CA encaissé aujourd'hui\n"
-            "- CA encaissé semaine courante\n"
-            "- CA encaissé mois courant\n"
-            "- CA encaissé année courante\n"
-            "- paiements jour et mois\n"
-            "- répartition par mode de paiement\n"
-            "- factures payées / partielles / non payées\n"
-            "- montant restant à encaisser\n"
-            "- ventes jour / semaine / mois / année\n"
-            "- derniers paiements\n"
-            "- historique annuel depuis 2026\n\n"
-            "Toutes les données sont limitées à la bijouterie "
-            "du caissier connecté."
+            "- CA encaissé aujourd'hui ;\n"
+            "- CA encaissé semaine courante ;\n"
+            "- CA encaissé mois courant ;\n"
+            "- CA encaissé année courante ;\n"
+            "- nombre et montant des paiements ;\n"
+            "- répartition par mode de paiement ;\n"
+            "- état des factures ;\n"
+            "- ventes de la bijouterie ;\n"
+            "- derniers paiements ;\n"
+            "- historique annuel depuis 2026."
         ),
+        responses={
+            200: openapi.Response(
+                description="Dashboard caissier",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "cashier": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=2,
+                                ),
+                                "nom": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="Mamadou Diop",
+                                ),
+                                "email": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="cashier@rio-gold.com",
+                                ),
+                                "telephone": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="771234567",
+                                    x_nullable=True,
+                                ),
+                            },
+                        ),
+
+                        "bijouterie": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=1,
+                                ),
+                                "nom": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="Rio Gold Dakar",
+                                ),
+                            },
+                        ),
+
+                        "periode": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "date": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATE,
+                                    example="2026-08-22",
+                                ),
+                                "debut_semaine": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATE,
+                                    example="2026-08-17",
+                                ),
+                                "fin_semaine": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATE,
+                                    example="2026-08-23",
+                                ),
+                                "mois": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=8,
+                                ),
+                                "annee": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=2026,
+                                ),
+                            },
+                        ),
+
+                        "ca_encaisse": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "aujourdhui": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="450000.00",
+                                ),
+                                "semaine": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="2150000.00",
+                                ),
+                                "mois": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="8750000.00",
+                                ),
+                                "annee": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="75400000.00",
+                                ),
+                            },
+                        ),
+
+                        "paiements": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "nombre_paiements_jour": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=7,
+                                ),
+                                "montant_paiements_jour": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="450000.00",
+                                ),
+                                "nombre_paiements_mois": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=118,
+                                ),
+                                "montant_paiements_mois": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="8750000.00",
+                                ),
+                            },
+                        ),
+
+                        "modes_paiement": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "code": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="wave",
+                                    ),
+                                    "nom": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="Wave",
+                                    ),
+                                    "nombre": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=25,
+                                    ),
+                                    "montant": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="2750000.00",
+                                    ),
+                                },
+                            ),
+                        ),
+
+                        "factures": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "factures_payees": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=82,
+                                ),
+                                "factures_partielles": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=8,
+                                ),
+                                "factures_non_payees": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=13,
+                                ),
+                                "montant_restant_a_encaisser": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="1850000.00",
+                                ),
+                            },
+                        ),
+
+                        "ventes": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "ventes_jour": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=5,
+                                ),
+                                "ventes_semaine": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=27,
+                                ),
+                                "ventes_mois": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=103,
+                                ),
+                                "ventes_annee": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=948,
+                                ),
+                            },
+                        ),
+
+                        "derniers_paiements": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "id": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=21,
+                                    ),
+                                    "date_paiement": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        format=openapi.FORMAT_DATETIME,
+                                    ),
+                                    "montant": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="250000.00",
+                                    ),
+
+                                    "facture": openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=15,
+                                            ),
+                                            "numero_facture": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="FAC-20260822-0001",
+                                            ),
+                                            "status": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="paye",
+                                            ),
+                                            "type_facture": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="facture",
+                                            ),
+                                            "montant_total": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="250000.00",
+                                            ),
+                                        },
+                                    ),
+
+                                    "client": openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        x_nullable=True,
+                                        properties={
+                                            "id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=7,
+                                            ),
+                                            "nom": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Alioune Ndiaye",
+                                            ),
+                                            "telephone": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="770000000",
+                                                x_nullable=True,
+                                            ),
+                                        },
+                                    ),
+
+                                    "cashier": openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        x_nullable=True,
+                                        properties={
+                                            "id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=2,
+                                            ),
+                                            "nom": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Mamadou Diop",
+                                            ),
+                                        },
+                                    ),
+
+                                    "modes_paiement": openapi.Schema(
+                                        type=openapi.TYPE_ARRAY,
+                                        items=openapi.Schema(
+                                            type=openapi.TYPE_OBJECT,
+                                            properties={
+                                                "code": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    example="wave",
+                                                ),
+                                                "nom": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    example="Wave",
+                                                ),
+                                                "montant": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    example="250000.00",
+                                                ),
+                                                "reference": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    x_nullable=True,
+                                                    example="WAVE-123456",
+                                                ),
+                                            },
+                                        ),
+                                    ),
+                                },
+                            ),
+                        ),
+
+                        "historique": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            additional_properties=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "ventes": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=948,
+                                    ),
+                                    "nombre_paiements": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=1020,
+                                    ),
+                                    "encaissements": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="75400000.00",
+                                    ),
+                                },
+                            ),
+                            example={
+                                "2026": {
+                                    "ventes": 948,
+                                    "nombre_paiements": 1020,
+                                    "encaissements": "75400000.00",
+                                },
+                                "2027": {
+                                    "ventes": 0,
+                                    "nombre_paiements": 0,
+                                    "encaissements": "0.00",
+                                },
+                            },
+                        ),
+                    },
+                ),
+            ),
+
+            400: openapi.Response(
+                description="Aucune bijouterie associée au caissier",
+                examples={
+                    "application/json": {
+                        "detail": (
+                            "Aucune bijouterie n'est associée "
+                            "à ce caissier."
+                        )
+                    }
+                },
+            ),
+
+            401: openapi.Response(
+                description="Utilisateur non authentifié",
+                examples={
+                    "application/json": {
+                        "detail": (
+                            "Authentication credentials "
+                            "were not provided."
+                        )
+                    }
+                },
+            ),
+
+            403: openapi.Response(
+                description="Accès interdit",
+                examples={
+                    "application/json": {
+                        "detail": "Accès réservé au caissier."
+                    }
+                },
+            ),
+        },
     )
     def get(self, request, *args, **kwargs):
 
