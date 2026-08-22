@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from django.db.models import (Count, DecimalField, ExpressionWrapper, F, Min,
                               Q, Sum, Value)
-from django.db.models.functions import Coalesce, ExtractYear, TruncMonth
+from django.db.models.functions import Coalesce, ExtractMonth, ExtractYear
 from django.utils import timezone
 # staff/views.py
 # staff/views.py
@@ -3030,7 +3030,7 @@ class ManagerDashboardView(APIView):
                 year=ExtractYear(
                     "created_at"
                 ),
-                month=TruncMonth(
+                month=ExtractMonth(
                     "created_at"
                 ),
             )
@@ -3046,7 +3046,6 @@ class ManagerDashboardView(APIView):
                         output_field=money_output,
                     ),
                 ),
-
                 nombre_ventes=Count(
                     "id",
                     distinct=True,
@@ -3077,16 +3076,14 @@ class ManagerDashboardView(APIView):
 
         for row in historique_qs:
 
-            if not row["year"] or not row["month"]:
+            if row["year"] is None or row["month"] is None:
                 continue
 
             year = int(
                 row["year"]
             )
 
-            month_number = (
-                row["month"].month
-            )
+            month_number = int(row["month"])
 
             if year not in historique_map:
 
