@@ -1,21 +1,34 @@
-from django.db.models import Count
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import timedelta
+from decimal import Decimal
+
+from django.db.models import (Count, DecimalField, ExpressionWrapper, F, Min,
+                              Q, Sum, Value)
+from django.db.models.functions import Coalesce, ExtractYear, TruncMonth
+from django.utils import timezone
 # staff/views.py
 # staff/views.py
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from backend.permissions import IsAdmin, IsAdminOrManager
 from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
                            ROLE_VENDOR, get_role_name)
-from staff.models import Buyer, Cashier, Manager
+from purchase.models import Achat, Lot
+from sale.models import Facture, Vente, VenteProduit
+from staff.models import Buyer, Cashier, Manager, Vendor
 from staff.serializers import (CreateStaffSerializer,
                                StaffDashboardResponseSerializer,
                                UpdateStaffSerializer)
 from staff.services import (create_staff_member, promote_user_to_admin,
                             update_staff_member)
+from stock.models import Stock, VendorStock
 from vendor.models import Vendor
 
 SINGLE_BIJOUTERIE_ROLES = {
@@ -24,6 +37,9 @@ SINGLE_BIJOUTERIE_ROLES = {
     ROLE_BUYER,
 }
 
+from sale.models import Facture, Paiement, PaiementLigne, Vente
+
+ZERO = Decimal("0.00")
 
 class CreateStaffView(APIView):
     """
@@ -1670,3 +1686,2103 @@ class StaffDashboardView(APIView):
         )
         
 
+
+
+class ManagerDashboardView(APIView):
+    """
+    Dashboard du manager connecté.
+
+    Le manager ne voit que les données appartenant
+    aux bijouteries qui lui sont attribuées.
+    """
+
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "options"]
+
+    # ============================================================
+    # Helpers
+    # ============================================================
+
+    @staticmethod
+    def _decimal(value) -> Decimal:
+        return value or Decimal("0.00")
+
+    @staticmethod
+    def _int(value) -> int:
+        return int(value or 0)
+
+    def _get_manager(self, user):
+        """
+        Retourne le profil Manager actif du user.
+        """
+
+        if get_role_name(user) != ROLE_MANAGER:
+            return None
+
+        return (
+            Manager.objects
+            .prefetch_related("bijouteries")
+            .filter(
+                user=user,
+                verifie=True,
+            )
+            .first()
+        )
+
+    # ============================================================
+    # Swagger
+    # ============================================================
+
+    @swagger_auto_schema(
+        operation_id="managerDashboard",
+        operation_summary="Dashboard manager connecté",
+        operation_description=(
+            "Retourne le tableau de bord du manager connecté.\n\n"
+            "### Scope\n"
+            "- Le manager voit uniquement ses bijouteries.\n\n"
+            "### Contenu\n"
+            "- chiffre d'affaires semaine / mois / année\n"
+            "- ventes aujourd'hui / semaine / mois / année\n"
+            "- stock magasin\n"
+            "- stock vendeurs\n"
+            "- performances vendeurs\n"
+            "- top produits\n"
+            "- achats du mois\n"
+            "- derniers arrivages\n"
+            "- état des factures\n"
+            "- statistiques par bijouterie\n"
+            "- historique annuel et mensuel"
+        ),
+        responses={
+            200: openapi.Response(
+                description="Dashboard manager",
+            ),
+            403: openapi.Response(
+                description="Utilisateur non manager ou manager désactivé",
+            ),
+        },
+        tags=["Dashboard Manager"],
+    )
+    def get(self, request):
+
+        # ========================================================
+        # Manager connecté
+        # ========================================================
+
+        manager = self._get_manager(request.user)
+
+        if not manager:
+            return Response(
+                {
+                    "detail": (
+                        "Accès réservé à un manager actif."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        bijouteries = manager.bijouteries.all()
+        bijouterie_ids = list(
+            bijouteries.values_list(
+                "id",
+                flat=True,
+            )
+        )
+
+        if not bijouterie_ids:
+            return Response(
+                {
+                    "detail": (
+                        "Aucune bijouterie n'est attribuée "
+                        "à ce manager."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # ========================================================
+        # Dates
+        # ========================================================
+
+        now = timezone.localtime()
+        today = now.date()
+
+        start_week = today - timezone.timedelta(
+            days=today.weekday()
+        )
+
+        start_month = today.replace(
+            day=1,
+        )
+
+        start_year = today.replace(
+            month=1,
+            day=1,
+        )
+
+        # ========================================================
+        # Querysets de base
+        # ========================================================
+
+        ventes = (
+            Vente.objects
+            .filter(
+                bijouterie_id__in=bijouterie_ids,
+            )
+        )
+
+        ventes_produits = (
+            VenteProduit.objects
+            .filter(
+                vente__bijouterie_id__in=bijouterie_ids,
+            )
+        )
+
+        stocks = (
+            Stock.objects
+            .filter(
+                bijouterie_id__in=bijouterie_ids,
+            )
+        )
+
+        vendor_stocks = (
+            VendorStock.objects
+            .filter(
+                bijouterie_id__in=bijouterie_ids,
+            )
+        )
+
+        vendors = (
+            Vendor.objects
+            .filter(
+                bijouterie_id__in=bijouterie_ids,
+            )
+            .select_related(
+                "user",
+                "bijouterie",
+            )
+        )
+
+        factures = (
+            Facture.objects
+            .filter(
+                vente__bijouterie_id__in=bijouterie_ids,
+            )
+        )
+
+        achats = (
+            Achat.objects
+            .filter(
+                bijouterie_id__in=bijouterie_ids,
+            )
+        )
+
+        lots = (
+            Lot.objects
+            .filter(
+                achat__bijouterie_id__in=bijouterie_ids,
+            )
+        )
+
+        # ========================================================
+        # CA / Ventes
+        # ========================================================
+
+        ventes_today = ventes.filter(
+            created_at__date=today,
+        )
+
+        ventes_week = ventes.filter(
+            created_at__date__gte=start_week,
+            created_at__date__lte=today,
+        )
+
+        ventes_month = ventes.filter(
+            created_at__date__gte=start_month,
+            created_at__date__lte=today,
+        )
+
+        ventes_year = ventes.filter(
+            created_at__date__gte=start_year,
+            created_at__date__lte=today,
+        )
+
+        ca_week = self._decimal(
+            ventes_week.aggregate(
+                total=Coalesce(
+                    Sum("montant_total"),
+                    Value(
+                        Decimal("0.00"),
+                        output_field=DecimalField(),
+                    ),
+                )
+            )["total"]
+        )
+
+        ca_month = self._decimal(
+            ventes_month.aggregate(
+                total=Coalesce(
+                    Sum("montant_total"),
+                    Value(
+                        Decimal("0.00"),
+                        output_field=DecimalField(),
+                    ),
+                )
+            )["total"]
+        )
+
+        ca_year = self._decimal(
+            ventes_year.aggregate(
+                total=Coalesce(
+                    Sum("montant_total"),
+                    Value(
+                        Decimal("0.00"),
+                        output_field=DecimalField(),
+                    ),
+                )
+            )["total"]
+        )
+
+        # ========================================================
+        # Stock
+        # ========================================================
+
+        stock_magasin = stocks.aggregate(
+            total=Coalesce(
+                Sum("en_stock"),
+                Value(0),
+            )
+        )["total"]
+
+        stock_vendor = vendor_stocks.aggregate(
+            allouee=Coalesce(
+                Sum("quantite_allouee"),
+                Value(0),
+            ),
+            vendue=Coalesce(
+                Sum("quantite_vendue"),
+                Value(0),
+            ),
+        )
+
+        stock_vendeurs = (
+            self._int(stock_vendor["allouee"])
+            - self._int(stock_vendor["vendue"])
+        )
+
+        quantite_totale = (
+            self._int(stock_magasin)
+            + stock_vendeurs
+        )
+
+        # --------------------------------------------------------
+        # Poids total restant
+        #
+        # Hypothèse :
+        # ProduitLine possède "poids".
+        #
+        # Si ton champ s'appelle poids_grammes,
+        # remplace produit_line__poids.
+        # --------------------------------------------------------
+
+        poids_magasin = stocks.aggregate(
+            total=Coalesce(
+                Sum(
+                    ExpressionWrapper(
+                        F("en_stock")
+                        * F("produit_line__poids"),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=3,
+                        ),
+                    )
+                ),
+                Value(
+                    Decimal("0.000"),
+                    output_field=DecimalField(),
+                ),
+            )
+        )["total"]
+
+        poids_vendor = vendor_stocks.aggregate(
+            total=Coalesce(
+                Sum(
+                    ExpressionWrapper(
+                        (
+                            F("quantite_allouee")
+                            - F("quantite_vendue")
+                        )
+                        * F("produit_line__poids"),
+                        output_field=DecimalField(
+                            max_digits=20,
+                            decimal_places=3,
+                        ),
+                    )
+                ),
+                Value(
+                    Decimal("0.000"),
+                    output_field=DecimalField(),
+                ),
+            )
+        )["total"]
+
+        poids_total = (
+            self._decimal(poids_magasin)
+            + self._decimal(poids_vendor)
+        )
+
+        # --------------------------------------------------------
+        # Stock faible
+        #
+        # Ici seuil = 2 unités.
+        # --------------------------------------------------------
+
+        produits_stock_faible = []
+
+        low_stocks = (
+            stocks
+            .filter(
+                en_stock__gt=0,
+                en_stock__lte=2,
+            )
+            .select_related(
+                "bijouterie",
+                "produit_line",
+                "produit_line__produit",
+            )
+            .order_by("en_stock")[:10]
+        )
+
+        for stock_item in low_stocks:
+            produits_stock_faible.append(
+                {
+                    "stock_id": stock_item.id,
+                    "produit_line_id": (
+                        stock_item.produit_line_id
+                    ),
+                    "produit_id": (
+                        stock_item.produit_line.produit_id
+                    ),
+                    "produit": (
+                        stock_item.produit_line.produit.nom
+                    ),
+                    "bijouterie": stock_item.bijouterie.nom,
+                    "quantite": stock_item.en_stock,
+                }
+            )
+
+        # ========================================================
+        # Vendeurs
+        # ========================================================
+
+        nombre_vendeurs = vendors.count()
+
+        vendeurs_actifs = vendors.filter(
+            verifie=True,
+        ).count()
+
+        performance_vendeurs = []
+
+        vendor_stats = (
+            ventes
+            .filter(
+                vendor__isnull=False,
+                created_at__date__gte=start_month,
+                created_at__date__lte=today,
+            )
+            .values(
+                "vendor_id",
+                "vendor__user__first_name",
+                "vendor__user__last_name",
+                "vendor__user__email",
+                "vendor__bijouterie__nom",
+            )
+            .annotate(
+                chiffre_affaires=Coalesce(
+                    Sum("montant_total"),
+                    Value(
+                        Decimal("0.00"),
+                        output_field=DecimalField(),
+                    ),
+                ),
+                nombre_ventes=Count(
+                    "id",
+                    distinct=True,
+                ),
+            )
+            .order_by("-chiffre_affaires")
+        )
+
+        quantites_vendor = {
+            row["vendor_id"]: row["quantite"]
+            for row in (
+                ventes_produits
+                .filter(
+                    vendor__isnull=False,
+                    vente__created_at__date__gte=start_month,
+                    vente__created_at__date__lte=today,
+                )
+                .values("vendor_id")
+                .annotate(
+                    quantite=Coalesce(
+                        Sum("quantite"),
+                        Value(0),
+                    )
+                )
+            )
+        }
+
+        for item in vendor_stats:
+
+            full_name = (
+                f"{item['vendor__user__first_name'] or ''} "
+                f"{item['vendor__user__last_name'] or ''}"
+            ).strip()
+
+            performance_vendeurs.append(
+                {
+                    "vendor_id": item["vendor_id"],
+                    "vendor": (
+                        full_name
+                        or item["vendor__user__email"]
+                    ),
+                    "email": item[
+                        "vendor__user__email"
+                    ],
+                    "bijouterie": item[
+                        "vendor__bijouterie__nom"
+                    ],
+                    "chiffre_affaires": item[
+                        "chiffre_affaires"
+                    ],
+                    "nombre_ventes": item[
+                        "nombre_ventes"
+                    ],
+                    "quantite_vendue": (
+                        quantites_vendor.get(
+                            item["vendor_id"],
+                            0,
+                        )
+                    ),
+                }
+            )
+
+        # ========================================================
+        # Top produits réellement vendus
+        # ========================================================
+
+        top_produits_qs = (
+            ventes_produits
+            .filter(
+                vente__created_at__date__gte=start_month,
+                vente__created_at__date__lte=today,
+            )
+            .values(
+                "produit_id",
+                "produit__nom",
+                "produit__sku",
+            )
+            .annotate(
+                quantite_vendue=Coalesce(
+                    Sum("quantite"),
+                    Value(0),
+                ),
+                chiffre_affaires=Coalesce(
+                    Sum("total_ligne"),
+                    Value(
+                        Decimal("0.00"),
+                        output_field=DecimalField(),
+                    ),
+                ),
+            )
+            .order_by(
+                "-quantite_vendue",
+                "-chiffre_affaires",
+            )[:10]
+        )
+
+        top_produits = [
+            {
+                "produit_id": item["produit_id"],
+                "produit": item["produit__nom"],
+                "sku": item["produit__sku"],
+                "quantite_vendue": (
+                    item["quantite_vendue"]
+                ),
+                "chiffre_affaires": (
+                    item["chiffre_affaires"]
+                ),
+            }
+            for item in top_produits_qs
+        ]
+
+        # ========================================================
+        # Achats
+        # ========================================================
+
+        achats_month = achats.filter(
+            created_at__date__gte=start_month,
+            created_at__date__lte=today,
+        )
+
+        montant_achats_mois = self._decimal(
+            achats_month.aggregate(
+                total=Coalesce(
+                    Sum("montant_total"),
+                    Value(
+                        Decimal("0.00"),
+                        output_field=DecimalField(),
+                    ),
+                )
+            )["total"]
+        )
+
+        derniers_arrivages = []
+
+        lots_qs = (
+            lots
+            .select_related(
+                "achat",
+                "achat__fournisseur",
+            )
+            .order_by("-received_at")[:10]
+        )
+
+        for lot in lots_qs:
+            derniers_arrivages.append(
+                {
+                    "id": lot.id,
+                    "numero_lot": lot.numero_lot,
+                    "numero_achat": (
+                        lot.achat.numero_achat
+                        if lot.achat
+                        else None
+                    ),
+                    "fournisseur": (
+                        str(lot.achat.fournisseur)
+                        if (
+                            lot.achat
+                            and lot.achat.fournisseur
+                        )
+                        else None
+                    ),
+                    "date_arrivage": lot.received_at,
+                }
+            )
+
+        # ========================================================
+        # Factures
+        # ========================================================
+
+        factures_non_payees = factures.filter(
+            status="non_paye",
+        ).count()
+
+        factures_partielles = factures.filter(
+            status="partiel",
+        ).count()
+
+        factures_payees = factures.filter(
+            status="paye",
+        ).count()
+
+        reste_a_encaisser = self._decimal(
+            factures.exclude(
+                status="paye",
+            ).aggregate(
+                total=Coalesce(
+                    Sum("reste_a_payer"),
+                    Value(
+                        Decimal("0.00"),
+                        output_field=DecimalField(),
+                    ),
+                )
+            )["total"]
+        )
+
+        # ========================================================
+        # Par bijouterie
+        # ========================================================
+
+        par_bijouterie = []
+
+        for bijouterie in bijouteries:
+
+            ventes_bijouterie = ventes_year.filter(
+                bijouterie=bijouterie,
+            )
+
+            ca_bijouterie = self._decimal(
+                ventes_bijouterie.aggregate(
+                    total=Coalesce(
+                        Sum("montant_total"),
+                        Value(
+                            Decimal("0.00"),
+                            output_field=DecimalField(),
+                        ),
+                    )
+                )["total"]
+            )
+
+            stock_bijouterie = self._int(
+                stocks.filter(
+                    bijouterie=bijouterie,
+                ).aggregate(
+                    total=Coalesce(
+                        Sum("en_stock"),
+                        Value(0),
+                    )
+                )["total"]
+            )
+
+            vendor_stock_bijouterie = (
+                vendor_stocks
+                .filter(
+                    bijouterie=bijouterie,
+                )
+                .aggregate(
+                    allouee=Coalesce(
+                        Sum("quantite_allouee"),
+                        Value(0),
+                    ),
+                    vendue=Coalesce(
+                        Sum("quantite_vendue"),
+                        Value(0),
+                    ),
+                )
+            )
+
+            stock_vendor_bijouterie = (
+                self._int(
+                    vendor_stock_bijouterie["allouee"]
+                )
+                - self._int(
+                    vendor_stock_bijouterie["vendue"]
+                )
+            )
+
+            par_bijouterie.append(
+                {
+                    "bijouterie_id": bijouterie.id,
+                    "bijouterie": bijouterie.nom,
+                    "chiffre_affaires": ca_bijouterie,
+                    "ventes": ventes_bijouterie.count(),
+                    "stock_magasin": stock_bijouterie,
+                    "stock_vendeur": (
+                        stock_vendor_bijouterie
+                    ),
+                }
+            )
+
+        # ========================================================
+        # Historique
+        # ========================================================
+
+        historique_qs = (
+            ventes
+            .annotate(
+                year=ExtractYear("created_at"),
+                month=TruncMonth("created_at"),
+            )
+            .values(
+                "year",
+                "month",
+            )
+            .annotate(
+                chiffre_affaires=Coalesce(
+                    Sum("montant_total"),
+                    Value(
+                        Decimal("0.00"),
+                        output_field=DecimalField(),
+                    ),
+                ),
+                nombre_ventes=Count(
+                    "id",
+                    distinct=True,
+                ),
+            )
+            .order_by(
+                "year",
+                "month",
+            )
+        )
+
+        historique_map = {}
+
+        month_names = {
+            1: "janvier",
+            2: "février",
+            3: "mars",
+            4: "avril",
+            5: "mai",
+            6: "juin",
+            7: "juillet",
+            8: "août",
+            9: "septembre",
+            10: "octobre",
+            11: "novembre",
+            12: "décembre",
+        }
+
+        for row in historique_qs:
+
+            year = int(row["year"])
+            month_date = row["month"]
+            month_number = month_date.month
+
+            if year not in historique_map:
+                historique_map[year] = {
+                    "annee": year,
+                    "chiffre_affaires": Decimal("0.00"),
+                    "nombre_ventes": 0,
+                    "mois": [],
+                }
+
+            historique_map[year][
+                "chiffre_affaires"
+            ] += self._decimal(
+                row["chiffre_affaires"]
+            )
+
+            historique_map[year][
+                "nombre_ventes"
+            ] += self._int(
+                row["nombre_ventes"]
+            )
+
+            historique_map[year]["mois"].append(
+                {
+                    "numero": month_number,
+                    "mois": month_names[
+                        month_number
+                    ],
+                    "chiffre_affaires": row[
+                        "chiffre_affaires"
+                    ],
+                    "nombre_ventes": row[
+                        "nombre_ventes"
+                    ],
+                }
+            )
+
+        historique = list(
+            historique_map.values()
+        )
+
+        historique.sort(
+            key=lambda x: x["annee"],
+            reverse=True,
+        )
+
+        # ========================================================
+        # Response
+        # ========================================================
+
+        return Response(
+            {
+                "manager": {
+                    "id": manager.id,
+                    "email": request.user.email,
+                    "first_name": request.user.first_name,
+                    "last_name": request.user.last_name,
+                },
+
+                "resume": {
+                    "chiffre_affaires_semaine": ca_week,
+                    "chiffre_affaires_mois": ca_month,
+                    "chiffre_affaires_annee": ca_year,
+
+                    "ventes_semaine": ventes_week.count(),
+                    "ventes_mois": ventes_month.count(),
+                    "ventes_annee": ventes_year.count(),
+
+                    "nombre_bijouteries": len(
+                        bijouterie_ids
+                    ),
+                },
+
+                "ventes": {
+                    "aujourd_hui": ventes_today.count(),
+                    "semaine": ventes_week.count(),
+                    "mois": ventes_month.count(),
+                    "annee": ventes_year.count(),
+                },
+
+                "stock": {
+                    "stock_magasin": self._int(
+                        stock_magasin
+                    ),
+                    "stock_vendeurs": stock_vendeurs,
+                    "quantite_totale": quantite_totale,
+                    "poids_total": poids_total,
+                    "produits_stock_faible": (
+                        produits_stock_faible
+                    ),
+                },
+
+                "vendeurs": {
+                    "nombre_vendeurs": nombre_vendeurs,
+                    "vendeurs_actifs": vendeurs_actifs,
+                    "performance_vendeurs": (
+                        performance_vendeurs
+                    ),
+                },
+
+                "top_produits": top_produits,
+
+                "achats": {
+                    "achats_mois": (
+                        achats_month.count()
+                    ),
+                    "montant_achats_mois": (
+                        montant_achats_mois
+                    ),
+                    "derniers_arrivages": (
+                        derniers_arrivages
+                    ),
+                },
+
+                "factures": {
+                    "non_payees": factures_non_payees,
+                    "partielles": factures_partielles,
+                    "payees": factures_payees,
+                    "reste_a_encaisser": (
+                        reste_a_encaisser
+                    ),
+                },
+
+                "par_bijouterie": par_bijouterie,
+
+                "historique": historique,
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+
+
+
+# ///////////////////Caissier dshboard
+class CashierDashboardView(APIView):
+    """
+    Dashboard du caissier connecté.
+
+    Règles :
+    - accès uniquement au rôle cashier ;
+    - profil Cashier obligatoirement vérifié ;
+    - le caissier voit uniquement les données de sa bijouterie ;
+    - le CA encaissé est calculé depuis PaiementLigne.montant_paye ;
+    - les ventes annulées sont exclues ;
+    - historique annuel dynamique à partir de 2026.
+    """
+
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get"]
+
+    # ============================================================
+    # Helpers
+    # ============================================================
+
+    def _get_cashier(self, user):
+        """
+        Retourne le profil caissier actif de l'utilisateur connecté.
+        """
+
+        return (
+            Cashier.objects
+            .select_related(
+                "user",
+                "bijouterie",
+            )
+            .filter(
+                user=user,
+                verifie=True,
+            )
+            .first()
+        )
+
+    @staticmethod
+    def _money(value):
+        """
+        Normalise un montant Decimal.
+        """
+        return value or ZERO
+
+    @staticmethod
+    def _money_string(value):
+        """
+        Transforme un montant en chaîne avec 2 décimales.
+
+        Exemple :
+            Decimal("150000") -> "150000.00"
+        """
+        value = value or ZERO
+        return f"{Decimal(value):.2f}"
+
+    @staticmethod
+    def _payment_sum(queryset):
+        """
+        Somme des PaiementLigne.montant_paye.
+        """
+
+        return (
+            queryset.aggregate(
+                total=Coalesce(
+                    Sum("montant_paye"),
+                    Value(
+                        ZERO,
+                        output_field=DecimalField(
+                            max_digits=18,
+                            decimal_places=2,
+                        ),
+                    ),
+                )
+            )["total"]
+            or ZERO
+        )
+
+    # ============================================================
+    # Swagger
+    # ============================================================
+
+    @swagger_auto_schema(
+        operation_id="cashierDashboard",
+        operation_summary="Dashboard du caissier connecté",
+        operation_description=(
+            "Retourne le tableau de bord du caissier connecté.\n\n"
+            "### Règles d'accès\n"
+            "- utilisateur authentifié ;\n"
+            "- rôle `cashier` obligatoire ;\n"
+            "- profil Cashier vérifié ;\n"
+            "- données limitées à la bijouterie du caissier.\n\n"
+            "### Données retournées\n"
+            "- CA encaissé aujourd'hui ;\n"
+            "- CA encaissé semaine courante ;\n"
+            "- CA encaissé mois courant ;\n"
+            "- CA encaissé année courante ;\n"
+            "- nombre et montant des paiements ;\n"
+            "- répartition par mode de paiement ;\n"
+            "- état des factures ;\n"
+            "- ventes de la bijouterie ;\n"
+            "- derniers paiements ;\n"
+            "- historique annuel depuis 2026."
+        ),
+        responses={
+            200: openapi.Response(
+                description="Dashboard caissier",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "cashier": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=2,
+                                ),
+                                "nom": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="Mamadou Diop",
+                                ),
+                                "email": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="cashier@rio-gold.com",
+                                ),
+                                "telephone": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="771234567",
+                                    x_nullable=True,
+                                ),
+                            },
+                        ),
+
+                        "bijouterie": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=1,
+                                ),
+                                "nom": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="Rio Gold Dakar",
+                                ),
+                            },
+                        ),
+
+                        "periode": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "date": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATE,
+                                    example="2026-08-22",
+                                ),
+                                "debut_semaine": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATE,
+                                    example="2026-08-17",
+                                ),
+                                "fin_semaine": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    format=openapi.FORMAT_DATE,
+                                    example="2026-08-23",
+                                ),
+                                "mois": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=8,
+                                ),
+                                "annee": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=2026,
+                                ),
+                            },
+                        ),
+
+                        "ca_encaisse": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "aujourdhui": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="450000.00",
+                                ),
+                                "semaine": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="2150000.00",
+                                ),
+                                "mois": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="8750000.00",
+                                ),
+                                "annee": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="75400000.00",
+                                ),
+                            },
+                        ),
+
+                        "paiements": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "nombre_paiements_jour": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=7,
+                                ),
+                                "montant_paiements_jour": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="450000.00",
+                                ),
+                                "nombre_paiements_mois": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=118,
+                                ),
+                                "montant_paiements_mois": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="8750000.00",
+                                ),
+                            },
+                        ),
+
+                        "modes_paiement": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "code": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="wave",
+                                    ),
+                                    "nom": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="Wave",
+                                    ),
+                                    "nombre": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=25,
+                                    ),
+                                    "montant": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="2750000.00",
+                                    ),
+                                },
+                            ),
+                        ),
+
+                        "factures": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "factures_payees": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=82,
+                                ),
+                                "factures_partielles": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=8,
+                                ),
+                                "factures_non_payees": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=13,
+                                ),
+                                "montant_restant_a_encaisser": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="1850000.00",
+                                ),
+                            },
+                        ),
+
+                        "ventes": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "ventes_jour": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=5,
+                                ),
+                                "ventes_semaine": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=27,
+                                ),
+                                "ventes_mois": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=103,
+                                ),
+                                "ventes_annee": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=948,
+                                ),
+                            },
+                        ),
+
+                        "derniers_paiements": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "id": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=21,
+                                    ),
+                                    "date_paiement": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        format=openapi.FORMAT_DATETIME,
+                                    ),
+                                    "montant": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="250000.00",
+                                    ),
+
+                                    "facture": openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=15,
+                                            ),
+                                            "numero_facture": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="FAC-20260822-0001",
+                                            ),
+                                            "status": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="paye",
+                                            ),
+                                            "type_facture": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="facture",
+                                            ),
+                                            "montant_total": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="250000.00",
+                                            ),
+                                        },
+                                    ),
+
+                                    "client": openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        x_nullable=True,
+                                        properties={
+                                            "id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=7,
+                                            ),
+                                            "nom": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Alioune Ndiaye",
+                                            ),
+                                            "telephone": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="770000000",
+                                                x_nullable=True,
+                                            ),
+                                        },
+                                    ),
+
+                                    "cashier": openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        x_nullable=True,
+                                        properties={
+                                            "id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=2,
+                                            ),
+                                            "nom": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Mamadou Diop",
+                                            ),
+                                        },
+                                    ),
+
+                                    "modes_paiement": openapi.Schema(
+                                        type=openapi.TYPE_ARRAY,
+                                        items=openapi.Schema(
+                                            type=openapi.TYPE_OBJECT,
+                                            properties={
+                                                "code": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    example="wave",
+                                                ),
+                                                "nom": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    example="Wave",
+                                                ),
+                                                "montant": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    example="250000.00",
+                                                ),
+                                                "reference": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    x_nullable=True,
+                                                    example="WAVE-123456",
+                                                ),
+                                            },
+                                        ),
+                                    ),
+                                },
+                            ),
+                        ),
+
+                        "historique": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            additional_properties=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "ventes": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=948,
+                                    ),
+                                    "nombre_paiements": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=1020,
+                                    ),
+                                    "encaissements": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="75400000.00",
+                                    ),
+                                },
+                            ),
+                            example={
+                                "2026": {
+                                    "ventes": 948,
+                                    "nombre_paiements": 1020,
+                                    "encaissements": "75400000.00",
+                                },
+                                "2027": {
+                                    "ventes": 0,
+                                    "nombre_paiements": 0,
+                                    "encaissements": "0.00",
+                                },
+                            },
+                        ),
+                    },
+                ),
+            ),
+
+            400: openapi.Response(
+                description="Aucune bijouterie associée au caissier",
+                examples={
+                    "application/json": {
+                        "detail": (
+                            "Aucune bijouterie n'est associée "
+                            "à ce caissier."
+                        )
+                    }
+                },
+            ),
+
+            401: openapi.Response(
+                description="Utilisateur non authentifié",
+                examples={
+                    "application/json": {
+                        "detail": (
+                            "Authentication credentials "
+                            "were not provided."
+                        )
+                    }
+                },
+            ),
+
+            403: openapi.Response(
+                description="Accès interdit",
+                examples={
+                    "application/json": {
+                        "detail": "Accès réservé au caissier."
+                    }
+                },
+            ),
+        },
+    )
+    def get(self, request, *args, **kwargs):
+
+        # ========================================================
+        # 1. Vérification rôle
+        # ========================================================
+
+        role = get_role_name(request.user)
+
+        if role != ROLE_CASHIER:
+            return Response(
+                {
+                    "detail": (
+                        "Accès réservé au caissier."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # ========================================================
+        # 2. Profil Cashier
+        # ========================================================
+
+        cashier = self._get_cashier(request.user)
+
+        if not cashier:
+            return Response(
+                {
+                    "detail": (
+                        "Profil caissier actif introuvable."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not cashier.bijouterie_id:
+            return Response(
+                {
+                    "detail": (
+                        "Aucune bijouterie n'est associée "
+                        "à ce caissier."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        bijouterie = cashier.bijouterie
+
+        # ========================================================
+        # 3. Dates courantes
+        # ========================================================
+
+        today = timezone.localdate()
+
+        # lundi de la semaine courante
+        start_week = today - timedelta(
+            days=today.weekday()
+        )
+
+        end_week = start_week + timedelta(days=6)
+
+        current_month = today.month
+        current_year = today.year
+
+        # ========================================================
+        # 4. Querysets de base
+        # ========================================================
+
+        ventes = (
+            Vente.objects
+            .filter(
+                bijouterie_id=bijouterie.id,
+                is_cancelled=False,
+            )
+        )
+
+        factures = (
+            Facture.objects
+            .filter(
+                bijouterie_id=bijouterie.id,
+            )
+        )
+
+        paiements = (
+            Paiement.objects
+            .filter(
+                facture__bijouterie_id=bijouterie.id,
+            )
+        )
+
+        paiement_lignes = (
+            PaiementLigne.objects
+            .filter(
+                paiement__facture__bijouterie_id=bijouterie.id,
+            )
+        )
+
+        # ========================================================
+        # 5. CA encaissé
+        # ========================================================
+        #
+        # IMPORTANT :
+        # on utilise PaiementLigne.montant_paye
+        # et NON Vente.montant_total.
+        #
+        # Ainsi :
+        # facture = 500 000
+        # paiement = 200 000
+        #
+        # CA encaissé = 200 000
+        # et non 500 000.
+        # ========================================================
+
+        ca_aujourdhui = self._payment_sum(
+            paiement_lignes.filter(
+                paiement__date_paiement__date=today,
+            )
+        )
+
+        ca_semaine = self._payment_sum(
+            paiement_lignes.filter(
+                paiement__date_paiement__date__range=(
+                    start_week,
+                    end_week,
+                ),
+            )
+        )
+
+        ca_mois = self._payment_sum(
+            paiement_lignes.filter(
+                paiement__date_paiement__year=current_year,
+                paiement__date_paiement__month=current_month,
+            )
+        )
+
+        ca_annee = self._payment_sum(
+            paiement_lignes.filter(
+                paiement__date_paiement__year=current_year,
+            )
+        )
+
+        # ========================================================
+        # 6. Paiements
+        # ========================================================
+
+        paiements_jour = paiements.filter(
+            date_paiement__date=today,
+        )
+
+        paiements_mois = paiements.filter(
+            date_paiement__year=current_year,
+            date_paiement__month=current_month,
+        )
+
+        nombre_paiements_jour = paiements_jour.count()
+
+        nombre_paiements_mois = paiements_mois.count()
+
+        # Les montants sont pris dans PaiementLigne
+        montant_paiements_jour = ca_aujourdhui
+        montant_paiements_mois = ca_mois
+
+        # ========================================================
+        # 7. Répartition modes de paiement
+        # ========================================================
+
+        modes_raw = (
+            paiement_lignes
+            .values(
+                "mode_paiement__code",
+                "mode_paiement__nom",
+            )
+            .annotate(
+                montant=Coalesce(
+                    Sum("montant_paye"),
+                    Value(
+                        ZERO,
+                        output_field=DecimalField(
+                            max_digits=18,
+                            decimal_places=2,
+                        ),
+                    ),
+                ),
+                nombre=Count("id"),
+            )
+            .order_by(
+                "mode_paiement__ordre_affichage",
+                "mode_paiement__nom",
+            )
+        )
+
+        # --------------------------------------------------------
+        # Catégories normalisées pour le frontend
+        # --------------------------------------------------------
+
+        repartition = {
+            "especes": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "wave": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "orange_money": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "carte": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "compte_depot": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "autres": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+        }
+
+        # Les codes peuvent évoluer légèrement.
+        # On accepte plusieurs variantes courantes.
+        cash_codes = {
+            "cash",
+            "espece",
+            "especes",
+        }
+
+        wave_codes = {
+            "wave",
+        }
+
+        orange_codes = {
+            "orange_money",
+            "orange",
+            "om",
+        }
+
+        card_codes = {
+            "card",
+            "carte",
+            "carte_bancaire",
+            "cb",
+        }
+
+        depot_codes = {
+            "depot",
+            "compte_depot",
+        }
+
+        for row in modes_raw:
+
+            code = (
+                row["mode_paiement__code"]
+                or ""
+            ).strip().lower()
+
+            montant = row["montant"] or ZERO
+            nombre = row["nombre"] or 0
+
+            if code in cash_codes:
+                key = "especes"
+
+            elif code in wave_codes:
+                key = "wave"
+
+            elif code in orange_codes:
+                key = "orange_money"
+
+            elif code in card_codes:
+                key = "carte"
+
+            elif code in depot_codes:
+                key = "compte_depot"
+
+            else:
+                key = "autres"
+
+            repartition[key]["montant"] += montant
+            repartition[key]["nombre"] += nombre
+
+        modes_paiement_data = []
+
+        labels = {
+            "especes": "Espèces",
+            "wave": "Wave",
+            "orange_money": "Orange Money",
+            "carte": "Carte",
+            "compte_depot": "Compte dépôt",
+            "autres": "Autres",
+        }
+
+        for code, values in repartition.items():
+            modes_paiement_data.append(
+                {
+                    "code": code,
+                    "nom": labels[code],
+                    "nombre": values["nombre"],
+                    "montant": self._money_string(
+                        values["montant"]
+                    ),
+                }
+            )
+
+        # ========================================================
+        # 8. Factures
+        # ========================================================
+
+        factures_payees = factures.filter(
+            status=Facture.STAT_PAYE,
+        ).count()
+
+        factures_partielles = factures.filter(
+            status=Facture.STAT_PARTIEL,
+        ).count()
+
+        factures_non_payees = factures.filter(
+            status=Facture.STAT_NON_PAYE,
+        ).count()
+
+        # --------------------------------------------------------
+        # Calcul SQL :
+        #
+        # reste =
+        # montant_total - somme des paiements
+        #
+        # On calcule uniquement les factures non totalement payées.
+        # --------------------------------------------------------
+
+        factures_a_encaisser = (
+            factures
+            .exclude(
+                status=Facture.STAT_PAYE,
+            )
+            .annotate(
+                total_paye_db=Coalesce(
+                    Sum(
+                        "paiements__lignes__montant_paye"
+                    ),
+                    Value(
+                        ZERO,
+                        output_field=DecimalField(
+                            max_digits=18,
+                            decimal_places=2,
+                        ),
+                    ),
+                )
+            )
+            .annotate(
+                reste_db=ExpressionWrapper(
+                    F("montant_total")
+                    - F("total_paye_db"),
+                    output_field=DecimalField(
+                        max_digits=18,
+                        decimal_places=2,
+                    ),
+                )
+            )
+        )
+
+        montant_restant_a_encaisser = (
+            factures_a_encaisser.aggregate(
+                total=Coalesce(
+                    Sum("reste_db"),
+                    Value(
+                        ZERO,
+                        output_field=DecimalField(
+                            max_digits=18,
+                            decimal_places=2,
+                        ),
+                    ),
+                )
+            )["total"]
+            or ZERO
+        )
+
+        # Sécurité : jamais de reste négatif
+        montant_restant_a_encaisser = max(
+            montant_restant_a_encaisser,
+            ZERO,
+        )
+
+        # ========================================================
+        # 9. Nombre de ventes
+        # ========================================================
+
+        ventes_jour = ventes.filter(
+            created_at__date=today,
+        ).count()
+
+        ventes_semaine = ventes.filter(
+            created_at__date__range=(
+                start_week,
+                end_week,
+            ),
+        ).count()
+
+        ventes_mois = ventes.filter(
+            created_at__year=current_year,
+            created_at__month=current_month,
+        ).count()
+
+        ventes_annee = ventes.filter(
+            created_at__year=current_year,
+        ).count()
+
+        # ========================================================
+        # 10. Derniers paiements
+        # ========================================================
+
+        derniers_paiements_qs = (
+            paiements
+            .select_related(
+                "facture",
+                "cashier",
+                "cashier__user",
+                "facture__vente",
+                "facture__vente__client",
+            )
+            .prefetch_related(
+                "lignes",
+                "lignes__mode_paiement",
+            )
+            .order_by(
+                "-date_paiement"
+            )[:10]
+        )
+
+        derniers_paiements = []
+
+        for paiement in derniers_paiements_qs:
+
+            lignes = list(paiement.lignes.all())
+
+            total_paye = sum(
+                (
+                    ligne.montant_paye or ZERO
+                    for ligne in lignes
+                ),
+                ZERO,
+            )
+
+            modes = [
+                {
+                    "code": ligne.mode_paiement.code,
+                    "nom": ligne.mode_paiement.nom,
+                    "montant": self._money_string(
+                        ligne.montant_paye
+                    ),
+                    "reference": ligne.reference,
+                }
+                for ligne in lignes
+            ]
+
+            facture = paiement.facture
+
+            vente = (
+                facture.vente
+                if facture
+                else None
+            )
+
+            client = (
+                vente.client
+                if vente
+                else None
+            )
+
+            derniers_paiements.append(
+                {
+                    "id": paiement.id,
+
+                    "date_paiement": (
+                        paiement.date_paiement
+                    ),
+
+                    "montant": self._money_string(
+                        total_paye
+                    ),
+
+                    "facture": {
+                        "id": facture.id,
+                        "numero_facture": (
+                            facture.numero_facture
+                        ),
+                        "status": facture.status,
+                        "type_facture": (
+                            facture.type_facture
+                        ),
+                        "montant_total": (
+                            self._money_string(
+                                facture.montant_total
+                            )
+                        ),
+                    },
+
+                    "client": (
+                        {
+                            "id": client.id,
+                            "nom": client.full_name,
+                            "telephone": (
+                                client.telephone
+                            ),
+                        }
+                        if client
+                        else None
+                    ),
+
+                    "cashier": (
+                        {
+                            "id": paiement.cashier_id,
+                            "nom": (
+                                paiement.cashier.full_name
+                            ),
+                        }
+                        if paiement.cashier
+                        else None
+                    ),
+
+                    "modes_paiement": modes,
+                }
+            )
+
+        # ========================================================
+        # 11. Historique annuel
+        # ========================================================
+        #
+        # À partir de 2026 jusqu'à l'année courante.
+        #
+        # En 2028 :
+        #
+        # historique:
+        #   2026
+        #   2027
+        #   2028
+        #
+        # ========================================================
+
+        HISTORIQUE_START_YEAR = 2026
+
+        ventes_par_annee = {
+            row["created_at__year"]: row["total"]
+            for row in (
+                ventes
+                .values(
+                    "created_at__year"
+                )
+                .annotate(
+                    total=Count("id")
+                )
+            )
+            if row["created_at__year"]
+        }
+
+        encaissements_par_annee = {
+            row["paiement__date_paiement__year"]:
+                row["montant"]
+            for row in (
+                paiement_lignes
+                .values(
+                    "paiement__date_paiement__year"
+                )
+                .annotate(
+                    montant=Coalesce(
+                        Sum("montant_paye"),
+                        Value(
+                            ZERO,
+                            output_field=DecimalField(
+                                max_digits=18,
+                                decimal_places=2,
+                            ),
+                        ),
+                    )
+                )
+            )
+            if row["paiement__date_paiement__year"]
+        }
+
+        paiements_par_annee = {
+            row["date_paiement__year"]: row["total"]
+            for row in (
+                paiements
+                .values(
+                    "date_paiement__year"
+                )
+                .annotate(
+                    total=Count("id")
+                )
+            )
+            if row["date_paiement__year"]
+        }
+
+        historique = {}
+
+        for year in range(
+            HISTORIQUE_START_YEAR,
+            current_year + 1,
+        ):
+            historique[str(year)] = {
+                "ventes": (
+                    ventes_par_annee.get(
+                        year,
+                        0,
+                    )
+                ),
+                "nombre_paiements": (
+                    paiements_par_annee.get(
+                        year,
+                        0,
+                    )
+                ),
+                "encaissements": (
+                    self._money_string(
+                        encaissements_par_annee.get(
+                            year,
+                            ZERO,
+                        )
+                    )
+                ),
+            }
+
+        # ========================================================
+        # 12. Réponse finale
+        # ========================================================
+
+        return Response(
+            {
+                "cashier": {
+                    "id": cashier.id,
+                    "nom": cashier.full_name,
+                    "email": cashier.email,
+                    "telephone": cashier.telephone,
+                },
+
+                "bijouterie": {
+                    "id": bijouterie.id,
+                    "nom": bijouterie.nom,
+                },
+
+                "periode": {
+                    "date": today,
+                    "debut_semaine": start_week,
+                    "fin_semaine": end_week,
+                    "mois": current_month,
+                    "annee": current_year,
+                },
+
+                # -----------------------------------------------
+                # CA réellement encaissé
+                # -----------------------------------------------
+
+                "ca_encaisse": {
+                    "aujourdhui": (
+                        self._money_string(
+                            ca_aujourdhui
+                        )
+                    ),
+                    "semaine": (
+                        self._money_string(
+                            ca_semaine
+                        )
+                    ),
+                    "mois": (
+                        self._money_string(
+                            ca_mois
+                        )
+                    ),
+                    "annee": (
+                        self._money_string(
+                            ca_annee
+                        )
+                    ),
+                },
+
+                # -----------------------------------------------
+                # Paiements
+                # -----------------------------------------------
+
+                "paiements": {
+                    "nombre_paiements_jour": (
+                        nombre_paiements_jour
+                    ),
+                    "montant_paiements_jour": (
+                        self._money_string(
+                            montant_paiements_jour
+                        )
+                    ),
+                    "nombre_paiements_mois": (
+                        nombre_paiements_mois
+                    ),
+                    "montant_paiements_mois": (
+                        self._money_string(
+                            montant_paiements_mois
+                        )
+                    ),
+                },
+
+                # -----------------------------------------------
+                # Modes de paiement
+                # -----------------------------------------------
+
+                "modes_paiement": (
+                    modes_paiement_data
+                ),
+
+                # -----------------------------------------------
+                # Factures
+                # -----------------------------------------------
+
+                "factures": {
+                    "factures_payees": (
+                        factures_payees
+                    ),
+                    "factures_partielles": (
+                        factures_partielles
+                    ),
+                    "factures_non_payees": (
+                        factures_non_payees
+                    ),
+                    "montant_restant_a_encaisser": (
+                        self._money_string(
+                            montant_restant_a_encaisser
+                        )
+                    ),
+                },
+
+                # -----------------------------------------------
+                # Ventes
+                # -----------------------------------------------
+
+                "ventes": {
+                    "ventes_jour": ventes_jour,
+                    "ventes_semaine": (
+                        ventes_semaine
+                    ),
+                    "ventes_mois": ventes_mois,
+                    "ventes_annee": ventes_annee,
+                },
+
+                # -----------------------------------------------
+                # Dernières opérations
+                # -----------------------------------------------
+
+                "derniers_paiements": (
+                    derniers_paiements
+                ),
+
+                # -----------------------------------------------
+                # Historique
+                # -----------------------------------------------
+
+                "historique": historique,
+            },
+            status=status.HTTP_200_OK,
+        )
+# //////////caissier dashboard

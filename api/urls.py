@@ -56,7 +56,7 @@ urlpatterns = [
     path('validate-token',userauths_views.ValidateTokenView.as_view(),name="validate_token"),
     
     # API Endpoints
-    path("dashboard/manager/", api_views.ManagerDashboardAPIView.as_view(), name="manager-dashboard"),
+    # path("dashboard/manager/", api_views.ManagerDashboardAPIView.as_view(), name="manager-dashboard"),
     path("settings/commercial/", api_views.CommercialSettingsUpdateView.as_view(),name="commercial-settings-update",),
     
     # STORE
@@ -181,6 +181,8 @@ urlpatterns = [
     path("staff/list", staff_views.ListStaffView.as_view(), name="staff"),
     path("staff/<str:role>/<int:staff_id>", staff_views.StaffDetailView.as_view(), name="staff-d"),
     path("staff/dashboard", staff_views.StaffDashboardView.as_view(), name="staff-dashboard"),
+    path("manager/dashboard/", staff_views.ManagerDashboardView.as_view(),name="manager-dashboard",),
+    path("cashier/dashboard/", staff_views.CashierDashboardView.as_view(),name="cashier-dashboard",),
     #VENDOR
     # path('vendor/list', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
     path('vendor/stock-vendor', vendor_views.VendorStockView.as_view(), name='Vendor-stock'),
@@ -226,7 +228,6 @@ urlpatterns = [
     # path("factures/paiement", sale_views.PaiementFactureMultiModeView.as_view(),name="paiement-facture-multi-mode",),
     path("factures/paiement",sale_views.PaiementFactureMultiModeView.as_view(),name="paiement-facture-multi-mode",),
     path("factures/export-comptable", sale_views.ExportComptableView.as_view(), name="export-comptable"),
-    path("cashier/dashboard/", sale_views.CashierDashboardView.as_view(),name="cashier-dashboard",),
     # path("ventes/<int:vente_id>/livraison/confirm/", sale_views.ConfirmerLivraisonView.as_view(), name="vente-confirmer-livraison"),
     # END STOCK
     
