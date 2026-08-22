@@ -1686,17 +1686,17 @@ class StaffDashboardView(APIView):
         )
         
 
-
 class ManagerDashboardView(APIView):
     """
     Dashboard du manager connecté.
 
     Règles :
-    - uniquement un manager actif ;
-    - uniquement les bijouteries attribuées au manager ;
-    - statistiques cumulées sur ses bijouteries ;
-    - détail par bijouterie ;
-    - historique complet par année/mois.
+    - manager actif uniquement ;
+    - uniquement ses bijouteries ;
+    - ventes annulées exclues ;
+    - achats annulés exclus ;
+    - stock magasin + stock vendeurs ;
+    - historique complet.
     """
 
     permission_classes = [IsAuthenticated]
@@ -1715,10 +1715,6 @@ class ManagerDashboardView(APIView):
         return int(value or 0)
 
     def _get_manager(self, user):
-        """
-        Retourne le profil manager actif du user connecté.
-        """
-
         if get_role_name(user) != ROLE_MANAGER:
             return None
 
@@ -1738,35 +1734,462 @@ class ManagerDashboardView(APIView):
 
     @swagger_auto_schema(
         operation_id="managerDashboard",
-        operation_summary="Dashboard manager connecté",
+        operation_summary="Dashboard du manager connecté",
         operation_description=(
             "Retourne le tableau de bord du manager connecté.\n\n"
-            "### Accès\n"
-            "- Manager connecté uniquement\n"
-            "- Manager actif uniquement\n"
-            "- Données limitées à ses bijouteries\n\n"
-            "### Données retournées\n"
-            "- chiffre d'affaires semaine / mois / année\n"
-            "- ventes aujourd'hui / semaine / mois / année\n"
+            "### Règles\n"
+            "- Accessible uniquement à un manager actif.\n"
+            "- Le manager voit uniquement les données de ses bijouteries.\n"
+            "- Les ventes annulées sont exclues.\n"
+            "- Les achats annulés sont exclus.\n\n"
+            "### Contenu\n"
+            "- résumé CA semaine / mois / année\n"
+            "- nombre de ventes par période\n"
             "- stock magasin\n"
             "- stock vendeurs\n"
-            "- quantité totale disponible\n"
-            "- poids total disponible\n"
+            "- poids restant\n"
             "- produits en stock faible\n"
             "- performances vendeurs\n"
             "- top produits vendus\n"
             "- achats du mois\n"
             "- derniers arrivages\n"
-            "- factures\n"
+            "- état des factures\n"
             "- statistiques par bijouterie\n"
             "- historique annuel et mensuel"
         ),
         responses={
             200: openapi.Response(
-                description="Dashboard manager retourné avec succès."
+                description="Dashboard manager retourné avec succès.",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+
+                        "manager": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=3,
+                                ),
+                                "email": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="manager@rio-gold.com",
+                                ),
+                                "first_name": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="Aliou",
+                                ),
+                                "last_name": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                    example="Diouf",
+                                ),
+                            },
+                        ),
+
+                        "resume": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "chiffre_affaires_semaine": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format="decimal",
+                                    example="4250000.00",
+                                ),
+                                "chiffre_affaires_mois": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format="decimal",
+                                    example="18250000.00",
+                                ),
+                                "chiffre_affaires_annee": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format="decimal",
+                                    example="154800000.00",
+                                ),
+                                "ventes_semaine": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=18,
+                                ),
+                                "ventes_mois": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=76,
+                                ),
+                                "ventes_annee": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=641,
+                                ),
+                                "nombre_bijouteries": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=2,
+                                ),
+                            },
+                        ),
+
+                        "ventes": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "aujourd_hui": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=5,
+                                ),
+                                "semaine": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=18,
+                                ),
+                                "mois": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=76,
+                                ),
+                                "annee": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=641,
+                                ),
+                            },
+                        ),
+
+                        "stock": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "stock_magasin": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=327,
+                                ),
+                                "stock_vendeurs": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=81,
+                                ),
+                                "quantite_totale": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=408,
+                                ),
+                                "poids_magasin": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format="decimal",
+                                    example="2210.50",
+                                ),
+                                "poids_vendeurs": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format="decimal",
+                                    example="735.10",
+                                ),
+                                "poids_total": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format="decimal",
+                                    example="2945.60",
+                                ),
+                                "produits_stock_faible": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    items=openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "stock_id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=12,
+                                            ),
+                                            "produit_line_id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=42,
+                                            ),
+                                            "produit_id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=25,
+                                            ),
+                                            "produit": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Bague Or 18K",
+                                            ),
+                                            "sku": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="BAG-BAG-N-18-RIO-P5-50",
+                                            ),
+                                            "poids": openapi.Schema(
+                                                type=openapi.TYPE_NUMBER,
+                                                format="decimal",
+                                                example="5.50",
+                                            ),
+                                            "bijouterie_id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=1,
+                                            ),
+                                            "bijouterie": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Rio Gold Dakar",
+                                            ),
+                                            "quantite": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=2,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                            },
+                        ),
+
+                        "vendeurs": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "nombre_vendeurs": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=8,
+                                ),
+                                "vendeurs_actifs": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=7,
+                                ),
+                                "performance_vendeurs": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    items=openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "vendor_id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=5,
+                                            ),
+                                            "vendor": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Moussa Diop",
+                                            ),
+                                            "email": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="moussa@example.com",
+                                            ),
+                                            "bijouterie": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Rio Gold Dakar",
+                                            ),
+                                            "chiffre_affaires": openapi.Schema(
+                                                type=openapi.TYPE_NUMBER,
+                                                format="decimal",
+                                                example="6525000.00",
+                                            ),
+                                            "nombre_ventes": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=27,
+                                            ),
+                                            "quantite_vendue": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=31,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                            },
+                        ),
+
+                        "top_produits": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "produit_id": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=25,
+                                    ),
+                                    "produit": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="Bague Or 18K",
+                                    ),
+                                    "sku": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="BAG-BAG-N-18-RIO-P5-50",
+                                    ),
+                                    "quantite_vendue": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=15,
+                                    ),
+                                    "chiffre_affaires": openapi.Schema(
+                                        type=openapi.TYPE_NUMBER,
+                                        format="decimal",
+                                        example="3750000.00",
+                                    ),
+                                },
+                            ),
+                        ),
+
+                        "achats": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "achats_mois": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=4,
+                                ),
+                                "montant_achats_mois": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format="decimal",
+                                    example="12500000.00",
+                                ),
+                                "derniers_arrivages": openapi.Schema(
+                                    type=openapi.TYPE_ARRAY,
+                                    items=openapi.Schema(
+                                        type=openapi.TYPE_OBJECT,
+                                        properties={
+                                            "id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=5,
+                                            ),
+                                            "numero_lot": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="LOT-20260822-0001",
+                                            ),
+                                            "numero_achat": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="ACH-20260822-1234",
+                                            ),
+                                            "reference_commande": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="CMD-2026-0010",
+                                            ),
+                                            "bijouterie_id": openapi.Schema(
+                                                type=openapi.TYPE_INTEGER,
+                                                example=1,
+                                            ),
+                                            "bijouterie": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Rio Gold Dakar",
+                                            ),
+                                            "fournisseur": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                example="Fournisseur Gold",
+                                            ),
+                                            "date_arrivage": openapi.Schema(
+                                                type=openapi.TYPE_STRING,
+                                                format=openapi.FORMAT_DATETIME,
+                                            ),
+                                            "montant_achat": openapi.Schema(
+                                                type=openapi.TYPE_NUMBER,
+                                                format="decimal",
+                                                example="6250000.00",
+                                            ),
+                                        },
+                                    ),
+                                ),
+                            },
+                        ),
+
+                        "factures": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "non_payees": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=5,
+                                ),
+                                "partielles": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=2,
+                                ),
+                                "payees": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                    example=68,
+                                ),
+                                "reste_a_encaisser": openapi.Schema(
+                                    type=openapi.TYPE_NUMBER,
+                                    format="decimal",
+                                    example="2150000.00",
+                                ),
+                            },
+                        ),
+
+                        "par_bijouterie": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "bijouterie_id": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=1,
+                                    ),
+                                    "bijouterie": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        example="Rio Gold Dakar",
+                                    ),
+                                    "chiffre_affaires": openapi.Schema(
+                                        type=openapi.TYPE_NUMBER,
+                                        format="decimal",
+                                        example="96500000.00",
+                                    ),
+                                    "ventes": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=401,
+                                    ),
+                                    "stock_magasin": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=210,
+                                    ),
+                                    "stock_vendeur": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=55,
+                                    ),
+                                    "stock_total": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=265,
+                                    ),
+                                },
+                            ),
+                        ),
+
+                        "historique": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "annee": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=2026,
+                                    ),
+                                    "chiffre_affaires": openapi.Schema(
+                                        type=openapi.TYPE_NUMBER,
+                                        format="decimal",
+                                        example="154800000.00",
+                                    ),
+                                    "nombre_ventes": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                        example=641,
+                                    ),
+                                    "mois": openapi.Schema(
+                                        type=openapi.TYPE_ARRAY,
+                                        items=openapi.Schema(
+                                            type=openapi.TYPE_OBJECT,
+                                            properties={
+                                                "numero": openapi.Schema(
+                                                    type=openapi.TYPE_INTEGER,
+                                                    example=8,
+                                                ),
+                                                "mois": openapi.Schema(
+                                                    type=openapi.TYPE_STRING,
+                                                    example="août",
+                                                ),
+                                                "chiffre_affaires": openapi.Schema(
+                                                    type=openapi.TYPE_NUMBER,
+                                                    format="decimal",
+                                                    example="18250000.00",
+                                                ),
+                                                "nombre_ventes": openapi.Schema(
+                                                    type=openapi.TYPE_INTEGER,
+                                                    example=76,
+                                                ),
+                                            },
+                                        ),
+                                    ),
+                                },
+                            ),
+                        ),
+                    },
+                ),
             ),
+
             403: openapi.Response(
-                description="Accès refusé."
+                description="Utilisateur non manager, manager désactivé ou sans bijouterie.",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "detail": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            example="Accès réservé à un manager actif.",
+                        ),
+                    },
+                ),
+            ),
+
+            401: openapi.Response(
+                description="Token JWT absent, invalide ou expiré."
             ),
         },
         tags=["Dashboard Manager"],
@@ -1774,7 +2197,7 @@ class ManagerDashboardView(APIView):
     def get(self, request):
 
         # ========================================================
-        # Manager connecté
+        # Manager
         # ========================================================
 
         manager = self._get_manager(request.user)
@@ -1782,16 +2205,10 @@ class ManagerDashboardView(APIView):
         if not manager:
             return Response(
                 {
-                    "detail": (
-                        "Accès réservé à un manager actif."
-                    )
+                    "detail": "Accès réservé à un manager actif."
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
-
-        # ========================================================
-        # Bijouteries du manager
-        # ========================================================
 
         bijouteries = manager.bijouteries.all()
 
@@ -1844,6 +2261,7 @@ class ManagerDashboardView(APIView):
             Vente.objects
             .filter(
                 bijouterie_id__in=bijouterie_ids,
+                is_cancelled=False,
             )
         )
 
@@ -1851,6 +2269,7 @@ class ManagerDashboardView(APIView):
             VenteProduit.objects
             .filter(
                 vente__bijouterie_id__in=bijouterie_ids,
+                vente__is_cancelled=False,
             )
         )
 
@@ -1882,7 +2301,7 @@ class ManagerDashboardView(APIView):
         factures = (
             Facture.objects
             .filter(
-                vente__bijouterie_id__in=bijouterie_ids,
+                bijouterie_id__in=bijouterie_ids,
             )
         )
 
@@ -1890,6 +2309,7 @@ class ManagerDashboardView(APIView):
             Achat.objects
             .filter(
                 bijouterie_id__in=bijouterie_ids,
+                status=Achat.STATUS_CONFIRMED,
             )
         )
 
@@ -1897,11 +2317,12 @@ class ManagerDashboardView(APIView):
             Lot.objects
             .filter(
                 achat__bijouterie_id__in=bijouterie_ids,
+                achat__status=Achat.STATUS_CONFIRMED,
             )
         )
 
         # ========================================================
-        # Ventes : périodes
+        # Ventes périodes
         # ========================================================
 
         ventes_today = ventes.filter(
@@ -1924,8 +2345,13 @@ class ManagerDashboardView(APIView):
         )
 
         # ========================================================
-        # CA semaine
+        # CA
         # ========================================================
+
+        money_output = DecimalField(
+            max_digits=20,
+            decimal_places=2,
+        )
 
         ca_week = self._decimal(
             ventes_week.aggregate(
@@ -1933,18 +2359,11 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=2,
-                        ),
+                        output_field=money_output,
                     ),
                 )
             )["total"]
         )
-
-        # ========================================================
-        # CA mois
-        # ========================================================
 
         ca_month = self._decimal(
             ventes_month.aggregate(
@@ -1952,18 +2371,11 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=2,
-                        ),
+                        output_field=money_output,
                     ),
                 )
             )["total"]
         )
-
-        # ========================================================
-        # CA année
-        # ========================================================
 
         ca_year = self._decimal(
             ventes_year.aggregate(
@@ -1971,31 +2383,30 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=2,
-                        ),
+                        output_field=money_output,
                     ),
                 )
             )["total"]
         )
 
         # ========================================================
-        # STOCK MAGASIN
+        # Stock magasin
         # ========================================================
 
-        stock_magasin = stocks.aggregate(
-            total=Coalesce(
-                Sum("en_stock"),
-                Value(0),
-            )
-        )["total"]
+        stock_magasin = self._int(
+            stocks.aggregate(
+                total=Coalesce(
+                    Sum("en_stock"),
+                    Value(0),
+                )
+            )["total"]
+        )
 
         # ========================================================
-        # STOCK VENDEURS
+        # Stock vendeurs
         # ========================================================
 
-        stock_vendor_data = vendor_stocks.aggregate(
+        vendor_stock_data = vendor_stocks.aggregate(
             allouee=Coalesce(
                 Sum("quantite_allouee"),
                 Value(0),
@@ -2008,95 +2419,83 @@ class ManagerDashboardView(APIView):
 
         stock_vendeurs = (
             self._int(
-                stock_vendor_data["allouee"]
+                vendor_stock_data["allouee"]
             )
             - self._int(
-                stock_vendor_data["vendue"]
+                vendor_stock_data["vendue"]
             )
         )
 
-        # ========================================================
-        # Quantité globale restante
-        # ========================================================
-
         quantite_totale = (
-            self._int(stock_magasin)
+            stock_magasin
             + stock_vendeurs
         )
 
         # ========================================================
-        # POIDS MAGASIN
+        # Poids magasin
         #
-        # Stock
-        # -> produit_line
-        # -> produit
-        # -> poids
+        # Stock -> ProduitLine -> Produit -> poids
         # ========================================================
 
-        poids_magasin = stocks.aggregate(
-            total=Coalesce(
-                Sum(
-                    ExpressionWrapper(
-                        F("en_stock")
-                        * F(
-                            "produit_line__produit__poids"
-                        ),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=3,
-                        ),
-                    )
-                ),
-                Value(
-                    Decimal("0.000"),
-                    output_field=DecimalField(
-                        max_digits=20,
-                        decimal_places=3,
-                    ),
-                ),
-            )
-        )["total"]
+        weight_output = DecimalField(
+            max_digits=20,
+            decimal_places=3,
+        )
 
-        # ========================================================
-        # POIDS VENDEURS
-        # ========================================================
-
-        poids_vendor = vendor_stocks.aggregate(
-            total=Coalesce(
-                Sum(
-                    ExpressionWrapper(
-                        (
-                            F("quantite_allouee")
-                            - F("quantite_vendue")
+        poids_magasin = self._decimal(
+            stocks.aggregate(
+                total=Coalesce(
+                    Sum(
+                        ExpressionWrapper(
+                            F("en_stock")
+                            * F(
+                                "produit_line__produit__poids"
+                            ),
+                            output_field=weight_output,
                         )
-                        * F(
-                            "produit_line__produit__poids"
-                        ),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=3,
-                        ),
-                    )
-                ),
-                Value(
-                    Decimal("0.000"),
-                    output_field=DecimalField(
-                        max_digits=20,
-                        decimal_places=3,
                     ),
-                ),
-            )
-        )["total"]
-
-        poids_total = (
-            self._decimal(poids_magasin)
-            + self._decimal(poids_vendor)
+                    Value(
+                        Decimal("0.000"),
+                        output_field=weight_output,
+                    ),
+                )
+            )["total"]
         )
 
         # ========================================================
-        # Produits stock faible
-        #
-        # Seuil actuel : <= 2
+        # Poids vendeurs
+        # ========================================================
+
+        poids_vendeurs = self._decimal(
+            vendor_stocks.aggregate(
+                total=Coalesce(
+                    Sum(
+                        ExpressionWrapper(
+                            (
+                                F("quantite_allouee")
+                                - F("quantite_vendue")
+                            )
+                            * F(
+                                "produit_line__produit__poids"
+                            ),
+                            output_field=weight_output,
+                        )
+                    ),
+                    Value(
+                        Decimal("0.000"),
+                        output_field=weight_output,
+                    ),
+                )
+            )["total"]
+        )
+
+        poids_total = (
+            poids_magasin
+            + poids_vendeurs
+        )
+
+        # ========================================================
+        # Stock faible
         # ========================================================
 
         produits_stock_faible = []
@@ -2120,7 +2519,11 @@ class ManagerDashboardView(APIView):
 
         for stock_item in low_stocks:
 
-            produit = stock_item.produit_line.produit
+            produit = (
+                stock_item
+                .produit_line
+                .produit
+            )
 
             produits_stock_faible.append(
                 {
@@ -2135,6 +2538,8 @@ class ManagerDashboardView(APIView):
                     "produit": produit.nom,
 
                     "sku": produit.sku,
+
+                    "poids": produit.poids,
 
                     "bijouterie_id": (
                         stock_item.bijouterie_id
@@ -2151,20 +2556,24 @@ class ManagerDashboardView(APIView):
             )
 
         # ========================================================
-        # VENDEURS
+        # Vendeurs
         # ========================================================
 
         nombre_vendeurs = vendors.count()
 
-        vendeurs_actifs = vendors.filter(
-            verifie=True,
-        ).count()
+        vendeurs_actifs = (
+            vendors
+            .filter(
+                verifie=True,
+            )
+            .count()
+        )
 
         # ========================================================
-        # Performance vendeurs du mois
+        # Performance vendeurs
+        #
+        # Mois courant
         # ========================================================
-
-        performance_vendeurs = []
 
         vendor_stats = (
             ventes
@@ -2185,10 +2594,7 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=2,
-                        ),
+                        output_field=money_output,
                     ),
                 ),
 
@@ -2198,13 +2604,9 @@ class ManagerDashboardView(APIView):
                 ),
             )
             .order_by(
-                "-chiffre_affaires"
+                "-chiffre_affaires",
             )
         )
-
-        # ========================================================
-        # Quantités vendues par vendeur
-        # ========================================================
 
         vendor_quantities_qs = (
             ventes_produits
@@ -2231,6 +2633,8 @@ class ManagerDashboardView(APIView):
             for row in vendor_quantities_qs
         }
 
+        performance_vendeurs = []
+
         for item in vendor_stats:
 
             first_name = (
@@ -2247,13 +2651,16 @@ class ManagerDashboardView(APIView):
                 or ""
             )
 
+            email = (
+                item[
+                    "vendor__user__email"
+                ]
+                or ""
+            )
+
             full_name = (
                 f"{first_name} {last_name}"
             ).strip()
-
-            email = item[
-                "vendor__user__email"
-            ]
 
             performance_vendeurs.append(
                 {
@@ -2268,9 +2675,11 @@ class ManagerDashboardView(APIView):
 
                     "email": email,
 
-                    "bijouterie": item[
-                        "vendor__bijouterie__nom"
-                    ],
+                    "bijouterie": (
+                        item[
+                            "vendor__bijouterie__nom"
+                        ]
+                    ),
 
                     "chiffre_affaires": (
                         item[
@@ -2294,9 +2703,9 @@ class ManagerDashboardView(APIView):
             )
 
         # ========================================================
-        # TOP PRODUITS
+        # Top produits
         #
-        # Mois courant
+        # VenteProduit.montant_total
         # ========================================================
 
         top_produits_qs = (
@@ -2317,13 +2726,10 @@ class ManagerDashboardView(APIView):
                 ),
 
                 chiffre_affaires=Coalesce(
-                    Sum("total_ligne"),
+                    Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=2,
-                        ),
+                        output_field=money_output,
                     ),
                 ),
             )
@@ -2368,40 +2774,39 @@ class ManagerDashboardView(APIView):
             )
 
         # ========================================================
-        # ACHATS MOIS
+        # Achats du mois
         # ========================================================
 
-        achats_month = achats.filter(
-            created_at__date__gte=start_month,
-            created_at__date__lte=today,
+        achats_month = (
+            achats
+            .filter(
+                created_at__date__gte=start_month,
+                created_at__date__lte=today,
+            )
         )
 
         montant_achats_mois = self._decimal(
             achats_month.aggregate(
                 total=Coalesce(
-                    Sum("montant_total"),
+                    Sum("montant_total_ttc"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=2,
-                        ),
+                        output_field=money_output,
                     ),
                 )
             )["total"]
         )
 
         # ========================================================
-        # DERNIERS ARRIVAGES
+        # Derniers arrivages
         # ========================================================
-
-        derniers_arrivages = []
 
         lots_qs = (
             lots
             .select_related(
                 "achat",
                 "achat__fournisseur",
+                "achat__bijouterie",
             )
             .order_by(
                 "-received_at",
@@ -2409,17 +2814,11 @@ class ManagerDashboardView(APIView):
             )[:10]
         )
 
+        derniers_arrivages = []
+
         for lot in lots_qs:
 
-            fournisseur = None
-
-            if (
-                lot.achat
-                and lot.achat.fournisseur
-            ):
-                fournisseur = str(
-                    lot.achat.fournisseur
-                )
+            achat = lot.achat
 
             derniers_arrivages.append(
                 {
@@ -2430,27 +2829,45 @@ class ManagerDashboardView(APIView):
                     ),
 
                     "numero_achat": (
-                        lot.achat.numero_achat
-                        if lot.achat
+                        achat.numero_achat
+                    ),
+
+                    "reference_commande": (
+                        achat.reference_commande
+                    ),
+
+                    "bijouterie_id": (
+                        achat.bijouterie_id
+                    ),
+
+                    "bijouterie": (
+                        achat.bijouterie.nom
+                    ),
+
+                    "fournisseur": (
+                        str(achat.fournisseur)
+                        if achat.fournisseur
                         else None
                     ),
 
-                    "fournisseur": fournisseur,
-
                     "date_arrivage": (
                         lot.received_at
+                    ),
+
+                    "montant_achat": (
+                        achat.montant_total_ttc
                     ),
                 }
             )
 
         # ========================================================
-        # FACTURES
+        # Factures
         # ========================================================
 
         factures_non_payees = (
             factures
             .filter(
-                status="non_paye",
+                status=Facture.STAT_NON_PAYE,
             )
             .count()
         )
@@ -2458,7 +2875,7 @@ class ManagerDashboardView(APIView):
         factures_partielles = (
             factures
             .filter(
-                status="partiel",
+                status=Facture.STAT_PARTIEL,
             )
             .count()
         )
@@ -2466,32 +2883,25 @@ class ManagerDashboardView(APIView):
         factures_payees = (
             factures
             .filter(
-                status="paye",
+                status=Facture.STAT_PAYE,
             )
             .count()
         )
 
-        reste_a_encaisser = self._decimal(
-            factures
-            .exclude(
-                status="paye",
-            )
-            .aggregate(
-                total=Coalesce(
-                    Sum("reste_a_payer"),
-                    Value(
-                        Decimal("0.00"),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=2,
-                        ),
-                    ),
+        # reste_a_payer est une @property Python.
+        # Donc pas de Sum("reste_a_payer").
+        reste_a_encaisser = sum(
+            (
+                facture.reste_a_payer
+                for facture in factures.exclude(
+                    status=Facture.STAT_PAYE,
                 )
-            )["total"]
+            ),
+            Decimal("0.00"),
         )
 
         # ========================================================
-        # PAR BIJOUTERIE
+        # Par bijouterie
         # ========================================================
 
         par_bijouterie = []
@@ -2499,13 +2909,13 @@ class ManagerDashboardView(APIView):
         for bijouterie in bijouteries:
 
             # ----------------------------------------------------
-            # Ventes année de la bijouterie
+            # Ventes année
             # ----------------------------------------------------
 
             ventes_bijouterie = (
                 ventes_year
                 .filter(
-                    bijouterie=bijouterie,
+                    bijouterie_id=bijouterie.id,
                 )
             )
 
@@ -2515,10 +2925,7 @@ class ManagerDashboardView(APIView):
                         Sum("montant_total"),
                         Value(
                             Decimal("0.00"),
-                            output_field=DecimalField(
-                                max_digits=20,
-                                decimal_places=2,
-                            ),
+                            output_field=money_output,
                         ),
                     )
                 )["total"]
@@ -2531,7 +2938,7 @@ class ManagerDashboardView(APIView):
             stock_bijouterie = self._int(
                 stocks
                 .filter(
-                    bijouterie=bijouterie,
+                    bijouterie_id=bijouterie.id,
                 )
                 .aggregate(
                     total=Coalesce(
@@ -2548,7 +2955,7 @@ class ManagerDashboardView(APIView):
             vendor_stock_bijouterie = (
                 vendor_stocks
                 .filter(
-                    bijouterie=bijouterie,
+                    bijouterie_id=bijouterie.id,
                 )
                 .aggregate(
                     allouee=Coalesce(
@@ -2614,9 +3021,7 @@ class ManagerDashboardView(APIView):
             )
 
         # ========================================================
-        # HISTORIQUE COMPLET
-        #
-        # Toutes les années disponibles.
+        # Historique
         # ========================================================
 
         historique_qs = (
@@ -2625,7 +3030,6 @@ class ManagerDashboardView(APIView):
                 year=ExtractYear(
                     "created_at"
                 ),
-
                 month=TruncMonth(
                     "created_at"
                 ),
@@ -2639,10 +3043,7 @@ class ManagerDashboardView(APIView):
                     Sum("montant_total"),
                     Value(
                         Decimal("0.00"),
-                        output_field=DecimalField(
-                            max_digits=20,
-                            decimal_places=2,
-                        ),
+                        output_field=money_output,
                     ),
                 ),
 
@@ -2676,22 +3077,15 @@ class ManagerDashboardView(APIView):
 
         for row in historique_qs:
 
-            if not row["year"]:
+            if not row["year"] or not row["month"]:
                 continue
 
             year = int(
                 row["year"]
             )
 
-            month_date = row[
-                "month"
-            ]
-
-            if not month_date:
-                continue
-
             month_number = (
-                month_date.month
+                row["month"].month
             )
 
             if year not in historique_map:
@@ -2708,16 +3102,20 @@ class ManagerDashboardView(APIView):
                     "mois": [],
                 }
 
-            historique_map[year][
-                "chiffre_affaires"
-            ] += self._decimal(
-                row["chiffre_affaires"]
+            historique_map[
+                year
+            ]["chiffre_affaires"] += (
+                self._decimal(
+                    row["chiffre_affaires"]
+                )
             )
 
-            historique_map[year][
-                "nombre_ventes"
-            ] += self._int(
-                row["nombre_ventes"]
+            historique_map[
+                year
+            ]["nombre_ventes"] += (
+                self._int(
+                    row["nombre_ventes"]
+                )
             )
 
             historique_map[
@@ -2755,22 +3153,16 @@ class ManagerDashboardView(APIView):
         )
 
         historique.sort(
-            key=lambda item: (
-                item["annee"]
-            ),
+            key=lambda item: item["annee"],
             reverse=True,
         )
 
         # ========================================================
-        # RESPONSE
+        # Response
         # ========================================================
 
         return Response(
             {
-                # =================================================
-                # Manager
-                # =================================================
-
                 "manager": {
                     "id": manager.id,
 
@@ -2786,10 +3178,6 @@ class ManagerDashboardView(APIView):
                         request.user.last_name
                     ),
                 },
-
-                # =================================================
-                # Résumé
-                # =================================================
 
                 "resume": {
                     "chiffre_affaires_semaine": (
@@ -2823,10 +3211,6 @@ class ManagerDashboardView(APIView):
                     ),
                 },
 
-                # =================================================
-                # Ventes
-                # =================================================
-
                 "ventes": {
                     "aujourd_hui": (
                         ventes_today.count()
@@ -2845,15 +3229,9 @@ class ManagerDashboardView(APIView):
                     ),
                 },
 
-                # =================================================
-                # Stock
-                # =================================================
-
                 "stock": {
                     "stock_magasin": (
-                        self._int(
-                            stock_magasin
-                        )
+                        stock_magasin
                     ),
 
                     "stock_vendeurs": (
@@ -2869,7 +3247,7 @@ class ManagerDashboardView(APIView):
                     ),
 
                     "poids_vendeurs": (
-                        poids_vendor
+                        poids_vendeurs
                     ),
 
                     "poids_total": (
@@ -2880,10 +3258,6 @@ class ManagerDashboardView(APIView):
                         produits_stock_faible
                     ),
                 },
-
-                # =================================================
-                # Vendeurs
-                # =================================================
 
                 "vendeurs": {
                     "nombre_vendeurs": (
@@ -2899,17 +3273,9 @@ class ManagerDashboardView(APIView):
                     ),
                 },
 
-                # =================================================
-                # Top produits
-                # =================================================
-
                 "top_produits": (
                     top_produits
                 ),
-
-                # =================================================
-                # Achats
-                # =================================================
 
                 "achats": {
                     "achats_mois": (
@@ -2924,10 +3290,6 @@ class ManagerDashboardView(APIView):
                         derniers_arrivages
                     ),
                 },
-
-                # =================================================
-                # Factures
-                # =================================================
 
                 "factures": {
                     "non_payees": (
@@ -2947,17 +3309,9 @@ class ManagerDashboardView(APIView):
                     ),
                 },
 
-                # =================================================
-                # Bijouteries
-                # =================================================
-
                 "par_bijouterie": (
                     par_bijouterie
                 ),
-
-                # =================================================
-                # Historique
-                # =================================================
 
                 "historique": (
                     historique
@@ -2965,7 +3319,6 @@ class ManagerDashboardView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-
 
 # ///////////////////Caissier dshboard
 class CashierDashboardView(APIView):
