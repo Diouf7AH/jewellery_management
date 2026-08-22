@@ -690,13 +690,6 @@ class PaiementLigne(models.Model):
         related_name="lignes_paiement"
     )
 
-    reference = models.CharField(
-        max_length=255,
-        null=True,
-        blank=True,
-        help_text="Référence transaction Wave / OM / banque / TPE"
-    )
-
     provider_reference = models.CharField(
         max_length=255,
         blank=True,

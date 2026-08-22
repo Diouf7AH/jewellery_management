@@ -208,183 +208,725 @@ class VendorStockView(APIView):
         )
 
 
+# class VendorDashboardView(APIView):
+#     permission_classes = [IsAuthenticated]
+#     http_method_names = ["get"]
+
+#     @swagger_auto_schema(
+#         operation_summary="Dashboard vendeur connecté",
+#         operation_description=(
+#             "Retourne le tableau de bord du vendeur connecté :\n"
+#             "- ventes semaine\n"
+#             "- ventes mois\n"
+#             "- ventes année\n"
+#             "- top produits\n"
+#             "- stock restant\n"
+#             "- graphique journalier sur 30 jours\n"
+#         ),
+#         tags=["vendor"],
+#         responses={200: openapi.Response("OK")},
+#     )
+#     def get(self, request):
+#         vendor = getattr(request.user, "staff_vendor_profile", None)
+#         if not vendor:
+#             return Response(
+#                 {"detail": "Profil vendeur introuvable."},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+
+#         now = timezone.now()
+#         start_week = now - timedelta(days=7)
+#         start_month = now - timedelta(days=30)
+#         start_year = now - timedelta(days=365)
+
+#         # -----------------------------
+#         # 1) ventes semaine
+#         # -----------------------------
+#         ventes_semaine_qs = (
+#             VenteProduit.objects
+#             .filter(vendor=vendor, vente__created_at__gte=start_week)
+#             .aggregate(
+#                 total_quantite=Sum("quantite"),
+#                 total_ttc=Sum("montant_total")
+#             )
+#         )
+
+#         ventes_semaine = {
+#             "total_quantite": int(ventes_semaine_qs["total_quantite"] or 0),
+#             "total_ttc": float(ventes_semaine_qs["total_ttc"] or 0),
+#         }
+
+#         # -----------------------------
+#         # 2) ventes mois
+#         # -----------------------------
+#         ventes_mois_qs = (
+#             VenteProduit.objects
+#             .filter(vendor=vendor, vente__created_at__gte=start_month)
+#             .aggregate(
+#                 total_quantite=Sum("quantite"),
+#                 total_ttc=Sum("montant_total")
+#             )
+#         )
+
+#         ventes_mois = {
+#             "total_quantite": int(ventes_mois_qs["total_quantite"] or 0),
+#             "total_ttc": float(ventes_mois_qs["total_ttc"] or 0),
+#         }
+
+#         # -----------------------------
+#         # 3) ventes année
+#         # -----------------------------
+#         ventes_annee_qs = (
+#             VenteProduit.objects
+#             .filter(vendor=vendor, vente__created_at__gte=start_year)
+#             .aggregate(
+#                 total_quantite=Sum("quantite"),
+#                 total_ttc=Sum("montant_total")
+#             )
+#         )
+
+#         ventes_annee = {
+#             "total_quantite": int(ventes_annee_qs["total_quantite"] or 0),
+#             "total_ttc": float(ventes_annee_qs["total_ttc"] or 0),
+#         }
+
+#         # -----------------------------
+#         # 4) top produits
+#         # -----------------------------
+#         top_produits_qs = (
+#             VenteProduit.objects
+#             .filter(vendor=vendor)
+#             .values("produit__id", "produit__nom", "produit__sku")
+#             .annotate(
+#                 total_quantite=Sum("quantite"),
+#                 total_ttc=Sum("montant_total")
+#             )
+#             .order_by("-total_quantite")[:10]
+#         )
+
+#         top_produits = []
+#         for item in top_produits_qs:
+#             top_produits.append({
+#                 "produit_id": item["produit__id"],
+#                 "nom": item["produit__nom"],
+#                 "sku": item["produit__sku"],
+#                 "total_quantite": int(item["total_quantite"] or 0),
+#                 "total_ttc": float(item["total_ttc"] or 0),
+#             })
+
+#         # -----------------------------
+#         # 5) stock restant
+#         # -----------------------------
+#         stock_qs = (
+#             VendorStock.objects
+#             .select_related("produit_line", "produit_line__produit")
+#             .filter(vendor=vendor)
+#         )
+
+#         stock_restant = []
+#         for stock in stock_qs:
+#             produit = getattr(stock.produit_line, "produit", None)
+#             restant = int(stock.quantite_allouee or 0) - int(stock.quantite_vendue or 0)
+
+#             stock_restant.append({
+#                 "produit_id": produit.id if produit else None,
+#                 "produit_nom": produit.nom if produit else None,
+#                 "sku": getattr(produit, "sku", None) if produit else None,
+#                 "quantite_allouee": int(stock.quantite_allouee or 0),
+#                 "quantite_vendue": int(stock.quantite_vendue or 0),
+#                 "restant": restant,
+#             })
+
+#         # -----------------------------
+#         # 6) graphique par jour (30 jours)
+#         # ⚠️ sans TruncDay pour éviter le bug MySQL timezone
+#         # -----------------------------
+#         graphique_rows = (
+#             VenteProduit.objects
+#             .filter(vendor=vendor, vente__created_at__gte=start_month)
+#             .values("vente__created_at", "quantite", "montant_total")
+#             .order_by("vente__created_at")
+#         )
+
+#         by_day = defaultdict(lambda: {
+#             "total_quantite": 0,
+#             "total_ttc": 0.0,
+#         })
+
+#         for row in graphique_rows:
+#             dt = row["vente__created_at"]
+#             if not dt:
+#                 continue
+
+#             local_day = timezone.localtime(dt).date().isoformat()
+#             by_day[local_day]["total_quantite"] += int(row["quantite"] or 0)
+#             by_day[local_day]["total_ttc"] += float(row["montant_total"] or 0)
+
+#         graphique = []
+#         for day in sorted(by_day.keys()):
+#             graphique.append({
+#                 "jour": day,
+#                 "total_quantite": by_day[day]["total_quantite"],
+#                 "total_ttc": by_day[day]["total_ttc"],
+#             })
+
+#         return Response(
+#             {
+#                 "vendor": {
+#                     "id": vendor.id,
+#                     "email": getattr(getattr(vendor, "user", None), "email", None),
+#                     "bijouterie": getattr(getattr(vendor, "bijouterie", None), "nom", None),
+#                 },
+#                 "ventes_semaine": ventes_semaine,
+#                 "ventes_mois": ventes_mois,
+#                 "ventes_annee": ventes_annee,
+#                 "top_produits": top_produits,
+#                 "stock_restant": stock_restant,
+#                 "graphique": graphique,
+#             },
+#             status=status.HTTP_200_OK
+#         )
+
 class VendorDashboardView(APIView):
+    """
+    Dashboard du vendeur connecté.
+
+    Retourne :
+    - CA semaine courante
+    - CA mois courant
+    - CA année courante
+    - top produits vendus
+    - stock vendeur restant
+    - graphique des 30 derniers jours
+    - historique annuel
+    """
+
     permission_classes = [IsAuthenticated]
     http_method_names = ["get"]
 
     @swagger_auto_schema(
         operation_summary="Dashboard vendeur connecté",
         operation_description=(
-            "Retourne le tableau de bord du vendeur connecté :\n"
-            "- ventes semaine\n"
-            "- ventes mois\n"
-            "- ventes année\n"
-            "- top produits\n"
-            "- stock restant\n"
-            "- graphique journalier sur 30 jours\n"
+            "Retourne le tableau de bord du vendeur connecté.\n\n"
+            "- ventes semaine courante\n"
+            "- ventes mois courant\n"
+            "- ventes année courante\n"
+            "- top produits réellement vendus\n"
+            "- stock vendeur restant\n"
+            "- graphique journalier des 30 derniers jours\n"
+            "- historique annuel automatique\n"
         ),
         tags=["vendor"],
-        responses={200: openapi.Response("OK")},
+        responses={
+            200: openapi.Response("Dashboard vendeur"),
+            400: openapi.Response("Profil vendeur introuvable"),
+            403: openapi.Response("Profil vendeur désactivé"),
+        },
     )
     def get(self, request):
-        vendor = getattr(request.user, "staff_vendor_profile", None)
+
+        # ============================================================
+        # 1. Vendeur connecté
+        # ============================================================
+
+        vendor = getattr(
+            request.user,
+            "staff_vendor_profile",
+            None,
+        )
+
         if not vendor:
             return Response(
-                {"detail": "Profil vendeur introuvable."},
-                status=status.HTTP_400_BAD_REQUEST
+                {
+                    "detail": "Profil vendeur introuvable."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        now = timezone.now()
-        start_week = now - timedelta(days=7)
-        start_month = now - timedelta(days=30)
-        start_year = now - timedelta(days=365)
+        if not getattr(vendor, "verifie", False):
+            return Response(
+                {
+                    "detail": "Profil vendeur désactivé."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-        # -----------------------------
-        # 1) ventes semaine
-        # -----------------------------
-        ventes_semaine_qs = (
+        # ============================================================
+        # 2. Dates
+        # ============================================================
+
+        now = timezone.now()
+        today = timezone.localdate()
+
+        # début semaine courante : lundi
+        start_week_date = (
+            today - timedelta(days=today.weekday())
+        )
+
+        # début mois courant
+        start_month_date = today.replace(
+            day=1
+        )
+
+        # début année courante
+        start_year_date = today.replace(
+            month=1,
+            day=1,
+        )
+
+        start_week = timezone.make_aware(
+            datetime.combine(
+                start_week_date,
+                datetime.min.time(),
+            )
+        )
+
+        start_month = timezone.make_aware(
+            datetime.combine(
+                start_month_date,
+                datetime.min.time(),
+            )
+        )
+
+        start_year = timezone.make_aware(
+            datetime.combine(
+                start_year_date,
+                datetime.min.time(),
+            )
+        )
+
+        # uniquement pour le graphique
+        start_30_days = now - timedelta(days=29)
+
+        # ============================================================
+        # QuerySet de base du vendeur
+        # ============================================================
+
+        ventes_vendor = (
             VenteProduit.objects
-            .filter(vendor=vendor, vente__created_at__gte=start_week)
+            .filter(
+                vendor=vendor,
+            )
+        )
+
+        # ============================================================
+        # 3. Ventes semaine courante
+        # ============================================================
+
+        ventes_semaine_qs = (
+            ventes_vendor
+            .filter(
+                vente__created_at__gte=start_week,
+            )
             .aggregate(
                 total_quantite=Sum("quantite"),
-                total_ttc=Sum("montant_total")
+                total_ttc=Sum("total_ligne"),
             )
         )
 
         ventes_semaine = {
-            "total_quantite": int(ventes_semaine_qs["total_quantite"] or 0),
-            "total_ttc": float(ventes_semaine_qs["total_ttc"] or 0),
+            "total_quantite": int(
+                ventes_semaine_qs["total_quantite"] or 0
+            ),
+            "total_ttc": float(
+                ventes_semaine_qs["total_ttc"] or Decimal("0.00")
+            ),
         }
 
-        # -----------------------------
-        # 2) ventes mois
-        # -----------------------------
+        # ============================================================
+        # 4. Ventes mois courant
+        # ============================================================
+
         ventes_mois_qs = (
-            VenteProduit.objects
-            .filter(vendor=vendor, vente__created_at__gte=start_month)
+            ventes_vendor
+            .filter(
+                vente__created_at__gte=start_month,
+            )
             .aggregate(
                 total_quantite=Sum("quantite"),
-                total_ttc=Sum("montant_total")
+                total_ttc=Sum("total_ligne"),
             )
         )
 
         ventes_mois = {
-            "total_quantite": int(ventes_mois_qs["total_quantite"] or 0),
-            "total_ttc": float(ventes_mois_qs["total_ttc"] or 0),
+            "total_quantite": int(
+                ventes_mois_qs["total_quantite"] or 0
+            ),
+            "total_ttc": float(
+                ventes_mois_qs["total_ttc"] or Decimal("0.00")
+            ),
         }
 
-        # -----------------------------
-        # 3) ventes année
-        # -----------------------------
+        # ============================================================
+        # 5. Ventes année courante
+        # ============================================================
+
         ventes_annee_qs = (
-            VenteProduit.objects
-            .filter(vendor=vendor, vente__created_at__gte=start_year)
+            ventes_vendor
+            .filter(
+                vente__created_at__gte=start_year,
+            )
             .aggregate(
                 total_quantite=Sum("quantite"),
-                total_ttc=Sum("montant_total")
+                total_ttc=Sum("total_ligne"),
             )
         )
 
         ventes_annee = {
-            "total_quantite": int(ventes_annee_qs["total_quantite"] or 0),
-            "total_ttc": float(ventes_annee_qs["total_ttc"] or 0),
+            "total_quantite": int(
+                ventes_annee_qs["total_quantite"] or 0
+            ),
+            "total_ttc": float(
+                ventes_annee_qs["total_ttc"] or Decimal("0.00")
+            ),
         }
 
-        # -----------------------------
-        # 4) top produits
-        # -----------------------------
+        # ============================================================
+        # 6. Top produits vendus
+        # ============================================================
+
         top_produits_qs = (
-            VenteProduit.objects
-            .filter(vendor=vendor)
-            .values("produit__id", "produit__nom", "produit__sku")
+            ventes_vendor
+            .values(
+                "produit__id",
+                "produit__nom",
+                "produit__sku",
+            )
             .annotate(
                 total_quantite=Sum("quantite"),
-                total_ttc=Sum("montant_total")
+                total_ttc=Sum("total_ligne"),
             )
-            .order_by("-total_quantite")[:10]
+            .order_by(
+                "-total_quantite"
+            )[:10]
         )
 
-        top_produits = []
-        for item in top_produits_qs:
-            top_produits.append({
+        top_produits = [
+            {
                 "produit_id": item["produit__id"],
                 "nom": item["produit__nom"],
                 "sku": item["produit__sku"],
-                "total_quantite": int(item["total_quantite"] or 0),
-                "total_ttc": float(item["total_ttc"] or 0),
-            })
+                "total_quantite": int(
+                    item["total_quantite"] or 0
+                ),
+                "total_ttc": float(
+                    item["total_ttc"] or Decimal("0.00")
+                ),
+            }
+            for item in top_produits_qs
+        ]
 
-        # -----------------------------
-        # 5) stock restant
-        # -----------------------------
+        # ============================================================
+        # 7. Stock restant vendeur
+        # ============================================================
+
         stock_qs = (
             VendorStock.objects
-            .select_related("produit_line", "produit_line__produit")
-            .filter(vendor=vendor)
+            .select_related(
+                "produit_line",
+                "produit_line__produit",
+                "produit_line__lot",
+            )
+            .filter(
+                vendor=vendor,
+            )
         )
 
         stock_restant = []
+
+        total_alloue = 0
+        total_vendu = 0
+        total_restant = 0
+
         for stock in stock_qs:
-            produit = getattr(stock.produit_line, "produit", None)
-            restant = int(stock.quantite_allouee or 0) - int(stock.quantite_vendue or 0)
 
-            stock_restant.append({
-                "produit_id": produit.id if produit else None,
-                "produit_nom": produit.nom if produit else None,
-                "sku": getattr(produit, "sku", None) if produit else None,
-                "quantite_allouee": int(stock.quantite_allouee or 0),
-                "quantite_vendue": int(stock.quantite_vendue or 0),
-                "restant": restant,
-            })
+            produit_line = stock.produit_line
+            produit = getattr(
+                produit_line,
+                "produit",
+                None,
+            )
 
-        # -----------------------------
-        # 6) graphique par jour (30 jours)
-        # ⚠️ sans TruncDay pour éviter le bug MySQL timezone
-        # -----------------------------
+            lot = getattr(
+                produit_line,
+                "lot",
+                None,
+            )
+
+            quantite_allouee = int(
+                stock.quantite_allouee or 0
+            )
+
+            quantite_vendue = int(
+                stock.quantite_vendue or 0
+            )
+
+            restant = (
+                quantite_allouee
+                - quantite_vendue
+            )
+
+            # On ne retourne pas les stocks épuisés
+            if restant <= 0:
+                continue
+
+            total_alloue += quantite_allouee
+            total_vendu += quantite_vendue
+            total_restant += restant
+
+            stock_restant.append(
+                {
+                    "vendor_stock_id": stock.id,
+
+                    "produit_line_id": (
+                        produit_line.id
+                        if produit_line
+                        else None
+                    ),
+
+                    "produit_id": (
+                        produit.id
+                        if produit
+                        else None
+                    ),
+
+                    "produit_nom": (
+                        produit.nom
+                        if produit
+                        else None
+                    ),
+
+                    "sku": (
+                        getattr(
+                            produit,
+                            "sku",
+                            None,
+                        )
+                        if produit
+                        else None
+                    ),
+
+                    "lot_id": (
+                        lot.id
+                        if lot
+                        else None
+                    ),
+
+                    "numero_lot": (
+                        getattr(
+                            lot,
+                            "numero_lot",
+                            None,
+                        )
+                        if lot
+                        else None
+                    ),
+
+                    "quantite_allouee": (
+                        quantite_allouee
+                    ),
+
+                    "quantite_vendue": (
+                        quantite_vendue
+                    ),
+
+                    "restant": restant,
+                }
+            )
+
+        stock_totaux = {
+            "quantite_allouee": total_alloue,
+            "quantite_vendue": total_vendu,
+            "quantite_restante": total_restant,
+        }
+
+        # ============================================================
+        # 8. Graphique 30 derniers jours
+        # ============================================================
+
         graphique_rows = (
-            VenteProduit.objects
-            .filter(vendor=vendor, vente__created_at__gte=start_month)
-            .values("vente__created_at", "quantite", "montant_total")
-            .order_by("vente__created_at")
+            ventes_vendor
+            .filter(
+                vente__created_at__gte=start_30_days,
+            )
+            .values(
+                "vente__created_at",
+                "quantite",
+                "total_ligne",
+            )
+            .order_by(
+                "vente__created_at"
+            )
         )
 
-        by_day = defaultdict(lambda: {
-            "total_quantite": 0,
-            "total_ttc": 0.0,
-        })
+        by_day = defaultdict(
+            lambda: {
+                "total_quantite": 0,
+                "total_ttc": Decimal("0.00"),
+            }
+        )
 
         for row in graphique_rows:
+
             dt = row["vente__created_at"]
+
             if not dt:
                 continue
 
-            local_day = timezone.localtime(dt).date().isoformat()
-            by_day[local_day]["total_quantite"] += int(row["quantite"] or 0)
-            by_day[local_day]["total_ttc"] += float(row["montant_total"] or 0)
+            local_day = (
+                timezone.localtime(dt)
+                .date()
+                .isoformat()
+            )
+
+            by_day[local_day]["total_quantite"] += int(
+                row["quantite"] or 0
+            )
+
+            by_day[local_day]["total_ttc"] += (
+                row["total_ligne"]
+                or Decimal("0.00")
+            )
+
+        # ------------------------------------------------------------
+        # Générer aussi les jours sans vente
+        # ------------------------------------------------------------
 
         graphique = []
-        for day in sorted(by_day.keys()):
-            graphique.append({
-                "jour": day,
-                "total_quantite": by_day[day]["total_quantite"],
-                "total_ttc": by_day[day]["total_ttc"],
-            })
+
+        start_graph_date = (
+            timezone.localdate()
+            - timedelta(days=29)
+        )
+
+        for offset in range(30):
+
+            current_date = (
+                start_graph_date
+                + timedelta(days=offset)
+            )
+
+            day_key = current_date.isoformat()
+
+            data = by_day.get(
+                day_key,
+                {
+                    "total_quantite": 0,
+                    "total_ttc": Decimal("0.00"),
+                },
+            )
+
+            graphique.append(
+                {
+                    "jour": day_key,
+                    "total_quantite": int(
+                        data["total_quantite"]
+                    ),
+                    "total_ttc": float(
+                        data["total_ttc"]
+                    ),
+                }
+            )
+
+        # ============================================================
+        # 9. Historique annuel
+        # ============================================================
+
+        historique_qs = (
+            ventes_vendor
+            .values(
+                "vente__created_at__year"
+            )
+            .annotate(
+                total_quantite=Sum(
+                    "quantite"
+                ),
+                total_ttc=Sum(
+                    "total_ligne"
+                ),
+            )
+            .order_by(
+                "-vente__created_at__year"
+            )
+        )
+
+        historique = []
+
+        for item in historique_qs:
+
+            annee = item[
+                "vente__created_at__year"
+            ]
+
+            if not annee:
+                continue
+
+            historique.append(
+                {
+                    "annee": annee,
+                    "total_quantite": int(
+                        item["total_quantite"] or 0
+                    ),
+                    "total_ttc": float(
+                        item["total_ttc"]
+                        or Decimal("0.00")
+                    ),
+                }
+            )
+
+        # ============================================================
+        # 10. Response
+        # ============================================================
 
         return Response(
             {
                 "vendor": {
                     "id": vendor.id,
-                    "email": getattr(getattr(vendor, "user", None), "email", None),
-                    "bijouterie": getattr(getattr(vendor, "bijouterie", None), "nom", None),
+
+                    "email": getattr(
+                        getattr(
+                            vendor,
+                            "user",
+                            None,
+                        ),
+                        "email",
+                        None,
+                    ),
+
+                    "bijouterie_id": (
+                        vendor.bijouterie_id
+                    ),
+
+                    "bijouterie": getattr(
+                        getattr(
+                            vendor,
+                            "bijouterie",
+                            None,
+                        ),
+                        "nom",
+                        None,
+                    ),
                 },
+
                 "ventes_semaine": ventes_semaine,
+
                 "ventes_mois": ventes_mois,
+
                 "ventes_annee": ventes_annee,
+
                 "top_produits": top_produits,
-                "stock_restant": stock_restant,
-                "graphique": graphique,
+
+                "stock": {
+                    "totaux": stock_totaux,
+                    "count": len(stock_restant),
+                    "results": stock_restant,
+                },
+
+                "graphique_30_jours": graphique,
+
+                "historique": historique,
             },
-            status=status.HTTP_200_OK
+            status=status.HTTP_200_OK,
         )
 
 

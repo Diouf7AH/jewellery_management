@@ -209,6 +209,7 @@ urlpatterns = [
     
     # SALE
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
+    
     # PDF
     path("factures/<str:numero_facture>/ticket-58mm/",sale_views.TicketProforma58mmView.as_view(),name="ticket-proforma-58mm",),
     path("factures/<str:numero_facture>/ticket-paiement-80mm/",sale_views.TicketPaiement80mmESCPosView.as_view(),name="ticket-paiement-80mm",),
@@ -225,6 +226,7 @@ urlpatterns = [
     # path("factures/paiement", sale_views.PaiementFactureMultiModeView.as_view(),name="paiement-facture-multi-mode",),
     path("factures/paiement",sale_views.PaiementFactureMultiModeView.as_view(),name="paiement-facture-multi-mode",),
     path("factures/export-comptable", sale_views.ExportComptableView.as_view(), name="export-comptable"),
+    path("cashier/dashboard/", sale_views.CashierDashboardView.as_view(),name="cashier-dashboard",),
     # path("ventes/<int:vente_id>/livraison/confirm/", sale_views.ConfirmerLivraisonView.as_view(), name="vente-confirmer-livraison"),
     # END STOCK
     

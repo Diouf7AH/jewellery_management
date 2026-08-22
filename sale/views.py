@@ -2858,7 +2858,864 @@ Conditions :
         )
         
 
+# ///////////////////Caissier dshboard
+class CashierDashboardView(APIView):
+    """
+    Dashboard du caissier connecté.
 
+    Règles :
+    - accès uniquement au rôle cashier ;
+    - profil Cashier obligatoirement vérifié ;
+    - le caissier voit uniquement les données de sa bijouterie ;
+    - le CA encaissé est calculé depuis PaiementLigne.montant_paye ;
+    - les ventes annulées sont exclues ;
+    - historique annuel dynamique à partir de 2026.
+    """
 
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get"]
 
+    # ============================================================
+    # Helpers
+    # ============================================================
 
+    def _get_cashier(self, user):
+        """
+        Retourne le profil caissier actif de l'utilisateur connecté.
+        """
+
+        return (
+            Cashier.objects
+            .select_related(
+                "user",
+                "bijouterie",
+            )
+            .filter(
+                user=user,
+                verifie=True,
+            )
+            .first()
+        )
+
+    @staticmethod
+    def _money(value):
+        """
+        Normalise un montant Decimal.
+        """
+        return value or ZERO
+
+    @staticmethod
+    def _money_string(value):
+        """
+        Transforme un montant en chaîne avec 2 décimales.
+
+        Exemple :
+            Decimal("150000") -> "150000.00"
+        """
+        value = value or ZERO
+        return f"{Decimal(value):.2f}"
+
+    @staticmethod
+    def _payment_sum(queryset):
+        """
+        Somme des PaiementLigne.montant_paye.
+        """
+
+        return (
+            queryset.aggregate(
+                total=Coalesce(
+                    Sum("montant_paye"),
+                    Value(
+                        ZERO,
+                        output_field=DecimalField(
+                            max_digits=18,
+                            decimal_places=2,
+                        ),
+                    ),
+                )
+            )["total"]
+            or ZERO
+        )
+
+    # ============================================================
+    # Swagger
+    # ============================================================
+
+    @swagger_auto_schema(
+        operation_id="cashierDashboard",
+        operation_summary="Dashboard du caissier connecté",
+        operation_description=(
+            "Retourne le tableau de bord du caissier connecté.\n\n"
+            "### Données retournées\n"
+            "- CA encaissé aujourd'hui\n"
+            "- CA encaissé semaine courante\n"
+            "- CA encaissé mois courant\n"
+            "- CA encaissé année courante\n"
+            "- paiements jour et mois\n"
+            "- répartition par mode de paiement\n"
+            "- factures payées / partielles / non payées\n"
+            "- montant restant à encaisser\n"
+            "- ventes jour / semaine / mois / année\n"
+            "- derniers paiements\n"
+            "- historique annuel depuis 2026\n\n"
+            "Toutes les données sont limitées à la bijouterie "
+            "du caissier connecté."
+        ),
+    )
+    def get(self, request, *args, **kwargs):
+
+        # ========================================================
+        # 1. Vérification rôle
+        # ========================================================
+
+        role = get_role_name(request.user)
+
+        if role != ROLE_CASHIER:
+            return Response(
+                {
+                    "detail": (
+                        "Accès réservé au caissier."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # ========================================================
+        # 2. Profil Cashier
+        # ========================================================
+
+        cashier = self._get_cashier(request.user)
+
+        if not cashier:
+            return Response(
+                {
+                    "detail": (
+                        "Profil caissier actif introuvable."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not cashier.bijouterie_id:
+            return Response(
+                {
+                    "detail": (
+                        "Aucune bijouterie n'est associée "
+                        "à ce caissier."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        bijouterie = cashier.bijouterie
+
+        # ========================================================
+        # 3. Dates courantes
+        # ========================================================
+
+        today = timezone.localdate()
+
+        # lundi de la semaine courante
+        start_week = today - timedelta(
+            days=today.weekday()
+        )
+
+        end_week = start_week + timedelta(days=6)
+
+        current_month = today.month
+        current_year = today.year
+
+        # ========================================================
+        # 4. Querysets de base
+        # ========================================================
+
+        ventes = (
+            Vente.objects
+            .filter(
+                bijouterie_id=bijouterie.id,
+                is_cancelled=False,
+            )
+        )
+
+        factures = (
+            Facture.objects
+            .filter(
+                bijouterie_id=bijouterie.id,
+            )
+        )
+
+        paiements = (
+            Paiement.objects
+            .filter(
+                facture__bijouterie_id=bijouterie.id,
+            )
+        )
+
+        paiement_lignes = (
+            PaiementLigne.objects
+            .filter(
+                paiement__facture__bijouterie_id=bijouterie.id,
+            )
+        )
+
+        # ========================================================
+        # 5. CA encaissé
+        # ========================================================
+        #
+        # IMPORTANT :
+        # on utilise PaiementLigne.montant_paye
+        # et NON Vente.montant_total.
+        #
+        # Ainsi :
+        # facture = 500 000
+        # paiement = 200 000
+        #
+        # CA encaissé = 200 000
+        # et non 500 000.
+        # ========================================================
+
+        ca_aujourdhui = self._payment_sum(
+            paiement_lignes.filter(
+                paiement__date_paiement__date=today,
+            )
+        )
+
+        ca_semaine = self._payment_sum(
+            paiement_lignes.filter(
+                paiement__date_paiement__date__range=(
+                    start_week,
+                    end_week,
+                ),
+            )
+        )
+
+        ca_mois = self._payment_sum(
+            paiement_lignes.filter(
+                paiement__date_paiement__year=current_year,
+                paiement__date_paiement__month=current_month,
+            )
+        )
+
+        ca_annee = self._payment_sum(
+            paiement_lignes.filter(
+                paiement__date_paiement__year=current_year,
+            )
+        )
+
+        # ========================================================
+        # 6. Paiements
+        # ========================================================
+
+        paiements_jour = paiements.filter(
+            date_paiement__date=today,
+        )
+
+        paiements_mois = paiements.filter(
+            date_paiement__year=current_year,
+            date_paiement__month=current_month,
+        )
+
+        nombre_paiements_jour = paiements_jour.count()
+
+        nombre_paiements_mois = paiements_mois.count()
+
+        # Les montants sont pris dans PaiementLigne
+        montant_paiements_jour = ca_aujourdhui
+        montant_paiements_mois = ca_mois
+
+        # ========================================================
+        # 7. Répartition modes de paiement
+        # ========================================================
+
+        modes_raw = (
+            paiement_lignes
+            .values(
+                "mode_paiement__code",
+                "mode_paiement__nom",
+            )
+            .annotate(
+                montant=Coalesce(
+                    Sum("montant_paye"),
+                    Value(
+                        ZERO,
+                        output_field=DecimalField(
+                            max_digits=18,
+                            decimal_places=2,
+                        ),
+                    ),
+                ),
+                nombre=Count("id"),
+            )
+            .order_by(
+                "mode_paiement__ordre_affichage",
+                "mode_paiement__nom",
+            )
+        )
+
+        # --------------------------------------------------------
+        # Catégories normalisées pour le frontend
+        # --------------------------------------------------------
+
+        repartition = {
+            "especes": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "wave": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "orange_money": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "carte": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "compte_depot": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+            "autres": {
+                "montant": ZERO,
+                "nombre": 0,
+            },
+        }
+
+        # Les codes peuvent évoluer légèrement.
+        # On accepte plusieurs variantes courantes.
+        cash_codes = {
+            "cash",
+            "espece",
+            "especes",
+        }
+
+        wave_codes = {
+            "wave",
+        }
+
+        orange_codes = {
+            "orange_money",
+            "orange",
+            "om",
+        }
+
+        card_codes = {
+            "card",
+            "carte",
+            "carte_bancaire",
+            "cb",
+        }
+
+        depot_codes = {
+            "depot",
+            "compte_depot",
+        }
+
+        for row in modes_raw:
+
+            code = (
+                row["mode_paiement__code"]
+                or ""
+            ).strip().lower()
+
+            montant = row["montant"] or ZERO
+            nombre = row["nombre"] or 0
+
+            if code in cash_codes:
+                key = "especes"
+
+            elif code in wave_codes:
+                key = "wave"
+
+            elif code in orange_codes:
+                key = "orange_money"
+
+            elif code in card_codes:
+                key = "carte"
+
+            elif code in depot_codes:
+                key = "compte_depot"
+
+            else:
+                key = "autres"
+
+            repartition[key]["montant"] += montant
+            repartition[key]["nombre"] += nombre
+
+        modes_paiement_data = []
+
+        labels = {
+            "especes": "Espèces",
+            "wave": "Wave",
+            "orange_money": "Orange Money",
+            "carte": "Carte",
+            "compte_depot": "Compte dépôt",
+            "autres": "Autres",
+        }
+
+        for code, values in repartition.items():
+            modes_paiement_data.append(
+                {
+                    "code": code,
+                    "nom": labels[code],
+                    "nombre": values["nombre"],
+                    "montant": self._money_string(
+                        values["montant"]
+                    ),
+                }
+            )
+
+        # ========================================================
+        # 8. Factures
+        # ========================================================
+
+        factures_payees = factures.filter(
+            status=Facture.STAT_PAYE,
+        ).count()
+
+        factures_partielles = factures.filter(
+            status=Facture.STAT_PARTIEL,
+        ).count()
+
+        factures_non_payees = factures.filter(
+            status=Facture.STAT_NON_PAYE,
+        ).count()
+
+        # --------------------------------------------------------
+        # Calcul SQL :
+        #
+        # reste =
+        # montant_total - somme des paiements
+        #
+        # On calcule uniquement les factures non totalement payées.
+        # --------------------------------------------------------
+
+        factures_a_encaisser = (
+            factures
+            .exclude(
+                status=Facture.STAT_PAYE,
+            )
+            .annotate(
+                total_paye_db=Coalesce(
+                    Sum(
+                        "paiements__lignes__montant_paye"
+                    ),
+                    Value(
+                        ZERO,
+                        output_field=DecimalField(
+                            max_digits=18,
+                            decimal_places=2,
+                        ),
+                    ),
+                )
+            )
+            .annotate(
+                reste_db=ExpressionWrapper(
+                    F("montant_total")
+                    - F("total_paye_db"),
+                    output_field=DecimalField(
+                        max_digits=18,
+                        decimal_places=2,
+                    ),
+                )
+            )
+        )
+
+        montant_restant_a_encaisser = (
+            factures_a_encaisser.aggregate(
+                total=Coalesce(
+                    Sum("reste_db"),
+                    Value(
+                        ZERO,
+                        output_field=DecimalField(
+                            max_digits=18,
+                            decimal_places=2,
+                        ),
+                    ),
+                )
+            )["total"]
+            or ZERO
+        )
+
+        # Sécurité : jamais de reste négatif
+        montant_restant_a_encaisser = max(
+            montant_restant_a_encaisser,
+            ZERO,
+        )
+
+        # ========================================================
+        # 9. Nombre de ventes
+        # ========================================================
+
+        ventes_jour = ventes.filter(
+            created_at__date=today,
+        ).count()
+
+        ventes_semaine = ventes.filter(
+            created_at__date__range=(
+                start_week,
+                end_week,
+            ),
+        ).count()
+
+        ventes_mois = ventes.filter(
+            created_at__year=current_year,
+            created_at__month=current_month,
+        ).count()
+
+        ventes_annee = ventes.filter(
+            created_at__year=current_year,
+        ).count()
+
+        # ========================================================
+        # 10. Derniers paiements
+        # ========================================================
+
+        derniers_paiements_qs = (
+            paiements
+            .select_related(
+                "facture",
+                "cashier",
+                "cashier__user",
+                "facture__vente",
+                "facture__vente__client",
+            )
+            .prefetch_related(
+                "lignes",
+                "lignes__mode_paiement",
+            )
+            .order_by(
+                "-date_paiement"
+            )[:10]
+        )
+
+        derniers_paiements = []
+
+        for paiement in derniers_paiements_qs:
+
+            lignes = list(paiement.lignes.all())
+
+            total_paye = sum(
+                (
+                    ligne.montant_paye or ZERO
+                    for ligne in lignes
+                ),
+                ZERO,
+            )
+
+            modes = [
+                {
+                    "code": ligne.mode_paiement.code,
+                    "nom": ligne.mode_paiement.nom,
+                    "montant": self._money_string(
+                        ligne.montant_paye
+                    ),
+                    "reference": ligne.reference,
+                }
+                for ligne in lignes
+            ]
+
+            facture = paiement.facture
+
+            vente = (
+                facture.vente
+                if facture
+                else None
+            )
+
+            client = (
+                vente.client
+                if vente
+                else None
+            )
+
+            derniers_paiements.append(
+                {
+                    "id": paiement.id,
+
+                    "date_paiement": (
+                        paiement.date_paiement
+                    ),
+
+                    "montant": self._money_string(
+                        total_paye
+                    ),
+
+                    "facture": {
+                        "id": facture.id,
+                        "numero_facture": (
+                            facture.numero_facture
+                        ),
+                        "status": facture.status,
+                        "type_facture": (
+                            facture.type_facture
+                        ),
+                        "montant_total": (
+                            self._money_string(
+                                facture.montant_total
+                            )
+                        ),
+                    },
+
+                    "client": (
+                        {
+                            "id": client.id,
+                            "nom": client.full_name,
+                            "telephone": (
+                                client.telephone
+                            ),
+                        }
+                        if client
+                        else None
+                    ),
+
+                    "cashier": (
+                        {
+                            "id": paiement.cashier_id,
+                            "nom": (
+                                paiement.cashier.full_name
+                            ),
+                        }
+                        if paiement.cashier
+                        else None
+                    ),
+
+                    "modes_paiement": modes,
+                }
+            )
+
+        # ========================================================
+        # 11. Historique annuel
+        # ========================================================
+        #
+        # À partir de 2026 jusqu'à l'année courante.
+        #
+        # En 2028 :
+        #
+        # historique:
+        #   2026
+        #   2027
+        #   2028
+        #
+        # ========================================================
+
+        HISTORIQUE_START_YEAR = 2026
+
+        ventes_par_annee = {
+            row["created_at__year"]: row["total"]
+            for row in (
+                ventes
+                .values(
+                    "created_at__year"
+                )
+                .annotate(
+                    total=Count("id")
+                )
+            )
+            if row["created_at__year"]
+        }
+
+        encaissements_par_annee = {
+            row["paiement__date_paiement__year"]:
+                row["montant"]
+            for row in (
+                paiement_lignes
+                .values(
+                    "paiement__date_paiement__year"
+                )
+                .annotate(
+                    montant=Coalesce(
+                        Sum("montant_paye"),
+                        Value(
+                            ZERO,
+                            output_field=DecimalField(
+                                max_digits=18,
+                                decimal_places=2,
+                            ),
+                        ),
+                    )
+                )
+            )
+            if row["paiement__date_paiement__year"]
+        }
+
+        paiements_par_annee = {
+            row["date_paiement__year"]: row["total"]
+            for row in (
+                paiements
+                .values(
+                    "date_paiement__year"
+                )
+                .annotate(
+                    total=Count("id")
+                )
+            )
+            if row["date_paiement__year"]
+        }
+
+        historique = {}
+
+        for year in range(
+            HISTORIQUE_START_YEAR,
+            current_year + 1,
+        ):
+            historique[str(year)] = {
+                "ventes": (
+                    ventes_par_annee.get(
+                        year,
+                        0,
+                    )
+                ),
+                "nombre_paiements": (
+                    paiements_par_annee.get(
+                        year,
+                        0,
+                    )
+                ),
+                "encaissements": (
+                    self._money_string(
+                        encaissements_par_annee.get(
+                            year,
+                            ZERO,
+                        )
+                    )
+                ),
+            }
+
+        # ========================================================
+        # 12. Réponse finale
+        # ========================================================
+
+        return Response(
+            {
+                "cashier": {
+                    "id": cashier.id,
+                    "nom": cashier.full_name,
+                    "email": cashier.email,
+                    "telephone": cashier.telephone,
+                },
+
+                "bijouterie": {
+                    "id": bijouterie.id,
+                    "nom": bijouterie.nom,
+                },
+
+                "periode": {
+                    "date": today,
+                    "debut_semaine": start_week,
+                    "fin_semaine": end_week,
+                    "mois": current_month,
+                    "annee": current_year,
+                },
+
+                # -----------------------------------------------
+                # CA réellement encaissé
+                # -----------------------------------------------
+
+                "ca_encaisse": {
+                    "aujourdhui": (
+                        self._money_string(
+                            ca_aujourdhui
+                        )
+                    ),
+                    "semaine": (
+                        self._money_string(
+                            ca_semaine
+                        )
+                    ),
+                    "mois": (
+                        self._money_string(
+                            ca_mois
+                        )
+                    ),
+                    "annee": (
+                        self._money_string(
+                            ca_annee
+                        )
+                    ),
+                },
+
+                # -----------------------------------------------
+                # Paiements
+                # -----------------------------------------------
+
+                "paiements": {
+                    "nombre_paiements_jour": (
+                        nombre_paiements_jour
+                    ),
+                    "montant_paiements_jour": (
+                        self._money_string(
+                            montant_paiements_jour
+                        )
+                    ),
+                    "nombre_paiements_mois": (
+                        nombre_paiements_mois
+                    ),
+                    "montant_paiements_mois": (
+                        self._money_string(
+                            montant_paiements_mois
+                        )
+                    ),
+                },
+
+                # -----------------------------------------------
+                # Modes de paiement
+                # -----------------------------------------------
+
+                "modes_paiement": (
+                    modes_paiement_data
+                ),
+
+                # -----------------------------------------------
+                # Factures
+                # -----------------------------------------------
+
+                "factures": {
+                    "factures_payees": (
+                        factures_payees
+                    ),
+                    "factures_partielles": (
+                        factures_partielles
+                    ),
+                    "factures_non_payees": (
+                        factures_non_payees
+                    ),
+                    "montant_restant_a_encaisser": (
+                        self._money_string(
+                            montant_restant_a_encaisser
+                        )
+                    ),
+                },
+
+                # -----------------------------------------------
+                # Ventes
+                # -----------------------------------------------
+
+                "ventes": {
+                    "ventes_jour": ventes_jour,
+                    "ventes_semaine": (
+                        ventes_semaine
+                    ),
+                    "ventes_mois": ventes_mois,
+                    "ventes_annee": ventes_annee,
+                },
+
+                # -----------------------------------------------
+                # Dernières opérations
+                # -----------------------------------------------
+
+                "derniers_paiements": (
+                    derniers_paiements
+                ),
+
+                # -----------------------------------------------
+                # Historique
+                # -----------------------------------------------
+
+                "historique": historique,
+            },
+            status=status.HTTP_200_OK,
+        )
+# //////////caissier dashboard
