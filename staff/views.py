@@ -22,7 +22,7 @@ from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
                            ROLE_VENDOR, get_role_name)
 from purchase.models import Achat, Lot
 from sale.models import Facture, Vente, VenteProduit
-from staff.models import Buyer, Cashier, Manager, Vendor
+from staff.models import Buyer, Cashier, Manager
 from staff.serializers import (CreateStaffSerializer,
                                StaffDashboardResponseSerializer,
                                UpdateStaffSerializer)
