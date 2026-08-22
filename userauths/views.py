@@ -25,9 +25,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
+from backend.bijouteries import get_user_bijouteries
 from backend.permissions import IsAdmin, IsAdminOrManager
 from backend.renderers import UserRenderer
 from backend.roles import SYSTEM_ROLES, get_role_name
+from store.serializers import BijouterieMiniSerializer
 
 from .models import Profile, Role
 from .serializers import (ProfileSerializer, ProfileUpdateSerializer,
@@ -456,7 +458,134 @@ def resend_confirmation_submit(request):
     return redirect("resend-confirmation-form")
 
 
+# class UserLoginView(APIView):
+#     permission_classes = [AllowAny]
+
+#     @swagger_auto_schema(
+#         operation_summary="Connexion utilisateur",
+#         operation_description=(
+#             "Connexion avec une adresse email, un nom d'utilisateur "
+#             "ou un numéro de téléphone."
+#         ),
+#         request_body=openapi.Schema(
+#             type=openapi.TYPE_OBJECT,
+#             required=["user", "password"],
+#             properties={
+#                 "user": openapi.Schema(
+#                     type=openapi.TYPE_STRING,
+#                     description=(
+#                         "Adresse email, nom d'utilisateur "
+#                         "ou numéro de téléphone"
+#                     ),
+#                 ),
+#                 "password": openapi.Schema(
+#                     type=openapi.TYPE_STRING,
+#                     description="Mot de passe",
+#                 ),
+#             },
+#         ),
+#         responses={
+#             200: openapi.Response(
+#                 description="Connexion réussie",
+#             ),
+#             401: openapi.Response(
+#                 description=(
+#                     "Identifiants invalides, compte désactivé "
+#                     "ou compte non autorisé"
+#                 ),
+#             ),
+#             403: openapi.Response(
+#                 description="Adresse email non vérifiée",
+#             ),
+#             400: openapi.Response(
+#                 description="Données invalides",
+#             ),
+#         },
+#     )
+#     def post(self, request, format=None):
+#         serializer = UserLoginSerializer(
+#             data=request.data,
+#         )
+#         serializer.is_valid(raise_exception=True)
+
+#         identifier = (
+#             serializer.validated_data.get("user")
+#             or ""
+#         ).strip()
+
+#         password = serializer.validated_data.get("password")
+
+#         user = authenticate(
+#             request=request,
+#             username=identifier,
+#             password=password,
+#         )
+
+#         # Le backend retourne None si :
+#         # - identifiants incorrects ;
+#         # - compte inactif ;
+#         # - utilisateur introuvable.
+#         if user is None:
+#             return Response(
+#                 {
+#                     "errors": {
+#                         "non_field_errors": [
+#                             "❌ Identifiants invalides "
+#                             "ou compte désactivé."
+#                         ]
+#                     }
+#                 },
+#                 status=status.HTTP_401_UNAUTHORIZED,
+#             )
+
+#         if not getattr(
+#             user,
+#             "is_email_verified",
+#             False,
+#         ):
+#             return Response(
+#                 {
+#                     "message": (
+#                         "❌ Votre adresse email n’a pas "
+#                         "encore été confirmée."
+#                     )
+#                 },
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         update_last_login(None, user)
+
+#         tokens = get_tokens_for_user(user)
+
+#         role = get_role_name(user)
+
+#         return Response(
+#             {
+#                 "refresh": tokens["refresh"],
+#                 "access": tokens["access"],
+#                 "user": {
+#                     "id": user.pk,
+#                     "email": user.email,
+#                     "username": user.username,
+#                     "telephone": getattr(
+#                         user,
+#                         "telephone",
+#                         None,
+#                     ),
+#                     "role": role,
+#                     "is_active": user.is_active,
+#                     "is_email_verified": (
+#                         user.is_email_verified
+#                     ),
+#                 },
+#                 "message": "Connexion réussie ✅",
+#             },
+#             status=status.HTTP_200_OK,
+#         )
+        
+        
 class UserLoginView(APIView):
+
     permission_classes = [AllowAny]
 
     @swagger_auto_schema(
@@ -467,7 +596,10 @@ class UserLoginView(APIView):
         ),
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=["user", "password"],
+            required=[
+                "user",
+                "password",
+            ],
             properties={
                 "user": openapi.Schema(
                     type=openapi.TYPE_STRING,
@@ -501,17 +633,23 @@ class UserLoginView(APIView):
         },
     )
     def post(self, request, format=None):
+
         serializer = UserLoginSerializer(
             data=request.data,
         )
-        serializer.is_valid(raise_exception=True)
+
+        serializer.is_valid(
+            raise_exception=True
+        )
 
         identifier = (
             serializer.validated_data.get("user")
             or ""
         ).strip()
 
-        password = serializer.validated_data.get("password")
+        password = serializer.validated_data.get(
+            "password"
+        )
 
         user = authenticate(
             request=request,
@@ -519,17 +657,15 @@ class UserLoginView(APIView):
             password=password,
         )
 
-        # Le backend retourne None si :
-        # - identifiants incorrects ;
-        # - compte inactif ;
-        # - utilisateur introuvable.
         if user is None:
             return Response(
                 {
                     "errors": {
                         "non_field_errors": [
-                            "❌ Identifiants invalides "
-                            "ou compte désactivé."
+                            (
+                                "❌ Identifiants invalides "
+                                "ou compte désactivé."
+                            )
                         ]
                     }
                 },
@@ -551,16 +687,41 @@ class UserLoginView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        update_last_login(None, user)
+        update_last_login(
+            None,
+            user,
+        )
 
-        tokens = get_tokens_for_user(user)
+        tokens = get_tokens_for_user(
+            user
+        )
 
-        role = get_role_name(user)
+        role = get_role_name(
+            user
+        )
+
+        bijouteries = get_user_bijouteries(
+            user
+        )
+
+        bijouteries_data = (
+            BijouterieMiniSerializer(
+                bijouteries,
+                many=True,
+            ).data
+        )
+
+        bijouterie_unique = (
+            bijouteries_data[0]
+            if len(bijouteries_data) == 1
+            else None
+        )
 
         return Response(
             {
                 "refresh": tokens["refresh"],
                 "access": tokens["access"],
+
                 "user": {
                     "id": user.pk,
                     "email": user.email,
@@ -576,11 +737,26 @@ class UserLoginView(APIView):
                         user.is_email_verified
                     ),
                 },
-                "message": "Connexion réussie ✅",
+
+                "bijouteries": (
+                    bijouteries_data
+                ),
+
+                "bijouterie_unique": (
+                    bijouterie_unique
+                ),
+
+                "multiple_bijouteries": (
+                    len(bijouteries_data) > 1
+                ),
+
+                "message": (
+                    "Connexion réussie ✅"
+                ),
             },
             status=status.HTTP_200_OK,
         )
-        
+
 class UserLogoutView(APIView):
     permission_classes = [IsAuthenticated]
 

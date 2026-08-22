@@ -12,6 +12,7 @@ class BijouterieSerializer(serializers.ModelSerializer):
         fields = ['id', 'nom', 'telephone_portable_1', 'telephone_portable_2', 'telephone_portable_3', 'telephone_portable_4', 'telephone_portable_5', 'telephone_fix', 'adresse', 'logo_blanc', 'logo_noir', 'nom_de_domaine', 'tiktok', 'facebook', 'instagram']
         
 
+
 class CategorieSerializer(serializers.ModelSerializer):
     class Meta:
         model = Categorie
@@ -564,4 +565,12 @@ class MarquePuretePrixEvolutionPointSerializer(serializers.Serializer):
 #     purete = serializers.CharField(required=False)
 #     source = serializers.CharField(required=False, allow_null=True)
     
-
+# pour le backend/bijouteries.py
+class BijouterieMiniSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Bijouterie
+        fields = [
+            "id",
+            "nom",
+        ]
+        read_only_fields = fields
