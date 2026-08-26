@@ -1871,25 +1871,25 @@ class CompteDepotDashboardAPIView(APIView):
 # =========================================================
 # RECU PDF 80MM
 # =========================================================
-class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
+class CompteDepotTransactionReceiptAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_id="compteDepotTransactionReceipt80mm",
-        operation_summary="Reçu ticket 80mm d'une transaction compte dépôt",
+        operation_id="compteDepotTransactionReceipt",
+        operation_summary="Récupérer les données d'un reçu compte dépôt",
         operation_description=(
-            "Génère un reçu PDF thermique 80mm pour une transaction "
-            "de compte dépôt.\n\n"
+            "Retourne les données nécessaires au frontend pour afficher "
+            "et imprimer un reçu compte dépôt.\n\n"
             "### Règles\n"
             "- Admin : toutes les bijouteries.\n"
             "- Manager : uniquement ses bijouteries.\n"
             "- Caissier : uniquement sa bijouterie.\n"
-            "- Vendor : non autorisé."
+            "- Vendor : non autorisé.\n"
+            "- Buyer : non autorisé."
         ),
-        produces=["application/pdf"],
         responses={
             200: openapi.Response(
-                description="Reçu PDF 80mm généré avec succès"
+                description="Données du reçu récupérées avec succès"
             ),
             400: openapi.Response(
                 description="Transaction sans bijouterie"
@@ -1927,13 +1927,15 @@ class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
                 )
                 .get(pk=transaction_id)
             )
+
         except CompteDepotTransaction.DoesNotExist:
             return Response(
                 {"detail": "Transaction introuvable."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        client = tx.compte.client
+        compte = tx.compte
+        client = compte.client
 
         client_bijouterie = getattr(
             client,
@@ -1962,7 +1964,65 @@ class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        return generate_transaction_ticket_80mm_pdf(
-            tx,
-            organisation_name="BIJOUTERIE RIO GOLD",
+        return Response(
+            {
+                "organisation": {
+                    "nom": "BIJOUTERIE RIO GOLD",
+                    "bijouterie": {
+                        "id": client_bijouterie.id,
+                        "nom": client_bijouterie.nom,
+                    },
+                },
+
+                "client": {
+                    "nom": client.nom,
+                    "prenom": client.prenom,
+                    "telephone": client.telephone,
+                },
+
+                "compte": {
+                    "id": compte.id,
+                    "numero_compte": compte.numero_compte,
+                    "solde": str(compte.solde),
+                },
+
+                "transaction": {
+                    "id": tx.id,
+                    "type_transaction": tx.type_transaction,
+                    "type_transaction_label":
+                    tx.get_type_transaction_display(),
+
+                    "montant": str(tx.montant),
+
+                    "solde_avant": str(tx.solde_avant),
+                    "solde_apres": str(tx.solde_apres),
+
+                    "statut": tx.statut,
+                    "statut_label":
+                    tx.get_statut_display(),
+
+                    "reference": tx.reference,
+                    "commentaire": tx.commentaire,
+
+                    "date_transaction":
+                    tx.date_transaction,
+                },
+
+                "effectue_par": {
+                    "id": tx.user_id,
+                    "email": (
+                        getattr(tx.user, "email", None)
+                        if tx.user
+                        else None
+                    ),
+                    "username": (
+                        getattr(tx.user, "username", None)
+                        if tx.user
+                        else None
+                    ),
+                },
+            },
+            status=status.HTTP_200_OK,
         )
+        
+        
