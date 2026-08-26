@@ -57,7 +57,8 @@ urlpatterns = [
     
     # API Endpoints
     # path("dashboard/manager/", api_views.ManagerDashboardAPIView.as_view(), name="manager-dashboard"),
-    path("settings/commercial/", api_views.CommercialSettingsUpdateView.as_view(),name="commercial-settings-update",),
+    # path("settings/commercial/", api_views.CommercialSettingsUpdateView.as_view(),name="commercial-settings-update",),
+    # path("commercial-settings/",store_views.CommercialSettingsUpdateView.as_view(),name="commercial-settings",),
     
     # STORE
     
