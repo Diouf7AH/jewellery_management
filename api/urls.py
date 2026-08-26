@@ -252,7 +252,7 @@ urlpatterns = [
     # dashboard
     path("dashboard", compte_depot_views.CompteDepotDashboardAPIView.as_view()),
     # reçu POS 80mm
-    path("transactions/<int:transaction_id>/receipt/80mm",compte_depot_views.CompteDepotTransactionReceipt80mmPDFAPIView.as_view()),
+    # path("transactions/<int:transaction_id>/receipt/80mm",compte_depot_views.CompteDepotTransactionReceipt80mmPDFAPIView.as_view()),
     # END BANK
     
     # path('commande-client/create', order_views.CreateCommandeClientView.as_view(), name='create-commande-client'),

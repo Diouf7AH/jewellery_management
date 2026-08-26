@@ -1920,98 +1920,98 @@ class CompteDepotDashboardAPIView(APIView):
 # =========================================================
 # RECU PDF 80MM
 # =========================================================
-class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+# class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
+#     permission_classes = [IsAuthenticated]
 
-    @swagger_auto_schema(
-        operation_id="compteDepotTransactionReceipt80mm",
-        operation_summary="Reçu ticket 80mm d'une transaction compte dépôt",
-        operation_description=(
-            "Génère un reçu PDF thermique 80mm pour une transaction "
-            "de compte dépôt.\n\n"
-            "### Règles\n"
-            "- Admin : toutes les bijouteries.\n"
-            "- Manager : uniquement ses bijouteries.\n"
-            "- Caissier : uniquement sa bijouterie.\n"
-            "- Vendor : non autorisé."
-        ),
-        produces=["application/pdf"],
-        responses={
-            200: openapi.Response(
-                description="Reçu PDF 80mm généré avec succès"
-            ),
-            400: openapi.Response(
-                description="Transaction sans bijouterie"
-            ),
-            403: openapi.Response(
-                description="Accès refusé"
-            ),
-            404: openapi.Response(
-                description="Transaction introuvable"
-            ),
-        },
-        tags=["compte dépôt"],
-    )
-    def get(self, request, transaction_id):
-        role = get_role_name(request.user)
+#     @swagger_auto_schema(
+#         operation_id="compteDepotTransactionReceipt80mm",
+#         operation_summary="Reçu ticket 80mm d'une transaction compte dépôt",
+#         operation_description=(
+#             "Génère un reçu PDF thermique 80mm pour une transaction "
+#             "de compte dépôt.\n\n"
+#             "### Règles\n"
+#             "- Admin : toutes les bijouteries.\n"
+#             "- Manager : uniquement ses bijouteries.\n"
+#             "- Caissier : uniquement sa bijouterie.\n"
+#             "- Vendor : non autorisé."
+#         ),
+#         produces=["application/pdf"],
+#         responses={
+#             200: openapi.Response(
+#                 description="Reçu PDF 80mm généré avec succès"
+#             ),
+#             400: openapi.Response(
+#                 description="Transaction sans bijouterie"
+#             ),
+#             403: openapi.Response(
+#                 description="Accès refusé"
+#             ),
+#             404: openapi.Response(
+#                 description="Transaction introuvable"
+#             ),
+#         },
+#         tags=["compte dépôt"],
+#     )
+#     def get(self, request, transaction_id):
+#         role = get_role_name(request.user)
 
-        if role not in {
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_CASHIER,
-        }:
-            return Response(
-                {"message": "Accès refusé."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+#         if role not in {
+#             ROLE_ADMIN,
+#             ROLE_MANAGER,
+#             ROLE_CASHIER,
+#         }:
+#             return Response(
+#                 {"message": "Accès refusé."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
 
-        try:
-            tx = (
-                CompteDepotTransaction.objects
-                .select_related(
-                    "compte",
-                    "compte__client",
-                    "compte__client__bijouterie",
-                    "user",
-                )
-                .get(pk=transaction_id)
-            )
-        except CompteDepotTransaction.DoesNotExist:
-            return Response(
-                {"detail": "Transaction introuvable."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+#         try:
+#             tx = (
+#                 CompteDepotTransaction.objects
+#                 .select_related(
+#                     "compte",
+#                     "compte__client",
+#                     "compte__client__bijouterie",
+#                     "user",
+#                 )
+#                 .get(pk=transaction_id)
+#             )
+#         except CompteDepotTransaction.DoesNotExist:
+#             return Response(
+#                 {"detail": "Transaction introuvable."},
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
 
-        client = tx.compte.client
+#         client = tx.compte.client
 
-        client_bijouterie = getattr(
-            client,
-            "bijouterie",
-            None,
-        )
+#         client_bijouterie = getattr(
+#             client,
+#             "bijouterie",
+#             None,
+#         )
 
-        if not client_bijouterie:
-            return Response(
-                {
-                    "detail":
-                    "Cette transaction n'est liée à aucune bijouterie."
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+#         if not client_bijouterie:
+#             return Response(
+#                 {
+#                     "detail":
+#                     "Cette transaction n'est liée à aucune bijouterie."
+#                 },
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
 
-        if not user_can_access_bijouterie(
-            request.user,
-            client_bijouterie,
-        ):
-            return Response(
-                {
-                    "detail":
-                    "Vous n'avez pas accès à cette transaction."
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+#         if not user_can_access_bijouterie(
+#             request.user,
+#             client_bijouterie,
+#         ):
+#             return Response(
+#                 {
+#                     "detail":
+#                     "Vous n'avez pas accès à cette transaction."
+#                 },
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
 
-        return generate_transaction_ticket_80mm_pdf(
-            tx,
-            organisation_name="BIJOUTERIE RIO GOLD",
-        )
+#         return generate_transaction_ticket_80mm_pdf(
+#             tx,
+#             organisation_name="BIJOUTERIE RIO GOLD",
+#         )
