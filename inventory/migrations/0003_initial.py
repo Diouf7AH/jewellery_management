@@ -83,7 +83,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AddIndex(
             model_name='inventorymovement',
-            index=models.Index(fields=['produit', 'occurred_at'], name='inv_mov_product_date_idx'),
+            index=models.Index(fields=['produit', 'occurred_at'], name='inv_mov_produit_date_idx'),
         ),
         migrations.AddIndex(
             model_name='inventorymovement',
@@ -147,6 +147,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='inventorymovement',
-            constraint=models.UniqueConstraint(condition=models.Q(('movement_type', 'SALE_OUT')), fields=('vente_ligne', 'produit_line'), name='uniq_sale_out_per_sale_line_product_line'),
+            constraint=models.UniqueConstraint(condition=models.Q(('movement_type', 'SALE_OUT')), fields=('vente_ligne', 'produit_line'), name='uniq_sale_out_per_sale_line_produit_line'),
         ),
     ]

@@ -96,7 +96,7 @@ class VenteProduitCreateView(APIView):
             .first()
         )
 
-    def _ensure_product_in_vendor_stock(self, *, user, role, produit):
+    def _ensure_produit_in_vendor_stock(self, *, user, role, produit):
         if role != ROLE_VENDOR:
             return
 
@@ -167,7 +167,7 @@ class VenteProduitCreateView(APIView):
                 "produit": "Produit introuvable ou code invalide."
             })
 
-        self._ensure_product_in_vendor_stock(
+        self._ensure_produit_in_vendor_stock(
             user=user,
             role=role,
             produit=produit,
@@ -2130,7 +2130,7 @@ def _update_client_if_provided(data, vente):
     vente.save(update_fields=["client"])
     return None
 
-def _resolve_product_for_sale_item(item):
+def _resolve_produit_for_sale_item(item):
     produit_id = item.get("produit_id")
     slug = item.get("slug")
     sku = item.get("sku")
@@ -2283,11 +2283,11 @@ Important :
 
         for item in produits_data:
             quantite = item["quantite"]
-            produit = _resolve_product_for_sale_item(item)
+            produit = _resolve_produit_for_sale_item(item)
 
             if not produit:
                 return error_response(
-                    "PRODUCT_NOT_FOUND",
+                    "Produit_NOT_FOUND",
                     "Produit introuvable. Vérifiez produit_id, slug, sku ou qr.",
                     status.HTTP_404_NOT_FOUND,
                 )
@@ -2642,7 +2642,7 @@ Conditions :
 
             if not move.produit_line_id:
                 return error_response(
-                    "PRODUCT_LINE_NOT_FOUND",
+                    "Produit_LINE_NOT_FOUND",
                     (
                         "Le mouvement SALE_OUT ne contient pas "
                         "de ProduitLine."

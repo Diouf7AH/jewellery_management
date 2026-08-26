@@ -3,7 +3,7 @@ from django.urls import include, path
 
 from api import views as api_views
 from compte_depot import views as compte_depot_views
-# from e_commerce import views as e_commerce_views
+from e_commerce import views as e_commerce_views
 from finance import views as finance_views
 from inventory import views as inv_views
 from order import views as order_views
@@ -98,18 +98,18 @@ urlpatterns = [
     # path('marques-par-categorie/', store_views.MarqueParCategorieAPIView.as_view(), name='marques-par-categorie'),
     # path('modeles-par-marque/', store_views.ModeleParMarqueAPIView.as_view(), name='modeles-par-marque'),
     
-    # Product
-    path('produit/list', store_views.ProduitListAPIView.as_view(), name='product_list'),
-    path('produit/create', store_views.ProduitCreateAPIView.as_view(), name='product_create'),
-    path('produit/update/<int:pk>', store_views.ProduitUpdateAPIView.as_view(), name='product_update'),
-    path('produit/delete/<int:pk>', store_views.ProduitDeleteAPIView.as_view(), name='product_delete'),
+    # Produit
+    path('produit/list', store_views.ProduitListAPIView.as_view(), name='produit_list'),
+    path('produit/create', store_views.ProduitCreateAPIView.as_view(), name='produit_create'),
+    path('produit/update/<int:pk>', store_views.ProduitUpdateAPIView.as_view(), name='produit_update'),
+    path('produit/delete/<int:pk>', store_views.ProduitDeleteAPIView.as_view(), name='produit_delete'),
     # path('gallery/by-produit/', store_views.GetGalleryByProduitAPIView.as_view(), name='get-gallery-by-produit'),
     # path('produit/recent-list', store_views.ProduitRecentListAPIView.as_view(), name='produit-recent-list'),
     
-    path('produit/<int:pk>/qr', store_views.QRCodeView.as_view(), name='product-qr-code'),
+    path('produit/<int:pk>/qr', store_views.QRCodeView.as_view(), name='produit-qr-code'),
     # path('produit/export/qr-codes/', store_views.ExportQRCodeExcelAPIView.as_view(), name='export-qr-codes'),
     # path('produit/export/qr-code/<slug:slug>', store_views.ExportOneQRCodeExcelAPIView.as_view(), name='export-one-qr-code'),
-    # path('api/products/<int:pk>/qrcode/', ProductQRCodeView.as_view(), name='product-qrcode'),
+    # path('api/produits/<int:pk>/qrcode/', ProduitQRCodeView.as_view(), name='produit-qrcode'),
     path("produit/<slug:slug>", store_views.ProduitDetailSlugView.as_view(), name="produit-detail-slug"),    
     path("prix/evolution", store_views.MarquePuretePriceEvolutionView.as_view(), name="prix-evolution"),
     path("prix/history", store_views.MarquePuretePrixHistoryListView.as_view(), name="prix-history"),
@@ -307,17 +307,11 @@ urlpatterns = [
     path("depenses/dashboard/", finance_views.DepenseDashboardView.as_view()),
     path("depenses/export-excel/", finance_views.ExportDepensesExcelView.as_view()),
     
-    
-    # path("products/", e_commerce_views.EcommerceProductListView.as_view(),name="ecommerce-products",),
-    # path("products/<uuid:uuid>/", e_commerce_views.EcommerceProductDetailView.as_view(),name="ecommerce-product-detail",),
-    # # path("orders/create/", e_commerce_views.CommandeEcommerceCreateView.as_view(),name="ecommerce-order-create",),
-    # path("payments/webhook/",e_commerce_views.PaymentWebhookView.as_view(),name="ecommerce-payment-webhook",),
-    # path("payments/initiate/",e_commerce_views.PaymentInitiateView.as_view(),name="ecommerce-payment-initiate",),
-    # path("orders/<uuid:uuid>/invoice/",e_commerce_views.EcommerceInvoiceView.as_view(),name="ecommerce-invoice",),
-    # path("dashboard/",e_commerce_views.EcommerceDashboardView.as_view(),name="ecommerce-dashboard",),
-    # path("orders/",e_commerce_views.EcommerceOrderListView.as_view(),name="ecommerce-order-list",),
-    # path("orders/<uuid:uuid>/livraison/",e_commerce_views.EcommerceLivraisonDetailView.as_view(),name="ecommerce-livraison-detail",),
-    # path("orders/<uuid:uuid>/livraison/update/",e_commerce_views.LivraisonEcommerceUpdateView.as_view(),name="ecommerce-livraison-update",),
-    # path("banners/<uuid:uuid>/",e_commerce_views.EcommerceBannerDetailView.as_view(),name="ecommerce-banner-detail",),
-    # path("home/",e_commerce_views.EcommerceHomePageView.as_view(),name="ecommerce-home",),
+    # e-cmmerce
+    path("ecommerce/commandes/",e_commerce_views.CommandeEcommerceCreateView.as_view(),name="ecommerce-commande-create",),
+    path("ecommerce/commandes/<uuid:uuid>/",e_commerce_views.CommandeEcommerceDetailView.as_view(),name="ecommerce-commande-detail",),
+    path("ecommerce/paiements/initier/",e_commerce_views.EcommercePaymentInitiateView.as_view(),name="ecommerce-payment-initiate",),
+    path("ecommerce/paiements/confirmation_paiement/",e_commerce_views.ConfirmationPaiementEcommerceView.as_view(),name="ecommerce-payment-confirmation_paiement",),
+    path("ecommerce/commandes/<uuid:uuid>/facture/",e_commerce_views.EcommerceInvoiceView.as_view(),name="ecommerce-invoice",),
+    path("ecommerce/produits/<slug:slug>/",e_commerce_views.EcommerceProduitDetailView.as_view(),name="ecommerce-produit-detail",),
 ]

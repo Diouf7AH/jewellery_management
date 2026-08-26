@@ -183,7 +183,7 @@ class CommandeAssignerOuvrierView(APIView):
         operation_summary="Assigner un ouvrier",
         operation_description="""
 Assigne un ouvrier à la commande.
-L'assignation passe automatiquement la commande en EN_PRODUCTION.
+L'assignation passe automatiquement la commande en EN_ProduitION.
 """,
         request_body=AssignerOuvrierSerializer,
         responses={200: CommandeClientDetailSerializer},
@@ -482,7 +482,7 @@ class CommandeBonCommandePDFView(APIView):
 #         statuts = qs.aggregate(
 #             brouillon=Count("id", filter=Q(statut=CommandeClient.STATUT_BROUILLON)),
 #             en_attente=Count("id", filter=Q(statut=CommandeClient.STATUT_EN_ATTENTE)),
-#             en_production=Count("id", filter=Q(statut=CommandeClient.STATUT_EN_PRODUCTION)),
+#             en_produition=Count("id", filter=Q(statut=CommandeClient.STATUT_EN_ProduitION)),
 #             terminees=Count("id", filter=Q(statut=CommandeClient.STATUT_TERMINEE)),
 #             livrees=Count("id", filter=Q(statut=CommandeClient.STATUT_LIVREE)),
 #             annulees=Count("id", filter=Q(statut=CommandeClient.STATUT_ANNULEE)),
@@ -500,11 +500,11 @@ class CommandeBonCommandePDFView(APIView):
 #                     filter=Q(commandes_clients__id__in=commande_ids),
 #                     distinct=True,
 #                 ),
-#                 nb_en_production=Count(
+#                 nb_en_produition=Count(
 #                     "commandes_clients",
 #                     filter=Q(
 #                         commandes_clients__id__in=commande_ids,
-#                         commandes_clients__statut=CommandeClient.STATUT_EN_PRODUCTION,
+#                         commandes_clients__statut=CommandeClient.STATUT_EN_ProduitION,
 #                     ),
 #                     distinct=True,
 #                 ),
@@ -525,7 +525,7 @@ class CommandeBonCommandePDFView(APIView):
 #                     distinct=True,
 #                 ),
 #             )
-#             .order_by("-nb_en_production", "-nb_commandes_total", "nom", "prenom")
+#             .order_by("-nb_en_produition", "-nb_commandes_total", "nom", "prenom")
 #         )
 
 #         recentes_qs = qs.order_by("-date_commande", "-id")[:10]
@@ -549,7 +549,7 @@ class CommandeBonCommandePDFView(APIView):
 #             "statuts": {
 #                 "brouillon": statuts["brouillon"],
 #                 "en_attente": statuts["en_attente"],
-#                 "en_production": statuts["en_production"],
+#                 "en_produition": statuts["en_produition"],
 #                 "terminees": statuts["terminees"],
 #                 "livrees": statuts["livrees"],
 #                 "annulees": statuts["annulees"],
@@ -708,9 +708,9 @@ Dashboard résumé des commandes :
                 "id",
                 filter=Q(statut=CommandeClient.STATUT_EN_ATTENTE),
             ),
-            en_production=Count(
+            en_produition=Count(
                 "id",
-                filter=Q(statut=CommandeClient.STATUT_EN_PRODUCTION),
+                filter=Q(statut=CommandeClient.STATUT_EN_ProduitION),
             ),
             terminees=Count(
                 "id",
@@ -731,10 +731,10 @@ Dashboard résumé des commandes :
             .filter(commandes_clients__in=qs)
             .annotate(
                 nb_commandes_total=Count("commandes_clients", distinct=True),
-                nb_en_production=Count(
+                nb_en_produition=Count(
                     "commandes_clients",
                     filter=Q(
-                        commandes_clients__statut=CommandeClient.STATUT_EN_PRODUCTION
+                        commandes_clients__statut=CommandeClient.STATUT_EN_ProduitION
                     ),
                     distinct=True,
                 ),
@@ -753,7 +753,7 @@ Dashboard résumé des commandes :
                     distinct=True,
                 ),
             )
-            .order_by("-nb_en_production", "-nb_commandes_total", "nom", "prenom")
+            .order_by("-nb_en_produition", "-nb_commandes_total", "nom", "prenom")
         )
 
         recentes_qs = qs.order_by("-date_commande", "-id")[:10]
@@ -778,7 +778,7 @@ Dashboard résumé des commandes :
             "statuts": {
                 "brouillon": statuts["brouillon"],
                 "en_attente": statuts["en_attente"],
-                "en_production": statuts["en_production"],
+                "en_produition": statuts["en_produition"],
                 "terminees": statuts["terminees"],
                 "livrees": statuts["livrees"],
                 "annulees": statuts["annulees"],

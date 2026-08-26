@@ -434,7 +434,7 @@ def _aware_range(date_from, date_to, tz):
 #             for row in sales_by_year_qs
 #         ]
 
-#         top_products_qs = (
+#         top_produits_qs = (
 #             lignes_qs
 #             .values(
 #                 "produit_id",
@@ -456,9 +456,9 @@ def _aware_range(date_from, date_to, tz):
 #             .order_by("-total_ttc", "-quantite")[:10]
 #         )
 
-#         top_products = []
+#         top_produits = []
 
-#         for row in top_products_qs:
+#         for row in top_produits_qs:
 #             produit_nom = " ".join(
 #                 filter(
 #                     None,
@@ -470,7 +470,7 @@ def _aware_range(date_from, date_to, tz):
 #                 )
 #             )
 
-#             top_products.append(
+#             top_produits.append(
 #                 {
 #                     "produit_id": row["produit_id"],
 #                     "produit": produit_nom or row.get("produit__sku") or "Produit",
@@ -534,7 +534,7 @@ def _aware_range(date_from, date_to, tz):
 #             .aggregate(total=Coalesce(Sum("disponible"), 0))["total"] or 0
 #         )
 
-#         stock_by_product_qs = (
+#         stock_by_produit_qs = (
 #             stock_qs
 #             .values(
 #                 "produit_line__produit_id",
@@ -551,9 +551,9 @@ def _aware_range(date_from, date_to, tz):
 #             .order_by("-total_en_stock")[:10]
 #         )
 
-#         stock_by_product = []
+#         stock_by_produit = []
 
-#         for row in stock_by_product_qs:
+#         for row in stock_by_produit_qs:
 #             produit_nom = " ".join(
 #                 filter(
 #                     None,
@@ -565,7 +565,7 @@ def _aware_range(date_from, date_to, tz):
 #                 )
 #             )
 
-#             stock_by_product.append(
+#             stock_by_produit.append(
 #                 {
 #                     "produit_id": row["produit_line__produit_id"],
 #                     "produit": produit_nom or row.get("produit_line__produit__sku") or "Produit",
@@ -605,7 +605,7 @@ def _aware_range(date_from, date_to, tz):
 #                     "ventes_count": ventes_3years_qs.count(),
 #                     "sales_by_year": sales_by_year,
 #                 },
-#                 "top_products": top_products,
+#                 "top_produits": top_produits,
 #                 "stock_summary": {
 #                     "lignes_stock": int(stock_summary["lignes_stock"] or 0),
 #                     "total_en_stock": int(stock_summary["total_en_stock"] or 0),
@@ -615,7 +615,7 @@ def _aware_range(date_from, date_to, tz):
 #                     "reserve_total": int(reserve_total or 0),
 #                     "vendor_available_total": float(vendor_available_total or 0),
 #                 },
-#                 "stock_by_product": stock_by_product,
+#                 "stock_by_produit": stock_by_produit,
 #             },
 #             status=status.HTTP_200_OK,
 #         )

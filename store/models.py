@@ -124,7 +124,7 @@ class Bijouterie(models.Model):
         
     
 
-# Model for Product Categories
+# Model for Produit Categories
 class Categorie(models.Model):
     nom = models.CharField(max_length=30, unique=True, blank=True, default="")
     image = models.ImageField(upload_to='categorie/', default="category.jpg", null=True, blank=True)
@@ -448,7 +448,7 @@ class Produit(models.Model):
     # qr_code_url.short_description = "QR Code"
 
 
-# Model for Product Gallery
+# Model for Produit Gallery
 class Gallery(models.Model):
     # produit = models.ForeignKey(
     #     Produit,

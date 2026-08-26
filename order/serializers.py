@@ -189,7 +189,7 @@ class CommandeClientDetailSerializer(serializers.ModelSerializer):
     total_paye_global = serializers.SerializerMethodField()
     reste_global = serializers.SerializerMethodField()
     acompte_regle = serializers.SerializerMethodField()
-    peut_passer_en_production = serializers.SerializerMethodField()
+    peut_passer_en_produition = serializers.SerializerMethodField()
     peut_etre_livree = serializers.SerializerMethodField()
 
     class Meta:
@@ -220,7 +220,7 @@ class CommandeClientDetailSerializer(serializers.ModelSerializer):
             "total_paye_global",
             "reste_global",
             "acompte_regle",
-            "peut_passer_en_production",
+            "peut_passer_en_produition",
             "peut_etre_livree",
             "notes_client",
             "notes_internes",
@@ -247,8 +247,8 @@ class CommandeClientDetailSerializer(serializers.ModelSerializer):
     def get_acompte_regle(self, obj):
         return obj.acompte_regle
 
-    def get_peut_passer_en_production(self, obj):
-        return obj.peut_passer_en_production
+    def get_peut_passer_en_produition(self, obj):
+        return obj.peut_passer_en_produition
 
     def get_peut_etre_livree(self, obj):
         return obj.peut_etre_livree
@@ -534,7 +534,7 @@ class CommandeDashboardRecentSerializer(serializers.ModelSerializer):
 class OuvrierDashboardSerializer(serializers.ModelSerializer):
     ouvrier_nom = serializers.SerializerMethodField()
     nb_commandes_total = serializers.IntegerField(read_only=True)
-    nb_en_production = serializers.IntegerField(read_only=True)
+    nb_en_produition = serializers.IntegerField(read_only=True)
     nb_terminees = serializers.IntegerField(read_only=True)
     nb_livrees = serializers.IntegerField(read_only=True)
 
@@ -546,7 +546,7 @@ class OuvrierDashboardSerializer(serializers.ModelSerializer):
             "telephone",
             "specialite",
             "nb_commandes_total",
-            "nb_en_production",
+            "nb_en_produition",
             "nb_terminees",
             "nb_livrees",
         ]

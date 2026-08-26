@@ -54,11 +54,11 @@ class Migration(migrations.Migration):
             name='EcommerceBanner',
         ),
         migrations.RemoveField(
-            model_name='ecommercehomeproduct',
+            model_name='ecommercehomeproduit',
             name='bijouterie',
         ),
         migrations.RemoveField(
-            model_name='ecommercehomeproduct',
+            model_name='ecommercehomeproduit',
             name='produit',
         ),
         migrations.DeleteModel(
@@ -74,6 +74,6 @@ class Migration(migrations.Migration):
             name='CommandeEcommerceLigne',
         ),
         migrations.DeleteModel(
-            name='EcommerceHomeProduct',
+            name='EcommerceHomeProduit',
         ),
     ]

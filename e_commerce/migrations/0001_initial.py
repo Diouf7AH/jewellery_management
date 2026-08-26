@@ -2,6 +2,7 @@
 
 import uuid
 from decimal import Decimal
+
 from django.db import migrations, models
 
 
@@ -36,7 +37,7 @@ class Migration(migrations.Migration):
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('quantite', models.PositiveIntegerField(default=1)),
-                ('prix_unitaire', models.DecimalField(decimal_places=2, max_digits=14)),
+                ('prix_gramme', models.DecimalField(decimal_places=2, max_digits=14)),
                 ('montant_total', models.DecimalField(decimal_places=2, max_digits=14)),
             ],
         ),
@@ -63,7 +64,7 @@ class Migration(migrations.Migration):
             },
         ),
         migrations.CreateModel(
-            name='EcommerceHomeProduct',
+            name='EcommerceHomeProduit',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('section', models.CharField(choices=[('featured', 'Produits sélectionnés'), ('new_arrival', 'Nouveaux arrivages'), ('slider', 'Carrousel'), ('best_seller', 'Meilleures ventes')], db_index=True, default='featured', max_length=30)),
@@ -71,7 +72,7 @@ class Migration(migrations.Migration):
                 ('ordre_affichage', models.PositiveIntegerField(default=0)),
                 ('titre_personnalise', models.CharField(blank=True, max_length=150, null=True)),
                 ('badge', models.CharField(blank=True, max_length=50, null=True)),
-                ('image_personnalisee', models.ImageField(blank=True, null=True, upload_to='ecommerce/home/products/')),
+                ('image_personnalisee', models.ImageField(blank=True, null=True, upload_to='ecommerce/home/produits/')),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
             ],

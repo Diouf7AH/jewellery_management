@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models
 from django.db.models import Sum
 from django.utils import timezone
@@ -26,7 +26,7 @@ def dec(v) -> Decimal:
 class CommandeClient(models.Model):
     STATUT_BROUILLON = "BROUILLON"
     STATUT_EN_ATTENTE = "EN_ATTENTE"
-    STATUT_EN_PRODUCTION = "EN_PRODUCTION"
+    STATUT_EN_ProduitION = "EN_ProduitION"
     STATUT_TERMINEE = "TERMINEE"
     STATUT_LIVREE = "LIVREE"
     STATUT_ANNULEE = "ANNULEE"
@@ -34,7 +34,7 @@ class CommandeClient(models.Model):
     STATUT_CHOICES = [
         (STATUT_BROUILLON, "Brouillon"),
         (STATUT_EN_ATTENTE, "En attente"),
-        (STATUT_EN_PRODUCTION, "En production"),
+        (STATUT_EN_ProduitION, "En produition"),
         (STATUT_TERMINEE, "Terminée"),
         (STATUT_LIVREE, "Livrée"),
         (STATUT_ANNULEE, "Annulée"),
@@ -121,18 +121,25 @@ class CommandeClient(models.Model):
         return self.numero_commande
 
     def clean(self):
-        if self.vendor and self.vendor.bijouterie_id and self.bijouterie_id:
-            if self.vendor_id and self.bijouterie_id:
-                try:
-                    vendor_bijouterie_id = getattr(
-                        self.vendor,
-                        "bijouterie_id",
-                        None,
-                    )
-                except ObjectDoesNotExist:
-                    vendor_bijouterie_id = None
-                    errors["vendor"] = "Le vendeur sélectionné est introuvable."
+        errors = {}
 
+        # ========================================================
+        # Vendor / Bijouterie
+        # ========================================================
+        if self.vendor_id and self.bijouterie_id:
+            try:
+                vendor_bijouterie_id = getattr(
+                    self.vendor,
+                    "bijouterie_id",
+                    None,
+                )
+            except ObjectDoesNotExist:
+                vendor_bijouterie_id = None
+                errors["vendor"] = (
+                    "Le vendeur sélectionné est introuvable."
+                )
+
+            if "vendor" not in errors:
                 if not vendor_bijouterie_id:
                     errors["vendor"] = (
                         "Le vendeur n'est rattaché à aucune bijouterie."
@@ -141,40 +148,75 @@ class CommandeClient(models.Model):
                     errors["bijouterie"] = (
                         "Le vendeur n'appartient pas à cette bijouterie."
                     )
-            
-            
-            
 
+        # ========================================================
+        # Poids
+        # ========================================================
         if self.poids_envoye_ouvrier < ZERO:
-            raise ValidationError({
-                "poids_envoye_ouvrier":
+            errors["poids_envoye_ouvrier"] = (
                 "Le poids envoyé à l'ouvrier ne peut pas être négatif."
-            })
+            )
 
         if self.poids_retour_ouvrier < ZERO:
-            raise ValidationError({
-                "poids_retour_ouvrier":
+            errors["poids_retour_ouvrier"] = (
                 "Le poids retourné ne peut pas être négatif."
-            })
+            )
 
         if self.poids_retour_ouvrier > self.poids_envoye_ouvrier:
-            raise ValidationError({
-                "poids_retour_ouvrier":
+            errors["poids_retour_ouvrier"] = (
                 "Le poids retourné ne peut pas dépasser le poids envoyé."
-            })
-    
-        if self.date_debut and self.date_fin_prevue and self.date_fin_prevue < self.date_debut:
-            raise ValidationError("La date de fin prévue ne peut pas être antérieure à la date de début.")
+            )
 
-        if self.statut == self.STATUT_EN_PRODUCTION and not self.ouvrier:
-            raise ValidationError("Un ouvrier est obligatoire quand la commande est en production.")
+        # ========================================================
+        # Dates
+        # ========================================================
+        if (
+            self.date_debut
+            and self.date_fin_prevue
+            and self.date_fin_prevue < self.date_debut
+        ):
+            errors["date_fin_prevue"] = (
+                "La date de fin prévue ne peut pas être "
+                "antérieure à la date de début."
+            )
 
-        if self.statut == self.STATUT_TERMINEE and not self.date_depot_boutique:
-            raise ValidationError("La date de dépôt boutique est obligatoire quand la commande est terminée.")
+        # ========================================================
+        # Statuts
+        # ========================================================
+        if (
+            self.statut == self.STATUT_EN_ProduitION
+            and not self.ouvrier_id
+        ):
+            errors["ouvrier"] = (
+                "Un ouvrier est obligatoire quand la commande "
+                "est en production."
+            )
 
-        if self.statut == self.STATUT_LIVREE and not self.date_livraison:
-            raise ValidationError("La date de livraison est obligatoire quand la commande est livrée.")
+        if (
+            self.statut == self.STATUT_TERMINEE
+            and not self.date_depot_boutique
+        ):
+            errors["date_depot_boutique"] = (
+                "La date de dépôt boutique est obligatoire "
+                "quand la commande est terminée."
+            )
 
+        if (
+            self.statut == self.STATUT_LIVREE
+            and not self.date_livraison
+        ):
+            errors["date_livraison"] = (
+                "La date de livraison est obligatoire "
+                "quand la commande est livrée."
+            )
+
+        # ========================================================
+        # Validation finale
+        # ========================================================
+        if errors:
+            raise ValidationError(errors)
+        
+        
     def save(self, *args, **kwargs):
         if not self.numero_commande:
             self.numero_commande = self.generate_numero_commande()
@@ -257,7 +299,7 @@ class CommandeClient(models.Model):
         return self.total_acompte_paye >= self.acompte_minimum_requis
 
     @property
-    def peut_passer_en_production(self) -> bool:
+    def peut_passer_en_produition(self) -> bool:
         return self.acompte_regle and self.statut in [self.STATUT_BROUILLON, self.STATUT_EN_ATTENTE]
 
     @property

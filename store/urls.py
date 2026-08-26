@@ -31,9 +31,9 @@
 #     path('modeles', store_views.ModeleListCreateAPIView.as_view(), name='modele-list-create'),
 #     path('modele/<int:pk>', store_views.ModeleDetailAPIView.as_view(), name='modele-detail'),
 
-#     # Product
-#     path('produits', store_views.ProduitListCreateAPIView.as_view(), name='product-list-create'),
-#     path('produit/<int:pk>', store_views.ProduitDetailAPIView.as_view(), name='product-detail'),
-#     path('produit/<slug:slug>/qr', store_views.QRCodeView.as_view(), name='product-qr-code'),
+#     # Produit
+#     path('produits', store_views.ProduitListCreateAPIView.as_view(), name='produit-list-create'),
+#     path('produit/<int:pk>', store_views.ProduitDetailAPIView.as_view(), name='produit-detail'),
+#     path('produit/<slug:slug>/qr', store_views.QRCodeView.as_view(), name='produit-qr-code'),
 
 # ]

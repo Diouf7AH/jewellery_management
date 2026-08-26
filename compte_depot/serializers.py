@@ -1,15 +1,13 @@
 # compte_depot/serializers.py
 
 from rest_framework import serializers
+
 from userauths.serializers import UserMiniSerializer
 
 from .models import ClientDepot, CompteDepot, CompteDepotTransaction
 
-
-# =========================
-# CLIENT DEPOT
-# =========================
 class ClientDepotSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = ClientDepot
         fields = [
@@ -17,28 +15,54 @@ class ClientDepotSerializer(serializers.ModelSerializer):
             "nom",
             "prenom",
             "telephone",
-            # "CNI",
             "photo",
         ]
 
     def validate_telephone(self, value):
         if not value:
-            raise serializers.ValidationError("Le téléphone est obligatoire.")
+            raise serializers.ValidationError(
+                "Le téléphone est obligatoire."
+            )
+
         value = str(value).strip()
+
         if not value.isdigit():
-            raise serializers.ValidationError("Le téléphone doit contenir uniquement des chiffres.")
+            raise serializers.ValidationError(
+                "Le téléphone doit contenir uniquement des chiffres."
+            )
+
         if len(value) < 9:
-            raise serializers.ValidationError("Le téléphone doit contenir au moins 9 chiffres.")
+            raise serializers.ValidationError(
+                "Le téléphone doit contenir au moins 9 chiffres."
+            )
+
         return value
-
-
+    
+    
 # =========================
 # COMPTE DEPOT (LECTURE)
 # =========================
 class CompteDepotSerializer(serializers.ModelSerializer):
     client = ClientDepotSerializer(read_only=True)
-    telephone = serializers.CharField(source="client.telephone", read_only=True)
-    created_by = UserMiniSerializer(read_only=True)
+
+    telephone = serializers.CharField(
+        source="client.telephone",
+        read_only=True,
+    )
+
+    created_by = UserMiniSerializer(
+        read_only=True,
+    )
+
+    bijouterie_id = serializers.IntegerField(
+        source="client.bijouterie_id",
+        read_only=True,
+    )
+
+    bijouterie_nom = serializers.CharField(
+        source="client.bijouterie.nom",
+        read_only=True,
+    )
 
     class Meta:
         model = CompteDepot
@@ -48,13 +72,14 @@ class CompteDepotSerializer(serializers.ModelSerializer):
             "telephone",
             "numero_compte",
             "solde",
+            "bijouterie_id",
+            "bijouterie_nom",
             "created_at",
-            "updated_at",
             "created_by",
         ]
+
         read_only_fields = fields
-
-
+        
 # =========================
 # CREATE OR DEPOSIT INPUT
 # =========================
@@ -63,7 +88,12 @@ class CreateOrDepotCompteSerializer(serializers.Serializer):
 
     montant = serializers.DecimalField(
         max_digits=12,
-        decimal_places=2
+        decimal_places=2,
+    )
+
+    bijouterie_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
     )
 
     def validate_montant(self, value):
@@ -73,71 +103,128 @@ class CreateOrDepotCompteSerializer(serializers.Serializer):
             )
 
         return value
-
-
+    
+    
 # =========================
 # TRANSACTION OUTPUT
 # =========================
 class CompteDepotTransactionSerializer(serializers.ModelSerializer):
-    compte_numero = serializers.CharField(source="compte.numero_compte", read_only=True)
-    client_nom = serializers.CharField(source="compte.client.nom", read_only=True)
-    client_prenom = serializers.CharField(source="compte.client.prenom", read_only=True)
-    client_telephone = serializers.CharField(source="compte.client.telephone", read_only=True)
-    type_transaction_label = serializers.CharField(source="get_type_transaction_display", read_only=True)
-    statut_label = serializers.CharField(source="get_statut_display", read_only=True)
-    user = UserMiniSerializer(read_only=True)
+    compte_numero = serializers.CharField(
+        source="compte.numero_compte",
+        read_only=True,
+    )
+
+    client_nom = serializers.CharField(
+        source="compte.client.nom",
+        read_only=True,
+    )
+
+    client_prenom = serializers.CharField(
+        source="compte.client.prenom",
+        read_only=True,
+    )
+
+    client_telephone = serializers.CharField(
+        source="compte.client.telephone",
+        read_only=True,
+    )
+
+    bijouterie_id = serializers.IntegerField(
+        source="compte.client.bijouterie_id",
+        read_only=True,
+    )
+
+    bijouterie_nom = serializers.CharField(
+        source="compte.client.bijouterie.nom",
+        read_only=True,
+    )
+
+    type_transaction_label = serializers.CharField(
+        source="get_type_transaction_display",
+        read_only=True,
+    )
+
+    statut_label = serializers.CharField(
+        source="get_statut_display",
+        read_only=True,
+    )
+
+    user = UserMiniSerializer(
+        read_only=True,
+    )
 
     class Meta:
         model = CompteDepotTransaction
+
         fields = [
             "id",
+
             "type_transaction",
             "type_transaction_label",
+
             "montant",
             "date_transaction",
+
             "statut",
             "statut_label",
+
             "compte",
             "compte_numero",
+
             "client_nom",
             "client_prenom",
             "client_telephone",
+
+            "bijouterie_id",
+            "bijouterie_nom",
+
             "solde_avant",
             "solde_apres",
+
             "reference",
             "commentaire",
+
             "user",
         ]
-        read_only_fields = fields
-        
 
+        read_only_fields = fields
 
 # =========================
 # DEPOT / RETRAIT VIA TELEPHONE
 # =========================
 class CompteDepotTelephoneTransactionSerializer(serializers.Serializer):
     telephone = serializers.CharField()
-    montant = serializers.DecimalField(max_digits=12, decimal_places=2)
-    # reference = serializers.CharField(required=False, allow_blank=True)
-    # commentaire = serializers.CharField(required=False, allow_blank=True)
+
+    montant = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+    )
 
     def validate_telephone(self, value):
         value = str(value).strip()
 
         if not value:
-            raise serializers.ValidationError("Le téléphone est obligatoire.")
+            raise serializers.ValidationError(
+                "Le téléphone est obligatoire."
+            )
 
         if not value.isdigit():
-            raise serializers.ValidationError("Le téléphone doit contenir uniquement des chiffres.")
+            raise serializers.ValidationError(
+                "Le téléphone doit contenir uniquement des chiffres."
+            )
 
         if len(value) < 9:
-            raise serializers.ValidationError("Le téléphone doit contenir au moins 9 chiffres.")
+            raise serializers.ValidationError(
+                "Le téléphone doit contenir au moins 9 chiffres."
+            )
 
         return value
 
     def validate_montant(self, value):
         if value is None or value <= 0:
-            raise serializers.ValidationError("Le montant doit être supérieur à 0.")
+            raise serializers.ValidationError(
+                "Le montant doit être supérieur à 0."
+            )
 
         return value
     

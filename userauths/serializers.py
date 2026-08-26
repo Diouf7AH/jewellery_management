@@ -275,22 +275,35 @@ class UserChangePasswordSerializer(serializers.ModelSerializer):
         return instance
     
 
-class UserMiniSerializer(serializers.ModelSerializer):
-    full_name = serializers.SerializerMethodField()
+# class UserMiniSerializer(serializers.ModelSerializer):
+#     full_name = serializers.SerializerMethodField()
 
+#     class Meta:
+#         model = User
+#         fields = [
+#             "id",
+#             "full_name",
+#         ]
+#         read_only_fields = fields
+
+#     def get_full_name(self, obj):
+#         return (
+#             f"{obj.first_name or ''} "
+#             f"{obj.last_name or ''}"
+#         ).strip()
+
+class UserMiniSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
             "id",
-            "full_name",
+            "username",
+            "first_name",
+            "last_name",
         ]
-        read_only_fields = fields
 
-    def get_full_name(self, obj):
-        return (
-            f"{obj.first_name or ''} "
-            f"{obj.last_name or ''}"
-        ).strip()
+        read_only_fields = fields
+        
 
 class UserDetailSerializer(serializers.ModelSerializer):
     role = serializers.SerializerMethodField(

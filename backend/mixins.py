@@ -164,7 +164,7 @@ def resolve_tz(
 GROUP_BY_CHOICES = {
     "lines",
     "day",
-    "product",
+    "produit",
     "vendor",
     "bijouterie",
 }

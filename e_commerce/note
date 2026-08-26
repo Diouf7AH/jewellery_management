@@ -11,10 +11,10 @@ e_commerce/
 │   ├── create_order.py
 │   ├── payment.py
 │   ├── stock.py
-│   └── webhook.py
+│   └── confirmation_paiement.py
 │
 ├── selectors/
-│   └── products.py
+│   └── produits.py
 │
 ├── tasks.py
 │
@@ -34,7 +34,7 @@ Phase 3
 ✅ Orange Money
 ✅ Carte bancaire
 Phase 4
-✅ Webhook paiement
+✅ confirmation_paiement paiement
 ✅ Création automatique Vente
 ✅ Création automatique Facture
 ✅ Consommation Stock bijouterie
@@ -42,11 +42,11 @@ Phase 4
 
 e_commerce/services/
 ├── stock.py      # consommation stock bijouterie + SALE_OUT
-└── webhook.py    # confirmation paiement + création Vente/Facture
+└── confirmation_paiement.py    # confirmation paiement + création Vente/Facture
 
 
 Ordre exact à respecter
-Webhook reçu
+confirmation_paiement reçu
 ↓
 Vérifier paiement
 ↓
@@ -87,7 +87,7 @@ Consommer Stock bijouterie
 Créer InventoryMovement SALE_OUT
 
 
-1. PaymentWebhookView
+1. Paymentconfirmation_paiementView
 2. PaymentInitiateView
 3. URLs paiements
 4. Tests complets
@@ -121,7 +121,7 @@ les étapes du e-commerce :
 ✅ Détail produit
 ✅ Commande
 ✅ Paiement
-✅ Webhook
+✅ confirmation_paiement
 ✅ Vente
 ✅ Facture
 ✅ Stock
@@ -182,3 +182,77 @@ Stock.en_stock diminué
 InventoryMovement SALE_OUT
         ↓
 CommandeEcommerce = paid
+
+
+
+
+
+CommandeEcommerce
+│
+├── montant_total       → HT produits
+├── appliquer_tva
+├── taux_tva
+├── montant_tva
+├── frais_transaction
+└── montant_a_payer     → HT + TVA + frais
+        │
+        ↓
+PaiementEcommerce
+├── montant             → montant_a_payer
+└── frais_transaction
+
+
+POST /commandes/
+→ Commande pending + Paiement pending
+
+POST /paiements/initier/
+→ lien Wave / Orange / Carte
+
+POST /paiements/webhook/
+→ paiement confirmé
+→ Vente
+→ Facture
+→ Paiement ERP
+→ Stock.en_stock diminué
+→ SALE_OUT
+→ Commande paid
+
+GET /commandes/{uuid}/
+→ état de la commande
+
+GET /commandes/{uuid}/facture/
+→ facture après paiement
+
+
+
+Visiteur non connecté
+        ↓
+Catalogue produits ✅
+        ↓
+Détail produit ✅
+        ↓
+Ajout au panier Angular/localStorage ✅
+        ↓
+Aucune CommandeEcommerce
+Aucune réservation
+Aucune modification du stock
+        ↓
+CHECKOUT
+        ↓
+Connexion obligatoire 🔐
+        ↓
+Client identifié
+        ↓
+Création CommandeEcommerce pending
+        ↓
+1re vérification stock
+        ↓
+Paiement
+        ↓
+Confirmation provider
+        ↓
+2e vérification stock
+        ↓
+Vente + Facture + Paiement ERP
+        ↓
+Consommation du stock

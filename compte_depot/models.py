@@ -3,19 +3,31 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.conf import settings
 from django.db import models
 from django.db.models import CheckConstraint, F, Q
+
 from sale.models import Client
 
 
 class ClientDepot(Client):
-    # CNI = models.CharField(max_length=50, blank=True, null=True)
-    photo = models.ImageField(upload_to="client/", default="client/default.jpg", null=True, blank=True)
-    bijouterie = models.ForeignKey("store.Bijouterie",on_delete=models.SET_NULL,null=True,blank=True,related_name="clients_depot",)
-    
+    photo = models.ImageField(
+        upload_to="client/",
+        default="client/default.jpg",
+        null=True,
+        blank=True,
+    )
+
+    bijouterie = models.ForeignKey(
+        "store.Bijouterie",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="clients_depot",
+    )
+
     class Meta:
         verbose_name = "Client (compte dépôt)"
         verbose_name_plural = "Clients (compte dépôt)"
-
-
+        
+        
 class CompteDepot(models.Model):
     client = models.OneToOneField(
         ClientDepot,
@@ -34,7 +46,6 @@ class CompteDepot(models.Model):
     numero_compte = models.CharField(max_length=30, unique=True, db_index=True)
     solde = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at"]

@@ -67,12 +67,13 @@ def send_compte_depot_notification(tx):
 # Paiement facture
 def build_compte_depot_facture_message(tx):
     client = tx.compte.client
+    reference_facture = (tx.reference or "").replace("FACTURE-", "")
 
     return (
         f"Bonjour {client.prenom} {client.nom},\n\n"
         f"Nous vous informons qu'un montant de {tx.montant} FCFA "
         f"a été prélevé sur votre compte dépôt pour le règlement "
-        f"de votre facture N° {tx.reference.replace('FACTURE-', '')}.\n\n"
+        f"de votre facture N° {reference_facture or '-'}.\n\n"
         f"Solde disponible sur votre compte dépôt : "
         f"{tx.solde_apres} FCFA.\n\n"
         f"Date de l'opération : "
@@ -80,6 +81,7 @@ def build_compte_depot_facture_message(tx):
         f"Merci de votre confiance.\n\n"
         f"BIJOUTERIE RIO GOLD"
     )
+    
     
 
 def send_compte_depot_facture_notification(tx):

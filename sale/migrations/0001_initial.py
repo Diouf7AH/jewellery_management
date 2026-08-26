@@ -2,6 +2,7 @@
 
 import uuid
 from decimal import Decimal
+
 from django.db import migrations, models
 
 
@@ -82,7 +83,7 @@ class Migration(migrations.Migration):
                 ('provider_reference', models.CharField(blank=True, db_index=True, help_text='Référence retournée par Stripe, PayDunya, CinetPay, banque ou TPE', max_length=255, null=True)),
                 ('checkout_url', models.URLField(blank=True, help_text='Lien de paiement en ligne si applicable', null=True)),
                 ('payment_token', models.CharField(blank=True, help_text='Token de paiement externe', max_length=255, null=True)),
-                ('callback_received', models.BooleanField(default=False, help_text='Indique si le callback/webhook du fournisseur a été reçu')),
+                ('callback_received', models.BooleanField(default=False, help_text='Indique si le callback/confirmation_paiement du fournisseur a été reçu')),
             ],
             options={
                 'ordering': ['id'],

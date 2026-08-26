@@ -232,7 +232,7 @@ class InventoryMovement(models.Model):
             ),
             models.Index(
                 fields=["produit", "occurred_at"],
-                name="inv_mov_product_date_idx",
+                name="inv_mov_produit_date_idx",
             ),
             models.Index(
                 fields=["src_bijouterie"],
@@ -403,7 +403,7 @@ class InventoryMovement(models.Model):
                 condition=Q(
                     movement_type=MovementType.SALE_OUT,
                 ),
-                name="uniq_sale_out_per_sale_line_product_line",
+                name="uniq_sale_out_per_sale_line_produit_line",
             ),
         ]
 

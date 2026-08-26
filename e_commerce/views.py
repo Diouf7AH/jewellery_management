@@ -1,947 +1,1027 @@
-# from django.db.models import Count, Sum
-# from django.shortcuts import get_object_or_404
-# from django.utils import timezone
-# from drf_yasg import openapi
-# from drf_yasg.utils import swagger_auto_schema
-# from rest_framework import generics, permissions, status
-# from rest_framework.permissions import AllowAny
-# from rest_framework.response import Response
-# from rest_framework.views import APIView
+# e_commerce/views.py
 
-# from backend.permissions import (ROLE_MANAGER, ROLE_VENDOR, IsAdminOrManager,
-#                                  IsAdminOrManagerOrVendor, get_role_name)
-# from e_commerce.models import (CommandeEcommerce, EcommerceBanner,
-#                                EcommerceHomeProduct, LivraisonEcommerce,
-#                                PaiementEcommerce)
-# from e_commerce.selectors.products import get_ecommerce_products
-# from e_commerce.serializers import (CommandeEcommerceCreateSerializer,
-#                                     CommandeEcommerceDetailSerializer,
-#                                     EcommerceBannerSerializer,
-#                                     EcommerceDashboardQuerySerializer,
-#                                     EcommerceHomeProductSerializer)
-# from e_commerce.services.payment import initiate_payment
-# from e_commerce.services.webhook import confirm_ecommerce_payment
-# from sale.models import VenteProduit
-# from stock.models import Stock
+from django.core.exceptions import ValidationError
+from django.shortcuts import get_object_or_404
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
+from rest_framework import generics, status
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
-# from .models import CommandeEcommerce
-# from .serializers import (CommandeEcommerceCreateSerializer,
-#                           CommandeEcommerceDetailSerializer,
-#                           EcommerceDashboardQuerySerializer,
-#                           EcommerceProductDetailSerializer,
-#                           EcommerceProductListSerializer,
-#                           LivraisonEcommerceSerializer)
+from e_commerce.models import (CommandeEcommerce, EcommerceBanner,
+                               EcommerceBannerNouveauArrivage,
+                               PaiementEcommerce)
+from e_commerce.selectors.produits import get_ecommerce_produits
+from e_commerce.serializers import (CommandeEcommerceCreateSerializer,
+                                    CommandeEcommerceDetailSerializer,
+                                    EcommerceBannerNouveauArrivageSerializer,
+                                    EcommerceBannerSerializer,
+                                    EcommerceProduitDetailSerializer,
+                                    EcommerceProduitListSerializer,
+                                    PaiementEcommerceSerializer)
+from e_commerce.services.confirmation_paiement import confirm_ecommerce_payment
+from e_commerce.services.payment import initiate_payment
+from e_commerce.services.signatures_paiement import (
+    verifier_signature_carte, verifier_signature_orange_money,
+    verifier_signature_wave)
+from sale.models import Client
 
+# ============================================================
+# BANNIÈRE PRINCIPALE E-COMMERCE
+# ============================================================
 
-# class CommandeEcommerceCreateView(APIView):
-#     permission_classes = [permissions.AllowAny]
+class EcommerceBannerView(
+    generics.ListAPIView
+):
+    permission_classes = [AllowAny]
+    serializer_class = EcommerceBannerSerializer
 
-#     @swagger_auto_schema(
-#         operation_summary="Créer une commande e-commerce",
-#         operation_description=(
-#             "Crée une commande e-commerce en attente de paiement.\n\n"
-#             "La commande utilise le stock de la bijouterie sélectionnée.\n"
-#             "Aucune vente, facture ou sortie de stock n'est créée à cette étape.\n"
-#             "La vente, la facture et le mouvement SALE_OUT seront créés après confirmation du paiement via webhook."
-#         ),
-#         request_body=CommandeEcommerceCreateSerializer,
-#         responses={
-#             201: openapi.Response(
-#                 description="Commande e-commerce créée avec succès",
-#                 schema=CommandeEcommerceDetailSerializer,
-#             ),
-#             400: "Erreur de validation : stock insuffisant, produit introuvable, bijouterie introuvable.",
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def post(self, request):
-#         serializer = CommandeEcommerceCreateSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
-
-#         commande = serializer.save()
-
-#         return Response(
-#             CommandeEcommerceDetailSerializer(commande).data,
-#             status=status.HTTP_201_CREATED,
-#         )
+    @swagger_auto_schema(
+        operation_id="bannieresEcommerce",
+        operation_summary="Afficher les bannières principales",
+        operation_description=(
+            "Retourne les bannières principales actives "
+            "de la page d'accueil e-commerce."
+        ),
+        responses={
+            200: EcommerceBannerSerializer(
+                many=True
+            ),
+        },
+        tags=["E-commerce - Accueil"],
+    )
+    def get_queryset(self):
+        return (
+            EcommerceBanner.objects
+            .filter(active=True)
+            .order_by(
+                "ordre_affichage",
+                "-created_at",
+            )
+        )
 
 
-# class EcommerceProductListView(generics.ListAPIView):
-#     permission_classes = [permissions.AllowAny]
-#     serializer_class = EcommerceProductListSerializer
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les produits e-commerce",
-#         operation_description=(
-#             "Retourne les produits disponibles à la vente sur le site e-commerce.\n\n"
-#             "- Utilise uniquement le stock de bijouterie.\n"
-#             "- Ignore le stock réserve.\n"
-#             "- Ignore les produits en rupture de stock.\n"
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "bijouterie_id",
-#                 openapi.IN_QUERY,
-#                 description="Filtrer les produits par bijouterie",
-#                 type=openapi.TYPE_INTEGER,
-#                 required=False,
-#             ),
-#         ],
-#         responses={
-#             200: EcommerceProductListSerializer(many=True),
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def get(self, request, *args, **kwargs):
-#         return super().get(request, *args, **kwargs)
-
-#     def get_queryset(self):
-#         return get_ecommerce_products(
-#             bijouterie_id=self.request.query_params.get("bijouterie_id")
-#         )
-
-
-# class EcommerceProductDetailView(generics.RetrieveAPIView):
-#     permission_classes = [permissions.AllowAny]
-#     serializer_class = EcommerceProductDetailSerializer
-
-#     lookup_field = "produit_line__produit__uuid"
-#     lookup_url_kwarg = "uuid"
-
-#     @swagger_auto_schema(
-#         operation_summary="Détail d'un produit e-commerce",
-#         operation_description=(
-#             "Retourne le détail complet d'un produit disponible "
-#             "sur le catalogue e-commerce."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "uuid",
-#                 openapi.IN_PATH,
-#                 description="UUID du produit",
-#                 type=openapi.TYPE_STRING,
-#                 required=True,
-#             ),
-#             openapi.Parameter(
-#                 "bijouterie_id",
-#                 openapi.IN_QUERY,
-#                 description="Filtrer sur une bijouterie spécifique",
-#                 type=openapi.TYPE_INTEGER,
-#                 required=False,
-#             ),
-#             openapi.Parameter(
-#                 "q",
-#                 openapi.IN_QUERY,
-#                 description="Recherche par nom, SKU, marque ou modèle",
-#                 type=openapi.TYPE_STRING,
-#                 required=False,
-#             ),
-
-#             openapi.Parameter(
-#                 "categorie",
-#                 openapi.IN_QUERY,
-#                 description="Filtrer par catégorie",
-#                 type=openapi.TYPE_STRING,
-#                 required=False,
-#             ),
-
-#             openapi.Parameter(
-#                 "marque",
-#                 openapi.IN_QUERY,
-#                 description="Filtrer par marque",
-#                 type=openapi.TYPE_STRING,
-#                 required=False,
-#             ),
-
-#             openapi.Parameter(
-#                 "purete",
-#                 openapi.IN_QUERY,
-#                 description="Filtrer par pureté",
-#                 type=openapi.TYPE_STRING,
-#                 required=False,
-#             ),
-#         ],
-#         responses={
-#             200: EcommerceProductDetailSerializer,
-#             404: "Produit introuvable",
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def get(self, request, *args, **kwargs):
-#         return super().get(request, *args, **kwargs)
-
-#     def get_queryset(self):
-#         return get_ecommerce_products(
-#             bijouterie_id=self.request.query_params.get(
-#                 "bijouterie_id"
-#             )
-#         )
-
-
-# class PaymentWebhookView(APIView):
-#     permission_classes = [permissions.AllowAny]
-
-#     @swagger_auto_schema(
-#         operation_summary="Webhook de confirmation paiement e-commerce",
-#         operation_description=(
-#             "Reçoit la confirmation de paiement depuis Wave, Orange Money ou carte bancaire.\n\n"
-#             "Si le paiement est confirmé :\n"
-#             "- PaiementEcommerce passe à success\n"
-#             "- CommandeEcommerce passe à paid\n"
-#             "- Vente ERP créée\n"
-#             "- Facture créée\n"
-#             "- Stock bijouterie consommé\n"
-#             "- InventoryMovement SALE_OUT créé\n\n"
-#             "⚠️ En production, ajouter la vérification de signature du fournisseur."
-#         ),
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["provider_reference"],
-#             properties={
-#                 "provider_reference": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     description="Référence fournisseur du paiement",
-#                     example="ECOM-123456",
-#                 ),
-#                 "transaction_id": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     description="ID transaction fournisseur",
-#                     example="TX-987654",
-#                 ),
-#                 "reference_paiement": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     description="Référence paiement interne ou externe",
-#                     example="PAY-20260606-001",
-#                 ),
-#                 "status": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     description="Statut retourné par le fournisseur",
-#                     example="success",
-#                 ),
-#             },
-#         ),
-#         responses={
-#             200: openapi.Response(
-#                 description="Paiement confirmé avec succès",
-#                 schema=openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     properties={
-#                         "detail": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "commande_uuid": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "commande_status": openapi.Schema(type=openapi.TYPE_STRING),
-#                     },
-#                 ),
-#             ),
-#             400: "provider_reference obligatoire",
-#             404: "Paiement e-commerce introuvable",
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def post(self, request):
-#         payload = request.data
-
-#         provider_reference = (
-#             payload.get("provider_reference")
-#             or payload.get("transaction_id")
-#             or payload.get("reference_paiement")
-#         )
-
-#         if not provider_reference:
-#             return Response(
-#                 {"detail": "provider_reference est obligatoire."},
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
-
-#         paiement = (
-#             PaiementEcommerce.objects.filter(provider_reference=provider_reference).first()
-#             or PaiementEcommerce.objects.filter(transaction_id=provider_reference).first()
-#             or PaiementEcommerce.objects.filter(reference_paiement=provider_reference).first()
-#         )
-
-#         if not paiement:
-#             return Response(
-#                 {"detail": "Paiement e-commerce introuvable."},
-#                 status=status.HTTP_404_NOT_FOUND,
-#             )
-
-#         commande = confirm_ecommerce_payment(
-#             paiement=paiement,
-#             payload=payload,
-#         )
-
-#         return Response(
-#             {
-#                 "detail": "Paiement confirmé avec succès.",
-#                 "commande_uuid": commande.uuid,
-#                 "commande_status": commande.status,
-#             },
-#             status=status.HTTP_200_OK,
-#         )
         
+class CommandeEcommerceCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["post", "options"]
+
+    @swagger_auto_schema(
+        operation_id="createEcommerceOrder",
+        operation_summary="Créer une commande e-commerce",
+        operation_description=(
+            "Crée une commande e-commerce en attente de paiement.\n\n"
+            "Le client doit être authentifié.\n\n"
+            "Le backend :\n"
+            "- identifie le client connecté ;\n"
+            "- vérifie la bijouterie ;\n"
+            "- vérifie les produits ;\n"
+            "- effectue une première vérification de Stock.en_stock ;\n"
+            "- ne réserve aucun stock ;\n"
+            "- ne diminue aucun stock ;\n"
+            "- calcule le montant HT ;\n"
+            "- calcule la TVA ;\n"
+            "- calcule les frais de transaction ;\n"
+            "- calcule le montant final à payer ;\n"
+            "- crée CommandeEcommerce = pending ;\n"
+            "- crée PaiementEcommerce = pending.\n\n"
+            "Aucune Vente, Facture ou sortie de stock n'est créée ici."
+        ),
+        request_body=CommandeEcommerceCreateSerializer,
+        responses={
+            201: openapi.Response(
+                description="Commande créée",
+                schema=CommandeEcommerceDetailSerializer,
+            ),
+            400: "Erreur de validation.",
+            401: "Authentification requise.",
+        },
+        tags=["E-commerce"],
+    )
+    def post(self, request):
+        serializer = CommandeEcommerceCreateSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+
+        serializer.is_valid(raise_exception=True)
+
+        commande = serializer.save()
+
+        paiement = (
+            commande.paiements
+            .filter(
+                status=PaiementEcommerce.STATUS_PENDING
+            )
+            .order_by("-created_at")
+            .first()
+        )
+
+        if paiement is None:
+            return Response(
+                {
+                    "detail": (
+                        "Aucun paiement en attente "
+                        "n'a été créé pour cette commande."
+                    )
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "commande": CommandeEcommerceDetailSerializer(
+                    commande,
+                    context={"request": request},
+                ).data,
+
+                "paiement": PaiementEcommerceSerializer(
+                    paiement,
+                    context={"request": request},
+                ).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
-# class PaymentInitiateView(APIView):
-#     permission_classes = [permissions.AllowAny]
+# ============================================================
+# INITIALISER LE PAIEMENT
+# ============================================================
+class EcommercePaymentInitiateView(APIView):
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["post", "options"]
 
-#     @swagger_auto_schema(
-#         operation_summary="Initialiser un paiement e-commerce",
-#         operation_description=(
-#             "Génère ou récupère le lien de paiement d'une commande e-commerce.\n\n"
-#             "La commande doit être en attente de paiement.\n"
-#             "Cette API ne crée pas encore la vente ERP, la facture ou la sortie de stock.\n"
-#             "Ces actions seront faites uniquement après confirmation du paiement via webhook."
-#         ),
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             required=["commande_uuid"],
-#             properties={
-#                 "commande_uuid": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     format=openapi.FORMAT_UUID,
-#                     description="UUID de la commande e-commerce",
-#                     example="7d68f4d3-9b88-4f8d-b6ab-6f15a0a59b74",
-#                 ),
-#             },
-#         ),
-#         responses={
-#             200: openapi.Response(
-#                 description="Lien de paiement généré",
-#                 schema=openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     properties={
-#                         "payment_uuid": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "commande_uuid": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "mode": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "status": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "montant": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "checkout_url": openapi.Schema(type=openapi.TYPE_STRING),
-#                         "provider_reference": openapi.Schema(type=openapi.TYPE_STRING),
-#                     },
-#                 ),
-#             ),
-#             400: "commande_uuid obligatoire ou commande déjà payée",
-#             404: "Commande ou paiement introuvable",
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def post(self, request):
-#         commande_uuid = request.data.get("commande_uuid")
+    @swagger_auto_schema(
+        operation_id="initiateEcommercePayment",
+        operation_summary="Initialiser un paiement e-commerce",
+        operation_description=(
+            "Initialise le paiement Wave, Orange Money "
+            "ou carte bancaire d'une commande e-commerce.\n\n"
+            "Règles :\n"
+            "- le client doit être authentifié ;\n"
+            "- la commande doit appartenir au client connecté ;\n"
+            "- la commande doit être en attente de paiement ;\n"
+            "- les informations client doivent être complètes ;\n"
+            "- aucun stock n'est consommé à cette étape."
+        ),
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["commande_uuid"],
+            properties={
+                "commande_uuid": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    format=openapi.FORMAT_UUID,
+                ),
+            },
+        ),
+        responses={
+            200: openapi.Response(
+                description="Paiement initialisé",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "payment_uuid": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "commande_uuid": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "mode": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "status": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "montant": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "checkout_url": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            nullable=True,
+                        ),
+                        "provider_reference": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            nullable=True,
+                        ),
+                    },
+                ),
+            ),
+            400: "Commande invalide ou informations manquantes.",
+            401: "Authentification requise.",
+            403: "Aucun profil client associé au compte.",
+            404: "Commande ou paiement introuvable.",
+        },
+        tags=["E-commerce"],
+    )
+    def post(self, request):
+        # ========================================================
+        # 1. UUID COMMANDE
+        # ========================================================
 
-#         if not commande_uuid:
-#             return Response(
-#                 {"detail": "commande_uuid est obligatoire."},
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
+        commande_uuid = request.data.get(
+            "commande_uuid"
+        )
 
-#         commande = CommandeEcommerce.objects.filter(
-#             uuid=commande_uuid
-#         ).first()
+        if not commande_uuid:
+            return Response(
+                {
+                    "detail": (
+                        "commande_uuid est obligatoire."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-#         if not commande:
-#             return Response(
-#                 {"detail": "Commande introuvable."},
-#                 status=status.HTTP_404_NOT_FOUND,
-#             )
+        # ========================================================
+        # 2. CLIENT CONNECTÉ
+        # ========================================================
 
-#         if commande.status == CommandeEcommerce.STATUS_PAID:
-#             return Response(
-#                 {"detail": "Cette commande est déjà payée."},
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
+        try:
+            client = request.user.client
 
-#         paiement = commande.paiements.filter(
-#             status=PaiementEcommerce.STATUS_PENDING
-#         ).order_by("-id").first()
+        except Client.DoesNotExist:
+            return Response(
+                {
+                    "detail": (
+                        "Aucun profil client n'est associé "
+                        "à ce compte."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-#         if not paiement:
-#             return Response(
-#                 {"detail": "Aucun paiement en attente pour cette commande."},
-#                 status=status.HTTP_404_NOT_FOUND,
-#             )
+        # ========================================================
+        # 3. COMMANDE DU CLIENT CONNECTÉ
+        # ========================================================
 
-#         paiement = initiate_payment(paiement=paiement)
+        commande = get_object_or_404(
+            CommandeEcommerce.objects
+            .select_related(
+                "client",
+                "bijouterie",
+            ),
+            uuid=commande_uuid,
+            client=client,
+        )
 
-#         return Response(
-#             {
-#                 "payment_uuid": paiement.uuid,
-#                 "commande_uuid": commande.uuid,
-#                 "mode": paiement.mode,
-#                 "status": paiement.status,
-#                 "montant": paiement.montant,
-#                 "checkout_url": paiement.checkout_url,
-#                 "provider_reference": paiement.provider_reference,
-#             },
-#             status=status.HTTP_200_OK,
-#         )
+        # ========================================================
+        # 4. STATUT COMMANDE
+        # ========================================================
+
+        if (
+            commande.status
+            == CommandeEcommerce.STATUS_PAID
+        ):
+            return Response(
+                {
+                    "detail": (
+                        "Cette commande est déjà payée."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if (
+            commande.status
+            != CommandeEcommerce.STATUS_PENDING
+        ):
+            return Response(
+                {
+                    "detail": (
+                        "Cette commande n'est pas disponible "
+                        "pour le paiement."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ========================================================
+        # 5. INFORMATIONS CLIENT OBLIGATOIRES
+        # ========================================================
+
+        champs_manquants = []
+
+        if not commande.nom_client:
+            champs_manquants.append(
+                "nom_client"
+            )
+
+        if not commande.telephone_client:
+            champs_manquants.append(
+                "telephone_client"
+            )
+
+        if not commande.email_client:
+            champs_manquants.append(
+                "email_client"
+            )
+
+        if not commande.adresse_livraison:
+            champs_manquants.append(
+                "adresse_livraison"
+            )
+
+        if champs_manquants:
+            return Response(
+                {
+                    "detail": (
+                        "Les informations client "
+                        "sont incomplètes."
+                    ),
+                    "champs_manquants":
+                        champs_manquants,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ========================================================
+        # 6. PAIEMENT PENDING
+        # ========================================================
+
+        paiement = (
+            commande.paiements
+            .filter(
+                status=PaiementEcommerce.STATUS_PENDING
+            )
+            .order_by(
+                "-created_at"
+            )
+            .first()
+        )
+
+        if paiement is None:
+            return Response(
+                {
+                    "detail": (
+                        "Aucun paiement en attente "
+                        "pour cette commande."
+                    )
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # ========================================================
+        # 7. INITIALISER LE PROVIDER
+        #
+        # IMPORTANT :
+        # - aucun Stock.en_stock n'est diminué ici ;
+        # - aucune Vente n'est créée ici ;
+        # - aucune Facture n'est créée ici.
+        # ========================================================
+
+        paiement = initiate_payment(
+            paiement=paiement
+        )
+
+        # ========================================================
+        # 8. RÉPONSE
+        # ========================================================
+
+        return Response(
+            {
+                "payment_uuid":
+                    str(paiement.uuid),
+
+                "commande_uuid":
+                    str(commande.uuid),
+
+                "mode":
+                    paiement.mode,
+
+                "status":
+                    paiement.status,
+
+                "montant":
+                    str(paiement.montant),
+
+                "checkout_url":
+                    paiement.checkout_url,
+
+                "provider_reference":
+                    paiement.provider_reference,
+            },
+            status=status.HTTP_200_OK,
+        )
         
-
-
-
-# class EcommerceInvoiceView(APIView):
-#     permission_classes = [AllowAny]
-
-#     @swagger_auto_schema(
-#         operation_summary="Récupérer la facture PDF d'une commande e-commerce",
-#         operation_description=(
-#             "Retourne les informations de facture liées à une commande e-commerce.\n\n"
-#             "La facture est disponible uniquement après confirmation du paiement."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "uuid",
-#                 openapi.IN_PATH,
-#                 description="UUID de la commande e-commerce",
-#                 type=openapi.TYPE_STRING,
-#                 format=openapi.FORMAT_UUID,
-#                 required=True,
-#             ),
-#         ],
-#         responses={
-#             200: openapi.Response(
-#                 description="Facture disponible",
-#                 schema=openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     properties={
-#                         "numero_facture": openapi.Schema(
-#                             type=openapi.TYPE_STRING,
-#                             example="FAC-20260606-0001",
-#                         ),
-#                         "facture_pdf": openapi.Schema(
-#                             type=openapi.TYPE_STRING,
-#                             nullable=True,
-#                             example="/media/factures/FAC-20260606-0001.pdf",
-#                         ),
-#                     },
-#                 ),
-#             ),
-#             404: "Commande introuvable ou facture indisponible",
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def get(self, request, uuid):
-#         commande = get_object_or_404(
-#             CommandeEcommerce,
-#             uuid=uuid,
-#         )
-
-#         if not commande.facture:
-#             return Response(
-#                 {"detail": "Facture indisponible."},
-#                 status=404,
-#             )
-
-#         return Response({
-#             "numero_facture": commande.facture.numero_facture,
-#             "facture_pdf": (
-#                 commande.facture.facture_pdf.url
-#                 if commande.facture.facture_pdf
-#                 else None
-#             ),
-#         })
-
-
-# class EcommerceDashboardView(APIView):
-#     permission_classes = [IsAdminOrManager]
-
-#     @swagger_auto_schema(
-#         operation_summary="Dashboard e-commerce",
-#         operation_description=(
-#             "Retourne les statistiques e-commerce : commandes, paiements, "
-#             "ventes et top produits.\n\n"
-#             "Filtres disponibles : bijouterie, date début, date fin."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "bijouterie_id",
-#                 openapi.IN_QUERY,
-#                 description="Filtrer par bijouterie",
-#                 type=openapi.TYPE_INTEGER,
-#                 required=False,
-#             ),
-#             openapi.Parameter(
-#                 "start_date",
-#                 openapi.IN_QUERY,
-#                 description="Date de début au format YYYY-MM-DD",
-#                 type=openapi.TYPE_STRING,
-#                 format=openapi.FORMAT_DATE,
-#                 required=False,
-#             ),
-#             openapi.Parameter(
-#                 "end_date",
-#                 openapi.IN_QUERY,
-#                 description="Date de fin au format YYYY-MM-DD",
-#                 type=openapi.TYPE_STRING,
-#                 format=openapi.FORMAT_DATE,
-#                 required=False,
-#             ),
-#         ],
-#         responses={
-#             200: openapi.Response(
-#                 description="Statistiques e-commerce",
-#                 schema=openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     properties={
-#                         "commandes": openapi.Schema(type=openapi.TYPE_OBJECT),
-#                         "paiements": openapi.Schema(type=openapi.TYPE_OBJECT),
-#                         "ventes": openapi.Schema(type=openapi.TYPE_OBJECT),
-#                         "top_produits": openapi.Schema(
-#                             type=openapi.TYPE_ARRAY,
-#                             items=openapi.Schema(type=openapi.TYPE_OBJECT),
-#                         ),
-#                     },
-#                 ),
-#             )
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def get(self, request):
-#         serializer = EcommerceDashboardQuerySerializer(data=request.query_params)
-#         serializer.is_valid(raise_exception=True)
-#         data = serializer.validated_data
-
-#         commandes = CommandeEcommerce.objects.all()
-
-#         if data.get("bijouterie_id"):
-#             commandes = commandes.filter(bijouterie_id=data["bijouterie_id"])
-
-#         if data.get("start_date"):
-#             commandes = commandes.filter(created_at__date__gte=data["start_date"])
-
-#         if data.get("end_date"):
-#             commandes = commandes.filter(created_at__date__lte=data["end_date"])
-
-#         paiements = PaiementEcommerce.objects.filter(commande__in=commandes)
-#         ventes = commandes.filter(vente__isnull=False)
-
-#         top_produits = (
-#             VenteProduit.objects
-#             .filter(
-#                 vente__source_vente="ecommerce",
-#                 vente__commande_ecommerce__in=commandes,
-#             )
-#             .values(
-#                 "produit_id",
-#                 "produit__nom",
-#                 "produit__sku",
-#             )
-#             .annotate(
-#                 quantite_vendue=Sum("quantite"),
-#                 chiffre_affaires=Sum("montant_total"),
-#             )
-#             .order_by("-quantite_vendue")[:10]
-#         )
-
-#         return Response({
-#             "commandes": {
-#                 "total": commandes.count(),
-#                 "pending": commandes.filter(status="pending").count(),
-#                 "paid": commandes.filter(status="paid").count(),
-#                 "failed": commandes.filter(status="failed").count(),
-#                 "cancelled": commandes.filter(status="cancelled").count(),
-#                 "montant_total": commandes.aggregate(total=Sum("montant_total"))["total"] or 0,
-#             },
-#             "paiements": {
-#                 "total": paiements.count(),
-#                 "pending": paiements.filter(status="pending").count(),
-#                 "success": paiements.filter(status="success").count(),
-#                 "failed": paiements.filter(status="failed").count(),
-#                 "montant_encaisse": paiements.filter(status="success").aggregate(total=Sum("montant"))["total"] or 0,
-#             },
-#             "ventes": {
-#                 "total": ventes.count(),
-#                 "chiffre_affaires": ventes.aggregate(total=Sum("vente__montant_total"))["total"] or 0,
-#             },
-#             "top_produits": list(top_produits),
-#         })
-
-
-# class EcommerceOrderListView(generics.ListAPIView):
-#     permission_classes = [permissions.IsAuthenticated]
-#     serializer_class = CommandeEcommerceDetailSerializer
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les commandes e-commerce",
-#         operation_description=(
-#             "Retourne la liste des commandes e-commerce avec filtres.\n\n"
-#             "Filtres disponibles : bijouterie, statut et téléphone client."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "bijouterie_id",
-#                 openapi.IN_QUERY,
-#                 description="Filtrer par ID de bijouterie",
-#                 type=openapi.TYPE_INTEGER,
-#                 required=False,
-#             ),
-#             openapi.Parameter(
-#                 "status",
-#                 openapi.IN_QUERY,
-#                 description="Filtrer par statut : pending, paid, failed, cancelled",
-#                 type=openapi.TYPE_STRING,
-#                 required=False,
-#                 enum=["pending", "paid", "failed", "cancelled"],
-#             ),
-#             openapi.Parameter(
-#                 "telephone",
-#                 openapi.IN_QUERY,
-#                 description="Rechercher par téléphone client",
-#                 type=openapi.TYPE_STRING,
-#                 required=False,
-#             ),
-#         ],
-#         responses={
-#             200: openapi.Response(
-#                 description="Liste des commandes e-commerce",
-#                 schema=CommandeEcommerceDetailSerializer(many=True),
-#             ),
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def get(self, request, *args, **kwargs):
-#         return super().get(request, *args, **kwargs)
-
-#     def get_queryset(self):
-#         queryset = CommandeEcommerce.objects.select_related(
-#             "client",
-#             "bijouterie",
-#             "vente",
-#             "facture",
-#         ).prefetch_related(
-#             "lignes",
-#             "paiements",
-#         ).order_by("-created_at")
-
-#         bijouterie_id = self.request.query_params.get("bijouterie_id")
-#         status_value = self.request.query_params.get("status")
-#         telephone = self.request.query_params.get("telephone")
-
-#         if bijouterie_id:
-#             queryset = queryset.filter(bijouterie_id=bijouterie_id)
-
-#         if status_value:
-#             queryset = queryset.filter(status=status_value)
-
-#         if telephone:
-#             queryset = queryset.filter(telephone_client__icontains=telephone)
-
-#         return queryset
-
-
-
-# class EcommerceLivraisonDetailView(APIView):
-#     permission_classes = [permissions.AllowAny]
-
-#     @swagger_auto_schema(
-#         operation_summary="Détail livraison e-commerce",
-#         operation_description=(
-#             "Retourne les informations de livraison liées à une commande e-commerce."
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "uuid",
-#                 openapi.IN_PATH,
-#                 description="UUID de la commande e-commerce",
-#                 type=openapi.TYPE_STRING,
-#                 format=openapi.FORMAT_UUID,
-#                 required=True,
-#             ),
-#         ],
-#         responses={
-#             200: openapi.Response(
-#                 description="Détail de la livraison",
-#                 schema=LivraisonEcommerceSerializer,
-#             ),
-#             404: "Livraison introuvable",
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def get(self, request, uuid):
-#         livraison = get_object_or_404(
-#             LivraisonEcommerce.objects.select_related("commande"),
-#             commande__uuid=uuid,
-#         )
-
-#         return Response(
-#             LivraisonEcommerceSerializer(livraison).data
-#         )
-        
-
-
-# class LivraisonEcommerceUpdateView(APIView):
-#     permission_classes = [permissions.IsAuthenticated]
-
-#     @swagger_auto_schema(
-#         operation_summary="Mettre à jour la livraison e-commerce",
-#         operation_description=(
-#             "Met à jour le statut de livraison d'une commande e-commerce.\n\n"
-#             "Statuts possibles :\n"
-#             "- en_preparation\n"
-#             "- expedie\n"
-#             "- livre\n"
-#             "- annule"
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "uuid",
-#                 openapi.IN_PATH,
-#                 description="UUID de la commande e-commerce",
-#                 type=openapi.TYPE_STRING,
-#                 format=openapi.FORMAT_UUID,
-#                 required=True,
-#             ),
-#         ],
-#         request_body=openapi.Schema(
-#             type=openapi.TYPE_OBJECT,
-#             properties={
-#                 "status": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     enum=["en_preparation", "expedie", "livre", "annule"],
-#                     example="expedie",
-#                 ),
-#                 "transporteur": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     example="Yango Livraison",
-#                 ),
-#                 "numero_suivi": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     example="TRK-20260606-001",
-#                 ),
-#                 "note": openapi.Schema(
-#                     type=openapi.TYPE_STRING,
-#                     example="Colis remis au transporteur.",
-#                 ),
-#             },
-#         ),
-#         responses={
-#             200: openapi.Response(
-#                 description="Livraison mise à jour",
-#                 schema=LivraisonEcommerceSerializer,
-#             ),
-#             404: "Livraison introuvable",
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def patch(self, request, uuid):
-#         livraison = get_object_or_404(
-#             LivraisonEcommerce,
-#             commande__uuid=uuid,
-#         )
-
-#         status_value = request.data.get("status")
-
-#         if status_value:
-#             livraison.status = status_value
-#             now = timezone.now()
-
-#             if status_value == LivraisonEcommerce.STATUS_PREPARATION:
-#                 livraison.prepared_at = now
-#             elif status_value == LivraisonEcommerce.STATUS_EXPEDIE:
-#                 livraison.shipped_at = now
-#             elif status_value == LivraisonEcommerce.STATUS_LIVRE:
-#                 livraison.delivered_at = now
-#             elif status_value == LivraisonEcommerce.STATUS_ANNULE:
-#                 livraison.cancelled_at = now
-
-#         livraison.transporteur = request.data.get("transporteur", livraison.transporteur)
-#         livraison.numero_suivi = request.data.get("numero_suivi", livraison.numero_suivi)
-#         livraison.note = request.data.get("note", livraison.note)
-
-#         livraison.save()
-
-#         return Response(LivraisonEcommerceSerializer(livraison).data)
-
-
-
-# from e_commerce.serializers import EcommerceBannerSerializer
-
-
-# class EcommerceBannerListView(generics.ListAPIView):
-#     permission_classes = [permissions.AllowAny]
-#     serializer_class = EcommerceBannerSerializer
-
-#     @swagger_auto_schema(
-#         operation_summary="Lister les bannières e-commerce",
-#         operation_description=(
-#             "Retourne toutes les bannières actives du site e-commerce.\n\n"
-#             "Une bannière peut être :\n"
-#             "- une image\n"
-#             "- une vidéo\n\n"
-#             "Les résultats sont triés selon ordre_affichage."
-#         ),
-#         responses={
-#             200: openapi.Response(
-#                 description="Liste des bannières actives",
-#                 schema=EcommerceBannerSerializer(many=True),
-#             ),
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def get(self, request, *args, **kwargs):
-#         return super().get(request, *args, **kwargs)
-
-#     def get_queryset(self):
-#         return EcommerceBanner.objects.filter(
-#             active=True
-#         ).order_by(
-#             "ordre_affichage",
-#             "-created_at",
-#         )
-        
-
-
-# class EcommerceBannerDetailView(generics.RetrieveAPIView):
-#     permission_classes = [permissions.AllowAny]
-#     serializer_class = EcommerceBannerSerializer
-
-#     lookup_field = "uuid"
-#     lookup_url_kwarg = "uuid"
-
-#     queryset = EcommerceBanner.objects.filter(
-#         active=True
-#     )
-
-#     @swagger_auto_schema(
-#         operation_summary="Détail d'une bannière e-commerce",
-#         operation_description=(
-#             "Retourne le détail d'une bannière active du site e-commerce.\n\n"
-#             "La bannière peut contenir :\n"
-#             "- une image\n"
-#             "- une vidéo\n"
-#             "- un bouton d'action\n"
-#             "- un lien de redirection"
-#         ),
-#         manual_parameters=[
-#             openapi.Parameter(
-#                 "uuid",
-#                 openapi.IN_PATH,
-#                 description="UUID de la bannière",
-#                 type=openapi.TYPE_STRING,
-#                 format=openapi.FORMAT_UUID,
-#                 required=True,
-#             ),
-#         ],
-#         responses={
-#             200: openapi.Response(
-#                 description="Détail de la bannière",
-#                 schema=EcommerceBannerSerializer,
-#             ),
-#             404: "Bannière introuvable",
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def get(self, request, *args, **kwargs):
-#         return super().get(request, *args, **kwargs)
     
+# ============================================================
+# confirmation_paiement PAIEMENT
+# ============================================================
+class ConfirmationPaiementEcommerceView(APIView):
+    permission_classes = [AllowAny]
+    http_method_names = ["post", "options"]
+
+    @swagger_auto_schema(
+        operation_id="confirmationPaiementEcommerce",
+        operation_summary="Confirmation du paiement e-commerce",
+        operation_description=(
+            "Reçoit la confirmation d'un paiement e-commerce.\n\n"
+            "Le backend :\n"
+            "- identifie le paiement concerné ;\n"
+            "- vérifie l'authenticité du provider ;\n"
+            "- vérifie le statut du paiement ;\n"
+            "- vérifie le montant confirmé ;\n"
+            "- traite la confirmation de manière atomique ;\n"
+            "- effectue une seconde vérification du stock ;\n"
+            "- crée la Vente ERP ;\n"
+            "- crée la Facture ;\n"
+            "- crée le Paiement ERP ;\n"
+            "- diminue Stock.en_stock ;\n"
+            "- crée InventoryMovement SALE_OUT ;\n"
+            "- marque PaiementEcommerce = success ;\n"
+            "- marque CommandeEcommerce = paid."
+        ),
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=[
+                "status",
+                "montant",
+            ],
+            properties={
+                "provider_reference": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    nullable=True,
+                ),
+                "transaction_id": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    nullable=True,
+                ),
+                "reference_paiement": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    nullable=True,
+                ),
+                "status": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    example="success",
+                ),
+                "montant": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    example="250000.00",
+                ),
+            },
+        ),
+        responses={
+            200: "Paiement confirmé avec succès.",
+            400: "Paiement non confirmé ou données invalides.",
+            401: "Signature du provider invalide.",
+            404: "Paiement introuvable.",
+            501: "Provider non encore configuré.",
+        },
+        tags=["E-commerce"],
+    )
+    def post(self, request):
+        # ========================================================
+        # 1. CONSERVER LE CORPS BRUT
+        #
+        # Utile pour la vérification cryptographique
+        # de certains providers.
+        # ========================================================
+
+        raw_body = request.body
+
+        payload = request.data
+
+        # ========================================================
+        # 2. RÉFÉRENCE DU PAIEMENT
+        # ========================================================
+
+        provider_reference = (
+            payload.get("provider_reference")
+            or payload.get("transaction_id")
+            or payload.get("reference_paiement")
+        )
+
+        if not provider_reference:
+            return Response(
+                {
+                    "detail": (
+                        "Une référence de paiement est obligatoire."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ========================================================
+        # 3. RETROUVER LE PAIEMENT E-COMMERCE
+        # ========================================================
+
+        paiement = (
+            PaiementEcommerce.objects
+            .filter(
+                provider_reference=provider_reference
+            )
+            .first()
+        )
+
+        if paiement is None:
+            paiement = (
+                PaiementEcommerce.objects
+                .filter(
+                    transaction_id=provider_reference
+                )
+                .first()
+            )
+
+        if paiement is None:
+            paiement = (
+                PaiementEcommerce.objects
+                .filter(
+                    reference_paiement=provider_reference
+                )
+                .first()
+            )
+
+        if paiement is None:
+            return Response(
+                {
+                    "detail": (
+                        "Paiement e-commerce introuvable."
+                    )
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # ========================================================
+        # 4. VÉRIFIER L'AUTHENTICITÉ DU PROVIDER
+        #
+        # Aucun traitement ERP ne doit commencer
+        # avant cette vérification.
+        # ========================================================
+
+        try:
+            if (
+                paiement.mode
+                == PaiementEcommerce.MODE_WAVE
+            ):
+                verifier_signature_wave(
+                    request
+                )
+
+            elif (
+                paiement.mode
+                == PaiementEcommerce.MODE_ORANGE
+            ):
+                verifier_signature_orange_money(
+                    request
+                )
+
+            elif (
+                paiement.mode
+                == PaiementEcommerce.MODE_CARTE
+            ):
+                verifier_signature_carte(
+                    request
+                )
+
+            else:
+                raise ValidationError(
+                    "Mode de paiement non pris en charge."
+                )
+
+        except NotImplementedError as exc:
+            return Response(
+                {
+                    "detail": str(exc)
+                },
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+
+        except ValidationError as exc:
+            return Response(
+                {
+                    "detail": (
+                        exc.messages
+                        if hasattr(exc, "messages")
+                        else str(exc)
+                    )
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # ========================================================
+        # 5. CONFIRMER LE PAIEMENT
+        #
+        # confirm_ecommerce_payment() doit gérer :
+        #
+        # - statut provider ;
+        # - montant provider ;
+        # - transaction.atomic() ;
+        # - select_for_update() paiement ;
+        # - select_for_update() commande ;
+        # - idempotence ;
+        # - création Vente ;
+        # - création Facture ;
+        # - création Paiement ERP ;
+        # - seconde vérification Stock ;
+        # - consommation Stock ;
+        # - SALE_OUT ;
+        # - PaiementEcommerce success ;
+        # - CommandeEcommerce paid.
+        # ========================================================
+
+        try:
+            commande = confirm_ecommerce_payment(
+                paiement=paiement,
+                payload=payload,
+            )
+
+        except ValidationError as exc:
+            return Response(
+                {
+                    "detail": (
+                        exc.messages
+                        if hasattr(exc, "messages")
+                        else str(exc)
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ========================================================
+        # 6. RÉPONSE
+        # ========================================================
+
+        return Response(
+            {
+                "detail": (
+                    "Paiement confirmé avec succès."
+                ),
+                "commande_uuid": str(
+                    commande.uuid
+                ),
+                "commande_status":
+                    commande.status,
+                "paiement_uuid": str(
+                    paiement.uuid
+                ),
+                "paiement_status":
+                    PaiementEcommerce.STATUS_SUCCESS,
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+        
+# ============================================================
+# DÉTAIL COMMANDE
+class CommandeEcommerceDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "options"]
+
+    @swagger_auto_schema(
+        operation_id="detailCommandeEcommerce",
+        operation_summary="Détail d'une commande e-commerce",
+        operation_description=(
+            "Retourne le détail d'une commande e-commerce "
+            "appartenant au client connecté."
+        ),
+        responses={
+            200: CommandeEcommerceDetailSerializer,
+            401: "Authentification requise.",
+            403: "Aucun profil client associé au compte.",
+            404: "Commande introuvable.",
+        },
+        tags=["E-commerce"],
+        
+    )
+    def get(self, request, uuid):
+        try:
+            client = request.user.client
+
+        except Client.DoesNotExist:
+            return Response(
+                {
+                    "detail": (
+                        "Aucun profil client n'est associé "
+                        "à ce compte."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        commande = get_object_or_404(
+            CommandeEcommerce.objects
+            .select_related(
+                "bijouterie",
+                "client",
+                "vente",
+                "facture",
+            )
+            .prefetch_related(
+                "lignes",
+                "paiements",
+            ),
+            uuid=uuid,
+            client=client,
+        )
+
+        return Response(
+            CommandeEcommerceDetailSerializer(
+                commande,
+                context={"request": request},
+            ).data,
+            status=status.HTTP_200_OK,
+        )
+        
+# ============================================================
+# FACTURE E-COMMERCE
+# ============================================================
+class EcommerceInvoiceView(APIView):
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "options"]
+
+    @swagger_auto_schema(
+        operation_id="factureCommandeEcommerce",
+        operation_summary=(
+            "Récupérer la facture d'une commande e-commerce"
+        ),
+        operation_description=(
+            "Retourne la facture associée à une commande "
+            "appartenant au client connecté."
+        ),
+        responses={
+            200: "Facture disponible.",
+            401: "Authentification requise.",
+            403: "Aucun profil client associé au compte.",
+            404: "Commande ou facture introuvable.",
+        },
+        tags=["E-commerce"],
+    )
+    def get(self, request, uuid):
+        try:
+            client = request.user.client
+        except Client.DoesNotExist:
+            return Response(
+                {
+                    "detail": (
+                        "Aucun profil client n'est associé "
+                        "à ce compte."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        commande = get_object_or_404(
+            CommandeEcommerce.objects
+            .select_related(
+                "facture",
+                "client",
+            ),
+            uuid=uuid,
+            client=client,
+        )
+
+        facture = commande.facture
+
+        if facture is None:
+            return Response(
+                {
+                    "detail": (
+                        "La facture n'est pas encore disponible."
+                    )
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            {
+                "numero_facture":
+                    facture.numero_facture,
+
+                "montant_ht":
+                    str(facture.montant_ht),
+
+                "montant_tva": (
+                    str(facture.montant_tva)
+                    if facture.montant_tva is not None
+                    else "0.00"
+                ),
+
+                "frais_transaction":
+                    str(facture.frais_transaction),
+
+                "montant_total":
+                    str(facture.montant_total),
+
+                "facture_pdf": (
+                    facture.facture_pdf.url
+                    if facture.facture_pdf
+                    else None
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+class EcommerceProduitListView(
+    generics.ListAPIView
+):
+    permission_classes = [AllowAny]
+    serializer_class = EcommerceProduitListSerializer
+
+    @swagger_auto_schema(
+        operation_id="listeProduitsEcommerce",
+        operation_summary="Lister les produits e-commerce",
+        operation_description=(
+            "Retourne les produits publiés disponibles à la vente "
+            "sur l'e-commerce.\n\n"
+            "Règles :\n"
+            "- produit publié ;\n"
+            "- Stock.en_stock > 0 ;\n"
+            "- stock rattaché à une bijouterie ;\n"
+            "- prix calculé selon MarquePurete ;\n"
+            "- possibilité de filtrer par bijouterie_id."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la bijouterie",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+        ],
+        responses={
+            200: EcommerceProduitListSerializer(
+                many=True
+            ),
+        },
+        tags=["E-commerce - Catalogue"],
+    )
+    def get_queryset(self):
+        return get_ecommerce_produits(
+            bijouterie_id=(
+                self.request.query_params.get(
+                    "bijouterie_id"
+                )
+            )
+        )
+        
+
+class EcommerceNouveauxArrivagesMediaView(
+    generics.ListAPIView
+):
+    permission_classes = [AllowAny]
+
+    serializer_class = (
+        EcommerceBannerNouveauArrivageSerializer
+    )
+
+    @swagger_auto_schema(
+        operation_id="nouveauxArrivagesMediaEcommerce",
+        operation_summary=(
+            "Afficher les médias des nouveaux arrivages"
+        ),
+        operation_description=(
+            "Retourne les médias actifs de la section "
+            "'Nouveaux arrivages'.\n\n"
+            "Chaque élément peut être une image ou une vidéo.\n\n"
+            "Les éléments sont retournés selon leur ordre "
+            "d'affichage."
+        ),
+        responses={
+            200: EcommerceBannerNouveauArrivageSerializer(
+                many=True
+            ),
+        },
+        tags=["E-commerce - Accueil"],
+    )
+    def get_queryset(self):
+        return (
+            EcommerceBannerNouveauArrivage.objects
+            .filter(
+                active=True,
+            )
+            .order_by(
+                "ordre_affichage",
+                "-created_at",
+            )
+        )
+        
+        
+class EcommerceProduitsRecentsView(
+    generics.ListAPIView
+):
+    permission_classes = [AllowAny]
+    serializer_class = EcommerceProduitListSerializer
+
+    @swagger_auto_schema(
+        operation_id="produitsRecentsEcommerce",
+        operation_summary="Lister les produits récents",
+        operation_description=(
+            "Retourne les 12 produits publiés et disponibles "
+            "les plus récents.\n\n"
+            "Possibilité de filtrer les produits par bijouterie."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la bijouterie",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+        ],
+        responses={
+            200: EcommerceProduitListSerializer(
+                many=True
+            ),
+        },
+        tags=["E-commerce - Catalogue"],
+    )
+    def get_queryset(self):
+        return get_ecommerce_produits(
+            bijouterie_id=(
+                self.request.query_params.get(
+                    "bijouterie_id"
+                )
+            )
+        )[:12]
 
 
-# class EcommerceHomePageView(APIView):
-#     permission_classes = [permissions.AllowAny]
 
-#     @swagger_auto_schema(
-#         operation_summary="Page d'accueil e-commerce",
-#         operation_description=(
-#             "Retourne tout le contenu dynamique de la page d'accueil e-commerce : "
-#             "grandes bannières, nouveaux arrivages, bannière vidéo, "
-#             "produits sélectionnés et produits carrousel."
-#         ),
-#         responses={
-#             200: openapi.Response(
-#                 description="Contenu de la page d'accueil e-commerce",
-#                 schema=openapi.Schema(
-#                     type=openapi.TYPE_OBJECT,
-#                     properties={
-#                         "grande_bannieres": openapi.Schema(
-#                             type=openapi.TYPE_ARRAY,
-#                             items=openapi.Schema(type=openapi.TYPE_OBJECT),
-#                         ),
-#                         "produits_selectionnes": openapi.Schema(
-#                             type=openapi.TYPE_ARRAY,
-#                             items=openapi.Schema(type=openapi.TYPE_OBJECT),
-#                         ),
-#                         "banniere_nouveau_arrivage": openapi.Schema(
-#                             type=openapi.TYPE_OBJECT,
-#                             nullable=True,
-#                         ),
-#                         "produits_nouveau_arrivage": openapi.Schema(
-#                             type=openapi.TYPE_ARRAY,
-#                             items=openapi.Schema(type=openapi.TYPE_OBJECT),
-#                         ),
-#                         "produits_carrousel": openapi.Schema(
-#                             type=openapi.TYPE_ARRAY,
-#                             items=openapi.Schema(type=openapi.TYPE_OBJECT),
-#                         ),
-#                         "banniere_video": openapi.Schema(
-#                             type=openapi.TYPE_OBJECT,
-#                             nullable=True,
-#                         ),
-#                     },
-#                 ),
-#             )
-#         },
-#         tags=["E-commerce"],
-#     )
-#     def get(self, request):
+# ============================================================
+# DÉTAIL PRODUIT E-COMMERCE
+# ============================================================
+class EcommerceProduitDetailView(
+    generics.RetrieveAPIView
+):
+    permission_classes = [AllowAny]
+    serializer_class = EcommerceProduitDetailSerializer
 
-#         banners = EcommerceBanner.objects.filter(active=True).order_by(
-#             "ordre_affichage",
-#             "-created_at",
-#         )
+    def get_queryset(self):
+        bijouterie_id = self.request.query_params.get(
+            "bijouterie_id"
+        )
 
-#         home_products = EcommerceHomeProduct.objects.select_related(
-#             "produit",
-#             "produit__categorie",
-#             "produit__marque",
-#             "produit__modele",
-#             "produit__purete",
-#             "bijouterie",
-#         ).filter(active=True)
+        if not bijouterie_id:
+            return get_ecommerce_produits(
+                bijouterie_id=None
+            ).none()
 
+        return get_ecommerce_produits(
+            bijouterie_id=bijouterie_id
+        )
 
-#         return Response({
-#             "grande_bannieres": EcommerceBannerSerializer(
-#                 banners.filter(
-#                     position=EcommerceBanner.POSITION_GRANDE_BANNIERE
-#                 ),
-#                 many=True,
-#             ).data,
+    def get_object(self):
+        bijouterie_id = self.request.query_params.get(
+            "bijouterie_id"
+        )
 
-#             "produits_selectionnes": EcommerceHomeProductSerializer(
-#                 home_products.filter(
-#                     section=EcommerceHomeProduct.SECTION_FEATURED
-#                 ),
-#                 many=True,
-#             ).data,
+        if not bijouterie_id:
+            from rest_framework.exceptions import ValidationError
 
-#             "banniere_nouveau_arrivage": EcommerceBannerSerializer(
-#                 banners.filter(
-#                     position=EcommerceBanner.POSITION_NOUVEAU_ARRIVAGE
-#                 ).first()
-#             ).data if banners.filter(
-#                 position=EcommerceBanner.POSITION_NOUVEAU_ARRIVAGE
-#             ).exists() else None,
+            raise ValidationError({
+                "bijouterie_id": (
+                    "bijouterie_id est obligatoire."
+                )
+            })
 
-#             "produits_nouveau_arrivage": EcommerceHomeProductSerializer(
-#                 home_products.filter(
-#                     section=EcommerceHomeProduct.SECTION_NEW_ARRIVAL
-#                 ),
-#                 many=True,
-#             ).data,
+        queryset = self.get_queryset()
 
-#             "produits_carrousel": EcommerceHomeProductSerializer(
-#                 home_products.filter(
-#                     section=EcommerceHomeProduct.SECTION_SLIDER
-#                 ),
-#                 many=True,
-#             ).data,
+        obj = get_object_or_404(
+            queryset,
+            produit_line__produit__slug=self.kwargs["slug"],
+        )
 
-#             "banniere_video": EcommerceBannerSerializer(
-#                 banners.filter(
-#                     position=EcommerceBanner.POSITION_BANNIERE_VIDEO
-#                 ).first()
-#             ).data if banners.filter(
-#                 position=EcommerceBanner.POSITION_BANNIERE_VIDEO
-#             ).exists() else None,
-#         })
-                
+        self.check_object_permissions(
+            self.request,
+            obj,
+        )
 
+        return obj
+
+    @swagger_auto_schema(
+        operation_id="detailProduitEcommerce",
+        operation_summary="Consulter un produit e-commerce",
+        operation_description=(
+            "Retourne le détail public d'un produit e-commerce.\n\n"
+            "Le produit doit :\n"
+            "- être publié ;\n"
+            "- avoir un stock disponible ;\n"
+            "- être rattaché à la bijouterie demandée ;\n"
+            "- avoir un prix de vente configuré."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la bijouterie",
+                type=openapi.TYPE_INTEGER,
+                required=True,
+            ),
+        ],
+        responses={
+            200: EcommerceProduitDetailSerializer(),
+            400: "bijouterie_id est obligatoire.",
+            404: "Produit introuvable ou indisponible.",
+        },
+        tags=["E-commerce - Catalogue"],
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(
+            request,
+            *args,
+            **kwargs,
+        )
+        
 

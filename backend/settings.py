@@ -333,7 +333,7 @@ LOGGING = {
     "loggers": {"mailer": {"handlers": ["console"], "level": "INFO", "propagate": False}},
 }
 
-# changer le montant minimum du dépôt sans modifier le code source
+
 COMPTE_DEPOT_RETRAIT_MINIMUM = 5
 COMPTE_DEPOT_RETRAIT_MULTIPLE = 5
 COMPTE_DEPOT_DEPOT_MINIMUM = 5000
@@ -341,3 +341,7 @@ COMPTE_DEPOT_DEPOT_MINIMUM = 5000
 # logo
 RIO_LOGO_DIR = os.path.join(MEDIA_ROOT, "logo")
 
+WAVE_WEBHOOK_SECRET = config(
+    "WAVE_WEBHOOK_SECRET",
+    default="",
+)

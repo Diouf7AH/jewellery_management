@@ -37,7 +37,7 @@ def assigner_ouvrier_commande(
 
     commande.ouvrier = ouvrier
     commande.date_affectation_ouvrier = timezone.now()
-    commande.statut = CommandeClient.STATUT_EN_PRODUCTION
+    commande.statut = CommandeClient.STATUT_EN_ProduitION
     commande.updated_by = user
     commande.save()
 
@@ -68,8 +68,8 @@ def terminer_commande(
     date_fin_reelle=None,
     commentaire="",
 ):
-    if commande.statut != CommandeClient.STATUT_EN_PRODUCTION:
-        raise ValidationError("Seule une commande en production peut être terminée.")
+    if commande.statut != CommandeClient.STATUT_EN_ProduitION:
+        raise ValidationError("Seule une commande en produition peut être terminée.")
 
     retourner_matiere_ouvrier(
         commande=commande,

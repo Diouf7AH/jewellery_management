@@ -11,7 +11,7 @@ EN_ATTENTE
     commande créée
     acompte validé
     pas encore confiée à un ouvrier
-EN_PRODUCTION
+EN_ProduitION
     dès qu’un ouvrier est affecté
 TERMINEE
     l’ouvrier a déposé la commande à la boutique
@@ -44,7 +44,7 @@ Il sert pour la liste des 10 dernières commandes avec :
 OuvrierDashboardSerializer
 Il sert pour la charge des ouvriers avec :
     nombre total de commandes
-    en production
+    en produition
     terminées
     livrées
 
@@ -53,7 +53,7 @@ Il sert pour la charge des ouvriers avec :
 En haut, des cartes résumées :
     Total commandes
     Commandes en attente
-    Commandes en production
+    Commandes en produition
     Commandes terminées
     Commandes livrées
     Commandes annulées

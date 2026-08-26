@@ -36,22 +36,91 @@ ZERO = Decimal("0.00")
 #     def __str__(self):
 #         return self.full_name
 
+# class Client(models.Model):
+#     prenom = models.CharField(max_length=100)
+#     nom = models.CharField(max_length=100)
+#     telephone = models.CharField(max_length=15,unique=True,blank=True,null=True,db_index=True)
+#     cni = models.CharField(max_length=50,unique=True,blank=True,null=True,db_index=True,verbose_name="Numéro CNI")
+#     address = models.CharField(max_length=255,blank=True,null=True,verbose_name="Adresse")
+#     #a chaque auto_now_add=True met de
+#     created_at = models.DateTimeField(auto_now_add=True)
+#     updated_at = models.DateTimeField(auto_now=True)
+
+#     class Meta:
+#         ordering = ["-id"]
+#         indexes = [
+#             models.Index(fields=["telephone"]),
+#             models.Index(fields=["cni"]),
+#         ]
+#         verbose_name = "Client"
+#         verbose_name_plural = "Clients"
+
+#     @property
+#     def full_name(self):
+#         return f"{self.prenom} {self.nom}".strip()
+
+#     def __str__(self):
+#         return self.full_name or self.telephone or f"Client #{self.pk}"
+    
+
+
 class Client(models.Model):
-    prenom = models.CharField(max_length=100)
-    nom = models.CharField(max_length=100)
-    telephone = models.CharField(max_length=15,unique=True,blank=True,null=True,db_index=True)
-    cni = models.CharField(max_length=50,unique=True,blank=True,null=True,db_index=True,verbose_name="Numéro CNI")
-    address = models.CharField(max_length=255,blank=True,null=True,verbose_name="Adresse")
-    #a chaque auto_now_add=True met de
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="client",
+    )
+
+    prenom = models.CharField(
+        max_length=100,
+    )
+
+    nom = models.CharField(
+        max_length=100,
+    )
+
+    telephone = models.CharField(
+        max_length=15,
+        unique=True,
+        blank=True,
+        null=True,
+        db_index=True,
+    )
+
+    cni = models.CharField(
+        max_length=50,
+        unique=True,
+        blank=True,
+        null=True,
+        db_index=True,
+        verbose_name="Numéro CNI",
+    )
+
+    address = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        verbose_name="Adresse",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
 
     class Meta:
         ordering = ["-id"]
+
         indexes = [
             models.Index(fields=["telephone"]),
             models.Index(fields=["cni"]),
         ]
+
         verbose_name = "Client"
         verbose_name_plural = "Clients"
 
@@ -60,9 +129,12 @@ class Client(models.Model):
         return f"{self.prenom} {self.nom}".strip()
 
     def __str__(self):
-        return self.full_name or self.telephone or f"Client #{self.pk}"
-    
-
+        return (
+            self.full_name
+            or self.telephone
+            or f"Client #{self.pk}"
+        )
+        
 
 # =========================
 # Vente
@@ -98,11 +170,20 @@ class Vente(models.Model):
         related_name="ventes",
     )
 
+    # vendor = models.ForeignKey(
+    #     "vendor.Vendor",
+    #     on_delete=models.PROTECT,
+    #     related_name="ventes",
+    #     db_index=True,
+    # )
+    
     vendor = models.ForeignKey(
         "vendor.Vendor",
         on_delete=models.PROTECT,
         related_name="ventes",
         db_index=True,
+        null=True,
+        blank=True,
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -247,7 +328,7 @@ class VenteProduit(models.Model):
         return prix
 
 
-    def _get_product_weight(self):
+    def _get_produit_weight(self):
         """
         Récupère le poids du produit.
         """
@@ -267,7 +348,7 @@ class VenteProduit(models.Model):
         self.full_clean()
 
         unit_price = self._resolve_unit_price()
-        weight = self._get_product_weight()
+        weight = self._get_produit_weight()
         qte = int(self.quantite or 0)
 
         base_ht = unit_price * weight * qte
@@ -456,27 +537,21 @@ class Facture(models.Model):
         return f"FAC-{day}-{seq:04d}"
 
     def recalculer_totaux(self):
-
         ht = Decimal(str(self.montant_ht or ZERO))
+        frais = Decimal(str(self.frais_transaction or ZERO))
 
-        # =========================================
-        # TVA NON APPLIQUÉE
-        # =========================================
         if not self.appliquer_tva:
-
             self.taux_tva = None
             self.montant_tva = None
 
-            self.montant_total = ht.quantize(
+            self.montant_total = (
+                ht + frais
+            ).quantize(
                 TWOPLACES,
                 rounding=ROUND_HALF_UP,
             )
-
             return
 
-        # =========================================
-        # TVA APPLIQUÉE
-        # =========================================
         taux = Decimal(str(self.taux_tva or ZERO))
 
         self.taux_tva = taux.quantize(
@@ -492,7 +567,9 @@ class Facture(models.Model):
         )
 
         self.montant_total = (
-            ht + self.montant_tva
+            ht
+            + self.montant_tva
+            + frais
         ).quantize(
             TWOPLACES,
             rounding=ROUND_HALF_UP,
@@ -713,7 +790,7 @@ class PaiementLigne(models.Model):
 
     callback_received = models.BooleanField(
         default=False,
-        help_text="Indique si le callback/webhook du fournisseur a été reçu"
+        help_text="Indique si le callback/confirmation_paiement du fournisseur a été reçu"
     )
     
 #     banque = models.CharField(

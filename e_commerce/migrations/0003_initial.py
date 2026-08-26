@@ -49,12 +49,12 @@ class Migration(migrations.Migration):
             field=models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='lignes_ecommerce', to='purchase.produitline'),
         ),
         migrations.AddField(
-            model_name='ecommercehomeproduct',
+            model_name='ecommercehomeproduit',
             name='bijouterie',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='home_ecommerce_products', to='store.bijouterie'),
+            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='home_ecommerce_produits', to='store.bijouterie'),
         ),
         migrations.AddField(
-            model_name='ecommercehomeproduct',
+            model_name='ecommercehomeproduit',
             name='produit',
             field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='home_ecommerce_items', to='store.produit'),
         ),
@@ -69,11 +69,11 @@ class Migration(migrations.Migration):
             field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='paiements', to='e_commerce.commandeecommerce'),
         ),
         migrations.AddIndex(
-            model_name='ecommercehomeproduct',
+            model_name='ecommercehomeproduit',
             index=models.Index(fields=['section', 'active'], name='e_commerce__section_66f726_idx'),
         ),
         migrations.AddConstraint(
-            model_name='ecommercehomeproduct',
-            constraint=models.UniqueConstraint(fields=('produit', 'bijouterie', 'section'), name='uniq_home_product_by_shop_section'),
+            model_name='ecommercehomeproduit',
+            constraint=models.UniqueConstraint(fields=('produit', 'bijouterie', 'section'), name='uniq_home_produit_by_shop_section'),
         ),
     ]
