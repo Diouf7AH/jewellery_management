@@ -40,7 +40,11 @@ from .services import effectuer_depot, effectuer_retrait
 class CreateOrDepotCompteView(APIView):
     permission_classes = [IsAuthenticated]
 
-    ALLOWED_ROLES = {"admin", "manager", "cashier"}
+    ALLOWED_ROLES = {
+        ROLE_ADMIN,
+        ROLE_MANAGER,
+        ROLE_CASHIER,
+    }
 
     @swagger_auto_schema(
         operation_id="createOrDepotCompte",
@@ -50,11 +54,11 @@ class CreateOrDepotCompteView(APIView):
             "Si le client possède déjà un compte via son téléphone, "
             "effectue directement un dépôt sur ce compte.\n\n"
             "### Règles d'accès\n"
-            "- **Admin** : autorisé, `bijouterie_id` obligatoire.\n"
-            "- **Manager** : autorisé, `bijouterie_id` obligatoire et doit appartenir à ses bijouteries.\n"
-            "- **Caissier** : autorisé, sa bijouterie est utilisée automatiquement.\n"
-            "- **Vendor** : non autorisé.\n"
-            "- **Buyer** : non autorisé.\n\n"
+            "- Admin : autorisé, `bijouterie_id` obligatoire.\n"
+            "- Manager : autorisé, `bijouterie_id` obligatoire et doit appartenir à ses bijouteries.\n"
+            "- Caissier : autorisé, sa bijouterie est utilisée automatiquement.\n"
+            "- Vendor : non autorisé.\n"
+            "- Buyer : non autorisé.\n\n"
             "### Comportement\n"
             "- Client inexistant : création client + compte + dépôt initial.\n"
             "- Client existant sans compte : création du compte + dépôt initial.\n"
@@ -67,7 +71,9 @@ class CreateOrDepotCompteView(APIView):
                 schema=openapi.Schema(
                     type=openapi.TYPE_OBJECT,
                     properties={
-                        "message": openapi.Schema(type=openapi.TYPE_STRING),
+                        "message": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
                         "operation_type": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             example="deposit_existing_account",
@@ -75,28 +81,14 @@ class CreateOrDepotCompteView(APIView):
                         "client": openapi.Schema(
                             type=openapi.TYPE_OBJECT,
                         ),
+                        "bijouterie": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                        ),
                         "compte": openapi.Schema(
                             type=openapi.TYPE_OBJECT,
-                            properties={
-                                "id": openapi.Schema(type=openapi.TYPE_INTEGER),
-                                "numero_compte": openapi.Schema(
-                                    type=openapi.TYPE_STRING
-                                ),
-                                "solde": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    example="15000.00",
-                                ),
-                                "created_at": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    format=openapi.FORMAT_DATETIME,
-                                ),
-                            },
                         ),
                         "transaction": openapi.Schema(
-                            type=openapi.TYPE_OBJECT
-                        ),
-                        "receipt_url": openapi.Schema(
-                            type=openapi.TYPE_STRING
+                            type=openapi.TYPE_OBJECT,
                         ),
                     },
                 ),
@@ -107,12 +99,17 @@ class CreateOrDepotCompteView(APIView):
                 schema=openapi.Schema(
                     type=openapi.TYPE_OBJECT,
                     properties={
-                        "message": openapi.Schema(type=openapi.TYPE_STRING),
+                        "message": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
                         "operation_type": openapi.Schema(
                             type=openapi.TYPE_STRING,
                             example="create_client_account_and_deposit",
                         ),
                         "client": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                        ),
+                        "bijouterie": openapi.Schema(
                             type=openapi.TYPE_OBJECT,
                         ),
                         "compte": openapi.Schema(
@@ -121,24 +118,20 @@ class CreateOrDepotCompteView(APIView):
                         "transaction": openapi.Schema(
                             type=openapi.TYPE_OBJECT,
                         ),
-                        "receipt_url": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                        ),
                     },
                 ),
             ),
 
             400: openapi.Response(
                 description=(
-                    "Données invalides, montant inférieur au minimum "
+                    "Données invalides, montant incorrect "
                     "ou bijouterie_id manquant."
                 )
             ),
 
             403: openapi.Response(
                 description=(
-                    "Accès refusé ou utilisateur non autorisé "
-                    "pour la bijouterie demandée."
+                    "Accès refusé ou bijouterie non accessible."
                 )
             ),
         },
@@ -146,7 +139,6 @@ class CreateOrDepotCompteView(APIView):
     )
     @transaction.atomic
     def post(self, request):
-
         role = get_role_name(request.user)
 
         if role not in self.ALLOWED_ROLES:
@@ -155,19 +147,25 @@ class CreateOrDepotCompteView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        serializer = CreateOrDepotCompteSerializer(data=request.data)
+        serializer = CreateOrDepotCompteSerializer(
+            data=request.data
+        )
         serializer.is_valid(raise_exception=True)
 
         client_data = serializer.validated_data["client"]
         montant = serializer.validated_data["montant"]
         telephone = client_data["telephone"]
-        bijouterie_id = serializer.validated_data.get("bijouterie_id")
+        bijouterie_id = serializer.validated_data.get(
+            "bijouterie_id"
+        )
 
         # =====================================================
         # BIJOUTERIES ACCESSIBLES
         # =====================================================
 
-        bijouteries = get_user_bijouteries(request.user)
+        bijouteries = get_user_bijouteries(
+            request.user
+        )
 
         if not bijouteries.exists():
             return Response(
@@ -182,8 +180,7 @@ class CreateOrDepotCompteView(APIView):
         # CASHIER
         # =====================================================
 
-        if role == "cashier":
-
+        if role == ROLE_CASHIER:
             user_bijouterie = bijouteries.first()
 
             if not user_bijouterie:
@@ -200,27 +197,28 @@ class CreateOrDepotCompteView(APIView):
         # =====================================================
 
         else:
-
             if not bijouterie_id:
                 return Response(
                     {
                         "detail":
-                        "Le champ bijouterie_id est obligatoire pour "
-                        "l'admin et le manager."
+                        "Le champ bijouterie_id est obligatoire "
+                        "pour l'admin et le manager."
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            user_bijouterie = bijouteries.filter(
-                id=bijouterie_id
-            ).first()
+            user_bijouterie = (
+                bijouteries
+                .filter(id=bijouterie_id)
+                .first()
+            )
 
             if not user_bijouterie:
                 return Response(
                     {
                         "detail":
-                        "Cette bijouterie est introuvable ou vous n'y "
-                        "avez pas accès."
+                        "Cette bijouterie est introuvable "
+                        "ou vous n'y avez pas accès."
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
@@ -237,11 +235,10 @@ class CreateOrDepotCompteView(APIView):
         )
 
         # =====================================================
-        # CLIENT EXISTANT
+        # CAS 1 : CLIENT EXISTANT
         # =====================================================
 
         if client:
-
             if not client.bijouterie_id:
                 return Response(
                     {
@@ -267,12 +264,11 @@ class CreateOrDepotCompteView(APIView):
                 .first()
             )
 
-            # -------------------------------------------------
+            # =================================================
             # CAS 1A : COMPTE EXISTANT
-            # -------------------------------------------------
+            # =================================================
 
             if compte:
-
                 tx = effectuer_depot(
                     compte_id=compte.id,
                     montant=montant,
@@ -285,7 +281,8 @@ class CreateOrDepotCompteView(APIView):
                 )
 
                 transaction.on_commit(
-                    lambda tx=tx: send_compte_depot_notification(tx)
+                    lambda tx=tx:
+                    send_compte_depot_notification(tx)
                 )
 
                 compte.refresh_from_db()
@@ -301,6 +298,11 @@ class CreateOrDepotCompteView(APIView):
                         "client":
                         ClientDepotSerializer(client).data,
 
+                        "bijouterie": {
+                            "id": user_bijouterie.id,
+                            "nom": user_bijouterie.nom,
+                        },
+
                         "compte": {
                             "id": compte.id,
                             "numero_compte": compte.numero_compte,
@@ -310,27 +312,23 @@ class CreateOrDepotCompteView(APIView):
 
                         "transaction":
                         CompteDepotTransactionSerializer(tx).data,
-
-                        "receipt_url":
-                        request.build_absolute_uri(
-                            f"/api/compte-depot/transactions/"
-                            f"{tx.id}/receipt/80mm/"
-                        ),
                     },
                     status=status.HTTP_200_OK,
                 )
 
-            # -------------------------------------------------
+            # =================================================
             # CAS 1B : CLIENT EXISTANT SANS COMPTE
-            # -------------------------------------------------
+            # =================================================
 
-            numero = self.generer_numero_compte(telephone)
+            numero = self.generer_numero_compte(
+                telephone
+            )
 
             compte = CompteDepot.objects.create(
                 client=client,
                 numero_compte=numero,
                 created_by=request.user,
-                solde=0,
+                solde=Decimal("0.00"),
             )
 
             tx = effectuer_depot(
@@ -365,6 +363,11 @@ class CreateOrDepotCompteView(APIView):
                     "client":
                     ClientDepotSerializer(client).data,
 
+                    "bijouterie": {
+                        "id": user_bijouterie.id,
+                        "nom": user_bijouterie.nom,
+                    },
+
                     "compte": {
                         "id": compte.id,
                         "numero_compte": compte.numero_compte,
@@ -374,12 +377,6 @@ class CreateOrDepotCompteView(APIView):
 
                     "transaction":
                     CompteDepotTransactionSerializer(tx).data,
-
-                    "receipt_url":
-                    request.build_absolute_uri(
-                        f"/api/compte-depot/transactions/"
-                        f"{tx.id}/receipt/80mm/"
-                    ),
                 },
                 status=status.HTTP_201_CREATED,
             )
@@ -393,13 +390,15 @@ class CreateOrDepotCompteView(APIView):
             bijouterie=user_bijouterie,
         )
 
-        numero = self.generer_numero_compte(telephone)
+        numero = self.generer_numero_compte(
+            telephone
+        )
 
         compte = CompteDepot.objects.create(
             client=client,
             numero_compte=numero,
             created_by=request.user,
-            solde=0,
+            solde=Decimal("0.00"),
         )
 
         tx = effectuer_depot(
@@ -408,8 +407,8 @@ class CreateOrDepotCompteView(APIView):
             user=request.user,
             reference="OUVERTURE_NOUVEAU_COMPTE",
             commentaire=(
-                "Nouveau client créé, compte ouvert "
-                "et crédité."
+                "Nouveau client créé, "
+                "compte ouvert et crédité."
             ),
         )
 
@@ -426,13 +425,18 @@ class CreateOrDepotCompteView(APIView):
         return Response(
             {
                 "message":
-                "Compte existant détecté, dépôt effectué avec succès.",
+                "Nouveau client créé, compte ouvert et crédité avec succès.",
 
                 "operation_type":
-                "deposit_existing_account",
+                "create_client_account_and_deposit",
 
                 "client":
                 ClientDepotSerializer(client).data,
+
+                "bijouterie": {
+                    "id": user_bijouterie.id,
+                    "nom": user_bijouterie.nom,
+                },
 
                 "compte": {
                     "id": compte.id,
@@ -444,12 +448,13 @@ class CreateOrDepotCompteView(APIView):
                 "transaction":
                 CompteDepotTransactionSerializer(tx).data,
             },
-            status=status.HTTP_200_OK,
+            status=status.HTTP_201_CREATED,
         )
 
     def generer_numero_compte(self, telephone):
-
-        date_str = timezone.now().strftime("%y%m")
+        date_str = timezone.localtime(
+            timezone.now()
+        ).strftime("%y%m")
 
         prefix = f"{telephone}-{date_str}"[:25]
 
@@ -459,7 +464,6 @@ class CreateOrDepotCompteView(APIView):
             return prefix
 
         for _ in range(10):
-
             suffix = uuid.uuid4().hex[:4].upper()
 
             numero = f"{prefix}-{suffix}"
@@ -469,10 +473,10 @@ class CreateOrDepotCompteView(APIView):
             ).exists():
                 return numero
 
-        raise Exception(
+        raise RuntimeError(
             "Impossible de générer un numéro de compte unique."
         )
-        
+
 
 class DepotView(APIView):
     permission_classes = [IsAuthenticated]
@@ -540,6 +544,9 @@ class DepotView(APIView):
                                 ),
                             },
                         ),
+                        "receipt_url": openapi.Schema(
+                            type=openapi.TYPE_STRING
+                        ),
                     },
                 ),
             ),
@@ -557,6 +564,7 @@ class DepotView(APIView):
     )
     @transaction.atomic
     def post(self, request):
+        
         role = get_role_name(request.user)
 
         if role not in {
@@ -659,9 +667,16 @@ class DepotView(APIView):
                     "numero_compte": compte.numero_compte,
                     "nouveau_solde": str(compte.solde),
                 },
+
+                "receipt_url":
+                request.build_absolute_uri(
+                    f"/api/compte-depot/transactions/"
+                    f"{tx.id}/receipt/80mm/"
+                ),
             },
             status=status.HTTP_201_CREATED,
         )
+
 
 # =========================================================
 # RETRAIT
@@ -802,6 +817,12 @@ class RetraitView(APIView):
                     "numero_compte": compte.numero_compte,
                     "nouveau_solde": str(compte.solde),
                 },
+
+                "receipt_url":
+                request.build_absolute_uri(
+                    f"/api/compte-depot/transactions/"
+                    f"{tx.id}/receipt/80mm/"
+                ),
             },
             status=status.HTTP_201_CREATED
         )
@@ -814,7 +835,6 @@ class GetSoldeAPIView(APIView):
     renderer_classes = [UserRenderer]
 
     @swagger_auto_schema(
-        operation_id="getCompteDepotSolde",
         operation_summary="Consulter le solde d’un compte dépôt",
         operation_description="""
         Récupérer le solde d’un compte dépôt via le téléphone du client.
@@ -835,64 +855,10 @@ class GetSoldeAPIView(APIView):
             )
         ],
         responses={
-            200: openapi.Response(
-                description="Solde récupéré avec succès",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "client": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "nom": openapi.Schema(
-                                    type=openapi.TYPE_STRING
-                                ),
-                                "prenom": openapi.Schema(
-                                    type=openapi.TYPE_STRING
-                                ),
-                                "telephone": openapi.Schema(
-                                    type=openapi.TYPE_STRING
-                                ),
-                            },
-                        ),
-                        "bijouterie": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "id": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER
-                                ),
-                                "nom": openapi.Schema(
-                                    type=openapi.TYPE_STRING
-                                ),
-                            },
-                        ),
-                        "compte": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "numero_compte": openapi.Schema(
-                                    type=openapi.TYPE_STRING
-                                ),
-                                "solde": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    example="60000.00",
-                                ),
-                                "created_at": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    format=openapi.FORMAT_DATETIME,
-                                ),
-                            },
-                        ),
-                    },
-                ),
-            ),
-            400: openapi.Response(
-                description="Paramètre invalide ou compte sans bijouterie"
-            ),
-            403: openapi.Response(
-                description="Accès refusé"
-            ),
-            404: openapi.Response(
-                description="Compte non trouvé"
-            ),
+            200: openapi.Response(description="Solde récupéré avec succès"),
+            400: openapi.Response(description="Paramètre invalide ou compte sans bijouterie"),
+            403: openapi.Response(description="Accès refusé"),
+            404: openapi.Response(description="Compte non trouvé"),
         },
         tags=["compte dépôt"],
     )
@@ -981,7 +947,6 @@ class ListerTousComptesAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_id="listCompteDepot",
         operation_summary="Lister les comptes dépôt",
         operation_description="""
         Liste les comptes dépôt accessibles à l'utilisateur.
@@ -1088,7 +1053,6 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_id="listCompteDepotTransactions",
         operation_summary="Lister les transactions compte dépôt",
         operation_description=(
             "Liste les transactions compte dépôt accessibles à l'utilisateur.\n\n"
@@ -1101,38 +1065,25 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
             openapi.Parameter(
                 "telephone",
                 openapi.IN_QUERY,
-                description="Téléphone partiel ou complet du client",
                 type=openapi.TYPE_STRING,
                 required=False,
             ),
             openapi.Parameter(
                 "numero_compte",
                 openapi.IN_QUERY,
-                description="Numéro de compte partiel ou complet",
                 type=openapi.TYPE_STRING,
                 required=False,
             ),
             openapi.Parameter(
                 "type_transaction",
                 openapi.IN_QUERY,
-                description="Type de transaction",
                 type=openapi.TYPE_STRING,
-                enum=[
-                    CompteDepotTransaction.TYPE_DEPOT,
-                    CompteDepotTransaction.TYPE_RETRAIT,
-                ],
                 required=False,
             ),
             openapi.Parameter(
                 "statut",
                 openapi.IN_QUERY,
-                description="Statut de la transaction",
                 type=openapi.TYPE_STRING,
-                enum=[
-                    CompteDepotTransaction.STAT_TERMINE,
-                    CompteDepotTransaction.STAT_ECHOUE,
-                    CompteDepotTransaction.STAT_ATTENTE,
-                ],
                 required=False,
             ),
             openapi.Parameter(
@@ -1920,98 +1871,98 @@ class CompteDepotDashboardAPIView(APIView):
 # =========================================================
 # RECU PDF 80MM
 # =========================================================
-# class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
+class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
+    permission_classes = [IsAuthenticated]
 
-#     @swagger_auto_schema(
-#         operation_id="compteDepotTransactionReceipt80mm",
-#         operation_summary="Reçu ticket 80mm d'une transaction compte dépôt",
-#         operation_description=(
-#             "Génère un reçu PDF thermique 80mm pour une transaction "
-#             "de compte dépôt.\n\n"
-#             "### Règles\n"
-#             "- Admin : toutes les bijouteries.\n"
-#             "- Manager : uniquement ses bijouteries.\n"
-#             "- Caissier : uniquement sa bijouterie.\n"
-#             "- Vendor : non autorisé."
-#         ),
-#         produces=["application/pdf"],
-#         responses={
-#             200: openapi.Response(
-#                 description="Reçu PDF 80mm généré avec succès"
-#             ),
-#             400: openapi.Response(
-#                 description="Transaction sans bijouterie"
-#             ),
-#             403: openapi.Response(
-#                 description="Accès refusé"
-#             ),
-#             404: openapi.Response(
-#                 description="Transaction introuvable"
-#             ),
-#         },
-#         tags=["compte dépôt"],
-#     )
-#     def get(self, request, transaction_id):
-#         role = get_role_name(request.user)
+    @swagger_auto_schema(
+        operation_id="compteDepotTransactionReceipt80mm",
+        operation_summary="Reçu ticket 80mm d'une transaction compte dépôt",
+        operation_description=(
+            "Génère un reçu PDF thermique 80mm pour une transaction "
+            "de compte dépôt.\n\n"
+            "### Règles\n"
+            "- Admin : toutes les bijouteries.\n"
+            "- Manager : uniquement ses bijouteries.\n"
+            "- Caissier : uniquement sa bijouterie.\n"
+            "- Vendor : non autorisé."
+        ),
+        produces=["application/pdf"],
+        responses={
+            200: openapi.Response(
+                description="Reçu PDF 80mm généré avec succès"
+            ),
+            400: openapi.Response(
+                description="Transaction sans bijouterie"
+            ),
+            403: openapi.Response(
+                description="Accès refusé"
+            ),
+            404: openapi.Response(
+                description="Transaction introuvable"
+            ),
+        },
+        tags=["compte dépôt"],
+    )
+    def get(self, request, transaction_id):
+        role = get_role_name(request.user)
 
-#         if role not in {
-#             ROLE_ADMIN,
-#             ROLE_MANAGER,
-#             ROLE_CASHIER,
-#         }:
-#             return Response(
-#                 {"message": "Accès refusé."},
-#                 status=status.HTTP_403_FORBIDDEN,
-#             )
+        if role not in {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_CASHIER,
+        }:
+            return Response(
+                {"message": "Accès refusé."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-#         try:
-#             tx = (
-#                 CompteDepotTransaction.objects
-#                 .select_related(
-#                     "compte",
-#                     "compte__client",
-#                     "compte__client__bijouterie",
-#                     "user",
-#                 )
-#                 .get(pk=transaction_id)
-#             )
-#         except CompteDepotTransaction.DoesNotExist:
-#             return Response(
-#                 {"detail": "Transaction introuvable."},
-#                 status=status.HTTP_404_NOT_FOUND,
-#             )
+        try:
+            tx = (
+                CompteDepotTransaction.objects
+                .select_related(
+                    "compte",
+                    "compte__client",
+                    "compte__client__bijouterie",
+                    "user",
+                )
+                .get(pk=transaction_id)
+            )
+        except CompteDepotTransaction.DoesNotExist:
+            return Response(
+                {"detail": "Transaction introuvable."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-#         client = tx.compte.client
+        client = tx.compte.client
 
-#         client_bijouterie = getattr(
-#             client,
-#             "bijouterie",
-#             None,
-#         )
+        client_bijouterie = getattr(
+            client,
+            "bijouterie",
+            None,
+        )
 
-#         if not client_bijouterie:
-#             return Response(
-#                 {
-#                     "detail":
-#                     "Cette transaction n'est liée à aucune bijouterie."
-#                 },
-#                 status=status.HTTP_400_BAD_REQUEST,
-#             )
+        if not client_bijouterie:
+            return Response(
+                {
+                    "detail":
+                    "Cette transaction n'est liée à aucune bijouterie."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-#         if not user_can_access_bijouterie(
-#             request.user,
-#             client_bijouterie,
-#         ):
-#             return Response(
-#                 {
-#                     "detail":
-#                     "Vous n'avez pas accès à cette transaction."
-#                 },
-#                 status=status.HTTP_403_FORBIDDEN,
-#             )
+        if not user_can_access_bijouterie(
+            request.user,
+            client_bijouterie,
+        ):
+            return Response(
+                {
+                    "detail":
+                    "Vous n'avez pas accès à cette transaction."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-#         return generate_transaction_ticket_80mm_pdf(
-#             tx,
-#             organisation_name="BIJOUTERIE RIO GOLD",
-#         )
+        return generate_transaction_ticket_80mm_pdf(
+            tx,
+            organisation_name="BIJOUTERIE RIO GOLD",
+        )
