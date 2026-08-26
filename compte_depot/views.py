@@ -1871,7 +1871,7 @@ class CompteDepotDashboardAPIView(APIView):
 # =========================================================
 # RECU PDF 80MM
 # =========================================================
-class CompteDepotTransactionReceiptAPIView(APIView):
+class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
