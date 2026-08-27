@@ -21,48 +21,6 @@ TWOPLACES = Decimal("0.01")
 ZERO = Decimal("0.00")
 
 
-# =========================
-# Client
-# =========================
-# class Client(models.Model):
-#     prenom = models.CharField(max_length=100)
-#     nom = models.CharField(max_length=100)
-#     telephone = models.CharField(max_length=15, unique=True, blank=True, null=True)
-
-#     @property
-#     def full_name(self):
-#         return f"{self.prenom} {self.nom}".strip()
-
-#     def __str__(self):
-#         return self.full_name
-
-# class Client(models.Model):
-#     prenom = models.CharField(max_length=100)
-#     nom = models.CharField(max_length=100)
-#     telephone = models.CharField(max_length=15,unique=True,blank=True,null=True,db_index=True)
-#     cni = models.CharField(max_length=50,unique=True,blank=True,null=True,db_index=True,verbose_name="Numéro CNI")
-#     address = models.CharField(max_length=255,blank=True,null=True,verbose_name="Adresse")
-#     #a chaque auto_now_add=True met de
-#     created_at = models.DateTimeField(auto_now_add=True)
-#     updated_at = models.DateTimeField(auto_now=True)
-
-#     class Meta:
-#         ordering = ["-id"]
-#         indexes = [
-#             models.Index(fields=["telephone"]),
-#             models.Index(fields=["cni"]),
-#         ]
-#         verbose_name = "Client"
-#         verbose_name_plural = "Clients"
-
-#     @property
-#     def full_name(self):
-#         return f"{self.prenom} {self.nom}".strip()
-
-#     def __str__(self):
-#         return self.full_name or self.telephone or f"Client #{self.pk}"
-    
-
 
 class Client(models.Model):
     user = models.OneToOneField(
@@ -169,13 +127,6 @@ class Vente(models.Model):
         null=True, blank=True,
         related_name="ventes",
     )
-
-    # vendor = models.ForeignKey(
-    #     "vendor.Vendor",
-    #     on_delete=models.PROTECT,
-    #     related_name="ventes",
-    #     db_index=True,
-    # )
     
     vendor = models.ForeignKey(
         "vendor.Vendor",
@@ -193,7 +144,7 @@ class Vente(models.Model):
         max_digits=14,
         decimal_places=2,
         default=Decimal("0.00"),
-        null=True,
+        # null=True,
     )
 
     delivered_at = models.DateTimeField(null=True, blank=True)
@@ -264,27 +215,70 @@ class Vente(models.Model):
         return total
 
 
-
 class VenteProduit(models.Model):
-    vente = models.ForeignKey("sale.Vente", on_delete=models.CASCADE, related_name="lignes")
-    produit = models.ForeignKey("store.Produit", on_delete=models.PROTECT)
+    vente = models.ForeignKey(
+        "sale.Vente",
+        on_delete=models.CASCADE,
+        related_name="lignes",
+    )
+
+    produit = models.ForeignKey(
+        "store.Produit",
+        on_delete=models.PROTECT,
+    )
 
     vendor = models.ForeignKey(
         "vendor.Vendor",
         on_delete=models.PROTECT,
         related_name="vente_produits",
-        null=True, blank=True,
+        null=True,
+        blank=True,
         db_index=True,
     )
 
     quantite = models.PositiveIntegerField(default=1)
 
-    prix_vente_grammes = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
-    montant_ht = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
-    montant_total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    # Prix du gramme figé au moment de la vente
+    prix_vente_grammes = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=ZERO,
+    )
 
-    remise = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"), null=True, blank=True)
-    autres = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
+    # Montant brut avant réduction/remise
+    montant_ht = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=ZERO,
+    )
+
+    # Montant final de la ligne avant TVA facture
+    montant_total = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=ZERO,
+    )
+
+    remise = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=ZERO,
+        null=True,
+        blank=True,
+    )
+
+    autres = models.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        default=ZERO,
+    )
+
+    # Snapshot de la réduction occasion
+    pourcentage_occasion = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=ZERO,
+    )
 
     class Meta:
         indexes = [
@@ -293,88 +287,292 @@ class VenteProduit(models.Model):
             models.Index(fields=["produit"]),
         ]
         constraints = [
-            CheckConstraint(check=Q(quantite__gte=1), name="ck_venteproduit_qty_gte_1"),
+            CheckConstraint(
+                check=Q(quantite__gte=1),
+                name="ck_venteproduit_qty_gte_1",
+            ),
+            CheckConstraint(
+                check=Q(prix_vente_grammes__gte=0),
+                name="ck_venteproduit_prix_gte_0",
+            ),
+            CheckConstraint(
+                check=Q(montant_ht__gte=0),
+                name="ck_venteproduit_montant_ht_gte_0",
+            ),
+            CheckConstraint(
+                check=Q(montant_total__gte=0),
+                name="ck_venteproduit_montant_total_gte_0",
+            ),
+            CheckConstraint(
+                check=Q(pourcentage_occasion__gte=0),
+                name="ck_venteproduit_occasion_gte_0",
+            ),
         ]
 
     def clean(self):
         super().clean()
 
-        if self.quantite < 1:
-            raise ValidationError({"quantite": "Doit être ≥ 1."})
+        # =====================================================
+        # Quantité
+        # =====================================================
 
-        for f in ("prix_vente_grammes", "remise", "autres"):
-            v = getattr(self, f)
-            if v is not None and Decimal(str(v)) < ZERO:
-                raise ValidationError({f: "Ne peut pas être négatif."})
+        if self.quantite < 1:
+            raise ValidationError({
+                "quantite": "Doit être ≥ 1."
+            })
+
+        # =====================================================
+        # Valeurs non négatives
+        # =====================================================
+
+        for field in (
+            "prix_vente_grammes",
+            "remise",
+            "autres",
+            "pourcentage_occasion",
+        ):
+            value = getattr(self, field)
+
+            if (
+                value is not None
+                and Decimal(str(value)) < ZERO
+            ):
+                raise ValidationError({
+                    field: "Ne peut pas être négatif."
+                })
+
+        # =====================================================
+        # Pourcentage occasion
+        # =====================================================
+
+        allowed = {
+            Decimal("0.00"),
+            Decimal("5.00"),
+            Decimal("10.00"),
+            Decimal("15.00"),
+            Decimal("20.00"),
+        }
+
+        pourcentage = Decimal(
+            str(self.pourcentage_occasion or ZERO)
+        )
+
+        if pourcentage not in allowed:
+            raise ValidationError({
+                "pourcentage_occasion": (
+                    "Valeur autorisée : "
+                    "0%, 5%, 10%, 15% ou 20%."
+                )
+            })
+
+        # =====================================================
+        # Produit occasion / neuf
+        # =====================================================
+
+        if self.produit_id:
+            etat = getattr(self.produit, "etat", None)
+
+            if etat == "O":
+                if pourcentage == ZERO:
+                    raise ValidationError({
+                        "pourcentage_occasion": (
+                            "Un produit d'occasion doit avoir "
+                            "une réduction de 5%, 10%, 15% ou 20%."
+                        )
+                    })
+
+            elif pourcentage != ZERO:
+                raise ValidationError({
+                    "pourcentage_occasion": (
+                        "La réduction occasion est réservée "
+                        "aux produits d'occasion."
+                    )
+                })
+
+        # =====================================================
+        # Cohérence vendeur / vente
+        # =====================================================
 
         if self.vente_id:
-            if self.vente.vendor_id and self.vendor_id and self.vendor_id != self.vente.vendor_id:
-                raise ValidationError({"vendor": "Le vendeur doit être identique à celui de la vente."})
+            if (
+                self.vente.vendor_id
+                and self.vendor_id
+                and self.vendor_id != self.vente.vendor_id
+            ):
+                raise ValidationError({
+                    "vendor": (
+                        "Le vendeur doit être identique "
+                        "à celui de la vente."
+                    )
+                })
+
+            # Héritage automatique du vendeur de la vente
             if self.vente.vendor_id and not self.vendor_id:
                 self.vendor = self.vente.vendor
-    
-    def _resolve_unit_price(self):
+
+    def _resolve_unit_price(self) -> Decimal:
         """
-        Le prix est déjà résolu par create_sale_one_vendor().
+        Le prix/gramme doit déjà être résolu par
+        create_sale_one_vendor().
         """
 
-        prix = Decimal(str(self.prix_vente_grammes or ZERO))
+        prix = Decimal(
+            str(self.prix_vente_grammes or ZERO)
+        )
 
         if prix <= ZERO:
             raise ValidationError({
-                "prix_vente_grammes": "Prix de vente obligatoire."
+                "prix_vente_grammes": (
+                    "Prix de vente obligatoire."
+                )
             })
 
         return prix
 
+    def _get_produit_weight(self) -> Decimal:
+        """
+        Retourne le poids du produit en grammes.
+        """
 
-    def _get_produit_weight(self):
-        """
-        Récupère le poids du produit.
-        """
+        if not self.produit_id:
+            raise ValidationError({
+                "produit": "Produit obligatoire."
+            })
 
         produit = self.produit
 
-        poids = getattr(produit, "poids", None) or getattr(produit, "poids_grammes", None)
+        poids = (
+            getattr(produit, "poids", None)
+            or getattr(produit, "poids_grammes", None)
+        )
 
-        if poids is None or Decimal(str(poids)) <= 0:
+        if poids is None:
             raise ValidationError({
-                "produit": f"Poids invalide ou manquant pour le produit {produit.nom}."
+                "produit": (
+                    f"Poids manquant pour le produit "
+                    f"{produit.nom}."
+                )
             })
 
-        return Decimal(str(poids))
-    
+        poids = Decimal(str(poids))
+
+        if poids <= ZERO:
+            raise ValidationError({
+                "produit": (
+                    f"Poids invalide pour le produit "
+                    f"{produit.nom}."
+                )
+            })
+
+        return poids
+
     def save(self, *args, **kwargs):
+        # =====================================================
+        # Validation
+        # =====================================================
+
         self.full_clean()
+
+        # =====================================================
+        # Données de calcul
+        # =====================================================
 
         unit_price = self._resolve_unit_price()
         weight = self._get_produit_weight()
         qte = int(self.quantite or 0)
 
+        # =====================================================
+        # Montant HT brut
+        # prix gramme × poids × quantité
+        # =====================================================
+
         base_ht = unit_price * weight * qte
-        self.montant_ht = base_ht.quantize(TWOPLACES, rounding=ROUND_HALF_UP)
 
-        remise_v = Decimal(str(self.remise or ZERO))
-        autres_v = Decimal(str(self.autres or ZERO))
+        self.montant_ht = base_ht.quantize(
+            TWOPLACES,
+            rounding=ROUND_HALF_UP,
+        )
 
-        total = self.montant_ht - remise_v + autres_v
+        # =====================================================
+        # Valeurs complémentaires
+        # =====================================================
+
+        remise_v = Decimal(
+            str(self.remise or ZERO)
+        )
+
+        autres_v = Decimal(
+            str(self.autres or ZERO)
+        )
+
+        pourcentage_occasion_v = Decimal(
+            str(self.pourcentage_occasion or ZERO)
+        )
+
+        # =====================================================
+        # Réduction occasion
+        # =====================================================
+
+        reduction_occasion = ZERO
+
+        if (
+            self.produit_id
+            and getattr(self.produit, "etat", None) == "O"
+        ):
+            reduction_occasion = (
+                self.montant_ht
+                * pourcentage_occasion_v
+                / Decimal("100")
+            ).quantize(
+                TWOPLACES,
+                rounding=ROUND_HALF_UP,
+            )
+
+        # =====================================================
+        # Montant final ligne
+        #
+        # HT
+        # - réduction occasion
+        # - remise
+        # + autres
+        #
+        # TVA NON appliquée ici.
+        # =====================================================
+
+        total = (
+            self.montant_ht
+            - reduction_occasion
+            - remise_v
+            + autres_v
+        )
+
         if total < ZERO:
             total = ZERO
 
-        self.montant_total = total.quantize(TWOPLACES, rounding=ROUND_HALF_UP)
+        self.montant_total = total.quantize(
+            TWOPLACES,
+            rounding=ROUND_HALF_UP,
+        )
+
+        # =====================================================
+        # Sauvegarde
+        # =====================================================
 
         super().save(*args, **kwargs)
 
-        if self.vente_id and hasattr(self.vente, "mettre_a_jour_montant_total"):
-            try:
-                self.vente.mettre_a_jour_montant_total()
-            except Exception:
-                pass
+        # =====================================================
+        # Recalcul total Vente
+        # =====================================================
+
+        if (
+            self.vente_id
+            and hasattr(
+                self.vente,
+                "mettre_a_jour_montant_total",
+            )
+        ):
+            self.vente.mettre_a_jour_montant_total()
             
-
-
-ZERO = Decimal("0.00")
-TWOPLACES = Decimal("0.01")
 
 
 class Facture(models.Model):
@@ -401,6 +599,7 @@ class Facture(models.Model):
     )
 
     # uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    # uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False,db_index=True,)
     uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
     numero_facture = models.CharField(max_length=32, editable=False)
 
@@ -439,14 +638,22 @@ class Facture(models.Model):
     )
 
     # Montants calculés
+    # montant_tva = models.DecimalField(
+    #     max_digits=12,
+    #     decimal_places=2,
+    #     null=True,
+    #     blank=True,
+    #     default=None
+    # )
+    
     montant_tva = models.DecimalField(
-        max_digits=12,
+        max_digits=14,
         decimal_places=2,
         null=True,
         blank=True,
-        default=None
+        default=None,
     )
-    
+        
     frais_transaction = models.DecimalField(
         max_digits=14,
         decimal_places=2,
@@ -517,8 +724,7 @@ class Facture(models.Model):
         ]
         constraints = [
             CheckConstraint(check=Q(montant_ht__gte=0), name="facture_montant_ht_gte_0"),
-            CheckConstraint(check=Q(taux_tva__isnull=True) | Q(taux_tva__gte=0),name="facture_taux_tva_gte_0",),
-            CheckConstraint(check=Q(taux_tva__lte=100), name="facture_taux_tva_lte_100"),
+            CheckConstraint(check=Q(taux_tva__isnull=True) | Q(taux_tva__lte=100),name="facture_taux_tva_lte_100",),
             CheckConstraint(check=Q(montant_tva__isnull=True) | Q(montant_tva__gte=0),name="facture_montant_tva_gte_0",),
             CheckConstraint(check=Q(montant_total__gte=0), name="facture_montant_total_gte_0"),
             models.UniqueConstraint(

@@ -1206,44 +1206,6 @@ class ModeleDeleteAPIView(APIView):
         modele_instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-# class ProduitListAPIView(ListAPIView):
-#     serializer_class = ProduitSerializer
-#     permission_classes = [IsAuthenticated]
-
-#     def get_queryset(self):
-#         role = get_role_name(self.request.user)
-
-#         if role not in {
-#             ROLE_ADMIN,
-#             ROLE_MANAGER,
-#             ROLE_VENDOR,
-#         }:
-#             return Produit.objects.none()
-
-#         queryset = (
-#             Produit.objects
-#             .select_related(
-#                 "categorie",
-#                 "marque",
-#                 "modele",
-#                 "purete",
-#             )
-#             .prefetch_related(
-#                 "produit_gallery",
-#             )
-#             .order_by("-id")
-#         )
-
-#         search = self.request.query_params.get("search")
-
-#         if search:
-#             queryset = queryset.filter(
-#                 sku__icontains=search
-#             )
-
-#         return queryset
-
-    
 
 class ProduitListAPIView(ListAPIView):
     serializer_class = ProduitSerializer

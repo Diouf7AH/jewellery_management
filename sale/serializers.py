@@ -271,84 +271,28 @@ class ClientInSerializer(serializers.Serializer):
     prenom = serializers.CharField(required=True, allow_blank=False)
     telephone = serializers.CharField(required=False, allow_blank=True)
 
-
-# class VenteProduitInSerializer(serializers.Serializer):
-#     produit_id = serializers.IntegerField(min_value=1)
-#     quantite = serializers.IntegerField(min_value=1)
-
-#     prix_vente_grammes = serializers.DecimalField(
-#         max_digits=12,
-#         decimal_places=2,
-#         required=False,
-#         allow_null=True,
-#     )
-#     remise = serializers.DecimalField(
-#         max_digits=12,
-#         decimal_places=2,
-#         required=False,
-#         allow_null=True,
-#         default=Decimal("0.00"),
-#     )
-#     autres = serializers.DecimalField(
-#         max_digits=12,
-#         decimal_places=2,
-#         required=False,
-#         allow_null=True,
-#         default=Decimal("0.00"),
-#     )
-    
-
-#     class Meta:
-#         ref_name = "VenteProduitIn"
-
-#     def to_internal_value(self, data):
-#         data = data.copy()
-
-#         # ✅ helper local
-#         def clean_decimal_field(field_name, default_zero=False):
-#             value = data.get(field_name, None)
-
-#             if value is None:
-#                 if default_zero:
-#                     data[field_name] = "0.00"
-#                 return
-
-#             if isinstance(value, str):
-#                 value = value.strip()
-
-#                 if value == "":
-#                     data[field_name] = "0.00" if default_zero else None
-#                     return
-
-#             data[field_name] = value
-
-#         # prix_vente_grammes peut être absent/null
-#         clean_decimal_field("prix_vente_grammes", default_zero=False)
-
-#         # ceux-ci doivent retomber à 0 si vide
-#         clean_decimal_field("remise", default_zero=True)
-#         clean_decimal_field("autres", default_zero=True)
-#         clean_decimal_field("tax", default_zero=True)
-
-#         return super().to_internal_value(data)
-
-#     def validate(self, attrs):
-#         for field in ("prix_vente_grammes", "remise", "autres"):
-#             value = attrs.get(field)
-#             if value is not None and value < 0:
-#                 raise serializers.ValidationError({
-#                     field: "Ne peut pas être négatif."
-#                 })
-#         return attrs
 class VenteProduitInSerializer(serializers.Serializer):
-    produit_id = serializers.IntegerField(min_value=1, required=False)
-    sku = serializers.CharField(required=False, allow_blank=True)
-    qr = serializers.CharField(required=False, allow_blank=True)
+    produit_id = serializers.IntegerField(
+        min_value=1,
+        required=False,
+    )
 
-    quantite = serializers.IntegerField(min_value=1)
+    sku = serializers.CharField(
+        required=False,
+        allow_blank=True,
+    )
+
+    qr = serializers.CharField(
+        required=False,
+        allow_blank=True,
+    )
+
+    quantite = serializers.IntegerField(
+        min_value=1,
+    )
 
     prix_vente_grammes = serializers.DecimalField(
-        max_digits=12,
+        max_digits=14,
         decimal_places=2,
         required=False,
         allow_null=True,
@@ -356,7 +300,7 @@ class VenteProduitInSerializer(serializers.Serializer):
     )
 
     remise = serializers.DecimalField(
-        max_digits=12,
+        max_digits=14,
         decimal_places=2,
         required=False,
         allow_null=True,
@@ -364,7 +308,7 @@ class VenteProduitInSerializer(serializers.Serializer):
     )
 
     autres = serializers.DecimalField(
-        max_digits=12,
+        max_digits=14,
         decimal_places=2,
         required=False,
         allow_null=True,
@@ -372,13 +316,32 @@ class VenteProduitInSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
-        if not attrs.get("produit_id") and not attrs.get("sku") and not attrs.get("qr"):
+        produit_id = attrs.get("produit_id")
+        sku = (attrs.get("sku") or "").strip()
+        qr = (attrs.get("qr") or "").strip()
+
+        identifiers = [
+            bool(produit_id),
+            bool(sku),
+            bool(qr),
+        ]
+
+        if sum(identifiers) == 0:
             raise serializers.ValidationError(
                 "Vous devez fournir produit_id, sku ou qr."
             )
+
+        if sum(identifiers) > 1:
+            raise serializers.ValidationError(
+                "Fournissez un seul identifiant produit : produit_id, sku ou qr."
+            )
+
+        attrs["sku"] = sku
+        attrs["qr"] = qr
+
         return attrs
-
-
+    
+    
 class VenteCreateInSerializer(serializers.Serializer):
     """
     - vendor : vendor_email non utilisé

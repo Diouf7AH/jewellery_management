@@ -87,15 +87,27 @@ def dec(v):
         return ZERO
 
 
-@transaction.atomic
-def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Facture, int]:
-    """
-    Création vente PROFORMA.
+ZERO = Decimal("0.00")
 
-    IMPORTANT :
-    - Ne consomme PAS le stock ici
-    - Vérifie seulement disponibilité stock vendeur
-    - La consommation FIFO sera faite au paiement
+
+@transaction.atomic
+def create_sale_one_vendor(
+    *,
+    user,
+    role: str,
+    payload: Dict,
+) -> tuple[Vente, Facture, int]:
+
+    """
+    Création vente PROFORMA pour un seul vendeur.
+
+    Règles :
+    - ne consomme PAS le stock ici ;
+    - vérifie uniquement la disponibilité VendorStock ;
+    - le stock sera consommé au paiement ;
+    - le prix/gramme est figé dans VenteProduit ;
+    - le pourcentage occasion est figé dans VenteProduit ;
+    - la TVA est figée dans Facture.
     """
 
     client_in = payload.get("client") or {}
@@ -107,13 +119,12 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
         })
 
     # =========================================================
-    # Agrégation des produits
-    # évite doublons produit dans payload
+    # 1. Agrégation produits
     # =========================================================
+
     grouped = {}
 
     for item in items:
-
         produit_id = item.get("produit_id")
 
         if not produit_id:
@@ -123,12 +134,17 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
 
         try:
             pid = int(produit_id)
-        except Exception:
+        except (TypeError, ValueError):
             raise ValidationError({
                 "produit_id": "Doit être un entier."
             })
 
-        qty = int(item.get("quantite") or 0)
+        try:
+            qty = int(item.get("quantite") or 0)
+        except (TypeError, ValueError):
+            raise ValidationError({
+                f"produit_{pid}": "Quantité invalide."
+            })
 
         if qty <= 0:
             raise ValidationError({
@@ -138,7 +154,9 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
         if pid not in grouped:
             grouped[pid] = {
                 "quantite": 0,
-                "prix_vente_grammes": dec(item.get("prix_vente_grammes")),
+                "prix_vente_grammes": dec(
+                    item.get("prix_vente_grammes")
+                ),
                 "remise": dec(item.get("remise")) or ZERO,
                 "autres": dec(item.get("autres")) or ZERO,
             }
@@ -146,8 +164,9 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
         grouped[pid]["quantite"] += qty
 
     # =========================================================
-    # Résolution vendeur + bijouterie
+    # 2. Résolution vendeur + bijouterie
     # =========================================================
+
     vendor, bijouterie = resolve_vendor_and_bijouterie_for_sale(
         role=role,
         user=user,
@@ -155,8 +174,9 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
     )
 
     # =========================================================
-    # Client optionnel
+    # 3. Client optionnel
     # =========================================================
+
     nom = (client_in.get("nom") or "").strip()
     prenom = (client_in.get("prenom") or "").strip()
     tel = (client_in.get("telephone") or "").strip()
@@ -164,11 +184,10 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
     client = None
 
     if nom and prenom:
-
         lookup = (
             {"telephone": tel}
-            if tel else
-            {"nom": nom, "prenom": prenom}
+            if tel
+            else {"nom": nom, "prenom": prenom}
         )
 
         client, _ = Client.objects.get_or_create(
@@ -186,19 +205,32 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
         })
 
     # =========================================================
-    # Préchargement produits
+    # 4. Préchargement produits
     # =========================================================
+
     produit_ids = list(grouped.keys())
 
     produits_qs = (
         Produit.objects
-        .select_related("marque", "purete")
+        .select_related(
+            "marque",
+            "purete",
+            "categorie",
+            "modele",
+        )
         .filter(id__in=produit_ids)
     )
 
-    produits = {p.id: p for p in produits_qs}
+    produits = {
+        produit.id: produit
+        for produit in produits_qs
+    }
 
-    missing = [pid for pid in produit_ids if pid not in produits]
+    missing = [
+        pid
+        for pid in produit_ids
+        if pid not in produits
+    ]
 
     if missing:
         raise ValidationError({
@@ -206,20 +238,27 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
         })
 
     # =========================================================
-    # Tarifs marque/pureté
+    # 5. Tarifs MarquePurete
     # =========================================================
+
     pairs = {
-        (p.marque_id, p.purete_id)
-        for p in produits.values()
-        if p.marque_id and p.purete_id
+        (produit.marque_id, produit.purete_id)
+        for produit in produits.values()
+        if produit.marque_id and produit.purete_id
     }
 
     tarifs = {}
 
     if pairs:
+        marques = {
+            marque_id
+            for marque_id, _ in pairs
+        }
 
-        marques = [m for (m, _) in pairs]
-        puretes = [p for (_, p) in pairs]
+        puretes = {
+            purete_id
+            for _, purete_id in pairs
+        }
 
         mp_qs = MarquePurete.objects.filter(
             marque_id__in=marques,
@@ -227,15 +266,18 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
         )
 
         for mp in mp_qs:
-            tarifs[(mp.marque_id, mp.purete_id)] = Decimal(str(mp.prix))
+            tarifs[
+                (mp.marque_id, mp.purete_id)
+            ] = Decimal(str(mp.prix))
 
     # =========================================================
-    # Vérification stock vendeur
+    # 6. Vérification stock vendeur
+    #
     # IMPORTANT :
-    # pas de consommation ici
+    # aucune consommation ici
     # =========================================================
-    for pid, data_item in grouped.items():
 
+    for pid, data_item in grouped.items():
         produit = produits[pid]
         qte = data_item["quantite"]
 
@@ -247,8 +289,9 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
         )
 
     # =========================================================
-    # Création vente
+    # 7. Création Vente
     # =========================================================
+
     vente = Vente.objects.create(
         client=client,
         created_by=user,
@@ -257,29 +300,55 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
     )
 
     # =========================================================
-    # Création lignes vente
+    # 8. Création lignes VenteProduit
     # =========================================================
+
     for pid, data_item in grouped.items():
-
         produit = produits[pid]
-
         qte = data_item["quantite"]
 
-        prix_vente = data_item["prix_vente_grammes"]
+        prix_vente = data_item[
+            "prix_vente_grammes"
+        ]
 
-        # fallback prix marque/pureté
-        if prix_vente is None or prix_vente <= 0:
+        # -----------------------------------------------------
+        # Prix gramme
+        # -----------------------------------------------------
 
+        if prix_vente is None or prix_vente <= ZERO:
             prix_vente = tarifs.get(
-                (produit.marque_id, produit.purete_id)
+                (
+                    produit.marque_id,
+                    produit.purete_id,
+                )
             )
 
-            if prix_vente is None or prix_vente <= 0:
+            if prix_vente is None or prix_vente <= ZERO:
                 raise ValidationError({
                     f"produit_{pid}": (
-                        f"Tarif manquant pour {produit.nom}."
+                        f"Tarif manquant pour "
+                        f"{produit.nom}."
                     )
                 })
+
+        # -----------------------------------------------------
+        # Snapshot pourcentage occasion
+        # -----------------------------------------------------
+
+        if getattr(produit, "etat", None) == "O":
+            pourcentage_occasion = Decimal(
+                str(
+                    produit.pourcentage_occasion
+                    or ZERO
+                )
+            )
+        else:
+            pourcentage_occasion = ZERO
+
+        # -----------------------------------------------------
+        # Création ligne
+        # VenteProduit.save() calcule montant_ht / montant_total
+        # -----------------------------------------------------
 
         VenteProduit.objects.create(
             vente=vente,
@@ -289,21 +358,26 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
             prix_vente_grammes=prix_vente,
             remise=data_item["remise"],
             autres=data_item["autres"],
+            pourcentage_occasion=pourcentage_occasion,
         )
 
     # =========================================================
-    # Recalcul total vente
+    # 9. Recalcul montant Vente
     # =========================================================
+
     vente.mettre_a_jour_montant_total()
 
     # =========================================================
-    # Création facture PROFORMA
+    # 10. Snapshot TVA
     # =========================================================
-    apply_tva = bool(
-        getattr(bijouterie, "appliquer_tva", False)
-    )
 
-    taux_tva = None
+    apply_tva = bool(
+        getattr(
+            bijouterie,
+            "appliquer_tva",
+            False,
+        )
+    )
 
     if apply_tva:
         taux_tva = Decimal(
@@ -311,19 +385,28 @@ def create_sale_one_vendor(*, user, role: str, payload: Dict) -> tuple[Vente, Fa
                 getattr(
                     bijouterie,
                     "taux_tva",
-                    "0.00"
-                ) or "0.00"
+                    ZERO,
+                )
+                or ZERO
             )
         )
+    else:
+        taux_tva = ZERO
+
+    # =========================================================
+    # 11. Création facture PROFORMA
+    # =========================================================
 
     facture = Facture.objects.create(
         vente=vente,
         bijouterie=bijouterie,
 
-        montant_ht=vente.montant_total or ZERO,
+        montant_ht=(
+            vente.montant_total
+            or ZERO
+        ),
 
         appliquer_tva=apply_tva,
-
         taux_tva=taux_tva,
 
         status=Facture.STAT_NON_PAYE,

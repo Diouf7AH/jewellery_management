@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from io import BytesIO
 from uuid import UUID
 
@@ -290,20 +290,82 @@ class VenteProduitCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        lignes = [
-            {
+        lignes = []
+
+        for ligne in vente.lignes.select_related("produit").all():
+            pourcentage_occasion = Decimal(
+                str(ligne.pourcentage_occasion or "0.00")
+            )
+
+            montant_ht = Decimal(
+                str(ligne.montant_ht or "0.00")
+            )
+
+            reduction_occasion = (
+                montant_ht
+                * pourcentage_occasion
+                / Decimal("100")
+            ).quantize(
+                Decimal("0.01"),
+                rounding=ROUND_HALF_UP,
+            )
+
+            lignes.append({
                 "ligne_id": ligne.id,
                 "produit_id": ligne.produit_id,
-                "produit_nom": getattr(ligne.produit, "nom", None),
+                "produit_nom": getattr(
+                    ligne.produit,
+                    "nom",
+                    None,
+                ),
+
+                "sku": getattr(
+                    ligne.produit,
+                    "sku",
+                    None,
+                ),
+
+                "etat": getattr(
+                    ligne.produit,
+                    "etat",
+                    None,
+                ),
+
                 "quantite": ligne.quantite,
-                "prix_vente_grammes": str(ligne.prix_vente_grammes),
-                "montant_ht": str(ligne.montant_ht),
-                "remise": str(ligne.remise or 0),
-                "autres": str(ligne.autres or 0),
-                "montant_total": str(ligne.montant_total or 0),
-            }
-            for ligne in vente.lignes.select_related("produit").all()
-        ]
+
+                "prix_vente_grammes": str(
+                    ligne.prix_vente_grammes
+                ),
+
+                # Brut avant réductions
+                "montant_ht": str(
+                    ligne.montant_ht
+                ),
+
+                # Snapshot occasion
+                "pourcentage_occasion": str(
+                    pourcentage_occasion
+                ),
+
+                # Montant réellement retiré
+                "reduction_occasion": str(
+                    reduction_occasion
+                ),
+
+                # Remise commerciale éventuelle
+                "remise": str(
+                    ligne.remise or Decimal("0.00")
+                ),
+
+                "autres": str(
+                    ligne.autres or Decimal("0.00")
+                ),
+
+                # HT final ligne avant TVA facture
+                "montant_total": str(
+                    ligne.montant_total or Decimal("0.00")
+                ),
+            })
 
         client = getattr(vente, "client", None)
 

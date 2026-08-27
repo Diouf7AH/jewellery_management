@@ -232,7 +232,13 @@ def _draw_table_header(c, left, right, y_top):
 
 
 def _draw_lines(c, left, right, y_top, data):
-    cols = _draw_table_header(c, left, right, y_top)
+    cols = _draw_table_header(
+        c,
+        left,
+        right,
+        y_top,
+    )
+
     yrow = y_top - 16 * mm
     lines = data.get("lines") or []
 
@@ -246,32 +252,148 @@ def _draw_lines(c, left, right, y_top, data):
 
         max_rows += 1
 
+        # =====================================================
+        # Ligne alternée
+        # =====================================================
+
         if i % 2 == 0:
             c.setFillColor(MID)
-            c.rect(left, yrow - 5 * mm, right - left, 7 * mm, stroke=0, fill=1)
+
+            c.rect(
+                left,
+                yrow - 6 * mm,
+                right - left,
+                9 * mm,
+                stroke=0,
+                fill=1,
+            )
+
+        # =====================================================
+        # Valeurs
+        # =====================================================
+
+        label = li.get("label") or ""
+        qty = _int(li.get("qty"))
+        pu = _dec(li.get("pu"))
+        total = _dec(li.get("total"))
+
+        pourcentage_occasion = _dec(
+            li.get("pourcentage_occasion")
+        )
+
+        reduction_occasion = _dec(
+            li.get("reduction_occasion")
+        )
+
+        # =====================================================
+        # Ligne principale
+        # =====================================================
 
         c.setFillColor(DARK)
-        c.drawString(cols["n"], yrow, str(i))
-        c.drawString(cols["label"], yrow, _truncate(li.get("label") or "", 42))
-        c.drawRightString(cols["qty"], yrow, str(_int(li.get("qty"))))
-        c.drawRightString(cols["pu"], yrow, money_fcfa(_dec(li.get("pu"))))
-        c.drawRightString(cols["ttc"], yrow, money_fcfa(_dec(li.get("ttc"))))
+        c.setFont("Helvetica", 10)
+
+        c.drawString(
+            cols["n"],
+            yrow,
+            str(i),
+        )
+
+        c.drawString(
+            cols["label"],
+            yrow,
+            _truncate(label, 42),
+        )
+
+        c.drawRightString(
+            cols["qty"],
+            yrow,
+            str(qty),
+        )
+
+        c.drawRightString(
+            cols["pu"],
+            yrow,
+            money_fcfa(pu),
+        )
+
+        c.drawRightString(
+            cols["ttc"],
+            yrow,
+            money_fcfa(total),
+        )
+
+        # =====================================================
+        # Réduction occasion
+        # =====================================================
+
+        if pourcentage_occasion > 0:
+            pourcentage_txt = (
+                str(int(pourcentage_occasion))
+                if (
+                    pourcentage_occasion
+                    == pourcentage_occasion.to_integral()
+                )
+                else str(pourcentage_occasion)
+            )
+
+            c.setFillColor(MUTED)
+            c.setFont(
+                "Helvetica-Oblique",
+                7,
+            )
+
+            c.drawString(
+                cols["label"],
+                yrow - 3 * mm,
+                (
+                    f"Occasion -{pourcentage_txt}% "
+                    f"(-{money_fcfa(reduction_occasion)})"
+                ),
+            )
+
+        # =====================================================
+        # Séparateur
+        # =====================================================
 
         c.setStrokeColor(LINE)
         c.setLineWidth(0.25)
-        c.line(left, yrow - 3 * mm, right, yrow - 3 * mm)
 
-        yrow -= 8 * mm
+        c.line(
+            left,
+            yrow - 5 * mm,
+            right,
+            yrow - 5 * mm,
+        )
+
+        # =====================================================
+        # Espacement
+        # =====================================================
+
+        if pourcentage_occasion > 0:
+            yrow -= 10 * mm
+        else:
+            yrow -= 8 * mm
+
+    # =========================================================
+    # Si trop de lignes
+    # =========================================================
 
     if len(lines) > max_rows:
         c.setFillColor(MUTED)
-        c.setFont("Helvetica-Oblique", 7)
+        c.setFont(
+            "Helvetica-Oblique",
+            7,
+        )
+
         c.drawString(
             left,
             72 * mm,
-            f"... {len(lines) - max_rows} ligne(s) supplémentaire(s) non affichée(s)",
+            (
+                f"... {len(lines) - max_rows} "
+                f"ligne(s) supplémentaire(s) non affichée(s)"
+            ),
         )
-
+        
 
 # def _draw_conditions_box(c, x, y):
 #     box_w = 60 * mm

@@ -295,6 +295,7 @@ class ProduitSerializer(serializers.ModelSerializer):
             "poids",
             "taille",
             "etat",
+            "pourcentage_occasion",
         )
 
     def get_prix_vente_gramme(self, obj):
@@ -408,6 +409,20 @@ class ProduitSerializer(serializers.ModelSerializer):
             or getattr(self.instance, "purete", None)
         )
 
+        etat = (
+            attrs.get("etat")
+            or getattr(self.instance, "etat", None)
+        )
+
+        pourcentage_occasion = attrs.get(
+            "pourcentage_occasion",
+            getattr(
+                self.instance,
+                "pourcentage_occasion",
+                Decimal("0.00"),
+            )
+        )
+
         if marque and purete:
             exists = MarquePurete.objects.filter(
                 marque=marque,
@@ -427,6 +442,42 @@ class ProduitSerializer(serializers.ModelSerializer):
                             "pour cette combinaison."
                         ),
                     }
+                })
+
+        allowed = {
+            Decimal("0.00"),
+            Decimal("5.00"),
+            Decimal("10.00"),
+            Decimal("15.00"),
+            Decimal("20.00"),
+        }
+
+        pourcentage = Decimal(
+            str(pourcentage_occasion or "0.00")
+        )
+
+        if pourcentage not in allowed:
+            raise serializers.ValidationError({
+                "pourcentage_occasion": (
+                    "Valeur autorisée : 0%, 5%, 10%, 15% ou 20%."
+                )
+            })
+
+        if etat == "O":
+            if pourcentage == Decimal("0.00"):
+                raise serializers.ValidationError({
+                    "pourcentage_occasion": (
+                        "Un produit d'occasion doit avoir "
+                        "une réduction de 5%, 10%, 15% ou 20%."
+                    )
+                })
+        else:
+            if pourcentage != Decimal("0.00"):
+                raise serializers.ValidationError({
+                    "pourcentage_occasion": (
+                        "La réduction occasion est réservée "
+                        "aux produits d'occasion."
+                    )
                 })
 
         return attrs

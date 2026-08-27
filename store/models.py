@@ -54,6 +54,14 @@ ETAT = (
     ("O", "Occasion")
 )
 
+
+POURCENTAGE_OCCASION_CHOICES = (
+    (Decimal("5.00"), "5%"),
+    (Decimal("10.00"), "10%"),
+    (Decimal("15.00"), "15%"),
+    (Decimal("20.00"), "20%"),
+)
+
 # store/models.py
 class Bijouterie(models.Model):
     nom = models.CharField(max_length=30, unique=True, null=True)
@@ -356,6 +364,15 @@ class Produit(models.Model):
 
     genre = models.CharField(choices=GENRE, default="F", max_length=10)
     etat = models.CharField(choices=ETAT, max_length=10, default="N")
+    
+    pourcentage_occasion = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        choices=POURCENTAGE_OCCASION_CHOICES,
+        null=True,
+        blank=True,
+        help_text="Réduction appliquée uniquement aux produits d'occasion.",
+    )
 
     sku = models.SlugField(unique=True,max_length=120,null=True,blank=True,)
     slug = models.SlugField(max_length=120,unique=True,null=True,blank=True,)
@@ -386,6 +403,20 @@ class Produit(models.Model):
         if self.taille is not None and self.taille < 0:
             raise ValidationError({
                 "taille": "La taille ne peut pas être négative."
+            })
+            
+        if self.etat != "O" and self.pourcentage_occasion:
+            raise ValidationError({
+                "pourcentage_occasion": (
+                    "Le pourcentage occasion est réservé aux produits d'occasion."
+                )
+            })
+
+        if self.etat == "O" and not self.pourcentage_occasion:
+            raise ValidationError({
+                "pourcentage_occasion": (
+                    "Veuillez choisir une réduction : 5%, 10%, 15% ou 20%."
+                )
             })
 
 
