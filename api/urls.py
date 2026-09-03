@@ -309,6 +309,8 @@ urlpatterns = [
     path("depenses/export-excel/", finance_views.ExportDepensesExcelView.as_view()),
     
     # e-cmmerce
+    path("ecommerce/home/",e_commerce_views.EcommerceHomeView.as_view(),name="ecommerce-home",),
+    path("ecommerce/banner/manage/<int:pk>/",e_commerce_views.EcommerceBannerManageView.as_view(),name="ecommerce-banner-manage",),
     path("ecommerce/commandes/",e_commerce_views.CommandeEcommerceCreateView.as_view(),name="ecommerce-commande-create",),
     path("ecommerce/commandes/<uuid:uuid>/",e_commerce_views.CommandeEcommerceDetailView.as_view(),name="ecommerce-commande-detail",),
     path("ecommerce/paiements/initier/",e_commerce_views.EcommercePaymentInitiateView.as_view(),name="ecommerce-payment-initiate",),

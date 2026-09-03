@@ -9,6 +9,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from backend.permissions import IsAdminOrManager
 from e_commerce.models import (CommandeEcommerce, EcommerceBanner,
                                EcommerceBannerNouveauArrivage,
                                PaiementEcommerce)
@@ -27,32 +28,22 @@ from e_commerce.services.signatures_paiement import (
     verifier_signature_wave)
 from sale.models import Client
 
-# ============================================================
-# BANNIÈRE PRINCIPALE E-COMMERCE
-# ============================================================
 
-class EcommerceBannerView(
-    generics.ListAPIView
-):
+class EcommerceHomeView(APIView):
     permission_classes = [AllowAny]
-    serializer_class = EcommerceBannerSerializer
 
     @swagger_auto_schema(
-        operation_id="bannieresEcommerce",
-        operation_summary="Afficher les bannières principales",
+        operation_id="ecommerceHome",
+        operation_summary="Page d'accueil e-commerce",
         operation_description=(
-            "Retourne les bannières principales actives "
-            "de la page d'accueil e-commerce."
+            "Retourne toutes les données nécessaires "
+            "à la page d'accueil e-commerce."
         ),
-        responses={
-            200: EcommerceBannerSerializer(
-                many=True
-            ),
-        },
         tags=["E-commerce - Accueil"],
     )
-    def get_queryset(self):
-        return (
+    def get(self, request):
+
+        banners = (
             EcommerceBanner.objects
             .filter(active=True)
             .order_by(
@@ -61,6 +52,86 @@ class EcommerceBannerView(
             )
         )
 
+        produits_recents = get_ecommerce_produits(
+            bijouterie_id=request.query_params.get(
+                "bijouterie_id"
+            )
+        )[:12]
+
+        return Response({
+            "banners": EcommerceBannerSerializer(
+                banners,
+                many=True,
+                context={"request": request},
+            ).data,
+
+            "produits_recents": EcommerceProduitListSerializer(
+                produits_recents,
+                many=True,
+                context={"request": request},
+            ).data,
+        })
+
+
+# ============================================================
+# BANNIÈRE PRINCIPALE E-COMMERCE
+# ============================================================
+class EcommerceBannerManageView(
+    generics.RetrieveUpdateAPIView
+):
+    permission_classes = [IsAdminOrManager]
+    serializer_class = EcommerceBannerSerializer
+    queryset = EcommerceBanner.objects.all()
+
+    @swagger_auto_schema(
+        operation_id="detailBannerEcommerce",
+        operation_summary="Consulter une bannière e-commerce",
+        operation_description=(
+            "Retourne une bannière e-commerce afin de permettre "
+            "sa gestion depuis l'administration."
+        ),
+        responses={
+            200: EcommerceBannerSerializer(),
+            404: "Bannière introuvable.",
+        },
+        tags=["E-commerce - Banner"],
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(
+            request,
+            *args,
+            **kwargs,
+        )
+
+    @swagger_auto_schema(
+        operation_id="modifierBannerEcommerce",
+        operation_summary="Modifier une bannière e-commerce",
+        operation_description=(
+            "Permet de modifier la bannière de la page d'accueil.\n\n"
+            "Il est possible de modifier :\n"
+            "- l'image ;\n"
+            "- le titre ;\n"
+            "- le sous-titre ;\n"
+            "- la description ;\n"
+            "- le texte du bouton ;\n"
+            "- le lien du bouton ;\n"
+            "- l'ordre d'affichage ;\n"
+            "- son état actif/inactif."
+        ),
+        request_body=EcommerceBannerSerializer,
+        responses={
+            200: EcommerceBannerSerializer(),
+            400: "Données invalides.",
+            404: "Bannière introuvable.",
+        },
+        tags=["E-commerce - Banner"],
+    )
+    def patch(self, request, *args, **kwargs):
+        return super().patch(
+            request,
+            *args,
+            **kwargs,
+        )
 
         
 class CommandeEcommerceCreateView(APIView):

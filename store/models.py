@@ -152,19 +152,6 @@ class Categorie(models.Model):
         super().save(*args, **kwargs)
 
 
-    
-# Type model
-# class Type(models.Model):
-#     type = models.CharField(max_length = 55, unique=True, null=True)
-#     categorie = models.ForeignKey(Categorie, on_delete=models.PROTECT, null=True, blank=True, related_name="type_categorie")
-    
-    
-#     class Meta:
-#         verbose_name_plural = "Types"
-    
-#     def __str__(self):
-#         return self.type
-
 
 # Type model
 class Modele(models.Model):
@@ -191,25 +178,6 @@ class Purete(models.Model):
     def __str__(self):  
         return f"{self.purete}K"
     
-
-# Brand model
-# class Marque(models.Model):
-#     marque = models.CharField(unique=True, max_length=25, null=True, blank=True)
-#     prix = models.DecimalField(default=0.00, decimal_places=2, max_digits=12)
-#     creation_date = models.DateTimeField(auto_now_add=True)
-#     modification_date = models.DateTimeField(auto_now=True)
-
-#     def save(self, *args, **kwargs):
-#         if not self.marque:
-#             raise ValueError("Le champ 'marque' ne peut pas être vide.")
-#         super().save(*args, **kwargs)
-    
-#     class Meta:
-#         verbose_name_plural = "Marques"
-    
-#     def __str__(self):
-#         return f"{self.marque} - {self.purete.purete if self.purete else 'N/A'}"
-
 
 class Marque(models.Model):
     marque = models.CharField(max_length=50, unique=True)
@@ -338,7 +306,7 @@ class MarquePuretePrixHistory(models.Model):
 
 class Produit(models.Model):
     # uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    uuid = models.UUIDField(default=uuid.uuid4, unique=True,editable=False,db_index=True,)
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True,editable=False)
     # uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
     nom = models.CharField(max_length=100, blank=True, default="")
     image = models.ImageField(upload_to="produits/", blank=True, null=True)
@@ -347,15 +315,17 @@ class Produit(models.Model):
     # QR code sera généré via signal post_save (transaction.on_commit)
     # qr_code = models.ImageField(upload_to="qr_codes/", null=True, blank=True)
 
-    categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit", null=True, blank=True)
-    purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit",null=True, blank=True)
-    marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",null=True, blank=True)
-    modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True, blank=True)
+    # categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit", null=True, blank=True)
+    # purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit",null=True, blank=True)
+    # marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",null=True, blank=True)
+    # modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True, blank=True)
 
-    # categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit")
-    # purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit")
-    # marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit")
+    categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit")
+    purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit")
+    marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit")
     # modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit")
+    # Au cas ou on a un produit sans modèle
+    modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True,blank=True,)
     
     
     matiere = models.CharField(choices=MATIERE,max_length=50,default="or",)
