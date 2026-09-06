@@ -25,7 +25,8 @@ from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
 from inventory.models import Bucket, MovementType
 from inventory.services import log_move
 from purchase.models import Achat, Fournisseur, Lot, ProduitLine
-from purchase.services.etiquettes import build_etiquette_bague_png
+from purchase.services.etiquettes import (build_code_etiquette,
+                                          build_etiquette_produit_png)
 from purchase.utils import generate_numero_lot
 from stock.models import Stock
 from store.models import Bijouterie, Produit
@@ -3009,24 +3010,29 @@ class LotEtiquettesZIPView(APIView):
 
             for line in produit_lines:
 
-                produit = line.produit
-
-                safe_name = (
-                    produit.sku
-                    if getattr(produit, "sku", None)
-                    else f"produit_{produit.id}"
+                # ---------------------------------------------
+                # Code de l'étiquette
+                # ---------------------------------------------
+                code_etiquette = build_code_etiquette(
+                    line
                 )
 
-                for i in range(1, int(line.quantite) + 1):
+                # ---------------------------------------------
+                # Générer une étiquette par quantité
+                # ---------------------------------------------
+                for i in range(
+                    1,
+                    int(line.quantite) + 1,
+                ):
 
-                    image_buffer = build_etiquette_bague_png(
-                        produit
+                    image_buffer = (
+                        build_etiquette_produit_png(
+                            line
+                        )
                     )
 
                     filename = (
-                        f"{safe_name}_"
-                        f"PL{line.id}_"
-                        f"{i}.png"
+                        f"{code_etiquette}_{i}.png"
                     )
 
                     zip_file.writestr(

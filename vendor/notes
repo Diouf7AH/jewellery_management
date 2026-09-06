@@ -82,3 +82,40 @@ quantite_restante	Lot global	Stock physique réel
 quantite_allouee	Vendeur	Réservation
 quantite_vendue	Vendeur	Déjà livré
 quantite_totale	Calcul	Ce que le vendeur peut encore livrer
+
+
+eitiquete
+Exactement. Puisqu’un Lot peut contenir plusieurs ProduitLine, je partirais sur cette architecture. Elle évite de dépendre du ProduitLine.id global tout en donnant une référence courte et compréhensible sur l’étiquette.
+
+LOT-20260906-0042
+│
+├── ProduitLine #1
+│   Produit : Bague
+│   └── BG-260042-01
+│
+├── ProduitLine #2
+│   Produit : Collier
+│   └── COL-260042-02
+│
+├── ProduitLine #3
+│   Produit : Bracelet
+│   └── BRA-260042-03
+│
+└── ProduitLine #4
+    Produit : Boucles d'oreilles
+    └── BD-260042-04
+Le principe
+
+Le code :
+
+BG-260042-01
+
+signifie :
+
+BG   → catégorie : Bague
+26   → année 2026
+0042 → numéro séquentiel du lot
+01   → position de ProduitLine dans le lot
+
+Cela permet immédiatement de comprendre que l'article appartient 
+à la ligne 01 du lot 0042 de 2026 et qu'il s'agit d'une bague.

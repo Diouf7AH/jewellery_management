@@ -36,3 +36,49 @@ SALE_OUT
 RETURN_IN
 
 InventoryAdjustmentView sera plus propre et plus générale que ArrivageAdjustmentsView.
+
+# explication des etiquetes
+
+LOT-20260906-0042
+│
+├── Ligne 01
+│   Produit
+│   ├── catégorie : Bague
+│   ├── modèle    : Alliance
+│   ├── marque    : Local
+│   ├── pureté    : 18K
+│   ├── poids     : 4.20 g
+│   └── quantité  : 3
+│
+│   → étiquette : BG-260042-01 × 3
+│
+├── Ligne 02
+│   Produit
+│   ├── catégorie : Bague
+│   ├── modèle    : Solitaire
+│   ├── marque    : Italie
+│   ├── pureté    : 18K
+│   ├── poids     : 5.10 g
+│   └── quantité  : 1
+│
+│   → étiquette : BG-260042-02
+│
+├── Ligne 03
+│   Produit
+│   ├── catégorie : Collier
+│   ├── modèle    : Maille
+│   ├── marque    : Dubai
+│   ├── poids     : 12.50 g
+│   └── quantité  : 1
+│
+│   → étiquette : COL-260042-03
+│
+└── Ligne 04
+    Produit
+    ├── catégorie : Bracelet
+    ├── modèle    : Gourmette
+    ├── marque    : Local
+    ├── poids     : 8.70 g
+    └── quantité  : 2
+
+    → étiquette : BRA-260042-04 × 2
