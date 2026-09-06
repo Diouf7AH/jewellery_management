@@ -2538,23 +2538,158 @@ def _can_access_facture(user, facture: Facture) -> bool:
 
 
 
+# class TicketProforma58mmView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Télécharger le ticket PROFORMA 58mm pour POS",
+#         operation_description="""
+#         Génère un ticket PROFORMA au format ESC/POS 58mm.
+
+#         Utilisation :
+#         - Sans debug : retourne un fichier `.bin` destiné à une imprimante thermique POS.
+#         - Avec `?debug=1` : retourne le contenu lisible en texte brut pour vérification dans le navigateur.
+
+#         Exemple :
+#         `/api/factures/FAC-20260509-0001/ticket-proforma-58mm/`
+
+#         Exemple debug :
+#         `/api/factures/FAC-20260509-0001/ticket-proforma-58mm/?debug=1`
+#         """,
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 name="numero_facture",
+#                 in_=openapi.IN_PATH,
+#                 description="Numéro de la facture proforma",
+#                 type=openapi.TYPE_STRING,
+#                 required=True,
+#                 example="FAC-20260509-0001",
+#             ),
+#             openapi.Parameter(
+#                 name="debug",
+#                 in_=openapi.IN_QUERY,
+#                 description="Mettre 1 pour afficher le ticket en texte lisible au lieu du fichier .bin",
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#                 example="1",
+#             ),
+#         ],
+#         responses={
+#             200: openapi.Response(
+#                 description="Ticket PROFORMA généré avec succès. Retourne un fichier .bin ou du texte si debug=1."
+#             ),
+#             400: "Aucune vente associée à cette facture.",
+#             403: "Accès refusé.",
+#             404: "Facture introuvable.",
+#         },
+#         tags=["Tickets POS"],
+#     )
+
+#     def get(self, request, numero_facture: str):
+#         try:
+
+#             facture = get_object_or_404(
+#                 Facture.objects.select_related(
+#                     "vente",
+#                     "bijouterie",
+#                     "vente__client",
+#                 ),
+#                 numero_facture__iexact=numero_facture,
+#             )
+
+#             if not _can_access_facture(request.user, facture):
+#                 return Response(
+#                     {"detail": "⛔ Accès refusé à cette facture."},
+#                     status=status.HTTP_403_FORBIDDEN,
+#                 )
+
+#             if not facture.vente_id:
+#                 return Response(
+#                     {"detail": "Aucune vente associée à cette facture."},
+#                     status=status.HTTP_400_BAD_REQUEST,
+#                 )
+
+#             bijouterie = facture.bijouterie
+
+#             shop_name = (
+#                 getattr(bijouterie, "nom", None)
+#                 or "BIJOUTERIE RIO-GOLD"
+#             )
+
+#             shop_phone = (
+#                 getattr(bijouterie, "telephone_portable_1", None)
+#                 or getattr(bijouterie, "telephone_portable_2", None)
+#                 or getattr(bijouterie, "telephone_fix", None)
+#                 or ""
+#             )
+
+#             date_txt = facture.date_creation.strftime("%d/%m/%Y %H:%M")
+
+#             escpos_bytes = build_escpos_ticket_proforma_58mm(
+#                 shop_name=shop_name,
+#                 shop_phone=shop_phone,
+#                 numero_facture=facture.numero_facture,
+#                 date_txt=date_txt,
+#                 montant_a_payer=facture.reste_a_payer,
+#                 statut_txt=(
+#                     facture.get_status_display()
+#                     if hasattr(facture, "get_status_display")
+#                     else facture.status
+#                 ),
+#                 note="Ticket PROFORMA - à régler en caisse",
+#             )
+
+#             # ✅ Mode debug
+#             if request.query_params.get("debug") == "1":
+#                 return HttpResponse(
+#                     escpos_bytes.decode("cp1252", errors="ignore"),
+#                     content_type="text/plain; charset=utf-8",
+#                 )
+
+#             # ✅ Mode POS
+#             return HttpResponse(
+#                 escpos_bytes,
+#                 content_type="application/octet-stream",
+#                 headers={
+#                     "Content-Disposition": (
+#                         f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
+#                     )
+#                 },
+#             )
+
+#         except Exception as e:
+#             return Response(
+#                 {
+#                     "detail": "Erreur lors de la génération du ticket proforma.",
+#                     "error": str(e),
+#                 },
+#                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             )
+
+
 class TicketProforma58mmView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Télécharger le ticket PROFORMA 58mm pour POS",
         operation_description="""
-        Génère un ticket PROFORMA au format ESC/POS 58mm.
+Génère un ticket PROFORMA au format ESC/POS 58mm.
 
-        Utilisation :
-        - Sans debug : retourne un fichier `.bin` destiné à une imprimante thermique POS.
-        - Avec `?debug=1` : retourne le contenu lisible en texte brut pour vérification dans le navigateur.
+### Utilisation
 
-        Exemple :
-        `/api/factures/FAC-20260509-0001/ticket-proforma-58mm/`
+- Sans `debug` :
+  retourne un fichier `.bin` destiné à l'imprimante thermique POS.
 
-        Exemple debug :
-        `/api/factures/FAC-20260509-0001/ticket-proforma-58mm/?debug=1`
+- Avec `?debug=1` :
+  retourne une représentation texte lisible du ticket.
+
+### Exemple
+
+`/api/factures/FAC-20260509-0001/ticket-proforma-58mm/`
+
+### Debug
+
+`/api/factures/FAC-20260509-0001/ticket-proforma-58mm/?debug=1`
         """,
         manual_parameters=[
             openapi.Parameter(
@@ -2568,7 +2703,10 @@ class TicketProforma58mmView(APIView):
             openapi.Parameter(
                 name="debug",
                 in_=openapi.IN_QUERY,
-                description="Mettre 1 pour afficher le ticket en texte lisible au lieu du fichier .bin",
+                description=(
+                    "Mettre 1 pour afficher le ticket "
+                    "en texte lisible."
+                ),
                 type=openapi.TYPE_STRING,
                 required=False,
                 example="1",
@@ -2576,94 +2714,237 @@ class TicketProforma58mmView(APIView):
         ],
         responses={
             200: openapi.Response(
-                description="Ticket PROFORMA généré avec succès. Retourne un fichier .bin ou du texte si debug=1."
+                description="Ticket PROFORMA généré avec succès."
             ),
             400: "Aucune vente associée à cette facture.",
             403: "Accès refusé.",
             404: "Facture introuvable.",
+            500: "Erreur lors de la génération du ticket.",
         },
         tags=["Tickets POS"],
     )
-
     def get(self, request, numero_facture: str):
+
         try:
+            # =====================================================
+            # FACTURE
+            # =====================================================
 
             facture = get_object_or_404(
                 Facture.objects.select_related(
                     "vente",
-                    "bijouterie",
                     "vente__client",
+                    "bijouterie",
                 ),
                 numero_facture__iexact=numero_facture,
             )
 
-            if not _can_access_facture(request.user, facture):
+            # =====================================================
+            # PERMISSION
+            # =====================================================
+
+            if not _can_access_facture(
+                request.user,
+                facture,
+            ):
                 return Response(
-                    {"detail": "⛔ Accès refusé à cette facture."},
+                    {
+                        "detail": (
+                            "⛔ Accès refusé à cette facture."
+                        )
+                    },
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
+            # =====================================================
+            # VENTE
+            # =====================================================
+
             if not facture.vente_id:
                 return Response(
-                    {"detail": "Aucune vente associée à cette facture."},
+                    {
+                        "detail": (
+                            "Aucune vente associée "
+                            "à cette facture."
+                        )
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            # =====================================================
+            # BIJOUTERIE
+            # =====================================================
 
             bijouterie = facture.bijouterie
 
             shop_name = (
-                getattr(bijouterie, "nom", None)
+                getattr(
+                    bijouterie,
+                    "nom",
+                    None,
+                )
                 or "BIJOUTERIE RIO-GOLD"
             )
 
             shop_phone = (
-                getattr(bijouterie, "telephone_portable_1", None)
-                or getattr(bijouterie, "telephone_portable_2", None)
-                or getattr(bijouterie, "telephone_fix", None)
+                getattr(
+                    bijouterie,
+                    "telephone_portable_1",
+                    None,
+                )
+                or getattr(
+                    bijouterie,
+                    "telephone_portable_2",
+                    None,
+                )
+                or getattr(
+                    bijouterie,
+                    "telephone_fix",
+                    None,
+                )
                 or ""
             )
 
-            date_txt = facture.date_creation.strftime("%d/%m/%Y %H:%M")
+            # =====================================================
+            # DATE LOCALE
+            # =====================================================
 
-            escpos_bytes = build_escpos_ticket_proforma_58mm(
-                shop_name=shop_name,
-                shop_phone=shop_phone,
-                numero_facture=facture.numero_facture,
-                date_txt=date_txt,
-                montant_a_payer=facture.reste_a_payer,
-                statut_txt=(
-                    facture.get_status_display()
-                    if hasattr(facture, "get_status_display")
-                    else facture.status
-                ),
-                note="Ticket PROFORMA - à régler en caisse",
-            )
+            date_creation = facture.date_creation
 
-            # ✅ Mode debug
-            if request.query_params.get("debug") == "1":
-                return HttpResponse(
-                    escpos_bytes.decode("cp1252", errors="ignore"),
-                    content_type="text/plain; charset=utf-8",
+            if timezone.is_aware(date_creation):
+                date_creation = timezone.localtime(
+                    date_creation
                 )
 
-            # ✅ Mode POS
-            return HttpResponse(
+            date_txt = date_creation.strftime(
+                "%d/%m/%Y %H:%M"
+            )
+
+            # =====================================================
+            # STATUT
+            # =====================================================
+
+            if facture.status == Facture.STAT_NON_PAYE:
+                statut_txt = "NON PAYE"
+
+            elif facture.status == Facture.STAT_PARTIEL:
+                statut_txt = "PARTIEL"
+
+            elif facture.status == Facture.STAT_PAYE:
+                statut_txt = "PAYE"
+
+            else:
+                statut_txt = str(
+                    facture.status or ""
+                ).upper()
+
+            # =====================================================
+            # MONTANT À PAYER
+            # =====================================================
+
+            montant_a_payer = (
+                facture.reste_a_payer
+                or Decimal("0.00")
+            )
+
+            # =====================================================
+            # MODE DEBUG
+            # =====================================================
+
+            if request.query_params.get("debug") == "1":
+
+                debug_text = (
+                    f"{shop_name.upper()}\n"
+                )
+
+                if shop_phone:
+                    debug_text += (
+                        f"Tel: {shop_phone}\n"
+                    )
+
+                debug_text += (
+                    f"{'-' * 42}\n"
+                    f"FACTURE PROFORMA    "
+                    f"N° {facture.numero_facture}\n"
+                    f"{'-' * 42}\n"
+                    f"DATE : "
+                    f"{date_creation.strftime('%d/%m/%Y')}"
+                    f"              "
+                    f"{date_creation.strftime('%H:%M')}\n"
+                    f"ETAT : {statut_txt}\n"
+                    f"{'-' * 42}\n"
+                    f"MONTANT A PAYER\n"
+                    f"{montant_a_payer} FCFA\n"
+                    f"{'-' * 42}\n"
+                    f"Ticket PROFORMA a regler en caisse.\n"
+                    f"Merci pour votre confiance !"
+                )
+
+                return HttpResponse(
+                    debug_text,
+                    content_type=(
+                        "text/plain; charset=utf-8"
+                    ),
+                )
+
+            # =====================================================
+            # GÉNÉRATION ESC/POS
+            # =====================================================
+
+            escpos_bytes = (
+                build_escpos_ticket_proforma_58mm(
+                    shop_name=shop_name,
+                    shop_phone=shop_phone,
+                    numero_facture=(
+                        facture.numero_facture
+                    ),
+                    date_txt=date_txt,
+                    montant_a_payer=(
+                        montant_a_payer
+                    ),
+                    statut_txt=statut_txt,
+                    note=(
+                        "Ticket PROFORMA "
+                        "a regler en caisse."
+                    ),
+                )
+            )
+
+            # =====================================================
+            # RÉPONSE POS
+            # =====================================================
+
+            response = HttpResponse(
                 escpos_bytes,
                 content_type="application/octet-stream",
-                headers={
-                    "Content-Disposition": (
-                        f'inline; filename="ticket_proforma_{facture.numero_facture}.bin"'
-                    )
-                },
             )
+
+            response["Content-Disposition"] = (
+                f'inline; filename="'
+                f'ticket_proforma_'
+                f'{facture.numero_facture}.bin"'
+            )
+
+            response["Content-Length"] = str(
+                len(escpos_bytes)
+            )
+
+            response["Cache-Control"] = "no-store"
+
+            return response
 
         except Exception as e:
             return Response(
                 {
-                    "detail": "Erreur lors de la génération du ticket proforma.",
+                    "detail": (
+                        "Erreur lors de la génération "
+                        "du ticket proforma."
+                    ),
                     "error": str(e),
                 },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
             )
 
 
