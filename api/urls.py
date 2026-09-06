@@ -133,7 +133,8 @@ urlpatterns = [
     path("achat/lots", achat_views.LotListView.as_view(), name="lot-list"),
     path("achat/arrivage/<int:lot_id>/meta", achat_views.ArrivageMetaUpdateView.as_view(), name="arrivage-meta-update"),
     # path("achat/produit-lines", achat_views.InventoryPhotoView.as_view(),name="produitline-list",),
-    path("achat/etiquettes-png/", achat_views.ProduitLineEtiquettesZIPView.as_view(),name="produits-etiquettes-png",),
+    # path("achat/etiquettes-png/", achat_views.ProduitLineEtiquettesZIPView.as_view(),name="produits-etiquettes-png",),
+    path("etiquettes/lot/<int:lot_id>/", achat_views.LotEtiquettesZIPView.as_view(),name="lot-etiquettes-zip",),
     path("achat/dashboard", achat_views.AchatDashboardView.as_view(), name="achat-dashboard"),
     
     # path("achat/lots/export/csv", achat_views.LotExportCSVView.as_view(), name="lots-export-csv"),
