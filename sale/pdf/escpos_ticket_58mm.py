@@ -309,7 +309,7 @@ from django.utils import timezone
 
 # Font B est plus petite que Font A.
 # Sur une imprimante 58 mm, elle permet environ 42 caractères.
-LINE_WIDTH = 42
+LINE_WIDTH = 32
 LINE = "-" * LINE_WIDTH
 
 
