@@ -288,22 +288,7 @@ def build_escpos_ticket_proforma_58mm(
         "Merci pour votre confiance !"
     )
 
-    out += BOLD_OFF
-
-    # ========================================================
-    # FIN DU TICKET
-    # ========================================================
-    #
-    # Très important :
-    # pas de FEED_3
-    # pas de grande avance papier
-    #
-    # seulement UNE petite ligne avant la coupe
-    # ========================================================
-
-    # petite marge après "Merci pour votre confiance !"
-    out += b"\n\n\n\n\n\n\n"
-
+    out += b"\n\n\n\n"
     out += CUT_PARTIAL
 
     return bytes(out)
