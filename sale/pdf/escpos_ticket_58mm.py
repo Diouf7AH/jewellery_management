@@ -302,7 +302,7 @@ def build_escpos_ticket_proforma_58mm(
     # ========================================================
 
     # petite marge après "Merci pour votre confiance !"
-    out += b"\n\n\n"
+    out += b"\n\n\n\n\n\n\n"
 
     out += CUT_PARTIAL
 
