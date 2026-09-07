@@ -170,6 +170,9 @@ def build_escpos_ticket_proforma_58mm(
     out += ALIGN_CENTER
     out += FONT_A
 
+    # Marge supérieure avant l'en-tête
+    out += b"\n\n"
+    
     # ========================================================
     # EN-TETE
     # ========================================================
@@ -298,7 +301,8 @@ def build_escpos_ticket_proforma_58mm(
     # seulement UNE petite ligne avant la coupe
     # ========================================================
 
-    out += b"\n"
+    # petite marge après "Merci pour votre confiance !"
+    out += b"\n\n\n"
 
     out += CUT_PARTIAL
 
