@@ -529,7 +529,7 @@ def build_escpos_ticket_proforma_58mm(
     # ========================================================
 
     # 2 lignes avant l'en-tête
-    out += b"\n\n"
+    out += b"\n"
 
     # ========================================================
     # EN-TÊTE
@@ -678,7 +678,7 @@ def build_escpos_ticket_proforma_58mm(
     # ========================================================
 
     # Exactement 4 lignes après le message
-    out += b"\n\n\n\n"
+    out += b"\n"
 
     # ========================================================
     # COUPE
