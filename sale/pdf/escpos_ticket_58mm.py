@@ -1,3 +1,299 @@
+# # # sale/pdf/escpos_ticket_58mm.py
+
+# # from __future__ import annotations
+
+# # from decimal import ROUND_HALF_UP, Decimal
+# # from typing import Optional
+
+# # from django.utils import timezone
+
+# # # Font A standard sur ticket 58mm
+# # LINE_WIDTH = 32
+# # LINE = "-" * LINE_WIDTH
+
+
+# # def _money(x) -> str:
+# #     try:
+# #         d = Decimal(str(x or "0")).quantize(
+# #             Decimal("1"),
+# #             rounding=ROUND_HALF_UP,
+# #         )
+# #     except Exception:
+# #         return str(x)
+
+# #     return f"{d:,}".replace(",", " ") + " FCFA"
+
+
+# # def _txt(s: str) -> bytes:
+# #     return (
+# #         str(s or "") + "\n"
+# #     ).encode(
+# #         "cp1252",
+# #         errors="replace",
+# #     )
+
+
+# # def _fit(
+# #     text: str,
+# #     width: int = LINE_WIDTH,
+# # ) -> str:
+# #     text = str(text or "")
+
+# #     if len(text) <= width:
+# #         return text
+
+# #     if width <= 3:
+# #         return text[:width]
+
+# #     return text[: width - 3] + "..."
+
+
+# # def _left_right(
+# #     left: str,
+# #     right: str,
+# #     width: int = LINE_WIDTH,
+# # ) -> str:
+
+# #     left = str(left or "").strip()
+# #     right = str(right or "").strip()
+
+# #     if not left:
+# #         return _fit(right, width)
+
+# #     if not right:
+# #         return _fit(left, width)
+
+# #     if len(right) >= width:
+# #         return right[:width]
+
+# #     max_left = width - len(right) - 1
+
+# #     if len(left) > max_left:
+# #         if max_left > 3:
+# #             left = left[: max_left - 3] + "..."
+# #         else:
+# #             left = left[:max_left]
+
+# #     spaces = width - len(left) - len(right)
+
+# #     if spaces < 1:
+# #         spaces = 1
+
+# #     return f"{left}{' ' * spaces}{right}"
+
+
+# # def _normalize_datetime(value):
+# #     if value is None:
+# #         return timezone.localtime(timezone.now())
+
+# #     try:
+# #         if timezone.is_naive(value):
+# #             value = timezone.make_aware(
+# #                 value,
+# #                 timezone.get_current_timezone(),
+# #             )
+
+# #         return timezone.localtime(value)
+
+# #     except Exception:
+# #         return timezone.localtime(timezone.now())
+
+
+# # def _split_date_time(date_txt: Optional[str]):
+# #     value = str(date_txt or "").strip()
+
+# #     if not value:
+# #         dt = _normalize_datetime(None)
+# #         return (
+# #             dt.strftime("%d/%m/%Y"),
+# #             dt.strftime("%H:%M"),
+# #         )
+
+# #     parts = value.split()
+
+# #     if len(parts) >= 2:
+# #         return parts[0], parts[1]
+
+# #     return value, ""
+
+
+# # def build_escpos_ticket_proforma_58mm(
+# #     *,
+# #     shop_name: str = "BIJOUTERIE RIO-GOLD",
+# #     shop_phone: Optional[str] = None,
+# #     numero_facture: str,
+# #     date_txt: Optional[str] = None,
+# #     montant_a_payer=Decimal("0"),
+# #     statut_txt: str = "NON PAYE",
+# #     note: Optional[str] = "Ticket PROFORMA a regler en caisse.",
+# # ) -> bytes:
+
+# #     # ========================================================
+# #     # DATE
+# #     # ========================================================
+
+# #     if not date_txt:
+# #         dt = _normalize_datetime(None)
+# #         date_txt = dt.strftime("%d/%m/%Y %H:%M")
+
+# #     date_only, heure_only = _split_date_time(date_txt)
+
+# #     # ========================================================
+# #     # COMMANDES ESC/POS
+# #     # ========================================================
+
+# #     INIT = b"\x1b@"
+
+# #     ALIGN_LEFT = b"\x1ba\x00"
+# #     ALIGN_CENTER = b"\x1ba\x01"
+
+# #     BOLD_ON = b"\x1bE\x01"
+# #     BOLD_OFF = b"\x1bE\x00"
+
+# #     DOUBLE_ON = b"\x1d!\x11"
+# #     DOUBLE_OFF = b"\x1d!\x00"
+
+# #     # Font A / Font B
+# #     FONT_A = b"\x1bM\x00"
+# #     FONT_B = b"\x1bM\x01"
+
+# #     # coupe partielle
+# #     CUT_PARTIAL = b"\x1dV\x01"
+
+# #     out = bytearray()
+
+# #     # ========================================================
+# #     # INIT
+# #     # ========================================================
+
+# #     out += INIT
+# #     out += ALIGN_CENTER
+# #     out += FONT_A
+
+# #     # Marge supérieure avant l'en-tête
+# #     out += b"\n\n"
+    
+# #     # ========================================================
+# #     # EN-TETE
+# #     # ========================================================
+
+# #     out += BOLD_ON
+# #     out += _txt(_fit(shop_name.upper()))
+# #     out += BOLD_OFF
+
+# #     if shop_phone:
+# #         out += _txt(
+# #             _fit(f"Tel: {shop_phone}")
+# #         )
+
+# #     out += _txt(LINE)
+
+# #     # ========================================================
+# #     # FACTURE PROFORMA + NUMERO SUR UNE SEULE LIGNE
+# #     # ========================================================
+
+# #     # Font B permet d'avoir plus de caractères sur 58mm
+# #     out += FONT_B
+# #     out += ALIGN_LEFT
+# #     out += BOLD_ON
+
+# #     title = "FACTURE PROFORMA"
+# #     numero = f"N° {numero_facture}"
+
+# #     # Font B ≈ 42 caractères sur 58 mm
+# #     line_width_b = 42
+
+# #     out += _txt(
+# #         _left_right(
+# #             title,
+# #             numero,
+# #             line_width_b,
+# #         )
+# #     )
+
+# #     out += BOLD_OFF
+
+# #     out += _txt("-" * line_width_b)
+
+# #     # ========================================================
+# #     # DATE + HEURE SUR UNE SEULE LIGNE
+# #     # ========================================================
+
+# #     out += _txt(
+# #         _left_right(
+# #             f"DATE : {date_only}",
+# #             heure_only,
+# #             line_width_b,
+# #         )
+# #     )
+
+# #     # ========================================================
+# #     # ETAT SUR UNE SEULE LIGNE
+# #     # ========================================================
+
+# #     statut = (
+# #         str(statut_txt or "NON PAYE")
+# #         .strip()
+# #         .upper()
+# #         .replace("É", "E")
+# #     )
+
+# #     out += _txt(
+# #         f"ETAT : {statut}"
+# #     )
+
+# #     out += _txt("-" * line_width_b)
+
+# #     # ========================================================
+# #     # MONTANT A PAYER
+# #     # ========================================================
+
+# #     out += ALIGN_CENTER
+# #     out += FONT_A
+# #     out += BOLD_ON
+
+# #     out += _txt("MONTANT A PAYER")
+
+# #     # montant juste en dessous
+# #     out += DOUBLE_ON
+
+# #     out += _txt(
+# #         _fit(
+# #             _money(montant_a_payer)
+# #         )
+# #     )
+
+# #     out += DOUBLE_OFF
+# #     out += BOLD_OFF
+
+# #     out += _txt(LINE)
+
+# #     # ========================================================
+# #     # NOTE
+# #     # ========================================================
+
+# #     if note:
+# #         out += _txt(
+# #             _fit(note)
+# #         )
+
+# #     # ========================================================
+# #     # MESSAGE FINAL
+# #     # ========================================================
+
+# #     out += ALIGN_CENTER
+# #     out += BOLD_ON
+
+# #     out += _txt(
+# #         "Merci pour votre confiance !"
+# #     )
+
+# #     out += b"\n\n\n\n"
+# #     out += CUT_PARTIAL
+
+# #     return bytes(out)
+
+
 # # sale/pdf/escpos_ticket_58mm.py
 
 # from __future__ import annotations
@@ -7,10 +303,19 @@
 
 # from django.utils import timezone
 
-# # Font A standard sur ticket 58mm
+# # ============================================================
+# # CONFIGURATION
+# # ============================================================
+
+# # Font B est plus petite que Font A.
+# # Sur une imprimante 58 mm, elle permet environ 42 caractères.
 # LINE_WIDTH = 32
 # LINE = "-" * LINE_WIDTH
 
+
+# # ============================================================
+# # HELPERS
+# # ============================================================
 
 # def _money(x) -> str:
 #     try:
@@ -37,6 +342,7 @@
 #     text: str,
 #     width: int = LINE_WIDTH,
 # ) -> str:
+
 #     text = str(text or "")
 
 #     if len(text) <= width:
@@ -68,25 +374,44 @@
 
 #     max_left = width - len(right) - 1
 
+#     if max_left < 0:
+#         max_left = 0
+
 #     if len(left) > max_left:
+
 #         if max_left > 3:
-#             left = left[: max_left - 3] + "..."
+#             left = (
+#                 left[: max_left - 3]
+#                 + "..."
+#             )
 #         else:
 #             left = left[:max_left]
 
-#     spaces = width - len(left) - len(right)
+#     spaces = (
+#         width
+#         - len(left)
+#         - len(right)
+#     )
 
 #     if spaces < 1:
 #         spaces = 1
 
-#     return f"{left}{' ' * spaces}{right}"
+#     return (
+#         f"{left}"
+#         f"{' ' * spaces}"
+#         f"{right}"
+#     )
 
 
 # def _normalize_datetime(value):
+
 #     if value is None:
-#         return timezone.localtime(timezone.now())
+#         return timezone.localtime(
+#             timezone.now()
+#         )
 
 #     try:
+
 #         if timezone.is_naive(value):
 #             value = timezone.make_aware(
 #                 value,
@@ -96,14 +421,24 @@
 #         return timezone.localtime(value)
 
 #     except Exception:
-#         return timezone.localtime(timezone.now())
+
+#         return timezone.localtime(
+#             timezone.now()
+#         )
 
 
-# def _split_date_time(date_txt: Optional[str]):
-#     value = str(date_txt or "").strip()
+# def _split_date_time(
+#     date_txt: Optional[str],
+# ):
+
+#     value = str(
+#         date_txt or ""
+#     ).strip()
 
 #     if not value:
+
 #         dt = _normalize_datetime(None)
+
 #         return (
 #             dt.strftime("%d/%m/%Y"),
 #             dt.strftime("%H:%M"),
@@ -117,6 +452,10 @@
 #     return value, ""
 
 
+# # ============================================================
+# # TICKET PROFORMA ESC/POS 58 MM
+# # ============================================================
+
 # def build_escpos_ticket_proforma_58mm(
 #     *,
 #     shop_name: str = "BIJOUTERIE RIO-GOLD",
@@ -125,7 +464,9 @@
 #     date_txt: Optional[str] = None,
 #     montant_a_payer=Decimal("0"),
 #     statut_txt: str = "NON PAYE",
-#     note: Optional[str] = "Ticket PROFORMA a regler en caisse.",
+#     note: Optional[str] = (
+#         "Ticket PROFORMA a regler en caisse."
+#     ),
 # ) -> bytes:
 
 #     # ========================================================
@@ -133,10 +474,16 @@
 #     # ========================================================
 
 #     if not date_txt:
-#         dt = _normalize_datetime(None)
-#         date_txt = dt.strftime("%d/%m/%Y %H:%M")
 
-#     date_only, heure_only = _split_date_time(date_txt)
+#         dt = _normalize_datetime(None)
+
+#         date_txt = dt.strftime(
+#             "%d/%m/%Y %H:%M"
+#         )
+
+#     date_only, heure_only = (
+#         _split_date_time(date_txt)
+#     )
 
 #     # ========================================================
 #     # COMMANDES ESC/POS
@@ -150,120 +497,151 @@
 #     BOLD_ON = b"\x1bE\x01"
 #     BOLD_OFF = b"\x1bE\x00"
 
-#     DOUBLE_ON = b"\x1d!\x11"
-#     DOUBLE_OFF = b"\x1d!\x00"
-
-#     # Font A / Font B
+#     # Font A = plus grande
 #     FONT_A = b"\x1bM\x00"
+
+#     # Font B = plus petite
 #     FONT_B = b"\x1bM\x01"
 
-#     # coupe partielle
+#     # Taille normale
+#     NORMAL_SIZE = b"\x1d!\x00"
+
+#     # Coupe partielle
 #     CUT_PARTIAL = b"\x1dV\x01"
 
 #     out = bytearray()
 
 #     # ========================================================
-#     # INIT
+#     # INITIALISATION
 #     # ========================================================
 
 #     out += INIT
-#     out += ALIGN_CENTER
-#     out += FONT_A
+#     out += NORMAL_SIZE
 
-#     # Marge supérieure avant l'en-tête
-#     out += b"\n\n"
-    
-#     # ========================================================
-#     # EN-TETE
-#     # ========================================================
-
-#     out += BOLD_ON
-#     out += _txt(_fit(shop_name.upper()))
-#     out += BOLD_OFF
-
-#     if shop_phone:
-#         out += _txt(
-#             _fit(f"Tel: {shop_phone}")
-#         )
-
-#     out += _txt(LINE)
-
-#     # ========================================================
-#     # FACTURE PROFORMA + NUMERO SUR UNE SEULE LIGNE
-#     # ========================================================
-
-#     # Font B permet d'avoir plus de caractères sur 58mm
+#     # On utilise Font B pour le ticket :
+#     # écriture légèrement plus petite.
 #     out += FONT_B
-#     out += ALIGN_LEFT
+
+#     out += ALIGN_CENTER
+
+#     # ========================================================
+#     # MARGE SUPÉRIEURE
+#     # ========================================================
+
+#     # 2 lignes avant l'en-tête
+#     out += b"\n"
+
+#     # ========================================================
+#     # EN-TÊTE
+#     # ========================================================
+
 #     out += BOLD_ON
-
-#     title = "FACTURE PROFORMA"
-#     numero = f"N° {numero_facture}"
-
-#     # Font B ≈ 42 caractères sur 58 mm
-#     line_width_b = 42
 
 #     out += _txt(
-#         _left_right(
-#             title,
-#             numero,
-#             line_width_b,
+#         _fit(
+#             shop_name.upper()
 #         )
 #     )
 
 #     out += BOLD_OFF
 
-#     out += _txt("-" * line_width_b)
+#     if shop_phone:
+
+#         out += _txt(
+#             _fit(
+#                 f"Tel: {shop_phone}"
+#             )
+#         )
+
+#     out += _txt(LINE)
 
 #     # ========================================================
-#     # DATE + HEURE SUR UNE SEULE LIGNE
+#     # FACTURE PROFORMA + NUMÉRO
+#     # ========================================================
+
+#     out += ALIGN_LEFT
+#     out += BOLD_ON
+
+#     out += _txt(
+#         _left_right(
+#             "FACTURE PROFORMA",
+#             f"N° {numero_facture}",
+#         )
+#     )
+
+#     out += BOLD_OFF
+
+#     out += _txt(LINE)
+
+#     # ========================================================
+#     # DATE + HEURE
 #     # ========================================================
 
 #     out += _txt(
 #         _left_right(
 #             f"DATE : {date_only}",
 #             heure_only,
-#             line_width_b,
 #         )
 #     )
 
 #     # ========================================================
-#     # ETAT SUR UNE SEULE LIGNE
+#     # ÉTAT
 #     # ========================================================
 
 #     statut = (
-#         str(statut_txt or "NON PAYE")
+#         str(
+#             statut_txt
+#             or "NON PAYE"
+#         )
 #         .strip()
 #         .upper()
 #         .replace("É", "E")
 #     )
 
+#     out += BOLD_ON
+
 #     out += _txt(
 #         f"ETAT : {statut}"
 #     )
 
-#     out += _txt("-" * line_width_b)
+#     out += BOLD_OFF
+
+#     out += _txt(LINE)
 
 #     # ========================================================
-#     # MONTANT A PAYER
+#     # MONTANT À PAYER
 #     # ========================================================
 
 #     out += ALIGN_CENTER
-#     out += FONT_A
+
+#     # Titre en petite Font B
+#     out += FONT_B
 #     out += BOLD_ON
 
-#     out += _txt("MONTANT A PAYER")
+#     out += _txt(
+#         "MONTANT A PAYER"
+#     )
 
-#     # montant juste en dessous
-#     out += DOUBLE_ON
+#     # --------------------------------------------------------
+#     # Montant légèrement plus grand
+#     # --------------------------------------------------------
+
+#     # On passe seulement le montant en Font A.
+#     # Pas de DOUBLE_ON : il ne sera donc pas énorme.
+#     out += FONT_A
 
 #     out += _txt(
 #         _fit(
-#             _money(montant_a_payer)
+#             _money(
+#                 montant_a_payer
+#             ),
+#             32,
 #         )
 #     )
 
-#     out += DOUBLE_OFF
+#     # Retour à la petite police
+#     out += FONT_B
+
 #     out += BOLD_OFF
 
 #     out += _txt(LINE)
@@ -273,6 +651,10 @@
 #     # ========================================================
 
 #     if note:
+
+#         out += ALIGN_CENTER
+#         out += FONT_B
+
 #         out += _txt(
 #             _fit(note)
 #         )
@@ -282,17 +664,29 @@
 #     # ========================================================
 
 #     out += ALIGN_CENTER
+#     out += FONT_B
 #     out += BOLD_ON
 
 #     out += _txt(
 #         "Merci pour votre confiance !"
 #     )
 
-#     out += b"\n\n\n\n"
+#     out += BOLD_OFF
+
+#     # ========================================================
+#     # MARGE INFÉRIEURE
+#     # ========================================================
+
+#     # Exactement 4 lignes après le message
+#     out += b"\n"
+
+#     # ========================================================
+#     # COUPE
+#     # ========================================================
+
 #     out += CUT_PARTIAL
 
 #     return bytes(out)
-
 
 # sale/pdf/escpos_ticket_58mm.py
 
@@ -303,35 +697,52 @@ from typing import Optional
 
 from django.utils import timezone
 
+
 # ============================================================
-# CONFIGURATION
+# CONFIGURATION POS-58
 # ============================================================
 
-# Font B est plus petite que Font A.
-# Sur une imprimante 58 mm, elle permet environ 42 caractères.
-LINE_WIDTH = 32
-LINE = "-" * LINE_WIDTH
+# Police normale
+NORMAL_WIDTH = 32
+
+# Mode condensé pour les lignes longues
+CONDENSED_WIDTH = 42
+
+LINE_NORMAL = "-" * NORMAL_WIDTH
+LINE_CONDENSED = "-" * CONDENSED_WIDTH
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def _money(x) -> str:
+def _money(value) -> str:
+    """
+    12500.00 -> 12 500 FCFA
+    """
+
     try:
-        d = Decimal(str(x or "0")).quantize(
+        amount = Decimal(str(value or "0")).quantize(
             Decimal("1"),
             rounding=ROUND_HALF_UP,
         )
     except Exception:
-        return str(x)
+        return str(value)
 
-    return f"{d:,}".replace(",", " ") + " FCFA"
-
-
-def _txt(s: str) -> bytes:
     return (
-        str(s or "") + "\n"
+        f"{amount:,.0f}"
+        .replace(",", " ")
+        + " FCFA"
+    )
+
+
+def _txt(value: str) -> bytes:
+    """
+    Ajoute automatiquement un retour ligne.
+    """
+
+    return (
+        str(value or "") + "\n"
     ).encode(
         "cp1252",
         errors="replace",
@@ -340,10 +751,10 @@ def _txt(s: str) -> bytes:
 
 def _fit(
     text: str,
-    width: int = LINE_WIDTH,
+    width: int,
 ) -> str:
 
-    text = str(text or "")
+    text = str(text or "").strip()
 
     if len(text) <= width:
         return text
@@ -357,8 +768,11 @@ def _fit(
 def _left_right(
     left: str,
     right: str,
-    width: int = LINE_WIDTH,
+    width: int,
 ) -> str:
+    """
+    Place gauche + droite sur UNE SEULE LIGNE.
+    """
 
     left = str(left or "").strip()
     right = str(right or "").strip()
@@ -369,23 +783,18 @@ def _left_right(
     if not right:
         return _fit(left, width)
 
+    # Sécurité
     if len(right) >= width:
         return right[:width]
 
-    max_left = width - len(right) - 1
-
-    if max_left < 0:
-        max_left = 0
+    max_left = (
+        width
+        - len(right)
+        - 1
+    )
 
     if len(left) > max_left:
-
-        if max_left > 3:
-            left = (
-                left[: max_left - 3]
-                + "..."
-            )
-        else:
-            left = left[:max_left]
+        left = left[:max_left]
 
     spaces = (
         width
@@ -393,13 +802,12 @@ def _left_right(
         - len(right)
     )
 
-    if spaces < 1:
-        spaces = 1
+    spaces = max(spaces, 1)
 
     return (
-        f"{left}"
-        f"{' ' * spaces}"
-        f"{right}"
+        left
+        + (" " * spaces)
+        + right
     )
 
 
@@ -453,12 +861,12 @@ def _split_date_time(
 
 
 # ============================================================
-# TICKET PROFORMA ESC/POS 58 MM
+# BUILD TICKET PROFORMA
 # ============================================================
 
 def build_escpos_ticket_proforma_58mm(
     *,
-    shop_name: str = "BIJOUTERIE RIO-GOLD",
+    shop_name: str = "RIO-GOLD",
     shop_phone: Optional[str] = None,
     numero_facture: str,
     date_txt: Optional[str] = None,
@@ -470,7 +878,7 @@ def build_escpos_ticket_proforma_58mm(
 ) -> bytes:
 
     # ========================================================
-    # DATE
+    # DATE / HEURE
     # ========================================================
 
     if not date_txt:
@@ -489,22 +897,32 @@ def build_escpos_ticket_proforma_58mm(
     # COMMANDES ESC/POS
     # ========================================================
 
+    # Initialisation
     INIT = b"\x1b@"
 
+    # Alignement
     ALIGN_LEFT = b"\x1ba\x00"
     ALIGN_CENTER = b"\x1ba\x01"
 
+    # Gras
     BOLD_ON = b"\x1bE\x01"
     BOLD_OFF = b"\x1bE\x00"
 
-    # Font A = plus grande
+    # Police
     FONT_A = b"\x1bM\x00"
-
-    # Font B = plus petite
-    FONT_B = b"\x1bM\x01"
 
     # Taille normale
     NORMAL_SIZE = b"\x1d!\x00"
+
+    # --------------------------------------------------------
+    # MODE CONDENSÉ
+    # --------------------------------------------------------
+    #
+    # ESC SI = mode condensé
+    # DC2    = retour normal
+    #
+    CONDENSED_ON = b"\x1b\x0f"
+    CONDENSED_OFF = b"\x12"
 
     # Coupe partielle
     CUT_PARTIAL = b"\x1dV\x01"
@@ -516,30 +934,26 @@ def build_escpos_ticket_proforma_58mm(
     # ========================================================
 
     out += INIT
+    out += FONT_A
     out += NORMAL_SIZE
-
-    # On utilise Font B pour le ticket :
-    # écriture légèrement plus petite.
-    out += FONT_B
-
     out += ALIGN_CENTER
 
     # ========================================================
-    # MARGE SUPÉRIEURE
+    # MARGE DU HAUT : 2 LIGNES
     # ========================================================
 
-    # 2 lignes avant l'en-tête
-    out += b"\n"
+    out += b"\n\n"
 
     # ========================================================
-    # EN-TÊTE
+    # ENTÊTE
     # ========================================================
 
     out += BOLD_ON
 
     out += _txt(
         _fit(
-            shop_name.upper()
+            shop_name.upper(),
+            NORMAL_WIDTH,
         )
     )
 
@@ -549,40 +963,67 @@ def build_escpos_ticket_proforma_58mm(
 
         out += _txt(
             _fit(
-                f"Tel: {shop_phone}"
+                f"Tel: {shop_phone}",
+                NORMAL_WIDTH,
             )
         )
 
-    out += _txt(LINE)
+    out += _txt(
+        LINE_NORMAL
+    )
 
     # ========================================================
     # FACTURE PROFORMA + NUMÉRO
     # ========================================================
+    #
+    # Mode condensé uniquement ici.
+    #
+    # Résultat recherché :
+    #
+    # FACTURE PROFORMA   N° FAC-20260906-0002
+    #
+    # ========================================================
 
     out += ALIGN_LEFT
+    out += CONDENSED_ON
     out += BOLD_ON
 
+    facture_line = _left_right(
+        "FACTURE PROFORMA",
+        f"N° {numero_facture}",
+        CONDENSED_WIDTH,
+    )
+
     out += _txt(
-        _left_right(
-            "FACTURE PROFORMA",
-            f"N° {numero_facture}",
-        )
+        facture_line
     )
 
     out += BOLD_OFF
 
-    out += _txt(LINE)
+    out += _txt(
+        LINE_CONDENSED
+    )
+
+    out += CONDENSED_OFF
 
     # ========================================================
-    # DATE + HEURE
+    # DATE + HEURE SUR UNE LIGNE
     # ========================================================
+
+    out += CONDENSED_ON
+    out += ALIGN_LEFT
+
+    date_line = _left_right(
+        f"DATE : {date_only}",
+        heure_only,
+        CONDENSED_WIDTH,
+    )
 
     out += _txt(
-        _left_right(
-            f"DATE : {date_only}",
-            heure_only,
-        )
+        date_line
     )
+
+    out += CONDENSED_OFF
 
     # ========================================================
     # ÉTAT
@@ -596,7 +1037,17 @@ def build_escpos_ticket_proforma_58mm(
         .strip()
         .upper()
         .replace("É", "E")
+        .replace("ÉE", "E")
     )
+
+    # Normalisation utile si Django retourne
+    # "Non payée"
+    if statut in {
+        "NON PAYEE",
+        "NON_PAYE",
+        "NON_PAYEE",
+    }:
+        statut = "NON PAYE"
 
     out += BOLD_ON
 
@@ -606,7 +1057,9 @@ def build_escpos_ticket_proforma_58mm(
 
     out += BOLD_OFF
 
-    out += _txt(LINE)
+    out += _txt(
+        LINE_NORMAL
+    )
 
     # ========================================================
     # MONTANT À PAYER
@@ -614,37 +1067,27 @@ def build_escpos_ticket_proforma_58mm(
 
     out += ALIGN_CENTER
 
-    # Titre en petite Font B
-    out += FONT_B
     out += BOLD_ON
 
     out += _txt(
         "MONTANT A PAYER"
     )
 
-    # --------------------------------------------------------
-    # Montant légèrement plus grand
-    # --------------------------------------------------------
-
-    # On passe seulement le montant en Font A.
-    # Pas de DOUBLE_ON : il ne sera donc pas énorme.
-    out += FONT_A
-
-    out += _txt(
-        _fit(
-            _money(
-                montant_a_payer
-            ),
-            32,
-        )
+    # montant formaté :
+    # 12 500 FCFA
+    montant_txt = _money(
+        montant_a_payer
     )
 
-    # Retour à la petite police
-    out += FONT_B
+    out += _txt(
+        montant_txt
+    )
 
     out += BOLD_OFF
 
-    out += _txt(LINE)
+    out += _txt(
+        LINE_NORMAL
+    )
 
     # ========================================================
     # NOTE
@@ -653,18 +1096,26 @@ def build_escpos_ticket_proforma_58mm(
     if note:
 
         out += ALIGN_CENTER
-        out += FONT_B
+
+        # Mode condensé pour éviter que la phrase
+        # soit découpée sur trop de lignes.
+        out += CONDENSED_ON
 
         out += _txt(
-            _fit(note)
+            _fit(
+                note,
+                CONDENSED_WIDTH,
+            )
         )
+
+        out += CONDENSED_OFF
 
     # ========================================================
     # MESSAGE FINAL
     # ========================================================
 
     out += ALIGN_CENTER
-    out += FONT_B
+
     out += BOLD_ON
 
     out += _txt(
@@ -674,11 +1125,10 @@ def build_escpos_ticket_proforma_58mm(
     out += BOLD_OFF
 
     # ========================================================
-    # MARGE INFÉRIEURE
+    # MARGE INFÉRIEURE : 4 LIGNES
     # ========================================================
 
-    # Exactement 4 lignes après le message
-    out += b"\n"
+    out += b"\n\n\n\n"
 
     # ========================================================
     # COUPE
