@@ -8,7 +8,7 @@ from io import BytesIO
 
 import qrcode
 from django.conf import settings
-from reportlab.lib.pagesizes import A5, landscape
+from reportlab.lib.pagesizes import A5
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
@@ -20,7 +20,7 @@ from .theme_riogold import (DARK, GOLD, LINE, MID, MUTED, WHITE, money_fcfa,
 # FORMAT
 # ============================================================
 
-PAGE = landscape(A5)
+PAGE = A5
 
 
 # ============================================================
