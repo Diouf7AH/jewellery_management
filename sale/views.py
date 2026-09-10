@@ -3147,10 +3147,14 @@ class TicketPaiement80mmESCPosView(APIView):
 class FactureA5PaysageView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, numero_facture: str):
+    def get(
+        self,
+        request,
+        numero_facture: str,
+    ):
 
         # =====================================================
-        # 1. FACTURE
+        # FACTURE
         # =====================================================
 
         facture = get_object_or_404(
@@ -3170,11 +3174,13 @@ class FactureA5PaysageView(APIView):
                 "vente__lignes__produit__modele",
                 "paiements__lignes__mode_paiement",
             ),
-            numero_facture__iexact=numero_facture,
+            numero_facture__iexact=(
+                numero_facture
+            ),
         )
 
         # =====================================================
-        # 2. PERMISSION
+        # PERMISSION
         # =====================================================
 
         if not _can_access_facture(
@@ -3184,580 +3190,28 @@ class FactureA5PaysageView(APIView):
             return Response(
                 {
                     "detail": (
-                        "⛔ Accès refusé à cette facture."
+                        "⛔ Accès refusé "
+                        "à cette facture."
                     )
                 },
-                status=status.HTTP_403_FORBIDDEN,
+                status=(
+                    status.HTTP_403_FORBIDDEN
+                ),
             )
 
         # =====================================================
-        # 3. OBJETS PRINCIPAUX
+        # DATA CENTRALISÉES
         # =====================================================
 
-        vente = getattr(
-            facture,
-            "vente",
-            None,
+        data = build_facture_pdf_data(
+            facture
         )
 
-        client = (
-            getattr(
-                vente,
-                "client",
-                None,
-            )
-            if vente
-            else None
-        )
-
-        bijouterie = facture.bijouterie
+        # =====================================================
+        # PDF
+        # =====================================================
 
         buffer = BytesIO()
-
-        # =====================================================
-        # 4. LIGNES PRODUITS
-        # =====================================================
-
-        lines = []
-
-        if vente:
-
-            for vp in vente.lignes.all():
-
-                produit = getattr(
-                    vp,
-                    "produit",
-                    None,
-                )
-
-                # ---------------------------------------------
-                # NOM
-                # ---------------------------------------------
-
-                produit_nom = (
-                    getattr(
-                        produit,
-                        "nom",
-                        None,
-                    )
-                    or "Produit supprimé"
-                )
-
-                # ---------------------------------------------
-                # POIDS
-                # ---------------------------------------------
-
-                poids = ""
-
-                if (
-                    produit
-                    and getattr(
-                        produit,
-                        "poids",
-                        None,
-                    ) is not None
-                ):
-                    poids = str(
-                        produit.poids
-                    )
-
-                # ---------------------------------------------
-                # PURETÉ
-                # ---------------------------------------------
-
-                purete = ""
-
-                if produit:
-
-                    purete_obj = getattr(
-                        produit,
-                        "purete",
-                        None,
-                    )
-
-                    if purete_obj:
-
-                        purete = (
-                            getattr(
-                                purete_obj,
-                                "purete",
-                                None,
-                            )
-                            or getattr(
-                                purete_obj,
-                                "nom",
-                                None,
-                            )
-                            or str(purete_obj)
-                        )
-
-                # ---------------------------------------------
-                # ÉTAT
-                # ---------------------------------------------
-
-                etat = ""
-
-                if produit:
-
-                    if hasattr(
-                        produit,
-                        "get_etat_display",
-                    ):
-                        etat = (
-                            produit.get_etat_display()
-                            or ""
-                        )
-                    else:
-                        etat = (
-                            getattr(
-                                produit,
-                                "etat",
-                                "",
-                            )
-                            or ""
-                        )
-
-                # ---------------------------------------------
-                # POURCENTAGE OCCASION
-                # ---------------------------------------------
-
-                pourcentage_occasion = getattr(
-                    vp,
-                    "pourcentage_occasion",
-                    None,
-                )
-
-                if pourcentage_occasion in (
-                    None,
-                    "",
-                ):
-                    pourcentage_occasion = (
-                        getattr(
-                            produit,
-                            "pourcentage_occasion",
-                            0,
-                        )
-                        if produit
-                        else 0
-                    )
-
-                # ---------------------------------------------
-                # RÉDUCTION OCCASION
-                # ---------------------------------------------
-
-                reduction_occasion = getattr(
-                    vp,
-                    "reduction_occasion",
-                    0,
-                )
-
-                # ---------------------------------------------
-                # LIGNE PDF
-                # ---------------------------------------------
-
-                lines.append(
-                    {
-                        "label": produit_nom,
-
-                        "poids": poids,
-
-                        "qty": (
-                            vp.quantite
-                            or 0
-                        ),
-
-                        # Prix au gramme
-                        "prix_gramme": (
-                            vp.prix_vente_grammes
-                            or 0
-                        ),
-
-                        # Total réel de la ligne
-                        "total": (
-                            vp.montant_total
-                            or 0
-                        ),
-
-                        "purete": purete,
-
-                        "etat": etat,
-
-                        "pourcentage_occasion": (
-                            pourcentage_occasion
-                            or 0
-                        ),
-
-                        "reduction_occasion": (
-                            reduction_occasion
-                            or 0
-                        ),
-                    }
-                )
-
-        # =====================================================
-        # 5. TÉLÉPHONE BIJOUTERIE
-        # =====================================================
-
-        shop_phone = (
-            getattr(
-                bijouterie,
-                "telephone_portable_1",
-                None,
-            )
-            or getattr(
-                bijouterie,
-                "telephone_portable_2",
-                None,
-            )
-            or getattr(
-                bijouterie,
-                "telephone_fix",
-                None,
-            )
-            or ""
-        )
-
-        # =====================================================
-        # 6. MODES DE PAIEMENT
-        # =====================================================
-
-        modes = []
-
-        for paiement in facture.paiements.all():
-
-            for ligne in paiement.lignes.all():
-
-                mode_obj = getattr(
-                    ligne,
-                    "mode_paiement",
-                    None,
-                )
-
-                if not mode_obj:
-                    continue
-
-                mode_nom = (
-                    getattr(
-                        mode_obj,
-                        "nom",
-                        None,
-                    )
-                    or getattr(
-                        mode_obj,
-                        "code",
-                        None,
-                    )
-                    or str(mode_obj)
-                )
-
-                if (
-                    mode_nom
-                    and mode_nom not in modes
-                ):
-                    modes.append(
-                        mode_nom
-                    )
-
-        payment_mode = (
-            ", ".join(modes)
-            if modes
-            else ""
-        )
-
-        # =====================================================
-        # 7. VENDEUR
-        # =====================================================
-
-        vendor_name = ""
-
-        if (
-            vente
-            and getattr(
-                vente,
-                "vendor",
-                None,
-            )
-        ):
-
-            vendor = vente.vendor
-
-            vendor_user = getattr(
-                vendor,
-                "user",
-                None,
-            )
-
-            if vendor_user:
-
-                full_name = ""
-
-                if hasattr(
-                    vendor_user,
-                    "get_full_name",
-                ):
-                    full_name = (
-                        vendor_user
-                        .get_full_name()
-                        .strip()
-                    )
-
-                vendor_name = (
-                    full_name
-                    or getattr(
-                        vendor_user,
-                        "email",
-                        "",
-                    )
-                )
-
-            if not vendor_name:
-                vendor_name = str(
-                    vendor
-                )
-
-        # =====================================================
-        # 8. CLIENT
-        # =====================================================
-
-        client_name = ""
-        client_phone = ""
-        client_address = ""
-
-        if client:
-
-            client_name = (
-                f"{getattr(client, 'prenom', '') or ''} "
-                f"{getattr(client, 'nom', '') or ''}"
-            ).strip()
-
-            client_phone = (
-                getattr(
-                    client,
-                    "telephone",
-                    "",
-                )
-                or ""
-            )
-
-            client_address = (
-                getattr(
-                    client,
-                    "adresse",
-                    "",
-                )
-                or ""
-            )
-
-        # =====================================================
-        # 9. DATE LOCALE
-        # =====================================================
-
-        date_creation = (
-            facture.date_creation
-        )
-
-        if (
-            date_creation
-            and timezone.is_aware(
-                date_creation
-            )
-        ):
-            date_creation = (
-                timezone.localtime(
-                    date_creation
-                )
-            )
-
-        date_txt = (
-            date_creation.strftime(
-                "%d/%m/%Y %H:%M"
-            )
-            if date_creation
-            else ""
-        )
-
-        # =====================================================
-        # 10. QR CODE PATH
-        # =====================================================
-
-        qr_code_path = None
-
-        qr_field = getattr(
-            facture,
-            "qr_code_image",
-            None,
-        )
-
-        if qr_field:
-
-            try:
-                qr_code_path = (
-                    qr_field.path
-                )
-            except Exception:
-                qr_code_path = None
-
-        # =====================================================
-        # 11. DONNÉES PDF
-        # =====================================================
-
-        data = {
-
-            # -------------------------------------------------
-            # BIJOUTERIE
-            # -------------------------------------------------
-
-            "shop_name": (
-                getattr(
-                    bijouterie,
-                    "nom",
-                    None,
-                )
-                or "RIO GOLD"
-            ),
-
-            "shop_phone":
-                shop_phone,
-
-            "shop_ninea": (
-                getattr(
-                    bijouterie,
-                    "ninea",
-                    None,
-                )
-                or getattr(
-                    bijouterie,
-                    "ninenea",
-                    None,
-                )
-                or ""
-            ),
-
-            "shop_address": (
-                getattr(
-                    bijouterie,
-                    "adresse",
-                    None,
-                )
-                or ""
-            ),
-
-            # -------------------------------------------------
-            # FACTURE
-            # -------------------------------------------------
-
-            "title":
-                "FACTURE",
-
-            "invoice_no":
-                facture.numero_facture,
-
-            "invoice_type":
-                facture.type_facture,
-
-            "status":
-                facture.status,
-
-            "date":
-                date_txt,
-
-            "qr_code_path":
-                qr_code_path,
-
-            # -------------------------------------------------
-            # CLIENT
-            # -------------------------------------------------
-
-            "client_name":
-                client_name,
-
-            "client_phone":
-                client_phone,
-
-            "client_address":
-                client_address,
-
-            # -------------------------------------------------
-            # VENTE
-            # -------------------------------------------------
-
-            "vendor":
-                vendor_name,
-
-            "cashier":
-                "",
-
-            "sale_no": (
-                vente.numero_vente
-                if vente
-                else ""
-            ),
-
-            # -------------------------------------------------
-            # PAIEMENT
-            # -------------------------------------------------
-
-            "payment_mode":
-                payment_mode,
-
-            # -------------------------------------------------
-            # PRODUITS
-            # -------------------------------------------------
-
-            "lines":
-                lines,
-
-            # -------------------------------------------------
-            # TOTAUX
-            # -------------------------------------------------
-
-            "total_ht": (
-                facture.montant_ht
-                or 0
-            ),
-
-            "taux_tva":
-                facture.taux_tva,
-
-            "montant_tva": (
-                facture.montant_tva
-                or 0
-            ),
-
-            "total_ttc": (
-                facture.montant_total
-                or 0
-            ),
-
-            "amount_paid": (
-                facture.total_paye
-                or 0
-            ),
-
-            "remaining_amount": (
-                facture.reste_a_payer
-                or 0
-            ),
-
-            "deposit_amount":
-                0,
-
-            # -------------------------------------------------
-            # FOOTER
-            # -------------------------------------------------
-
-            "thanks":
-                "Merci pour votre confiance.",
-
-            "footer_note": (
-                "Bijouterie Rio-Gold "
-                "- L'excellence en or."
-            ),
-        }
-
-        # =====================================================
-        # 12. PDF
-        # =====================================================
 
         build_facture_a5_paysage_pdf(
             buffer,
@@ -3765,10 +3219,6 @@ class FactureA5PaysageView(APIView):
         )
 
         buffer.seek(0)
-
-        # =====================================================
-        # 13. RESPONSE
-        # =====================================================
 
         filename = (
             f"facture_"
@@ -3783,6 +3233,7 @@ class FactureA5PaysageView(APIView):
             content_type="application/pdf",
         )
         
+
         
 class ExportFacturesExcelView(APIView):
     permission_classes = [IsAuthenticated]
