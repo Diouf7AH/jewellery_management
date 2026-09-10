@@ -3143,25 +3143,6 @@ class TicketPaiement80mmESCPosView(APIView):
             },
         )
 
-# class FactureA5PaysageView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def get(self, request, numero_facture: str):
-#         facture = get_object_or_404(
-#             Facture.objects.select_related("vente", "bijouterie", "vente__client"),
-#             numero_facture__iexact=numero_facture,
-#         )
-
-#         if not _can_access_facture(request.user, facture):
-#             return Response(
-#                 {"detail": "⛔ Accès refusé à cette facture."},
-#                 status=status.HTTP_403_FORBIDDEN,
-#             )
-
-#         pdf_buffer = build_facture_a5_paysage_pdf(facture=facture)
-
-#         filename = f"facture_{facture.numero_facture}.pdf"
-#         return FileResponse(pdf_buffer, as_attachment=False, filename=filename)
 
 class FactureA5PaysageView(APIView):
     permission_classes = [IsAuthenticated]
@@ -3210,7 +3191,7 @@ class FactureA5PaysageView(APIView):
             )
 
         # =====================================================
-        # 3. DONNÉES PRINCIPALES
+        # 3. OBJETS PRINCIPAUX
         # =====================================================
 
         vente = getattr(
@@ -3250,7 +3231,7 @@ class FactureA5PaysageView(APIView):
                 )
 
                 # ---------------------------------------------
-                # Nom produit
+                # NOM
                 # ---------------------------------------------
 
                 produit_nom = (
@@ -3263,7 +3244,7 @@ class FactureA5PaysageView(APIView):
                 )
 
                 # ---------------------------------------------
-                # Poids
+                # POIDS
                 # ---------------------------------------------
 
                 poids = ""
@@ -3281,41 +3262,37 @@ class FactureA5PaysageView(APIView):
                     )
 
                 # ---------------------------------------------
-                # Pureté
+                # PURETÉ
                 # ---------------------------------------------
 
-                purete_obj = (
-                    getattr(
+                purete = ""
+
+                if produit:
+
+                    purete_obj = getattr(
                         produit,
                         "purete",
                         None,
                     )
-                    if produit
-                    else None
-                )
 
-                purete = ""
+                    if purete_obj:
 
-                if purete_obj:
-
-                    purete = (
-                        getattr(
-                            purete_obj,
-                            "purete",
-                            None,
+                        purete = (
+                            getattr(
+                                purete_obj,
+                                "purete",
+                                None,
+                            )
+                            or getattr(
+                                purete_obj,
+                                "nom",
+                                None,
+                            )
+                            or str(purete_obj)
                         )
-                        or getattr(
-                            purete_obj,
-                            "nom",
-                            None,
-                        )
-                        or str(
-                            purete_obj
-                        )
-                    )
 
                 # ---------------------------------------------
-                # État
+                # ÉTAT
                 # ---------------------------------------------
 
                 etat = ""
@@ -3341,7 +3318,7 @@ class FactureA5PaysageView(APIView):
                         )
 
                 # ---------------------------------------------
-                # Réduction occasion
+                # POURCENTAGE OCCASION
                 # ---------------------------------------------
 
                 pourcentage_occasion = getattr(
@@ -3350,16 +3327,23 @@ class FactureA5PaysageView(APIView):
                     None,
                 )
 
-                # Fallback éventuel sur Produit
                 if pourcentage_occasion in (
                     None,
                     "",
                 ):
-                    pourcentage_occasion = getattr(
-                        produit,
-                        "pourcentage_occasion",
-                        0,
-                    ) if produit else 0
+                    pourcentage_occasion = (
+                        getattr(
+                            produit,
+                            "pourcentage_occasion",
+                            0,
+                        )
+                        if produit
+                        else 0
+                    )
+
+                # ---------------------------------------------
+                # RÉDUCTION OCCASION
+                # ---------------------------------------------
 
                 reduction_occasion = getattr(
                     vp,
@@ -3368,35 +3352,35 @@ class FactureA5PaysageView(APIView):
                 )
 
                 # ---------------------------------------------
-                # Ligne finale
+                # LIGNE PDF
                 # ---------------------------------------------
 
                 lines.append(
                     {
                         "label": produit_nom,
 
+                        "poids": poids,
+
                         "qty": (
                             vp.quantite
                             or 0
                         ),
 
-                        "poids": poids,
-
-                        "purete": purete,
-
-                        "etat": etat,
-
-                        "pu": (
+                        # Prix au gramme
+                        "prix_gramme": (
                             vp.prix_vente_grammes
                             or 0
                         ),
 
-                        # IMPORTANT :
-                        # le générateur PDF lit "total"
+                        # Total réel de la ligne
                         "total": (
                             vp.montant_total
                             or 0
                         ),
+
+                        "purete": purete,
+
+                        "etat": etat,
 
                         "pourcentage_occasion": (
                             pourcentage_occasion
@@ -3512,9 +3496,10 @@ class FactureA5PaysageView(APIView):
                     "get_full_name",
                 ):
                     full_name = (
-                        vendor_user.get_full_name()
-                        or ""
-                    ).strip()
+                        vendor_user
+                        .get_full_name()
+                        .strip()
+                    )
 
                 vendor_name = (
                     full_name
@@ -3571,8 +3556,11 @@ class FactureA5PaysageView(APIView):
             facture.date_creation
         )
 
-        if timezone.is_aware(
+        if (
             date_creation
+            and timezone.is_aware(
+                date_creation
+            )
         ):
             date_creation = (
                 timezone.localtime(
@@ -3584,10 +3572,12 @@ class FactureA5PaysageView(APIView):
             date_creation.strftime(
                 "%d/%m/%Y %H:%M"
             )
+            if date_creation
+            else ""
         )
 
         # =====================================================
-        # 10. QR CODE
+        # 10. QR CODE PATH
         # =====================================================
 
         qr_code_path = None
@@ -3599,6 +3589,7 @@ class FactureA5PaysageView(APIView):
         )
 
         if qr_field:
+
             try:
                 qr_code_path = (
                     qr_field.path
@@ -3607,14 +3598,14 @@ class FactureA5PaysageView(APIView):
                 qr_code_path = None
 
         # =====================================================
-        # 11. DATA PDF
+        # 11. DONNÉES PDF
         # =====================================================
 
         data = {
 
-            # ---------------------------------------------
-            # Bijouterie
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # BIJOUTERIE
+            # -------------------------------------------------
 
             "shop_name": (
                 getattr(
@@ -3651,9 +3642,9 @@ class FactureA5PaysageView(APIView):
                 or ""
             ),
 
-            # ---------------------------------------------
-            # Facture
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # FACTURE
+            # -------------------------------------------------
 
             "title":
                 "FACTURE",
@@ -3673,9 +3664,9 @@ class FactureA5PaysageView(APIView):
             "qr_code_path":
                 qr_code_path,
 
-            # ---------------------------------------------
-            # Client
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # CLIENT
+            # -------------------------------------------------
 
             "client_name":
                 client_name,
@@ -3686,9 +3677,9 @@ class FactureA5PaysageView(APIView):
             "client_address":
                 client_address,
 
-            # ---------------------------------------------
-            # Vente
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # VENTE
+            # -------------------------------------------------
 
             "vendor":
                 vendor_name,
@@ -3702,32 +3693,31 @@ class FactureA5PaysageView(APIView):
                 else ""
             ),
 
-            # ---------------------------------------------
-            # Paiement
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # PAIEMENT
+            # -------------------------------------------------
 
             "payment_mode":
                 payment_mode,
 
-            # ---------------------------------------------
-            # Produits
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # PRODUITS
+            # -------------------------------------------------
 
             "lines":
                 lines,
 
-            # ---------------------------------------------
-            # Totaux
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # TOTAUX
+            # -------------------------------------------------
 
             "total_ht": (
                 facture.montant_ht
                 or 0
             ),
 
-            "taux_tva": (
-                facture.taux_tva
-            ),
+            "taux_tva":
+                facture.taux_tva,
 
             "montant_tva": (
                 facture.montant_tva
@@ -3752,13 +3742,12 @@ class FactureA5PaysageView(APIView):
             "deposit_amount":
                 0,
 
-            # ---------------------------------------------
-            # Footer
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # FOOTER
+            # -------------------------------------------------
 
-            "thanks": (
-                "Merci pour votre confiance."
-            ),
+            "thanks":
+                "Merci pour votre confiance.",
 
             "footer_note": (
                 "Bijouterie Rio-Gold "
@@ -3767,7 +3756,7 @@ class FactureA5PaysageView(APIView):
         }
 
         # =====================================================
-        # 12. GÉNÉRATION PDF
+        # 12. PDF
         # =====================================================
 
         build_facture_a5_paysage_pdf(
