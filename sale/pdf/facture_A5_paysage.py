@@ -1,5 +1,3 @@
-# sale/pdf/facture_A5_paysage.py
-
 from __future__ import annotations
 
 import os
@@ -16,27 +14,15 @@ from reportlab.pdfgen import canvas
 from .theme_riogold import (DARK, GOLD, LINE, MID, MUTED, WHITE, money_fcfa,
                             safe)
 
-# ============================================================
-# FORMAT
-# ============================================================
-
 PAGE = A5
 
-
-# ============================================================
-# HELPERS
-# ============================================================
 
 def _dec(v, default=Decimal("0")):
     try:
         if v in (None, ""):
             return default
         return Decimal(str(v))
-    except (
-        InvalidOperation,
-        ValueError,
-        TypeError,
-    ):
+    except (InvalidOperation, ValueError, TypeError):
         return default
 
 
@@ -49,38 +35,13 @@ def _int(v, default=0):
         return default
 
 
-def _truncate(text: str, max_len: int) -> str:
+def _truncate(text, max_len):
     text = safe(text)
-
-    if len(text) <= max_len:
-        return text
-
-    return text[: max_len - 1] + "…"
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
-def _doc_type_label(value: str) -> str:
-    value = (
-        value
-        or ""
-    ).strip().upper()
-
-    return {
-        "PROFORMA": "FACTURE PROFORMA",
-        "FACTURE": "FACTURE",
-        "ACOMPTE": "FACTURE D’ACOMPTE",
-        "FINALE": "FACTURE FINALE",
-    }.get(
-        value,
-        "FACTURE",
-    )
-
-
-def _etat_label(value) -> str:
-    value = (
-        safe(value)
-        .strip()
-        .upper()
-    )
+def _etat_label(value):
+    value = safe(value).strip().upper()
 
     if value in {"N", "NEUF"}:
         return "Neuf"
@@ -90,10 +51,6 @@ def _etat_label(value) -> str:
 
     return safe(value)
 
-
-# ============================================================
-# QR CODE
-# ============================================================
 
 def _make_invoice_qr_reader(numero_facture):
     buffer = BytesIO()
@@ -112,36 +69,15 @@ def _make_invoice_qr_reader(numero_facture):
         back_color="white",
     )
 
-    img.save(
-        buffer,
-        format="PNG",
-    )
-
+    img.save(buffer, format="PNG")
     buffer.seek(0)
 
     return ImageReader(buffer)
 
 
-# ============================================================
-# HEADER
-# ============================================================
-
-def _draw_page_header(c, w, h, data):
-
+def _draw_header(c, w, h, data):
     c.setFillColor(WHITE)
-
-    c.rect(
-        0,
-        0,
-        w,
-        h,
-        stroke=0,
-        fill=1,
-    )
-
-    # --------------------------------------------------------
-    # LOGO
-    # --------------------------------------------------------
+    c.rect(0, 0, w, h, stroke=0, fill=1)
 
     logo_path = os.path.join(
         settings.MEDIA_ROOT,
@@ -152,194 +88,148 @@ def _draw_page_header(c, w, h, data):
     if os.path.exists(logo_path):
         c.drawImage(
             logo_path,
-            7 * mm,
-            h - 31 * mm,
-            width=30 * mm,
-            height=25 * mm,
+            8 * mm,
+            h - 30 * mm,
+            width=27 * mm,
+            height=23 * mm,
             preserveAspectRatio=True,
             mask="auto",
         )
 
-    # --------------------------------------------------------
-    # BIJOUTERIE
-    # --------------------------------------------------------
-
-    left_x = 38 * mm
-
     c.setFillColor(GOLD)
-    c.setFont("Helvetica-Bold", 13)
+    c.setFont("Helvetica-Bold", 12)
 
     c.drawString(
-        left_x,
-        h - 10 * mm,
+        38 * mm,
+        h - 12 * mm,
         _truncate(
-            f"Bijouterie {data.get('shop_name') or 'Rio Gold'}",
-            35,
+            f"Bijouterie {data.get('shop_name') or 'Rio-Gold'}",
+            30,
         ),
     )
 
     c.setStrokeColor(GOLD)
-    c.setLineWidth(1)
+    c.setLineWidth(0.8)
 
     c.line(
-        left_x,
-        h - 13 * mm,
-        92 * mm,
-        h - 13 * mm,
+        38 * mm,
+        h - 15 * mm,
+        w - 8 * mm,
+        h - 15 * mm,
     )
 
     c.setFillColor(DARK)
-    c.setFont("Helvetica", 8.5)
+    c.setFont("Helvetica", 8)
 
-    y_info = h - 18 * mm
+    y = h - 20 * mm
 
     if data.get("shop_phone"):
         c.drawString(
-            left_x,
-            y_info,
-            _truncate(
-                f"Tél : (+221) {data.get('shop_phone')}",
-                38,
-            ),
+            38 * mm,
+            y,
+            f"Tél : (+221) {data.get('shop_phone')}",
         )
-        y_info -= 4.3 * mm
+        y -= 4 * mm
 
     if data.get("shop_address"):
         c.drawString(
-            left_x,
-            y_info,
-            _truncate(
-                f"Adresse : {data.get('shop_address')}",
-                38,
-            ),
+            38 * mm,
+            y,
+            f"Adresse : {data.get('shop_address')}",
         )
-        y_info -= 4.3 * mm
+        y -= 4 * mm
 
     if data.get("shop_ninea"):
         c.drawString(
-            left_x,
-            y_info,
-            _truncate(
-                f"NINEA : {data.get('shop_ninea')}",
-                38,
-            ),
+            38 * mm,
+            y,
+            f"NINEA : {data.get('shop_ninea')}",
         )
 
-    # --------------------------------------------------------
-    # CLIENT
-    # --------------------------------------------------------
 
-    client_x = 98 * mm
-    client_y = h - 31 * mm
-    client_w = 52 * mm
-    client_h = 23 * mm
+def _draw_invoice_info(c, w, h, data):
+    top = h - 42 * mm
+
+    c.setFillColor(DARK)
+    c.setFont("Helvetica-Bold", 16)
+
+    c.drawString(
+        8 * mm,
+        top,
+        "FACTURE",
+    )
+
+    c.setFont("Helvetica-Bold", 8.5)
+
+    c.drawRightString(
+        w - 8 * mm,
+        top,
+        f"N° {safe(data.get('invoice_no'))}",
+    )
+
+    c.setFont("Helvetica", 8)
+
+    c.drawString(
+        8 * mm,
+        top - 6 * mm,
+        "Date",
+    )
+
+    c.drawRightString(
+        w - 8 * mm,
+        top - 6 * mm,
+        safe(data.get("date")),
+    )
 
     c.setStrokeColor(LINE)
-    c.setLineWidth(0.7)
-
-    c.roundRect(
-        client_x,
-        client_y,
-        client_w,
-        client_h,
-        2 * mm,
-        stroke=1,
-        fill=0,
+    c.line(
+        8 * mm,
+        top - 10 * mm,
+        w - 8 * mm,
+        top - 10 * mm,
     )
+
+
+def _draw_client(c, w, h, data):
+    y = h - 66 * mm
 
     c.setFillColor(GOLD)
     c.setFont("Helvetica-Bold", 9)
 
-    c.drawCentredString(
-        client_x + client_w / 2,
-        client_y + 17 * mm,
+    c.drawString(
+        8 * mm,
+        y,
         "CLIENT",
     )
 
     c.setFillColor(DARK)
     c.setFont("Helvetica-Bold", 9)
 
-    c.drawCentredString(
-        client_x + client_w / 2,
-        client_y + 11.5 * mm,
-        _truncate(
-            data.get("client_name")
-            or "Client non renseigné",
-            25,
-        ),
+    c.drawString(
+        8 * mm,
+        y - 6 * mm,
+        data.get("client_name")
+        or "Client non renseigné",
     )
 
     c.setFont("Helvetica", 8)
 
     if data.get("client_phone"):
-        c.drawCentredString(
-            client_x + client_w / 2,
-            client_y + 6.5 * mm,
-            _truncate(
-                f"Tél : {data.get('client_phone')}",
-                27,
-            ),
+        c.drawString(
+            8 * mm,
+            y - 11 * mm,
+            f"Tél : {data.get('client_phone')}",
         )
 
     if data.get("client_address"):
-        c.drawCentredString(
-            client_x + client_w / 2,
-            client_y + 2.8 * mm,
-            _truncate(
-                f"Adresse : {data.get('client_address')}",
-                28,
-            ),
+        c.drawString(
+            8 * mm,
+            y - 16 * mm,
+            f"Adresse : {data.get('client_address')}",
         )
 
-    # --------------------------------------------------------
-    # FACTURE
-    # --------------------------------------------------------
-
-    right_x = w - 8 * mm
-
-    doc_type = _doc_type_label(
-        data.get("invoice_type")
-    )
-
-    c.setFillColor(DARK)
-    c.setFont("Helvetica-Bold", 16)
-
-    c.drawRightString(
-        right_x,
-        h - 10 * mm,
-        doc_type,
-    )
-
-    c.setFont("Helvetica-Bold", 9)
-
-    c.drawRightString(
-        right_x,
-        h - 18 * mm,
-        f"N° {safe(data.get('invoice_no'))}",
-    )
-
-    c.setFont("Helvetica", 8.5)
-
-    c.drawRightString(
-        right_x,
-        h - 24 * mm,
-        f"Date : {safe(data.get('date'))}",
-    )
-
-    if data.get("sale_no"):
-        c.drawRightString(
-            right_x,
-            h - 29 * mm,
-            f"Vente : {safe(data.get('sale_no'))}",
-        )
-
-
-# ============================================================
-# TABLE HEADER
-# ============================================================
 
 def _draw_table_header(c, left, right, y_top):
-
     header_h = 8 * mm
 
     c.setFillColor(GOLD)
@@ -355,24 +245,17 @@ def _draw_table_header(c, left, right, y_top):
     )
 
     c.setFillColor(WHITE)
-    c.setFont("Helvetica-Bold", 8.5)
+    c.setFont("Helvetica-Bold", 7.3)
 
     cols = {
-        "n": left + 4 * mm,
-        "label": left + 11 * mm,
-        "poids": left + 105 * mm,
-        "qty": left + 124 * mm,
-        "prix_gramme": left + 158 * mm,
-        "total": right - 3 * mm,
+        "label": left + 2 * mm,
+        "poids": left + 68 * mm,
+        "qty": left + 84 * mm,
+        "prix_gramme": left + 108 * mm,
+        "total": right - 2 * mm,
     }
 
-    y = y_top - 5.5 * mm
-
-    c.drawString(
-        cols["n"],
-        y,
-        "#",
-    )
+    y = y_top - 5.4 * mm
 
     c.drawString(
         cols["label"],
@@ -407,18 +290,7 @@ def _draw_table_header(c, left, right, y_top):
     return cols
 
 
-# ============================================================
-# TABLE LINES
-# ============================================================
-
-def _draw_lines(
-    c,
-    left,
-    right,
-    y_top,
-    data,
-):
-
+def _draw_lines(c, left, right, y_top, data):
     cols = _draw_table_header(
         c,
         left,
@@ -430,26 +302,16 @@ def _draw_lines(
 
     lines = data.get("lines") or []
 
-    max_rows = 0
-
-    for i, li in enumerate(
-        lines,
-        start=1,
-    ):
-
-        if yrow < 69 * mm:
+    for i, li in enumerate(lines, start=1):
+        if yrow < 82 * mm:
             break
 
-        max_rows += 1
-
         label = safe(
-            li.get("label")
-            or ""
+            li.get("label") or ""
         )
 
         poids = safe(
-            li.get("poids")
-            or ""
+            li.get("poids") or ""
         )
 
         qty = _int(
@@ -465,63 +327,33 @@ def _draw_lines(
         )
 
         purete = safe(
-            li.get("purete")
-            or ""
+            li.get("purete") or ""
         )
 
         etat = _etat_label(
             li.get("etat")
         )
 
-        pourcentage_occasion = _dec(
+        pourcentage = _dec(
             li.get("pourcentage_occasion")
         )
-
-        reduction_occasion = _dec(
-            li.get("reduction_occasion")
-        )
-
-        # ----------------------------------------------------
-        # DÉTAILS
-        # ----------------------------------------------------
 
         details = []
 
         if purete:
             details.append(purete)
 
-        if pourcentage_occasion > 0:
-
-            pourcentage_txt = (
-                str(int(pourcentage_occasion))
-                if (
-                    pourcentage_occasion
-                    == pourcentage_occasion.to_integral()
-                )
-                else str(pourcentage_occasion)
-            )
-
+        if pourcentage > 0:
             details.append("Occasion")
             details.append(
-                f"Réduction -{pourcentage_txt}%"
+                f"Réduction -{int(pourcentage)}%"
             )
-
         elif etat:
             details.append(etat)
 
         detail_txt = " • ".join(details)
 
-        has_detail = bool(detail_txt)
-
-        row_h = (
-            9 * mm
-            if has_detail
-            else 7 * mm
-        )
-
-        # ----------------------------------------------------
-        # FOND ALTERNÉ
-        # ----------------------------------------------------
+        row_h = 9 * mm if detail_txt else 7 * mm
 
         if i % 2 == 0:
             c.setFillColor(MID)
@@ -535,38 +367,19 @@ def _draw_lines(
                 fill=1,
             )
 
-        # ----------------------------------------------------
-        # LIGNE PRINCIPALE
-        # ----------------------------------------------------
-
         c.setFillColor(DARK)
-        c.setFont("Helvetica", 8.5)
-
-        c.drawString(
-            cols["n"],
-            yrow,
-            str(i),
-        )
+        c.setFont("Helvetica", 7.4)
 
         c.drawString(
             cols["label"],
             yrow,
-            _truncate(
-                label,
-                39,
-            ),
-        )
-
-        poids_txt = (
-            f"{poids} g"
-            if poids
-            else "-"
+            _truncate(label, 27),
         )
 
         c.drawRightString(
             cols["poids"],
             yrow,
-            poids_txt,
+            f"{poids} g" if poids else "-",
         )
 
         c.drawRightString(
@@ -578,35 +391,22 @@ def _draw_lines(
         c.drawRightString(
             cols["prix_gramme"],
             yrow,
-            money_fcfa(
-                prix_gramme
-            ),
+            money_fcfa(prix_gramme),
         )
 
-        c.setFont(
-            "Helvetica-Bold",
-            8.5,
-        )
+        c.setFont("Helvetica-Bold", 7.4)
 
         c.drawRightString(
             cols["total"],
             yrow,
-            money_fcfa(
-                total
-            ),
+            money_fcfa(total),
         )
 
-        # ----------------------------------------------------
-        # PURETÉ / ÉTAT / OCCASION
-        # ----------------------------------------------------
-
         if detail_txt:
-
             c.setFillColor(MUTED)
-
             c.setFont(
                 "Helvetica-Oblique",
-                6.8,
+                6.2,
             )
 
             c.drawString(
@@ -614,35 +414,9 @@ def _draw_lines(
                 yrow - 3.2 * mm,
                 _truncate(
                     detail_txt,
-                    55,
+                    38,
                 ),
             )
-
-        # ----------------------------------------------------
-        # MONTANT RÉDUCTION OCCASION
-        # ----------------------------------------------------
-
-        if (
-            pourcentage_occasion > 0
-            and reduction_occasion > 0
-        ):
-
-            c.setFillColor(MUTED)
-
-            c.setFont(
-                "Helvetica-Oblique",
-                6.3,
-            )
-
-            c.drawRightString(
-                cols["prix_gramme"],
-                yrow - 3.2 * mm,
-                f"-{money_fcfa(reduction_occasion)}",
-            )
-
-        # ----------------------------------------------------
-        # SÉPARATEUR
-        # ----------------------------------------------------
 
         c.setStrokeColor(LINE)
         c.setLineWidth(0.3)
@@ -656,41 +430,16 @@ def _draw_lines(
 
         yrow -= row_h
 
-    # --------------------------------------------------------
-    # TROP DE LIGNES
-    # --------------------------------------------------------
 
-    if len(lines) > max_rows:
+def _draw_totals(c, w, data):
+    x = 74 * mm
+    y = 45 * mm
 
-        c.setFillColor(MUTED)
+    box_w = 65 * mm
+    box_h = 38 * mm
 
-        c.setFont(
-            "Helvetica-Oblique",
-            6.5,
-        )
-
-        c.drawString(
-            left,
-            67 * mm,
-            (
-                f"... "
-                f"{len(lines) - max_rows} "
-                f"ligne(s) supplémentaire(s)"
-            ),
-        )
-
-
-# ============================================================
-# CONDITIONS
-# ============================================================
-
-def _draw_conditions_box(c, x, y):
-
-    box_w = 62 * mm
-    box_h = 25 * mm
-
-    c.setStrokeColor(LINE)
-    c.setLineWidth(0.6)
+    c.setStrokeColor(GOLD)
+    c.setLineWidth(0.8)
 
     c.roundRect(
         x,
@@ -702,84 +451,6 @@ def _draw_conditions_box(c, x, y):
         fill=0,
     )
 
-    c.setFillColor(GOLD)
-    c.setFont("Helvetica-Bold", 9)
-
-    c.drawString(
-        x + 4 * mm,
-        y + box_h - 6 * mm,
-        "CONDITIONS",
-    )
-
-    c.setStrokeColor(GOLD)
-    c.setLineWidth(0.6)
-
-    c.line(
-        x + 4 * mm,
-        y + box_h - 8 * mm,
-        x + box_w - 4 * mm,
-        y + box_h - 8 * mm,
-    )
-
-    c.setFillColor(DARK)
-    c.setFont("Helvetica", 7.5)
-
-    c.drawString(
-        x + 4 * mm,
-        y + 9 * mm,
-        "Marchandises ni reprises ni échangées.",
-    )
-
-    c.drawString(
-        x + 4 * mm,
-        y + 5 * mm,
-        "Vérifiez vos articles avant de partir.",
-    )
-
-
-# ============================================================
-# TOTALS
-# ============================================================
-
-def _draw_totals_box(
-    c,
-    x,
-    y,
-    data,
-):
-
-    box_w = 80 * mm
-    box_h = 44 * mm
-
-    c.setStrokeColor(GOLD)
-    c.setLineWidth(0.8)
-
-    c.roundRect(
-        x,
-        y,
-        box_w,
-        box_h,
-        2.5 * mm,
-        stroke=1,
-        fill=0,
-    )
-
-    taux_tva = data.get(
-        "taux_tva"
-    )
-
-    tva_label = (
-        "TVA NON APPLIQUÉE"
-        if taux_tva is None
-        else f"TVA ({taux_tva}%)"
-    )
-
-    remaining_amount = _dec(
-        data.get(
-            "remaining_amount"
-        )
-    )
-
     rows = [
         (
             "TOTAL HT",
@@ -787,7 +458,11 @@ def _draw_totals_box(
             False,
         ),
         (
-            tva_label,
+            (
+                "TVA NON APPLIQUÉE"
+                if data.get("taux_tva") is None
+                else f"TVA ({data.get('taux_tva')}%)"
+            ),
             data.get("montant_tva") or 0,
             False,
         ),
@@ -797,169 +472,110 @@ def _draw_totals_box(
             True,
         ),
         (
-            "MONTANT PAYÉ",
+            "PAYÉ",
             data.get("amount_paid"),
             False,
         ),
     ]
 
-    if remaining_amount > 0:
+    remaining = _dec(
+        data.get("remaining_amount")
+    )
 
+    if remaining > 0:
         rows.append(
             (
-                "RESTE À PAYER",
-                remaining_amount,
+                "RESTE",
+                remaining,
                 True,
             )
         )
 
-    yrow = (
-        y + box_h - 7 * mm
-    )
+    yy = y + box_h - 7 * mm
 
-    for (
-        label,
-        amount,
-        highlight,
-    ) in rows:
-
-        if highlight:
-
-            c.setFillColor(MID)
-
-            c.roundRect(
-                x + 2 * mm,
-                yrow - 3 * mm,
-                box_w - 4 * mm,
-                6 * mm,
-                1 * mm,
-                stroke=0,
-                fill=1,
-            )
-
+    for label, amount, highlight in rows:
         c.setFillColor(
-            GOLD
-            if highlight
-            else DARK
+            GOLD if highlight else DARK
         )
 
         c.setFont(
             "Helvetica-Bold"
             if highlight
             else "Helvetica",
-            9.5,
+            8.5,
         )
 
         c.drawString(
-            x + 5 * mm,
-            yrow,
+            x + 4 * mm,
+            yy,
             label,
         )
 
         c.drawRightString(
-            x + box_w - 5 * mm,
-            yrow,
+            x + box_w - 4 * mm,
+            yy,
             money_fcfa(
                 _dec(amount)
             ),
         )
 
-        yrow -= 6.7 * mm
-
-    # --------------------------------------------------------
-    # MODE DE PAIEMENT
-    # --------------------------------------------------------
-
-    payment_mode = safe(
-        data.get(
-            "payment_mode"
-        )
-        or ""
-    )
-
-    if payment_mode:
-
-        c.setFillColor(DARK)
-
-        c.setFont(
-            "Helvetica-Bold",
-            7.5,
-        )
-
-        c.drawString(
-            x + 5 * mm,
-            y + 3 * mm,
-            _truncate(
-                f"Paiement : {payment_mode}",
-                43,
-            ),
-        )
+        yy -= 6.5 * mm
 
 
-# ============================================================
-# QR
-# ============================================================
+def _draw_conditions_qr(c, w, data):
+    x = 8 * mm
+    y = 45 * mm
 
-def _draw_qr_box(
-    c,
-    x,
-    y,
-    data,
-):
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica-Bold", 8.5)
 
-    numero_facture = data.get(
-        "invoice_no"
-    )
-
-    if not numero_facture:
-        return
-
-    qr_image = (
-        _make_invoice_qr_reader(
-            numero_facture
-        )
-    )
-
-    qr_size = 27 * mm
-
-    c.drawImage(
-        qr_image,
+    c.drawString(
         x,
-        y,
-        width=qr_size,
-        height=qr_size,
-        preserveAspectRatio=True,
-        mask="auto",
+        y + 23 * mm,
+        "CONDITIONS",
     )
 
     c.setFillColor(DARK)
-    c.setFont("Helvetica", 6)
+    c.setFont("Helvetica", 7)
 
-    c.drawCentredString(
-        x + qr_size / 2,
-        y - 2.5 * mm,
-        "Vérification facture",
+    c.drawString(
+        x,
+        y + 16 * mm,
+        "Marchandises ni reprises ni échangées.",
     )
 
+    c.drawString(
+        x,
+        y + 11 * mm,
+        "Vérifiez vos articles avant de partir.",
+    )
 
-# ============================================================
-# FOOTER
-# ============================================================
+    numero = data.get("invoice_no")
 
-def _draw_footer_note(
-    c,
-    w,
-    data,
-):
+    if numero:
+        qr = _make_invoice_qr_reader(
+            numero
+        )
 
+        c.drawImage(
+            qr,
+            25 * mm,
+            y - 1 * mm,
+            width=26 * mm,
+            height=26 * mm,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+
+
+def _draw_footer(c, w, data):
     c.setStrokeColor(GOLD)
-    c.setLineWidth(0.6)
 
     c.line(
         8 * mm,
-        12 * mm,
+        20 * mm,
         w - 8 * mm,
-        12 * mm,
+        20 * mm,
     )
 
     c.setFillColor(GOLD)
@@ -971,11 +587,9 @@ def _draw_footer_note(
 
     c.drawCentredString(
         w / 2,
-        7.5 * mm,
-        (
-            data.get("thanks")
-            or "Merci pour votre confiance."
-        ),
+        13 * mm,
+        data.get("thanks")
+        or "Merci pour votre confiance.",
     )
 
     c.setFillColor(DARK)
@@ -983,26 +597,16 @@ def _draw_footer_note(
 
     c.drawCentredString(
         w / 2,
-        3.8 * mm,
-        (
-            data.get("footer_note")
-            or (
-                "Bijouterie Rio-Gold "
-                "- L'excellence en or."
-            )
-        ),
+        8 * mm,
+        data.get("footer_note")
+        or "Bijouterie Rio-Gold - L'excellence en or.",
     )
 
 
-# ============================================================
-# BUILD
-# ============================================================
-
-def build_facture_a5_paysage_pdf(
+def build_facture_a5_portrait_pdf(
     path,
     data: dict,
 ):
-
     w, h = PAGE
 
     c = canvas.Canvas(
@@ -1010,19 +614,31 @@ def build_facture_a5_paysage_pdf(
         pagesize=PAGE,
     )
 
-    _draw_page_header(
+    _draw_header(
         c,
         w,
         h,
         data,
     )
 
-    left = 7 * mm
-    right = w - 7 * mm
-
-    y_table_top = (
-        h - 38 * mm
+    _draw_invoice_info(
+        c,
+        w,
+        h,
+        data,
     )
+
+    _draw_client(
+        c,
+        w,
+        h,
+        data,
+    )
+
+    left = 8 * mm
+    right = w - 8 * mm
+
+    y_table_top = h - 92 * mm
 
     _draw_lines(
         c,
@@ -1032,29 +648,19 @@ def build_facture_a5_paysage_pdf(
         data,
     )
 
-    bottom_y = 18 * mm
-
-    _draw_conditions_box(
+    _draw_conditions_qr(
         c,
-        7 * mm,
-        bottom_y,
-    )
-
-    _draw_totals_box(
-        c,
-        73 * mm,
-        bottom_y,
+        w,
         data,
     )
 
-    _draw_qr_box(
+    _draw_totals(
         c,
-        w - 35 * mm,
-        bottom_y + 8 * mm,
+        w,
         data,
     )
 
-    _draw_footer_note(
+    _draw_footer(
         c,
         w,
         data,
