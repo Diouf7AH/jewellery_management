@@ -64,6 +64,7 @@ from sale.services.comptable_export_service import export_comptable_factures
 from sale.services.confirm_service import confirm_sale_out_from_vendor
 from sale.services.export.export_facture_excel import export_factures_excel
 from sale.services.facture_hash_service import generate_facture_hash
+from sale.services.facture_pdf_data_service import build_facture_pdf_data
 from sale.services.facture_pdf_service import generate_facture_pdf
 from sale.services.facture_qr_service import generate_facture_qr
 from sale.services.sale_service import (create_sale_one_vendor,
