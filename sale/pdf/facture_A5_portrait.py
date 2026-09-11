@@ -291,6 +291,306 @@ def _draw_table_header(c, left, right, y_top):
     return cols
 
 
+def _draw_lines_paginated(
+    c,
+    w,
+    h,
+    data,
+):
+    """
+    Dessine toutes les lignes produits avec pagination automatique.
+
+    Retourne :
+    - yrow final
+    - numéro de page courant
+    """
+
+    lines = data.get("lines") or []
+
+    left = 8 * mm
+    right = w - 8 * mm
+
+    # Première page
+    y_table_top = h - 92 * mm
+
+    # Zone réservée en bas de la première page
+    y_min = 82 * mm
+
+    cols = _draw_table_header(
+        c,
+        left,
+        right,
+        y_table_top,
+    )
+
+    yrow = y_table_top - 13 * mm
+    page_number = 1
+
+    for i, li in enumerate(
+        lines,
+        start=1,
+    ):
+        label = safe(
+            li.get("label") or ""
+        )
+
+        poids = safe(
+            li.get("poids") or ""
+        )
+
+        qty = _int(
+            li.get("qty")
+        )
+
+        prix_gramme = _dec(
+            li.get("prix_gramme")
+        )
+
+        total = _dec(
+            li.get("total")
+        )
+
+        purete = safe(
+            li.get("purete") or ""
+        )
+
+        etat = _etat_label(
+            li.get("etat")
+        )
+
+        pourcentage = _dec(
+            li.get("pourcentage_occasion")
+        )
+
+        reduction_occasion = _dec(
+            li.get("reduction_occasion")
+        )
+
+        # =====================================================
+        # DÉTAILS
+        # =====================================================
+
+        details = []
+
+        if purete:
+            details.append(purete)
+
+        if pourcentage > 0:
+            details.append("Occasion")
+
+            pourcentage_txt = (
+                str(int(pourcentage))
+                if pourcentage == pourcentage.to_integral()
+                else str(pourcentage)
+            )
+
+            details.append(
+                f"Réduction -{pourcentage_txt}%"
+            )
+
+        elif etat:
+            details.append(etat)
+
+        detail_txt = " • ".join(details)
+
+        row_h = (
+            9 * mm
+            if detail_txt
+            else 7 * mm
+        )
+
+        # =====================================================
+        # NOUVELLE PAGE
+        # =====================================================
+
+        if yrow - row_h < y_min:
+
+            c.showPage()
+
+            page_number += 1
+
+            # En-tête page suivante
+            _draw_header(
+                c,
+                w,
+                h,
+                data,
+            )
+
+            c.setFillColor(DARK)
+            c.setFont(
+                "Helvetica-Bold",
+                10,
+            )
+
+            c.drawString(
+                8 * mm,
+                h - 44 * mm,
+                (
+                    f"FACTURE "
+                    f"{safe(data.get('invoice_no'))}"
+                    f" - SUITE"
+                ),
+            )
+
+            c.setFont(
+                "Helvetica",
+                7.5,
+            )
+
+            c.drawRightString(
+                w - 8 * mm,
+                h - 44 * mm,
+                f"Page {page_number}",
+            )
+
+            y_table_top = h - 55 * mm
+
+            cols = _draw_table_header(
+                c,
+                left,
+                right,
+                y_table_top,
+            )
+
+            yrow = y_table_top - 13 * mm
+
+            # Sur les pages suivantes, plus de place
+            y_min = 30 * mm
+
+        # =====================================================
+        # FOND ALTERNÉ
+        # =====================================================
+
+        if i % 2 == 0:
+            c.setFillColor(MID)
+
+            c.rect(
+                left,
+                yrow - 4.5 * mm,
+                right - left,
+                row_h,
+                stroke=0,
+                fill=1,
+            )
+
+        # =====================================================
+        # LIGNE PRINCIPALE
+        # =====================================================
+
+        c.setFillColor(DARK)
+        c.setFont(
+            "Helvetica",
+            7.4,
+        )
+
+        c.drawString(
+            cols["label"],
+            yrow,
+            _truncate(
+                label,
+                27,
+            ),
+        )
+
+        c.drawRightString(
+            cols["poids"],
+            yrow,
+            (
+                f"{poids} g"
+                if poids
+                else "-"
+            ),
+        )
+
+        c.drawRightString(
+            cols["qty"],
+            yrow,
+            str(qty),
+        )
+
+        c.drawRightString(
+            cols["prix_gramme"],
+            yrow,
+            money_fcfa(
+                prix_gramme
+            ),
+        )
+
+        c.setFont(
+            "Helvetica-Bold",
+            7.4,
+        )
+
+        c.drawRightString(
+            cols["total"],
+            yrow,
+            money_fcfa(
+                total
+            ),
+        )
+
+        # =====================================================
+        # LIGNE SECONDAIRE
+        # =====================================================
+
+        if detail_txt:
+            c.setFillColor(MUTED)
+
+            c.setFont(
+                "Helvetica-Oblique",
+                6.2,
+            )
+
+            c.drawString(
+                cols["label"],
+                yrow - 3.2 * mm,
+                _truncate(
+                    detail_txt,
+                    38,
+                ),
+            )
+
+        # =====================================================
+        # MONTANT RÉDUCTION
+        # =====================================================
+
+        if (
+            pourcentage > 0
+            and reduction_occasion > 0
+        ):
+            c.setFillColor(MUTED)
+
+            c.setFont(
+                "Helvetica-Oblique",
+                6,
+            )
+
+            c.drawRightString(
+                cols["prix_gramme"],
+                yrow - 3.2 * mm,
+                f"-{money_fcfa(reduction_occasion)}",
+            )
+
+        # =====================================================
+        # SÉPARATEUR
+        # =====================================================
+
+        c.setStrokeColor(LINE)
+        c.setLineWidth(0.3)
+
+        c.line(
+            left,
+            yrow - 5 * mm,
+            right,
+            yrow - 5 * mm,
+        )
+
+        yrow -= row_h
+
+    return yrow, page_number
+
+
 def _draw_lines(c, left, right, y_top, data):
     cols = _draw_table_header(
         c,
@@ -602,16 +902,21 @@ def _draw_footer(c, w, data):
         data.get("footer_note")
         or "Bijouterie Rio-Gold - L'excellence en or.",
     )
-
+    
 def build_facture_a5_portrait_pdf(
     path,
     data: dict,
 ):
     """
-    Génère une facture A5 portrait.
+    Génère une facture A5 portrait 148 x 210 mm.
 
-    Format :
-    148 x 210 mm
+    Gestion automatique de N produits :
+    - pagination automatique,
+    - aucun produit perdu,
+    - en-tête tableau répété,
+    - pages "SUITE",
+    - récapitulatif final si nécessaire,
+    - totaux + conditions + QR + footer.
     """
 
     w, h = PAGE
@@ -621,7 +926,10 @@ def build_facture_a5_portrait_pdf(
         pagesize=PAGE,
     )
 
-    # En-tête
+    # ========================================================
+    # PREMIÈRE PAGE
+    # ========================================================
+
     _draw_header(
         c,
         w,
@@ -629,7 +937,6 @@ def build_facture_a5_portrait_pdf(
         data,
     )
 
-    # Informations facture
     _draw_invoice_info(
         c,
         w,
@@ -637,7 +944,6 @@ def build_facture_a5_portrait_pdf(
         data,
     )
 
-    # Client
     _draw_client(
         c,
         w,
@@ -645,40 +951,108 @@ def build_facture_a5_portrait_pdf(
         data,
     )
 
-    # Tableau produits
-    left = 8 * mm
-    right = w - 8 * mm
+    # ========================================================
+    # PRODUITS AVEC PAGINATION AUTOMATIQUE
+    # ========================================================
 
-    y_table_top = h - 92 * mm
-
-    _draw_lines(
+    yrow, page_number = _draw_lines_paginated(
         c,
-        left,
-        right,
-        y_table_top,
+        w,
+        h,
         data,
     )
 
-    # Conditions + QR
+    # ========================================================
+    # PLACE NÉCESSAIRE POUR LE BAS DE FACTURE
+    # ========================================================
+
+    # Les totaux commencent vers 45 mm
+    # et montent jusqu'à environ 83 mm.
+    # 88 mm donne une petite marge de sécurité.
+    min_space_for_bottom = 88 * mm
+
+    if yrow < min_space_for_bottom:
+
+        # ----------------------------------------------------
+        # Nouvelle page récapitulative
+        # ----------------------------------------------------
+
+        c.showPage()
+
+        page_number += 1
+
+        _draw_header(
+            c,
+            w,
+            h,
+            data,
+        )
+
+        # ----------------------------------------------------
+        # Titre
+        # ----------------------------------------------------
+
+        c.setFillColor(DARK)
+
+        c.setFont(
+            "Helvetica-Bold",
+            10,
+        )
+
+        c.drawString(
+            8 * mm,
+            h - 44 * mm,
+            (
+                f"FACTURE "
+                f"{safe(data.get('invoice_no'))}"
+                f" - RÉCAPITULATIF"
+            ),
+        )
+
+        c.setFont(
+            "Helvetica",
+            7.5,
+        )
+
+        c.drawRightString(
+            w - 8 * mm,
+            h - 44 * mm,
+            f"Page {page_number}",
+        )
+
+    # ========================================================
+    # CONDITIONS + QR CODE
+    # ========================================================
+
     _draw_conditions_qr(
         c,
         w,
         data,
     )
 
-    # Totaux
+    # ========================================================
+    # TOTAUX
+    # ========================================================
+
     _draw_totals(
         c,
         w,
         data,
     )
 
-    # Footer
+    # ========================================================
+    # FOOTER
+    # ========================================================
+
     _draw_footer(
         c,
         w,
         data,
     )
+
+    # ========================================================
+    # FIN
+    # ========================================================
 
     c.showPage()
     c.save()

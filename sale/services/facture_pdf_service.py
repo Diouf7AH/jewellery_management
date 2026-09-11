@@ -10,7 +10,7 @@ from sale.services.facture_pdf_data_service import build_facture_pdf_data
 
 def generate_facture_pdf(facture):
     """
-    Génère et stocke la facture PDF officielle.
+    Génère et stocke la facture PDF officielle A5 portrait.
 
     Retourne l'URL du PDF.
     """
@@ -20,10 +20,8 @@ def generate_facture_pdf(facture):
     # =========================================================
 
     if facture.facture_pdf:
-
         try:
             return facture.facture_pdf.url
-
         except Exception:
             pass
 
@@ -36,17 +34,18 @@ def generate_facture_pdf(facture):
     )
 
     # =========================================================
-    # 3. GÉNÉRATION
+    # 3. GÉNÉRATION PDF
     # =========================================================
 
     buffer = BytesIO()
 
     try:
-
         build_facture_a5_portrait_pdf(
             buffer,
             data,
         )
+
+        buffer.seek(0)
 
         filename = (
             f"facture_"
@@ -63,7 +62,6 @@ def generate_facture_pdf(facture):
         )
 
     finally:
-
         buffer.close()
 
     # =========================================================
@@ -71,12 +69,8 @@ def generate_facture_pdf(facture):
     # =========================================================
 
     try:
-
         return facture.facture_pdf.url
-
     except Exception:
-
         return None
     
     
-

@@ -3143,7 +3143,10 @@ class TicketPaiement80mmESCPosView(APIView):
             },
         )
 
+
+# class FactureA5PortraitView(APIView):
 class FactureA5paysageView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def get(
@@ -3151,10 +3154,6 @@ class FactureA5paysageView(APIView):
         request,
         numero_facture: str,
     ):
-
-        # =====================================================
-        # FACTURE
-        # =====================================================
 
         facture = get_object_or_404(
             Facture.objects
@@ -3176,34 +3175,20 @@ class FactureA5paysageView(APIView):
             numero_facture__iexact=numero_facture,
         )
 
-        # =====================================================
-        # PERMISSION
-        # =====================================================
-
         if not _can_access_facture(
             request.user,
             facture,
         ):
             return Response(
                 {
-                    "detail": (
-                        "⛔ Accès refusé à cette facture."
-                    )
+                    "detail": "⛔ Accès refusé à cette facture."
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # =====================================================
-        # DATA CENTRALISÉES
-        # =====================================================
-
         data = build_facture_pdf_data(
             facture
         )
-
-        # =====================================================
-        # PDF A5 PORTRAIT
-        # =====================================================
 
         buffer = BytesIO()
 
@@ -3226,8 +3211,8 @@ class FactureA5paysageView(APIView):
             filename=filename,
             content_type="application/pdf",
         )
-
         
+
 class ExportFacturesExcelView(APIView):
     permission_classes = [IsAuthenticated]
 
