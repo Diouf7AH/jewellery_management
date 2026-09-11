@@ -2,7 +2,6 @@
 # import weasyprint
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from io import BytesIO
@@ -53,7 +52,7 @@ from sale.models import (Client, Facture,  # adapte le chemin si besoin
                          VenteProduit)
 from sale.pdf.escpos_ticket_58mm import build_escpos_ticket_proforma_58mm
 from sale.pdf.escpos_ticket_80mm import build_escpos_recu_paiement_80mm
-from sale.pdf.facture_A5_paysage import build_facture_a5_paysage_pdf
+from sale.pdf.facture_A5_portrait import build_facture_a5_portrait_pdf
 from sale.serializers import (CancelProformaVenteSerializer,
                               FactureListSerializer,
                               RetourVenteProduitSerializer,
@@ -3144,8 +3143,7 @@ class TicketPaiement80mmESCPosView(APIView):
             },
         )
 
-
-class FactureA5PaysageView(APIView):
+class FactureA5paysageView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(
@@ -3175,9 +3173,7 @@ class FactureA5PaysageView(APIView):
                 "vente__lignes__produit__modele",
                 "paiements__lignes__mode_paiement",
             ),
-            numero_facture__iexact=(
-                numero_facture
-            ),
+            numero_facture__iexact=numero_facture,
         )
 
         # =====================================================
@@ -3191,13 +3187,10 @@ class FactureA5PaysageView(APIView):
             return Response(
                 {
                     "detail": (
-                        "⛔ Accès refusé "
-                        "à cette facture."
+                        "⛔ Accès refusé à cette facture."
                     )
                 },
-                status=(
-                    status.HTTP_403_FORBIDDEN
-                ),
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         # =====================================================
@@ -3209,12 +3202,12 @@ class FactureA5PaysageView(APIView):
         )
 
         # =====================================================
-        # PDF
+        # PDF A5 PORTRAIT
         # =====================================================
 
         buffer = BytesIO()
 
-        build_facture_a5_paysage_pdf(
+        build_facture_a5_portrait_pdf(
             buffer,
             data,
         )
@@ -3233,7 +3226,6 @@ class FactureA5PaysageView(APIView):
             filename=filename,
             content_type="application/pdf",
         )
-        
 
         
 class ExportFacturesExcelView(APIView):

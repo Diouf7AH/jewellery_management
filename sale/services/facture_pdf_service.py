@@ -4,7 +4,7 @@ from io import BytesIO
 
 from django.core.files.base import ContentFile
 
-from sale.pdf.facture_A5_paysage import build_facture_a5_paysage_pdf
+from sale.pdf.facture_A5_portrait import build_facture_a5_portrait_pdf
 from sale.services.facture_pdf_data_service import build_facture_pdf_data
 
 
@@ -43,7 +43,7 @@ def generate_facture_pdf(facture):
 
     try:
 
-        build_facture_a5_paysage_pdf(
+        build_facture_a5_portrait_pdf(
             buffer,
             data,
         )

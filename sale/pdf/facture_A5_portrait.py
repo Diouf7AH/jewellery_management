@@ -1,3 +1,4 @@
+# sale/pdf/facture_A5_portrait.py
 from __future__ import annotations
 
 import os
@@ -602,11 +603,17 @@ def _draw_footer(c, w, data):
         or "Bijouterie Rio-Gold - L'excellence en or.",
     )
 
-
 def build_facture_a5_portrait_pdf(
     path,
     data: dict,
 ):
+    """
+    Génère une facture A5 portrait.
+
+    Format :
+    148 x 210 mm
+    """
+
     w, h = PAGE
 
     c = canvas.Canvas(
@@ -614,6 +621,7 @@ def build_facture_a5_portrait_pdf(
         pagesize=PAGE,
     )
 
+    # En-tête
     _draw_header(
         c,
         w,
@@ -621,6 +629,7 @@ def build_facture_a5_portrait_pdf(
         data,
     )
 
+    # Informations facture
     _draw_invoice_info(
         c,
         w,
@@ -628,6 +637,7 @@ def build_facture_a5_portrait_pdf(
         data,
     )
 
+    # Client
     _draw_client(
         c,
         w,
@@ -635,6 +645,7 @@ def build_facture_a5_portrait_pdf(
         data,
     )
 
+    # Tableau produits
     left = 8 * mm
     right = w - 8 * mm
 
@@ -648,18 +659,21 @@ def build_facture_a5_portrait_pdf(
         data,
     )
 
+    # Conditions + QR
     _draw_conditions_qr(
         c,
         w,
         data,
     )
 
+    # Totaux
     _draw_totals(
         c,
         w,
         data,
     )
 
+    # Footer
     _draw_footer(
         c,
         w,

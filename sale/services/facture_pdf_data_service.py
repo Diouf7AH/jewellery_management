@@ -11,7 +11,7 @@ def build_facture_pdf_data(facture) -> dict:
 
     Ce service est la source UNIQUE des données utilisées par :
 
-    - FactureA5PaysageView
+    - FactureA5paysageView
     - generate_facture_pdf()
     - build_facture_a5_paysage_pdf()
 
