@@ -48,25 +48,61 @@ def pill(c, x, y, w, h, fill, radius=3):
 
 
 # =========================
-# 🖼️ LOGO
+# 🖼️ LOGOS
 # =========================
 
 def _safe_path(*parts):
-    return os.path.normpath(os.path.join(*parts))
+    return os.path.normpath(
+        os.path.join(*parts)
+    )
 
 
 def _file_exists(path):
-    return bool(path and os.path.exists(path))
+    return bool(
+        path
+        and os.path.exists(path)
+    )
+
+
+def get_logo_gold():
+    path = _safe_path(
+        settings.MEDIA_ROOT,
+        "logo",
+        "gold_logo.png",
+    )
+
+    return (
+        path
+        if _file_exists(path)
+        else None
+    )
 
 
 def get_logo_noir():
-    path = _safe_path(settings.MEDIA_ROOT, "logo", "logo_noir.png")
-    return path if _file_exists(path) else None
+    path = _safe_path(
+        settings.MEDIA_ROOT,
+        "logo",
+        "logo_noir.png",
+    )
+
+    return (
+        path
+        if _file_exists(path)
+        else None
+    )
 
 
 def get_logo_blanc():
-    path = _safe_path(settings.MEDIA_ROOT, "logo", "logo_blanc.png")
-    return path if _file_exists(path) else None
+    path = _safe_path(
+        settings.MEDIA_ROOT,
+        "logo",
+        "logo_blanc.png",
+    )
 
-
-
+    return (
+        path
+        if _file_exists(path)
+        else None
+    )
+    
+    
