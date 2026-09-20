@@ -16,3 +16,14 @@ __pycache__/
 .idea/
 
 staticfiles/
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# User generated files
+media/
+
+# Backups
+*.backup
+*.bak
