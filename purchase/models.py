@@ -292,22 +292,12 @@ class ProduitLine(models.Model):
     """
     Une ligne produit dans un lot.
 
-    Règles :
-    - un Lot peut contenir plusieurs ProduitLine ;
-    - chaque ProduitLine correspond à un Produit précis ;
-    - le Produit porte ses caractéristiques :
-        catégorie, modèle, marque, pureté, poids, taille, etc. ;
-    - plusieurs exemplaires strictement identiques utilisent
-      la même ProduitLine avec quantite > 1 ;
-    - numero_ligne_lot est unique à l'intérieur du lot.
-
-    Exemple :
-        LOT-20260906-0042
-
-        ligne 01 -> Bague 4.20 g
-        ligne 02 -> Bague 5.10 g
-        ligne 03 -> Collier 12.50 g
-        ligne 04 -> Bracelet 8.70 g
+    - Un lot peut contenir plusieurs ProduitLine.
+    - Une ProduitLine correspond à un Produit précis.
+    - Plusieurs exemplaires identiques sont regroupés
+      dans la même ligne avec quantite > 1.
+    - numero_ligne_lot identifie la position stable
+      de la ligne dans le lot.
     """
 
     lot = models.ForeignKey(
@@ -322,17 +312,13 @@ class ProduitLine(models.Model):
         related_name="produit_lines",
     )
 
-    # Coût d'achat par gramme
     prix_achat_gramme = models.DecimalField(
         max_digits=14,
         decimal_places=2,
     )
 
-    # Nombre d'exemplaires identiques de ce produit dans le lot
     quantite = models.PositiveIntegerField()
 
-    # Position stable de la ligne à l'intérieur du lot :
-    # 1, 2, 3, 4...
     numero_ligne_lot = models.PositiveIntegerField(
         null=True,
         blank=True,
@@ -363,29 +349,21 @@ class ProduitLine(models.Model):
         ]
 
         constraints = [
-            # Quantité minimum = 1
             models.CheckConstraint(
                 condition=Q(quantite__gte=1),
                 name="ck_pl_qty_gte1",
             ),
 
-            # Prix d'achat positif ou égal à zéro
             models.CheckConstraint(
                 condition=Q(prix_achat_gramme__gte=0),
                 name="produit_line_prix_achat_gte_0",
             ),
 
-            # Le même Produit ne doit apparaître
-            # qu'une seule fois dans le même lot.
-            #
-            # Si quantité = 3 :
-            # une seule ProduitLine avec quantite=3.
             models.UniqueConstraint(
                 fields=["lot", "produit"],
                 name="uniq_produit_per_lot",
             ),
 
-            # Numéro de ligne unique dans le lot.
             models.UniqueConstraint(
                 fields=["lot", "numero_ligne_lot"],
                 name="unique_numero_ligne_par_lot",
@@ -395,7 +373,7 @@ class ProduitLine(models.Model):
     def __str__(self):
         numero = (
             f"{self.numero_ligne_lot:02d}"
-            if self.numero_ligne_lot
+            if self.numero_ligne_lot is not None
             else "--"
         )
 
@@ -404,10 +382,6 @@ class ProduitLine(models.Model):
             f" · ligne={numero}"
             f" · produit={self.produit_id}"
         )
-
-    # ============================================================
-    # VALIDATION
-    # ============================================================
 
     def clean(self):
         super().clean()
@@ -442,28 +416,24 @@ class ProduitLine(models.Model):
                 )
             })
 
-    # ============================================================
-    # NUMÉROTATION AUTOMATIQUE DANS LE LOT
-    # ============================================================
-
     def save(self, *args, **kwargs):
         """
-        Attribue automatiquement numero_ligne_lot
-        lors de la création.
+        Attribue automatiquement et définitivement
+        numero_ligne_lot lors de la création.
 
         Exemple :
 
         LOT-20260906-0042
-            première ligne  -> 1
-            deuxième ligne  -> 2
-            troisième ligne -> 3
 
-        Le verrou SELECT FOR UPDATE sur le Lot évite que
-        deux créations simultanées utilisent le même numéro.
+        ProduitLine 1 -> numero_ligne_lot = 1
+        ProduitLine 2 -> numero_ligne_lot = 2
+        ProduitLine 3 -> numero_ligne_lot = 3
         """
 
-        if self._state.adding and self.numero_ligne_lot is None:
-
+        if (
+            self._state.adding
+            and self.numero_ligne_lot is None
+        ):
             if not self.lot_id:
                 raise ValidationError({
                     "lot": "Le lot est obligatoire."
@@ -471,7 +441,7 @@ class ProduitLine(models.Model):
 
             with transaction.atomic():
 
-                # Verrou du lot pendant l'attribution du numéro
+                # Verrouille le lot pendant la numérotation.
                 Lot.objects.select_for_update().get(
                     pk=self.lot_id
                 )
@@ -480,39 +450,31 @@ class ProduitLine(models.Model):
                     ProduitLine.objects
                     .filter(lot_id=self.lot_id)
                     .aggregate(
-                        maximum=Max("numero_ligne_lot")
+                        maximum=Max(
+                            "numero_ligne_lot"
+                        )
                     )
-                    .get("maximum")
+                    ["maximum"]
                 )
 
                 self.numero_ligne_lot = (
                     (dernier_numero or 0) + 1
                 )
 
-                self.full_clean()
+                return super().save(
+                    *args,
+                    **kwargs,
+                )
 
-                return super().save(*args, **kwargs)
-
-        self.full_clean()
-
-        return super().save(*args, **kwargs)
-
-    # ============================================================
-    # POIDS TOTAL
-    # ============================================================
+        return super().save(
+            *args,
+            **kwargs,
+        )
 
     @property
     def poids_total_calc(self):
         """
-        Poids total de la ligne :
-
-            quantite × produit.poids
-
-        Exemple :
-            quantité = 3
-            poids unitaire = 4.20 g
-
-            poids_total = 12.60 g
+        quantité × poids unitaire du Produit.
         """
 
         if not self.produit_id:
@@ -521,14 +483,15 @@ class ProduitLine(models.Model):
         if self.produit.poids is None:
             return None
 
-        quantite = Decimal(self.quantite or 0)
-        poids = Decimal(str(self.produit.poids))
+        quantite = Decimal(
+            self.quantite or 0
+        )
+
+        poids = Decimal(
+            str(self.produit.poids)
+        )
 
         return quantite * poids
-
-    # ============================================================
-    # NUMÉRO DE LIGNE FORMATÉ
-    # ============================================================
 
     @property
     def numero_ligne_lot_formate(self):
@@ -537,8 +500,10 @@ class ProduitLine(models.Model):
         2  -> 02
         12 -> 12
         """
+
         if self.numero_ligne_lot is None:
             return None
 
         return f"{self.numero_ligne_lot:02d}"
     
+
