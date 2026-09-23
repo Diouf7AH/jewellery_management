@@ -20,6 +20,7 @@ from e_commerce.serializers import (CommandeEcommerceCreateSerializer,
                                     EcommerceBannerSerializer,
                                     EcommerceProduitDetailSerializer,
                                     EcommerceProduitListSerializer,
+                                    EcommerceProduitQuerySerializer,
                                     PaiementEcommerceSerializer)
 from e_commerce.services.confirmation_paiement import confirm_ecommerce_payment
 from e_commerce.services.payment import initiate_payment
@@ -883,6 +884,76 @@ class EcommerceInvoiceView(APIView):
             status=status.HTTP_200_OK,
         )
         
+# class EcommerceProduitListView(
+#     generics.ListAPIView
+# ):
+#     permission_classes = [AllowAny]
+#     serializer_class = EcommerceProduitListSerializer
+
+#     @swagger_auto_schema(
+#         operation_id="listeProduitsEcommerce",
+#         operation_summary="Lister les produits e-commerce",
+#         operation_description=(
+#             "Retourne les produits publiés disponibles à la vente "
+#             "sur l'e-commerce.\n\n"
+#             "Règles :\n"
+#             "- produit publié ;\n"
+#             "- Stock.en_stock > 0 ;\n"
+#             "- stock rattaché à une bijouterie ;\n"
+#             "- prix calculé selon MarquePurete ;\n"
+#             "- possibilité de filtrer par bijouterie_id."
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "bijouterie_id",
+#                 openapi.IN_QUERY,
+#                 description="Identifiant de la bijouterie",
+#                 type=openapi.TYPE_INTEGER,
+#                 required=False,
+#             ),
+#             openapi.Parameter(
+#                 "prix_min",
+#                 openapi.IN_QUERY,
+#                 description="Budget minimum en FCFA",
+#                 type=openapi.TYPE_NUMBER,
+#                 required=False,
+#             ),
+
+#             openapi.Parameter(
+#                 "prix_max",
+#                 openapi.IN_QUERY,
+#                 description="Budget maximum en FCFA",
+#                 type=openapi.TYPE_NUMBER,
+#                 required=False,
+#             ),
+#         ],
+#         responses={
+#             200: EcommerceProduitListSerializer(
+#                 many=True
+#             ),
+#         },
+#         tags=["E-commerce - Catalogue"],
+#     )
+#     def get_queryset(self):
+#         return get_ecommerce_produits(
+#             bijouterie_id=(
+#                 self.request.query_params.get(
+#                     "bijouterie_id"
+#                 )
+#             ),
+#             prix_min=(
+#                 self.request.query_params.get(
+#                     "prix_min"
+#                 )
+#             ),
+#             prix_max=(
+#                 self.request.query_params.get(
+#                     "prix_max"
+#                 )
+#             ),
+#         )
+
+
 class EcommerceProduitListView(
     generics.ListAPIView
 ):
@@ -900,7 +971,8 @@ class EcommerceProduitListView(
             "- Stock.en_stock > 0 ;\n"
             "- stock rattaché à une bijouterie ;\n"
             "- prix calculé selon MarquePurete ;\n"
-            "- possibilité de filtrer par bijouterie_id."
+            "- filtrage possible par bijouterie ;\n"
+            "- filtrage possible selon le budget du client."
         ),
         manual_parameters=[
             openapi.Parameter(
@@ -910,21 +982,50 @@ class EcommerceProduitListView(
                 type=openapi.TYPE_INTEGER,
                 required=False,
             ),
+            openapi.Parameter(
+                "prix_min",
+                openapi.IN_QUERY,
+                description="Budget minimum en FCFA",
+                type=openapi.TYPE_NUMBER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "prix_max",
+                openapi.IN_QUERY,
+                description="Budget maximum en FCFA",
+                type=openapi.TYPE_NUMBER,
+                required=False,
+            ),
         ],
         responses={
             200: EcommerceProduitListSerializer(
                 many=True
             ),
+            400: "Paramètres de filtrage invalides.",
         },
         tags=["E-commerce - Catalogue"],
     )
     def get_queryset(self):
+        query_serializer = EcommerceProduitQuerySerializer(
+            data=self.request.query_params
+        )
+
+        query_serializer.is_valid(
+            raise_exception=True
+        )
+
+        params = query_serializer.validated_data
+
         return get_ecommerce_produits(
-            bijouterie_id=(
-                self.request.query_params.get(
-                    "bijouterie_id"
-                )
-            )
+            bijouterie_id=params.get(
+                "bijouterie_id"
+            ),
+            prix_min=params.get(
+                "prix_min"
+            ),
+            prix_max=params.get(
+                "prix_max"
+            ),
         )
         
 

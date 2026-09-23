@@ -4,6 +4,7 @@ import uuid
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 
 TWOPLACES = Decimal("0.01")
@@ -253,8 +254,7 @@ class CommandeEcommerceLigne(models.Model):
     )
 
     quantite = models.PositiveIntegerField(
-        default=1,
-    )
+        default=1,validators=[MinValueValidator(1),],)
 
     prix_gramme = models.DecimalField(
         max_digits=14,

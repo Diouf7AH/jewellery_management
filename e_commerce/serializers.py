@@ -933,3 +933,45 @@ class EcommerceBannerNouveauArrivageSerializer(
         ]
         
 
+
+
+# cusseur
+class EcommerceProduitQuerySerializer(
+    serializers.Serializer
+):
+    bijouterie_id = serializers.IntegerField(
+        required=False,
+        min_value=1,
+    )
+
+    prix_min = serializers.DecimalField(
+        required=False,
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.00"),
+    )
+
+    prix_max = serializers.DecimalField(
+        required=False,
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.00"),
+    )
+
+    def validate(self, attrs):
+        prix_min = attrs.get("prix_min")
+        prix_max = attrs.get("prix_max")
+
+        if (
+            prix_min is not None
+            and prix_max is not None
+            and prix_min > prix_max
+        ):
+            raise serializers.ValidationError({
+                "prix_max": (
+                    "Le budget maximum doit être supérieur "
+                    "ou égal au budget minimum."
+                )
+            })
+
+        return attrs
