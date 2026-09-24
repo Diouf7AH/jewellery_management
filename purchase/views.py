@@ -3063,16 +3063,69 @@ class LotEtiquettesZIPView(APIView):
         operation_summary="Télécharger les étiquettes d'un lot",
         operation_description=(
             "Génère toutes les étiquettes PNG correspondant "
-            "aux ProduitLine du lot et retourne un fichier ZIP."
+            "aux ProduitLine du lot et retourne un fichier ZIP.\n\n"
+            "Le numéro du lot est passé dans l'URL.\n"
+            "Exemple : LOT-20260813-0001"
         ),
         tags=["Étiquettes"],
+
+        produces=["application/zip"],
+
         responses={
             200: openapi.Response(
-                description="ZIP contenant les étiquettes PNG"
+                description=(
+                    "Fichier ZIP contenant toutes les "
+                    "étiquettes PNG du lot."
+                ),
+                schema=openapi.Schema(
+                    type=openapi.TYPE_FILE,
+                ),
             ),
-            400: "Ligne produit invalide.",
-            403: "Accès refusé.",
-            404: "Lot introuvable.",
+
+            400: openapi.Response(
+                description="Ligne produit invalide.",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "detail": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            example=(
+                                "La ProduitLine #1 ne possède "
+                                "pas de numero_ligne_lot."
+                            ),
+                        ),
+                    },
+                ),
+            ),
+
+            403: openapi.Response(
+                description="Accès refusé.",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "detail": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            example="Accès refusé.",
+                        ),
+                    },
+                ),
+            ),
+
+            404: openapi.Response(
+                description="Lot introuvable.",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "detail": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            example=(
+                                "Le lot 'LOT-20260813-0001' "
+                                "est introuvable."
+                            ),
+                        ),
+                    },
+                ),
+            ),
         },
     )
     def post(self, request, numero_lot):
