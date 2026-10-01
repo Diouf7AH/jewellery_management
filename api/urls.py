@@ -132,34 +132,14 @@ urlpatterns = [
     path("achat/arrivage", achat_views.ArrivageCreateView.as_view(), name="arrivage-create"),
     path("achat/lots", achat_views.LotListView.as_view(), name="lot-list"),
     path("achat/arrivage/<int:lot_id>/meta", achat_views.ArrivageMetaUpdateView.as_view(), name="arrivage-meta-update"),
-    # path("achat/produit-lines", achat_views.InventoryPhotoView.as_view(),name="produitline-list",),
-    # path("achat/etiquettes-png/", achat_views.ProduitLineEtiquettesZIPView.as_view(),name="produits-etiquettes-png",),
-    # path("etiquettes/lot/<int:lot_id>/", achat_views.LotEtiquettesZIPView.as_view(),name="lot-etiquettes-zip",),
     path("etiquettes/lot/<str:numero_lot>/",achat_views.LotEtiquettesZIPView.as_view(),name="etiquettes-lot",),
     path("achat/dashboard", achat_views.AchatDashboardView.as_view(), name="achat-dashboard"),
     
-    # path("achat/lots/export/csv", achat_views.LotExportCSVView.as_view(), name="lots-export-csv"),
-    # path("achat/lots/export/xlsx", achat_views.LotExportExcelView.as_view(), name="lots-export-xlsx"),
-    # path('achat-produit/create-achats', achat_views.AchatCreateView.as_view(), name='achats-create'),
-    # path("achats-produit-update/<int:achat_id>/", achat_views.AchatUpdateView.as_view(), name="achats-update"),
     path("stocks/magasin/produits-disponibles/", stock_views.MagasinProduitDisponibleListView.as_view(),name="magasin-produits-disponibles",),
     # path("stocks/assign/vendor/",stock_views.BijouterieToVendorAssignmentView.as_view(),name="magasin-to-vendor-assignment",),
     path("stocks/bijouterie/affecter-vendeur/",stock_views.BijouterieToVendorAssignmentView.as_view(),name="stock-bijouterie-affecter-vendeur",),
     path("stocks/disponibles-pour-vendeur/", stock_views.StockDisponiblePourVendeurView.as_view(),name="stock-disponibles-pour-vendeur",),
-    # path("stocks/transfer/reserve-to-bijouterie", stock_views.ReserveToBijouterieTransferView.as_view(), name="reserve-to-bijouterie"),
-    # path("stocks/recieve/recieve-reserve-for-bijouterie", stock_views.BijouterieReceiveView.as_view(), name="receive-bijouterie"),
-    # path("stock/affectations/reserve", achat_views.StockReserveAffectationView.as_view(), name="stock-reserve-affect"),
-    # path("stocks/transfer/bijouterie-to-vendor", stock_views.BijouterieToVendorTransferView.as_view(),name="bijouterie-to-vendor"),
-    # path("stocks/summary", stock_views.StockSummaryView.as_view(), name="stock-summary"),
     
-    # path("achats/<int:achat_id>/cancel", achat_views.AchatCancelView.as_view(), name="achat-cancel"),
-    # path('achat-produit/update-achat/<int:achat_id>', achat_views.AchatUpdateAPIView.as_view(), name='achat_update_achat'),
-    # path('achat-produit/update-achat-produit/<int:achatproduit_id>', achat_views.AchatUpdateAchatProduitAPIView.as_view(), name='achat_produit_update_achat'),
-    # path('achat-produit/<int:achatproduit_id>/produits/<int:achat_id>', achat_views.AchatProduitUpdate    APIView.as_view(),name='achat-produit-update'),
-    # path('achat-produit/list-achat', achat_views.AchatListView.as_view(), name='achat_produit_list'),
-    # path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatPDFView.as_view(), name='achat-facture-pdf'),
-    # path('achat-produit/<int:pk>/facture-pdf', achat_views.AchatProduitPDFView.as_view(), name='achat-produit-facture-pdf'),
-    # END ACHAT
     
     # INVENTORY
     # Journal des mouvements d'inventaire
