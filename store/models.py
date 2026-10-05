@@ -55,7 +55,7 @@ ETAT = (
 )
 
 
-POURCENTAGE_OCCASION_CHOICES = (
+REDUCTION_OCCASION_CHOICES = (
     (Decimal("5.00"), "5%"),
     (Decimal("10.00"), "10%"),
     (Decimal("15.00"), "15%"),
@@ -335,10 +335,10 @@ class Produit(models.Model):
     genre = models.CharField(choices=GENRE, default="F", max_length=10)
     etat = models.CharField(choices=ETAT, max_length=10, default="N")
     
-    pourcentage_occasion = models.DecimalField(
+    reduction_occasion = models.DecimalField(
         max_digits=5,
         decimal_places=2,
-        choices=POURCENTAGE_OCCASION_CHOICES,
+        choices=REDUCTION_OCCASION_CHOICES,
         null=True,
         blank=True,
         help_text="Réduction appliquée uniquement aux produits d'occasion.",
@@ -375,16 +375,16 @@ class Produit(models.Model):
                 "taille": "La taille ne peut pas être négative."
             })
             
-        if self.etat != "O" and self.pourcentage_occasion:
+        if self.etat != "O" and self.reduction_occasion:
             raise ValidationError({
-                "pourcentage_occasion": (
+                "reduction_occasion": (
                     "Le pourcentage occasion est réservé aux produits d'occasion."
                 )
             })
 
-        if self.etat == "O" and not self.pourcentage_occasion:
+        if self.etat == "O" and not self.reduction_occasion:
             raise ValidationError({
-                "pourcentage_occasion": (
+                "reduction_occasion": (
                     "Veuillez choisir une réduction : 5%, 10%, 15% ou 20%."
                 )
             })

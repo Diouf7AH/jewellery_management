@@ -1207,145 +1207,178 @@ class ModeleDeleteAPIView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class ProduitListAPIView(ListAPIView):
-    serializer_class = ProduitSerializer
-    permission_classes = [IsAuthenticated]
+# class ProduitListAPIView(ListAPIView):
+#     serializer_class = ProduitSerializer
+#     permission_classes = [IsAuthenticated]
 
-    def get_queryset(self):
-        user = self.request.user
-        role = get_role_name(user)
+#     def get_queryset(self):
+#         user = self.request.user
+#         role = get_role_name(user)
 
-        queryset = (
-            Produit.objects
-            .select_related(
-                "categorie",
-                "marque",
-                "modele",
-                "purete",
-            )
-            .prefetch_related(
-                "produit_gallery",
-            )
-        )
+#         queryset = (
+#             Produit.objects
+#             .select_related(
+#                 "categorie",
+#                 "marque",
+#                 "modele",
+#                 "purete",
+#             )
+#             .prefetch_related(
+#                 "produit_gallery",
+#             )
+#         )
 
-        # ====================================================
-        # ADMIN
-        # ====================================================
+#         # ====================================================
+#         # ADMIN
+#         # ====================================================
 
-        if role == ROLE_ADMIN:
-            """
-            Admin :
-            - peut voir les produits ayant du stock
-              dans les bijouteries.
-            - possibilité de filtrer par bijouterie_id.
-            """
+#         if role == ROLE_ADMIN:
+#             """
+#             Admin :
+#             - peut voir les produits ayant du stock
+#                 dans les bijouteries.
+#             - possibilité de filtrer par bijouterie_id.
+#             """
 
-            bijouterie_id = self.request.query_params.get(
-                "bijouterie_id"
-            )
+#             bijouterie_id = self.request.query_params.get(
+#                 "bijouterie_id"
+#             )
 
-            if bijouterie_id:
-                queryset = queryset.filter(
-                    produit_lines__stocks__bijouterie_id=bijouterie_id,
-                    produit_lines__stocks__en_stock__gt=0,
-                )
-            else:
-                queryset = queryset.filter(
-                    produit_lines__stocks__en_stock__gt=0,
-                )
+#             if bijouterie_id:
+#                 queryset = queryset.filter(
+#                     produit_lines__stocks__bijouterie_id=bijouterie_id,
+#                     produit_lines__stocks__en_stock__gt=0,
+#                 ).distinct()
+#             else:
+#                 queryset = queryset.filter(
+#                     produit_lines__stocks__en_stock__gt=0,
+#                 ).distinct()
 
-        # ====================================================
-        # MANAGER
-        # ====================================================
+#         # ====================================================
+#         # MANAGER
+#         # ====================================================
 
-        elif role == ROLE_MANAGER:
-            """
-            Manager :
-            voit uniquement les produits disponibles
-            dans ses bijouteries.
-            """
+#         elif role == ROLE_MANAGER:
+#             """
+#             Manager :
+#             voit uniquement les produits disponibles
+#             dans ses bijouteries.
+#             """
 
-            manager = getattr(
-                user,
-                "staff_manager_profile",
-                None,
-            )
+#             manager = getattr(
+#                 user,
+#                 "staff_manager_profile",
+#                 None,
+#             )
 
-            if not manager or not manager.verifie:
-                return Produit.objects.none()
+#             if not manager or not manager.verifie:
+#                 return Produit.objects.none()
 
-            bijouterie_ids = manager.bijouteries.values_list(
-                "id",
-                flat=True,
-            )
+#             bijouterie_ids = manager.bijouteries.values_list(
+#                 "id",
+#                 flat=True,
+#             )
 
-            queryset = queryset.filter(
-                produit_lines__stocks__bijouterie_id__in=bijouterie_ids,
-                produit_lines__stocks__en_stock__gt=0,
-            )
+#             queryset = queryset.filter(
+#                 produit_lines__stocks__bijouterie_id__in=bijouterie_ids,
+#                 produit_lines__stocks__en_stock__gt=0,
+#             ).distinct()
 
-            # Filtre facultatif sur une de ses bijouteries
-            bijouterie_id = self.request.query_params.get(
-                "bijouterie_id"
-            )
+#             # Filtre facultatif sur une de ses bijouteries
+#             bijouterie_id = self.request.query_params.get(
+#                 "bijouterie_id"
+#             )
 
-            if bijouterie_id:
-                if not manager.bijouteries.filter(
-                    id=bijouterie_id
-                ).exists():
-                    return Produit.objects.none()
+#             if bijouterie_id:
+#                 if not manager.bijouteries.filter(
+#                     id=bijouterie_id
+#                 ).exists():
+#                     return Produit.objects.none()
 
-                queryset = queryset.filter(
-                    produit_lines__stocks__bijouterie_id=bijouterie_id
-                )
+#                 queryset = queryset.filter(
+#                     produit_lines__stocks__bijouterie_id=bijouterie_id
+#                 )
 
-        # ====================================================
-        # VENDOR
-        # ====================================================
+#         # ====================================================
+#         # VENDOR
+#         # ====================================================
 
-        elif role == ROLE_VENDOR:
-            """
-            Vendor :
-            uniquement les produits qui lui sont réellement
-            affectés et dont il reste du stock vendeur.
-            """
+#         elif role == ROLE_VENDOR:
+#             """
+#             Vendor :
+#             uniquement les produits qui lui sont réellement
+#             affectés et dont il reste du stock vendeur.
+#             """
 
-            vendor = getattr(
-                user,
-                "staff_vendor_profile",
-                None,
-            )
+#             vendor = getattr(
+#                 user,
+#                 "staff_vendor_profile",
+#                 None,
+#             )
 
-            if not vendor or not vendor.verifie:
-                return Produit.objects.none()
+#             if not vendor or not vendor.verifie:
+#                 return Produit.objects.none()
 
-            queryset = queryset.filter(
-                produit_lines__vendor_stocks__vendor=vendor,
-                produit_lines__vendor_stocks__quantite_allouee__gt=(
-                    F("produit_lines__vendor_stocks__quantite_vendue")
-                ),
-            )
+#             queryset = queryset.filter(
+#                 produit_lines__vendor_stocks__vendor=vendor,
+#                 produit_lines__vendor_stocks__quantite_allouee__gt=(
+#                     F("produit_lines__vendor_stocks__quantite_vendue")
+#                 ),
+#             )
 
-        # ====================================================
-        # AUTRES ROLES
-        # ====================================================
+#         # ====================================================
+#         # AUTRES ROLES
+#         # ====================================================
 
-        else:
-            return Produit.objects.none()
+#         else:
+#             return Produit.objects.none()
 
-        # ====================================================
-        # RECHERCHE
-        # ====================================================
+#         # ====================================================
+#         # RECHERCHE
+#         # ====================================================
 
-        search = self.request.query_params.get("search")
+#         search = self.request.query_params.get("search")
 
-        if search:
-            queryset = queryset.filter(
-                sku__icontains=search
-            )
+#         if search:
+#             queryset = queryset.filter(
+#                 sku__icontains=search
+#             )
 
-        return queryset.distinct().order_by("-id")
+#         return queryset.distinct().order_by("-id")
     
+    
+    
+
+
+class ProduitListAPIView(APIView):
+    renderer_classes = [UserRenderer]
+    permission_classes = [IsAuthenticated]
+    
+    @swagger_auto_schema(
+        operation_description="Liste tous les produits disponibles",
+        responses={200: ProduitSerializer(many=True)},
+        manual_parameters=[
+            openapi.Parameter(
+                'search',
+                openapi.IN_QUERY,
+                description="Filtrer les produits par sku",
+                type=openapi.TYPE_STRING
+            )
+        ]
+    )
+    def get(self, request):
+        user = request.user
+        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
+            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        
+        search = request.GET.get('search')
+        queryset = Produit.objects.all()
+        if search:
+            queryset = queryset.filter(sku__icontains=search)
+        serializer = ProduitSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+
     
 
 
