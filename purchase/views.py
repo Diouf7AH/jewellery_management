@@ -1,13 +1,12 @@
-import zipfile
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from io import BytesIO
 
 from django.db import IntegrityError, transaction
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum
 from django.db.models.functions import Coalesce, ExtractYear
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
@@ -3055,31 +3054,187 @@ class ArrivageMetaUpdateView(APIView):
 #         return response
     
 
-class LotEtiquettesZIPView(APIView):
+# class LotEtiquettesZIPView(APIView):
+
+#     permission_classes = [IsAuthenticated]
+
+#     @swagger_auto_schema(
+#         operation_summary="Télécharger les étiquettes d'un lot",
+#         operation_description=(
+#             "Génère et télécharge le fichier ZIP contenant "
+#             "toutes les étiquettes PNG du lot."
+#         ),
+#         tags=["Étiquettes"],
+#         produces=["application/zip"],
+#         responses={
+#             200: openapi.Response(
+#                 description="Fichier ZIP des étiquettes.",
+#                 schema=openapi.Schema(
+#                     type=openapi.TYPE_FILE,
+#                 ),
+#             ),
+#             400: "Ligne produit invalide.",
+#             403: "Accès refusé.",
+#             404: "Lot introuvable.",
+#         },
+#     )
+#     def get(self, request, numero_lot):
+
+#         role = get_role_name(request.user)
+
+#         if role not in [ROLE_ADMIN, ROLE_MANAGER]:
+#             return Response(
+#                 {"detail": "Accès refusé."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
+
+#         # -----------------------------------------------------
+#         # Vérifier que le lot existe
+#         # -----------------------------------------------------
+
+#         try:
+#             lot = Lot.objects.get(
+#                 numero_lot=numero_lot
+#             )
+#         except Lot.DoesNotExist:
+#             return Response(
+#                 {
+#                     "detail": (
+#                         f"Le lot '{numero_lot}' "
+#                         "est introuvable."
+#                     )
+#                 },
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
+
+#         # -----------------------------------------------------
+#         # Récupérer toutes les ProduitLine du lot
+#         # -----------------------------------------------------
+
+#         produit_lines = (
+#             ProduitLine.objects
+#             .select_related(
+#                 "lot",
+#                 "produit",
+#                 "produit__purete",
+#                 "produit__marque",
+#                 "produit__categorie",
+#                 "produit__modele",
+#             )
+#             .filter(
+#                 lot=lot,
+#             )
+#             .order_by(
+#                 "numero_ligne_lot",
+#                 "id",
+#             )
+#         )
+
+#         if not produit_lines.exists():
+#             return Response(
+#                 {
+#                     "detail": (
+#                         "Aucune ligne produit trouvée "
+#                         "pour ce lot."
+#                     )
+#                 },
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
+
+#         # -----------------------------------------------------
+#         # Génération ZIP
+#         # -----------------------------------------------------
+
+#         zip_buffer = BytesIO()
+
+#         with zipfile.ZipFile(
+#             zip_buffer,
+#             "w",
+#             compression=zipfile.ZIP_DEFLATED,
+#         ) as zip_file:
+
+#             for line in produit_lines:
+
+#                 if line.numero_ligne_lot is None:
+#                     return Response(
+#                         {
+#                             "detail": (
+#                                 f"La ProduitLine #{line.id} "
+#                                 "ne possède pas de "
+#                                 "numero_ligne_lot."
+#                             )
+#                         },
+#                         status=status.HTTP_400_BAD_REQUEST,
+#                     )
+
+#                 code_etiquette = build_code_etiquette(
+#                     line
+#                 )
+
+#                 for i in range(
+#                     1,
+#                     int(line.quantite) + 1,
+#                 ):
+
+#                     image_buffer = (
+#                         build_etiquette_produit_png(
+#                             line
+#                         )
+#                     )
+
+#                     filename = (
+#                         f"{code_etiquette}_{i}.png"
+#                     )
+
+#                     zip_file.writestr(
+#                         filename,
+#                         image_buffer.getvalue(),
+#                     )
+
+#         # -----------------------------------------------------
+#         # Réponse ZIP
+#         # -----------------------------------------------------
+
+#         zip_buffer.seek(0)
+
+#         response = HttpResponse(
+#             zip_buffer.getvalue(),
+#             content_type="application/zip",
+#         )
+
+#         response["Content-Disposition"] = (
+#             f'attachment; '
+#             f'filename="etiquettes_{numero_lot}.zip"'
+#         )
+
+#         return response
+    
+    
+
+class LotEtiquettesListAPIView(APIView):
 
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Télécharger les étiquettes d'un lot",
+        operation_summary="Lister les étiquettes d'un lot",
         operation_description=(
-            "Génère et télécharge le fichier ZIP contenant "
-            "toutes les étiquettes PNG du lot."
+            "Retourne les informations des étiquettes "
+            "du lot ainsi que les URLs de téléchargement."
         ),
         tags=["Étiquettes"],
-        produces=["application/zip"],
         responses={
             200: openapi.Response(
-                description="Fichier ZIP des étiquettes.",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_FILE,
-                ),
+                description="Liste des étiquettes."
             ),
-            400: "Ligne produit invalide.",
             403: "Accès refusé.",
             404: "Lot introuvable.",
         },
     )
     def get(self, request, numero_lot):
+
+        # -----------------------------------------------------
+        # Vérification du rôle
+        # -----------------------------------------------------
 
         role = get_role_name(request.user)
 
@@ -3090,13 +3245,14 @@ class LotEtiquettesZIPView(APIView):
             )
 
         # -----------------------------------------------------
-        # Vérifier que le lot existe
+        # Vérifier le lot
         # -----------------------------------------------------
 
         try:
             lot = Lot.objects.get(
                 numero_lot=numero_lot
             )
+
         except Lot.DoesNotExist:
             return Response(
                 {
@@ -3109,7 +3265,7 @@ class LotEtiquettesZIPView(APIView):
             )
 
         # -----------------------------------------------------
-        # Récupérer toutes les ProduitLine du lot
+        # Récupérer les lignes
         # -----------------------------------------------------
 
         produit_lines = (
@@ -3122,92 +3278,151 @@ class LotEtiquettesZIPView(APIView):
                 "produit__categorie",
                 "produit__modele",
             )
-            .filter(
-                lot=lot,
-            )
+            .filter(lot=lot)
             .order_by(
                 "numero_ligne_lot",
                 "id",
             )
         )
 
-        if not produit_lines.exists():
+        # -----------------------------------------------------
+        # Construire le JSON
+        # -----------------------------------------------------
+
+        etiquettes = []
+
+        for line in produit_lines:
+
+            if line.numero_ligne_lot is None:
+                continue
+
+            try:
+                quantite = int(line.quantite)
+            except (TypeError, ValueError):
+                quantite = 0
+
+            code_etiquette = build_code_etiquette(line)
+
+            etiquettes.append({
+                "numero_ligne": line.numero_ligne_lot,
+                "code": code_etiquette,
+                "quantite": quantite,
+                "download_url": request.build_absolute_uri(
+                    reverse(
+                        "lot-etiquette-download",
+                        kwargs={
+                            "numero_lot": numero_lot,
+                            "numero_ligne": (
+                                line.numero_ligne_lot
+                            ),
+                        },
+                    )
+                ),
+            })
+
+        return Response({
+            "lot": numero_lot,
+            "etiquettes": etiquettes,
+        })
+        
+
+
+class LotEtiquetteDownloadAPIView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def get(
+        self,
+        request,
+        numero_lot,
+        numero_ligne,
+    ):
+
+        # -----------------------------------------------------
+        # Vérification du rôle
+        # -----------------------------------------------------
+
+        role = get_role_name(request.user)
+
+        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
+            return Response(
+                {"detail": "Accès refusé."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # -----------------------------------------------------
+        # Récupérer la ligne
+        # -----------------------------------------------------
+
+        try:
+            line = (
+                ProduitLine.objects
+                .select_related(
+                    "lot",
+                    "produit",
+                    "produit__purete",
+                    "produit__marque",
+                    "produit__categorie",
+                    "produit__modele",
+                )
+                .get(
+                    lot__numero_lot=numero_lot,
+                    numero_ligne_lot=numero_ligne,
+                )
+            )
+
+        except ProduitLine.DoesNotExist:
             return Response(
                 {
                     "detail": (
-                        "Aucune ligne produit trouvée "
-                        "pour ce lot."
+                        "Ligne produit introuvable."
                     )
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
 
         # -----------------------------------------------------
-        # Génération ZIP
+        # Générer UNE étiquette
         # -----------------------------------------------------
 
-        zip_buffer = BytesIO()
+        try:
+            image_buffer = (
+                build_etiquette_produit_png(line)
+            )
 
-        with zipfile.ZipFile(
-            zip_buffer,
-            "w",
-            compression=zipfile.ZIP_DEFLATED,
-        ) as zip_file:
+            code_etiquette = (
+                build_code_etiquette(line)
+            )
 
-            for line in produit_lines:
-
-                if line.numero_ligne_lot is None:
-                    return Response(
-                        {
-                            "detail": (
-                                f"La ProduitLine #{line.id} "
-                                "ne possède pas de "
-                                "numero_ligne_lot."
-                            )
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                code_etiquette = build_code_etiquette(
-                    line
-                )
-
-                for i in range(
-                    1,
-                    int(line.quantite) + 1,
-                ):
-
-                    image_buffer = (
-                        build_etiquette_produit_png(
-                            line
-                        )
-                    )
-
-                    filename = (
-                        f"{code_etiquette}_{i}.png"
-                    )
-
-                    zip_file.writestr(
-                        filename,
-                        image_buffer.getvalue(),
-                    )
+        except ValueError as e:
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # -----------------------------------------------------
-        # Réponse ZIP
+        # Nom du fichier
         # -----------------------------------------------------
 
-        zip_buffer.seek(0)
+        filename = (
+            f"{numero_lot}_"
+            f"{numero_ligne:02d}_"
+            f"{code_etiquette}.png"
+        )
+
+        # -----------------------------------------------------
+        # Réponse
+        # -----------------------------------------------------
 
         response = HttpResponse(
-            zip_buffer.getvalue(),
-            content_type="application/zip",
+            image_buffer.getvalue(),
+            content_type="image/png",
         )
 
         response["Content-Disposition"] = (
-            f'attachment; '
-            f'filename="etiquettes_{numero_lot}.zip"'
+            f'attachment; filename="{filename}"'
         )
 
         return response
     
-    
+
