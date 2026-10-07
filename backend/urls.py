@@ -48,5 +48,5 @@ if settings.DEBUG:
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
     
 
-
+# jewelerydbbase
 # CREATE DATABASE jewellery_management CHARACTER set utf8 COLLATE utf8_general_ci;

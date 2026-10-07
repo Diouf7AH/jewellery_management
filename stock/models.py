@@ -1,3 +1,4 @@
+# stock/models.py
 from __future__ import annotations
 
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
@@ -9,17 +10,17 @@ class Stock(models.Model):
     """
     Stock magasin d'une ProduitLine dans une bijouterie.
 
-    quantite_totale :
-        quantité cumulée entrée physiquement dans cette bijouterie :
-        - PURCHASE_IN
-        - RETURN_IN
-        - ADJUSTMENT positif
-
-        Elle ne diminue pas lors d'une affectation vendeur.
-
     en_stock :
-        quantité actuellement disponible physiquement dans le magasin,
-        hors quantités affectées aux vendeurs.
+        quantité actuellement disponible physiquement
+        dans la bijouterie, hors quantités affectées
+        aux vendeurs.
+
+    La quantité initialement achetée/reçue reste portée
+    par ProduitLine.quantite.
+
+    L'historique des entrées, sorties, affectations,
+    ventes, retours et ajustements est conservé dans
+    InventoryMovement.
     """
 
     produit_line = models.ForeignKey(
@@ -43,11 +44,17 @@ class Stock(models.Model):
         db_index=True,
     )
 
-    en_stock = models.PositiveIntegerField(default=0)
-    quantite_totale = models.PositiveIntegerField(default=0)
+    en_stock = models.PositiveIntegerField(
+        default=0,
+    )
 
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
 
     class Meta:
         ordering = [
@@ -60,16 +67,6 @@ class Stock(models.Model):
             models.CheckConstraint(
                 condition=Q(en_stock__gte=0),
                 name="ck_stock_en_stock_gte_zero",
-            ),
-            models.CheckConstraint(
-                condition=Q(quantite_totale__gte=0),
-                name="ck_stock_quantite_totale_gte_zero",
-            ),
-            models.CheckConstraint(
-                condition=Q(
-                    quantite_totale__gte=F("en_stock")
-                ),
-                name="ck_stock_en_stock_lte_quantite_totale",
             ),
             models.UniqueConstraint(
                 fields=[
@@ -101,8 +98,7 @@ class Stock(models.Model):
         return (
             f"PL#{self.produit_line_id} - "
             f"{self.bijouterie} - "
-            f"disponible:{self.en_stock}/"
-            f"entrées cumulées:{self.quantite_totale}"
+            f"disponible:{self.en_stock}"
         )
 
     def clean(self):
@@ -127,25 +123,6 @@ class Stock(models.Model):
         elif self.en_stock < 0:
             errors["en_stock"] = (
                 "La quantité disponible ne peut pas être négative."
-            )
-
-        if self.quantite_totale is None:
-            errors["quantite_totale"] = (
-                "La quantité totale est obligatoire."
-            )
-        elif self.quantite_totale < 0:
-            errors["quantite_totale"] = (
-                "La quantité totale ne peut pas être négative."
-            )
-
-        if (
-            self.en_stock is not None
-            and self.quantite_totale is not None
-            and self.en_stock > self.quantite_totale
-        ):
-            errors["en_stock"] = (
-                "La quantité disponible ne peut pas dépasser "
-                "les quantités cumulées entrées en bijouterie."
             )
 
         if errors:
@@ -175,7 +152,7 @@ class Stock(models.Model):
     @property
     def lot(self):
         return self.produit_line.lot
-
+    
 
 class VendorStock(models.Model):
     """

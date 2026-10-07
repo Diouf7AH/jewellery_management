@@ -1,3 +1,4 @@
+# compte_depot/models.py
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings

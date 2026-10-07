@@ -291,3 +291,41 @@ VendorStock.en_stock
 Stock.en_stock diminue
 Stock.quantite_totale reste inchangée
 VendorStock.quantite_allouee augmente
+
+
+
+#######################################
+#######################################
+#######################################
+trois informations bien séparées :
+ProduitLine.quantite
+    = quantité initiale achetée
+    = historique
+    = ne change pas
+
+Stock.en_stock
+    = quantité actuellement dans la bijouterie
+
+VendorStock.en_stock
+    = quantité actuellement chez le vendeur
+    = quantite_allouee - quantite_vendue
+
+
+##############################################
+Ton modèle devient conceptuellement beaucoup plus clair :
+ProduitLine.quantite
+        │
+        └── quantité historique achetée
+
+Stock.en_stock
+        │
+        └── quantité actuellement en bijouterie
+
+VendorStock
+        ├── quantite_allouee
+        ├── quantite_vendue
+        └── en_stock = allouee - vendue
+
+InventoryMovement
+        │
+        └── historique de tous les mouvements

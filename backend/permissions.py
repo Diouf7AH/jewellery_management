@@ -1,31 +1,53 @@
 # backend/permissions.py
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from rest_framework.permissions import BasePermission
 
+from backend.bijouteries import user_has_bijouterie_access
 from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
-                           ROLE_VENDOR, get_role_name)
+                           ROLE_VENDOR, get_role_name, has_role)
+
+# ============================================================
+# Helpers internes
+# ============================================================
 
 
 def _verified(profile) -> bool:
     """
-    Retourne True uniquement lorsque le profil existe
-    et possède verifie=True.
+    Retourne True uniquement si le profil staff existe
+    et est actif/vérifié.
     """
-
     return bool(
         profile
         and getattr(profile, "verifie", False)
     )
 
 
-def _manager_profile(user):
+def _user_is_authenticated(user) -> bool:
     """
-    Retourne le profil manager vérifié.
+    Vérifie que le compte utilisateur est authentifié
+    et actif.
     """
+    return bool(
+        user
+        and getattr(user, "is_authenticated", False)
+        and getattr(user, "is_active", False)
+    )
 
+
+def _role_is(user, *roles: str) -> bool:
+    """
+    Vérifie que l'utilisateur est authentifié/actif
+    et possède l'un des rôles demandés.
+    """
+    if not _user_is_authenticated(user):
+        return False
+
+    return has_role(user, *roles)
+
+
+def _manager_profile(user):
     profile = getattr(
         user,
         "staff_manager_profile",
@@ -36,10 +58,6 @@ def _manager_profile(user):
 
 
 def _vendor_profile(user):
-    """
-    Retourne le profil vendeur vérifié.
-    """
-
     profile = getattr(
         user,
         "staff_vendor_profile",
@@ -50,10 +68,6 @@ def _vendor_profile(user):
 
 
 def _cashier_profile(user):
-    """
-    Retourne le profil caissier vérifié.
-    """
-
     profile = getattr(
         user,
         "staff_cashier_profile",
@@ -64,10 +78,6 @@ def _cashier_profile(user):
 
 
 def _buyer_profile(user):
-    """
-    Retourne le profil responsable rachat vérifié.
-    """
-
     profile = getattr(
         user,
         "staff_buyer_profile",
@@ -77,428 +87,160 @@ def _buyer_profile(user):
     return profile if _verified(profile) else None
 
 
-def _obj_bijouterie_id(obj) -> Optional[int]:
-    """
-    Essaie d'obtenir l'identifiant de la bijouterie
-    depuis différents types d'objets.
-
-    Compatible notamment avec :
-    - Bijouterie ;
-    - Vente ;
-    - Facture ;
-    - Paiement ;
-    - VendorStock ;
-    - InventoryMovement ;
-    - objets liés à une vente ou une facture.
-    """
-
-    if obj is None:
-        return None
-
-    direct_id = getattr(
-        obj,
-        "bijouterie_id",
-        None,
-    )
-
-    if direct_id:
-        return direct_id
-
-    bijouterie = getattr(
-        obj,
-        "bijouterie",
-        None,
-    )
-
-    if bijouterie and getattr(
-        bijouterie,
-        "pk",
-        None,
-    ):
-        return bijouterie.pk
-
-    vente = getattr(
-        obj,
-        "vente",
-        None,
-    )
-
-    if vente:
-        vente_bijouterie_id = getattr(
-            vente,
-            "bijouterie_id",
-            None,
-        )
-
-        if vente_bijouterie_id:
-            return vente_bijouterie_id
-
-    facture = getattr(
-        obj,
-        "facture",
-        None,
-    )
-
-    if facture:
-        facture_bijouterie_id = getattr(
-            facture,
-            "bijouterie_id",
-            None,
-        )
-
-        if facture_bijouterie_id:
-            return facture_bijouterie_id
-
-        facture_vente = getattr(
-            facture,
-            "vente",
-            None,
-        )
-
-        if facture_vente:
-            facture_vente_bijouterie_id = getattr(
-                facture_vente,
-                "bijouterie_id",
-                None,
-            )
-
-            if facture_vente_bijouterie_id:
-                return facture_vente_bijouterie_id
-
-    vendor = getattr(
-        obj,
-        "vendor",
-        None,
-    )
-
-    if vendor:
-        vendor_bijouterie_id = getattr(
-            vendor,
-            "bijouterie_id",
-            None,
-        )
-
-        if vendor_bijouterie_id:
-            return vendor_bijouterie_id
-
-    src_bijouterie_id = getattr(
-        obj,
-        "src_bijouterie_id",
-        None,
-    )
-
-    dst_bijouterie_id = getattr(
-        obj,
-        "dst_bijouterie_id",
-        None,
-    )
-
-    if src_bijouterie_id and dst_bijouterie_id:
-        if src_bijouterie_id == dst_bijouterie_id:
-            return src_bijouterie_id
-
-    return (
-        src_bijouterie_id
-        or dst_bijouterie_id
-        or None
-    )
-
-
-def _obj_owner_user_id(obj) -> Optional[int]:
-    """
-    Essaie de retrouver l'utilisateur propriétaire
-    d'un objet.
-
-    Cette fonction est principalement utilisée pour
-    limiter un vendeur à ses propres données.
-    """
-
-    if obj is None:
-        return None
-
-    direct_user_id = getattr(
-        obj,
-        "user_id",
-        None,
-    )
-
-    if direct_user_id:
-        return direct_user_id
-
-    direct_user = getattr(
-        obj,
-        "user",
-        None,
-    )
-
-    if direct_user and getattr(
-        direct_user,
-        "pk",
-        None,
-    ):
-        return direct_user.pk
-
-    vendor = getattr(
-        obj,
-        "vendor",
-        None,
-    )
-
-    if vendor:
-        vendor_user_id = getattr(
-            vendor,
-            "user_id",
-            None,
-        )
-
-        if vendor_user_id:
-            return vendor_user_id
-
-        vendor_user = getattr(
-            vendor,
-            "user",
-            None,
-        )
-
-        if vendor_user and getattr(
-            vendor_user,
-            "pk",
-            None,
-        ):
-            return vendor_user.pk
-
-    vente = getattr(
-        obj,
-        "vente",
-        None,
-    )
-
-    if vente:
-        vente_vendor = getattr(
-            vente,
-            "vendor",
-            None,
-        )
-
-        if vente_vendor:
-            vente_vendor_user_id = getattr(
-                vente_vendor,
-                "user_id",
-                None,
-            )
-
-            if vente_vendor_user_id:
-                return vente_vendor_user_id
-
-            vente_vendor_user = getattr(
-                vente_vendor,
-                "user",
-                None,
-            )
-
-            if vente_vendor_user and getattr(
-                vente_vendor_user,
-                "pk",
-                None,
-            ):
-                return vente_vendor_user.pk
-
-    facture = getattr(
-        obj,
-        "facture",
-        None,
-    )
-
-    if facture:
-        facture_vente = getattr(
-            facture,
-            "vente",
-            None,
-        )
-
-        if facture_vente:
-            facture_vendor = getattr(
-                facture_vente,
-                "vendor",
-                None,
-            )
-
-            if facture_vendor:
-                facture_vendor_user_id = getattr(
-                    facture_vendor,
-                    "user_id",
-                    None,
-                )
-
-                if facture_vendor_user_id:
-                    return facture_vendor_user_id
-
-                facture_vendor_user = getattr(
-                    facture_vendor,
-                    "user",
-                    None,
-                )
-
-                if facture_vendor_user and getattr(
-                    facture_vendor_user,
-                    "pk",
-                    None,
-                ):
-                    return facture_vendor_user.pk
-
-    return None
-
-
-def _manager_has_bijouterie(
-    user,
-    bijouterie_id: int,
-) -> bool:
-    """
-    Vérifie qu'un manager vérifié gère la bijouterie.
-    """
-
-    if not bijouterie_id:
-        return False
-
-    manager = _manager_profile(user)
-
-    if manager is None:
-        return False
-
-    return manager.bijouteries.filter(
-        pk=bijouterie_id
-    ).exists()
-
-
-def _user_is_authenticated(user) -> bool:
-    """
-    Vérifie proprement l'authentification.
-    """
-
-    return bool(
-        user
-        and getattr(user, "is_authenticated", False)
-    )
-
-
 # ============================================================
 # Permissions simples
 # ============================================================
 
-def _role_is(
-    user,
-    *roles: str,
-) -> bool:
-    if not _user_is_authenticated(user):
-        return False
-
-    return get_role_name(user) in roles
-
-# class IsAdminOnly(BasePermission):
-#     """
-#     Accès réservé à l'administrateur.
-#     """
-
-#     message = "Accès réservé au rôle admin."
-
-#     def has_permission(self, request, view):
-#         return _role_is(
-#             request.user,
-#             ROLE_ADMIN,
-#         )
 
 class IsAdmin(BasePermission):
     """
-    Autorise uniquement les administrateurs.
+    Administrateur uniquement.
     """
 
     message = "Accès réservé aux administrateurs."
 
     def has_permission(self, request, view):
-        user = request.user
-
-        if not user or not user.is_authenticated:
-            return False
-
-        return get_role_name(user) == ROLE_ADMIN
+        return _role_is(
+            request.user,
+            ROLE_ADMIN,
+        )
 
 
 class IsManager(BasePermission):
     """
-    Accès réservé au manager.
+    Manager actif/vérifié uniquement.
     """
 
     message = "Accès réservé au rôle manager."
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
+        user = request.user
+
+        if not _role_is(
+            user,
             ROLE_MANAGER,
+        ):
+            return False
+
+        return bool(
+            _manager_profile(user)
         )
+
 
 
 class IsVendor(BasePermission):
     """
-    Accès réservé au vendeur.
+    Vendeur actif/vérifié et rattaché
+    à une bijouterie.
     """
 
     message = "Accès réservé au rôle vendeur."
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
+        user = request.user
+
+        if not _role_is(
+            user,
             ROLE_VENDOR,
+        ):
+            return False
+
+        vendor = _vendor_profile(user)
+
+        return bool(
+            vendor
+            and getattr(
+                vendor,
+                "bijouterie_id",
+                None,
+            )
         )
-        
 
 class IsCashierOnly(BasePermission):
     """
-    Accès strictement réservé au caissier.
+    Caissier actif/vérifié et rattaché
+    à une bijouterie.
     """
 
     message = "Accès réservé au rôle caissier."
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
+        user = request.user
+
+        if not _role_is(
+            user,
             ROLE_CASHIER,
+        ):
+            return False
+
+        cashier = _cashier_profile(user)
+
+        return bool(
+            cashier
+            and getattr(
+                cashier,
+                "bijouterie_id",
+                None,
+            )
         )
+
 
 class IsBuyer(BasePermission):
     """
-    Accès réservé au responsable des rachats.
+    Responsable rachat actif/vérifié.
     """
 
     message = "Accès réservé au responsable des rachats."
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
+        user = request.user
+
+        if not _role_is(
+            user,
             ROLE_BUYER,
+        ):
+            return False
+
+        return bool(
+            _buyer_profile(user)
         )
+
+
+# ============================================================
+# Permissions combinées
+# ============================================================
 
 
 class IsAdminOrManager(BasePermission):
     """
-    Accès réservé à l'admin ou au manager.
+    Admin ou manager actif/vérifié.
     """
 
     message = "Accès réservé aux rôles admin ou manager."
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-        )
+        user = request.user
+
+        if not _user_is_authenticated(user):
+            return False
+
+        role = get_role_name(user)
+
+        if role == ROLE_ADMIN:
+            return True
+
+        if role == ROLE_MANAGER:
+            return bool(
+                _manager_profile(user)
+            )
+
+        return False
 
 
 class IsAdminManagerVendor(BasePermission):
     """
-    Accès réservé à :
-    - admin ;
-    - manager ;
-    - vendor.
+    Admin, manager ou vendeur.
+    Les profils staff doivent être actifs/vérifiés.
     """
 
     message = (
@@ -507,20 +249,57 @@ class IsAdminManagerVendor(BasePermission):
     )
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_VENDOR,
-        )
+        user = request.user
+
+        if not _user_is_authenticated(user):
+            return False
+
+        role = get_role_name(user)
+
+        if role == ROLE_ADMIN:
+            return True
+
+        if role == ROLE_MANAGER:
+            return bool(
+                _manager_profile(user)
+            )
+
+        if role == ROLE_VENDOR:
+            vendor = _vendor_profile(user)
+
+            return bool(
+                vendor
+                and getattr(
+                    vendor,
+                    "bijouterie_id",
+                    None,
+                )
+            )
+
+        return False
+
+
+
+class IsAdminOrManagerOrVendor(IsAdminManagerVendor):
+    """
+    Alias compatible avec les anciennes vues.
+
+    Autorise :
+    - ADMIN
+    - MANAGER actif/vérifié
+    - VENDOR actif/vérifié et rattaché à une bijouterie
+    """
+
+    message = (
+        "Accès réservé aux rôles "
+        "admin, manager ou vendeur."
+    )
+
 
 class IsAdminManagerVendorCashier(BasePermission):
     """
-    Accès réservé à :
-    - admin ;
-    - manager ;
-    - vendor ;
-    - cashier.
+    Admin, manager, vendeur ou caissier.
+    Les profils staff doivent être actifs/vérifiés.
     """
 
     message = (
@@ -529,21 +308,51 @@ class IsAdminManagerVendorCashier(BasePermission):
     )
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_VENDOR,
-            ROLE_CASHIER,
-        )
+        user = request.user
+
+        if not _user_is_authenticated(user):
+            return False
+
+        role = get_role_name(user)
+
+        if role == ROLE_ADMIN:
+            return True
+
+        if role == ROLE_MANAGER:
+            return bool(
+                _manager_profile(user)
+            )
+
+        if role == ROLE_VENDOR:
+            vendor = _vendor_profile(user)
+
+            return bool(
+                vendor
+                and getattr(
+                    vendor,
+                    "bijouterie_id",
+                    None,
+                )
+            )
+
+        if role == ROLE_CASHIER:
+            cashier = _cashier_profile(user)
+
+            return bool(
+                cashier
+                and getattr(
+                    cashier,
+                    "bijouterie_id",
+                    None,
+                )
+            )
+
+        return False
 
 
 class IsAdminManagerBuyer(BasePermission):
     """
-    Accès réservé à :
-    - admin ;
-    - manager ;
-    - buyer.
+    Admin, manager ou responsable rachat.
     """
 
     message = (
@@ -552,304 +361,337 @@ class IsAdminManagerBuyer(BasePermission):
     )
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_BUYER,
-        )
-        
+        user = request.user
 
-class CanCreateSale(BasePermission):
-    """
-    Autorise la création d'une vente à :
-    - admin ;
-    - manager ;
-    - vendor.
-    """
-
-    message = (
-        "Seuls admin, manager ou vendeur "
-        "peuvent créer une vente."
-    )
-
-    def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_VENDOR,
-        )
-        
-
-class CanProcessInvoicePayment(BasePermission):
-    """
-    Autorise le paiement d'une facture.
-
-    Rôles autorisés :
-    - manager ;
-    - cashier.
-    """
-
-    message = (
-        "Seuls le manager ou le caissier "
-        "peuvent réaliser un paiement."
-    )
-
-    def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_MANAGER,
-            ROLE_CASHIER,
-        )
-# ============================================================
-
-# ============================================================
-# Object-level : vendeur propriétaire
-# ============================================================
-
-class IsAdminOrManagerOrVendor(BasePermission):
-    """
-    Permission générale :
-
-    - Admin :
-        accès autorisé.
-
-    - Manager :
-        accès autorisé uniquement aux objets appartenant
-        à ses bijouteries.
-
-    - Vendor :
-        accès autorisé uniquement aux objets qui lui
-        appartiennent.
-
-    Important :
-    Cette permission ne filtre pas automatiquement
-    les listes. Le queryset doit également être limité.
-    """
-
-    message = (
-        "Accès réservé aux administrateurs, managers "
-        "ou au vendeur propriétaire."
-    )
-
-    def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_VENDOR,
-        )
-
-    def has_object_permission(
-        self,
-        request,
-        view,
-        obj,
-    ):
-        role = get_role_name(request.user)
-
-        if role == ROLE_ADMIN:
-            return True
-
-        if role == ROLE_MANAGER:
-            bijouterie_id = _obj_bijouterie_id(obj)
-
-            return bool(
-                bijouterie_id
-                and _manager_has_bijouterie(
-                    request.user,
-                    bijouterie_id,
-                )
-            )
-
-        if role == ROLE_VENDOR:
-            owner_user_id = _obj_owner_user_id(obj)
-
-            return bool(
-                owner_user_id
-                and owner_user_id == request.user.id
-            )
-
-        return False
-
-
-# ============================================================
-# Object-level : scope bijouterie générique
-# ============================================================
-
-class IsSameBijouterieOrAdmin(BasePermission):
-    """
-    Autorise l'accès si l'objet appartient au périmètre
-    de l'utilisateur.
-
-    - Admin :
-        toutes les bijouteries.
-
-    - Manager :
-        une des bijouteries gérées.
-
-    - Vendor :
-        sa bijouterie.
-
-    - Cashier :
-        sa bijouterie.
-
-    - Buyer :
-        sa bijouterie.
-
-    Cette permission est générique et ne doit pas vérifier
-    le propriétaire d'une Vente.
-    """
-
-    message = "Objet hors de votre périmètre de bijouterie."
-
-    def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_VENDOR,
-            ROLE_CASHIER,
-            ROLE_BUYER,
-        )
-
-    def has_object_permission(
-        self,
-        request,
-        view,
-        obj,
-    ):
-        role = get_role_name(request.user)
-
-        if role == ROLE_ADMIN:
-            return True
-
-        bijouterie_id = _obj_bijouterie_id(obj)
-
-        if not bijouterie_id:
+        if not _user_is_authenticated(user):
             return False
 
+        role = get_role_name(user)
+
+        if role == ROLE_ADMIN:
+            return True
+
         if role == ROLE_MANAGER:
-            return _manager_has_bijouterie(
-                request.user,
-                bijouterie_id,
-            )
-
-        if role == ROLE_VENDOR:
-            vendor = _vendor_profile(
-                request.user
-            )
-
             return bool(
-                vendor
-                and vendor.bijouterie_id
-                == bijouterie_id
-            )
-
-        if role == ROLE_CASHIER:
-            cashier = _cashier_profile(
-                request.user
-            )
-
-            return bool(
-                cashier
-                and cashier.bijouterie_id
-                == bijouterie_id
+                _manager_profile(user)
             )
 
         if role == ROLE_BUYER:
-            buyer = _buyer_profile(
-                request.user
-            )
-
             return bool(
-                buyer
-                and buyer.bijouterie_id
-                == bijouterie_id
+                _buyer_profile(user)
             )
 
         return False
 
 
 # ============================================================
-# Object-level : ventes
+# Permissions métier - Vente
 # ============================================================
-class IsSameBijouterieForVenteOrAdmin(BasePermission):
-    """
-    Permission destinée aux objets Vente.
 
-    Règles :
-    - admin : toutes les ventes ;
-    - manager : ventes de ses bijouteries ;
-    - vendor : uniquement ses propres ventes ;
-    - cashier : ventes de sa bijouterie ;
-    - buyer : aucun accès.
+
+class CanCreateSale(BasePermission):
+    """
+    Autorise la création d'une vente.
+
+    ADMIN
+        Autorisé.
+
+    MANAGER
+        Autorisé si profil manager actif/vérifié.
+
+    VENDOR
+        Autorisé si profil vendeur actif/vérifié
+        et rattaché à une bijouterie.
+
+    CASHIER / BUYER
+        Non autorisés.
     """
 
-    message = "Vente hors de votre périmètre."
+    message = "Vous n'êtes pas autorisé à créer une vente."
 
     def has_permission(self, request, view):
-        return _role_is(
-            request.user,
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_VENDOR,
-            ROLE_CASHIER,
+        user = request.user
+
+        if not _user_is_authenticated(user):
+            return False
+
+        role = get_role_name(user)
+
+        # ----------------------------------------------------
+        # ADMIN
+        # ----------------------------------------------------
+
+        if role == ROLE_ADMIN:
+            return True
+
+        # ----------------------------------------------------
+        # MANAGER
+        # ----------------------------------------------------
+
+        if role == ROLE_MANAGER:
+            return bool(
+                _manager_profile(user)
+            )
+
+        # ----------------------------------------------------
+        # VENDOR
+        # ----------------------------------------------------
+
+        if role == ROLE_VENDOR:
+            vendor = _vendor_profile(user)
+
+            return bool(
+                vendor
+                and getattr(
+                    vendor,
+                    "bijouterie_id",
+                    None,
+                )
+            )
+
+        return False
+
+
+# ============================================================
+# Permissions métier - Paiement facture
+# ============================================================
+
+
+class CanProcessInvoicePayment(BasePermission):
+    """
+    Autorise l'encaissement d'une facture.
+
+    ADMIN
+        Autorisé.
+
+    MANAGER
+        Autorisé si profil manager actif/vérifié.
+
+    CASHIER
+        Autorisé si profil caissier actif/vérifié
+        et rattaché à une bijouterie.
+
+    VENDOR / BUYER
+        Non autorisés.
+    """
+
+    message = (
+        "Vous n'êtes pas autorisé "
+        "à enregistrer un paiement."
+    )
+
+    def has_permission(self, request, view):
+        user = request.user
+
+        if not _user_is_authenticated(user):
+            return False
+
+        role = get_role_name(user)
+
+        # ----------------------------------------------------
+        # ADMIN
+        # ----------------------------------------------------
+
+        if role == ROLE_ADMIN:
+            return True
+
+        # ----------------------------------------------------
+        # MANAGER
+        # ----------------------------------------------------
+
+        if role == ROLE_MANAGER:
+            return bool(
+                _manager_profile(user)
+            )
+
+        # ----------------------------------------------------
+        # CASHIER
+        # ----------------------------------------------------
+
+        if role == ROLE_CASHIER:
+            cashier = _cashier_profile(user)
+
+            return bool(
+                cashier
+                and getattr(
+                    cashier,
+                    "bijouterie_id",
+                    None,
+                )
+            )
+
+        return False
+
+
+# ============================================================
+# Permission générique par bijouterie
+# ============================================================
+
+
+class HasBijouterieAccess(BasePermission):
+    """
+    Permission objet permettant de vérifier qu'un utilisateur
+    possède l'accès à la bijouterie portée par l'objet.
+
+    La vue peut définir :
+
+        bijouterie_field = "bijouterie_id"
+
+    ou par exemple :
+
+        bijouterie_field = "vente.bijouterie_id"
+    """
+
+    message = (
+        "Vous n'avez pas accès à cette bijouterie."
+    )
+
+    def has_permission(self, request, view):
+        return _user_is_authenticated(
+            request.user
         )
 
     def has_object_permission(
         self,
         request,
         view,
-        vente,
+        obj,
     ):
-        role = get_role_name(request.user)
+        field = getattr(
+            view,
+            "bijouterie_field",
+            "bijouterie_id",
+        )
+
+        value = obj
+
+        for part in field.split("."):
+            value = getattr(
+                value,
+                part,
+                None,
+            )
+
+            if value is None:
+                return False
+
+        return user_has_bijouterie_access(
+            request.user,
+            value,
+        )
+        
+
+
+class IsSameBijouterieOrAdmin(BasePermission):
+    """
+    Autorise :
+
+    - ADMIN :
+        accès à toutes les bijouteries.
+
+    - autres rôles autorisés par la vue :
+        accès uniquement aux objets appartenant
+        à une bijouterie à laquelle l'utilisateur
+        a accès.
+
+    Cette permission est principalement une
+    permission objet.
+
+    La vue peut définir :
+
+        bijouterie_field = "bijouterie_id"
+
+    ou :
+
+        bijouterie_field = "bijouterie"
+
+    ou encore :
+
+        bijouterie_field = "stock.bijouterie_id"
+    """
+
+    message = (
+        "Vous n'êtes pas autorisé à accéder "
+        "aux données de cette bijouterie."
+    )
+
+    def has_permission(self, request, view):
+        """
+        À ce niveau on vérifie seulement que
+        l'utilisateur est authentifié et actif.
+
+        La permission métier principale
+        (ex: IsAdminManagerBuyer) détermine
+        quels rôles sont autorisés.
+        """
+
+        return _user_is_authenticated(
+            request.user
+        )
+
+    def has_object_permission(
+        self,
+        request,
+        view,
+        obj,
+    ):
+        user = request.user
+
+        if not _user_is_authenticated(user):
+            return False
+
+        role = get_role_name(user)
+
+        # ====================================================
+        # ADMIN
+        # ====================================================
 
         if role == ROLE_ADMIN:
             return True
 
-        bijouterie_id = getattr(
-            vente,
+        # ====================================================
+        # Récupération bijouterie de l'objet
+        # ====================================================
+
+        field = getattr(
+            view,
+            "bijouterie_field",
             "bijouterie_id",
-            None,
+        )
+
+        value = obj
+
+        for part in field.split("."):
+            value = getattr(
+                value,
+                part,
+                None,
+            )
+
+            if value is None:
+                return False
+
+        # ----------------------------------------------------
+        # Le champ peut retourner :
+        #
+        #   bijouterie_id -> int
+        #
+        # ou :
+        #
+        #   bijouterie -> instance Bijouterie
+        # ----------------------------------------------------
+
+        bijouterie_id = getattr(
+            value,
+            "id",
+            value,
         )
 
         if not bijouterie_id:
             return False
 
-        if role == ROLE_MANAGER:
-            return _manager_has_bijouterie(
-                request.user,
-                bijouterie_id,
-            )
-
-        if role == ROLE_VENDOR:
-            vendor = _vendor_profile(
-                request.user
-            )
-
-            return bool(
-                vendor
-                and vendor.bijouterie_id == bijouterie_id
-                and getattr(
-                    vente,
-                    "vendor_id",
-                    None,
-                ) == vendor.id
-            )
-
-        if role == ROLE_CASHIER:
-            cashier = _cashier_profile(
-                request.user
-            )
-
-            return bool(
-                cashier
-                and cashier.bijouterie_id == bijouterie_id
-            )
-
-        return False
-    
-
-
+        return user_has_bijouterie_access(
+            user,
+            bijouterie_id,
+        )
+        

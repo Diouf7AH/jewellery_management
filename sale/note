@@ -174,3 +174,61 @@ Cependant, pour un ERP de bijouterie physique, le plus simple est souvent de ne 
 reference
 car le ticket TPE contient déjà toutes les informations nécessaires. Les champs banque, 
 numero_carte_masque et provider_reference sont des améliorations utiles mais non obligatoires.
+
+
+
+
+ProduitLine.quantite
+    = quantité du lot
+
+VendorStock.quantite_allouee
+    = quantité attribuée au vendeur
+
+VendorStock.quantite_vendue
+    = quantité vendue
+
+VendorStock.en_stock
+    = quantite_allouee - quantite_vendue
+
+
+InventoryMovement
+
+Cela évite de perdre l'information sur la quantité initialement reçue.
+
+Exemple
+Si :
+
+ProduitLine PL-ABC
+quantite = 10
+
+et qu'on attribue :
+
+VendorStock
+quantite_allouee = 10
+quantite_vendue = 0
+
+Après une vente de 3 :
+
+ProduitLine
+quantite = 10       ← inchangé
+
+VendorStock
+allouee = 10
+vendue = 3
+disponible = 7
+
+InventoryMovement
+SALE_OUT = 3
+
+Après une deuxième vente de 2 :
+
+ProduitLine
+quantite = 10
+
+VendorStock
+allouee = 10
+vendue = 5
+disponible = 5
+
+InventoryMovement
+SALE_OUT = 2

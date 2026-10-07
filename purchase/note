@@ -82,3 +82,26 @@ LOT-20260906-0042
     └── quantité  : 2
 
     → étiquette : BRA-260042-04 × 2
+    
+    
+    
+
+etiquette
+
+{
+  "lot": "LOT-20260906-0042",
+  "etiquettes": [
+    {
+      "numero_ligne_lot": 1,
+      "code": "BG-260042-01",
+      "quantite": 5,
+      "download_url": "/api/lots/LOT-20260906-0042/etiquettes/1/download/"
+    },
+    {
+      "numero_ligne_lot": 2,
+      "code": "COL-260042-02",
+      "quantite": 3,
+      "download_url": "/api/lots/LOT-20260906-0042/etiquettes/2/download/"
+    }
+  ]
+}

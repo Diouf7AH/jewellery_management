@@ -62,21 +62,359 @@ REDUCTION_OCCASION_CHOICES = (
     (Decimal("20.00"), "20%"),
 )
 
-# store/models.py
+# # store/models.py
+# class Bijouterie(models.Model):
+#     nom = models.CharField(max_length=30, unique=True, null=True)
+
+#     telephone_portable_1 = models.CharField(max_length=30, null=True, blank=True)
+#     telephone_portable_2 = models.CharField(max_length=30, null=True, blank=True)
+#     telephone_portable_3 = models.CharField(max_length=30, null=True, blank=True)
+#     telephone_portable_4 = models.CharField(max_length=30, null=True, blank=True)
+#     telephone_portable_5 = models.CharField(max_length=30, null=True, blank=True)
+#     telephone_fix = models.CharField(max_length=30, null=True, blank=True)
+
+#     # appliquer_tva = models.BooleanField(default=True)
+#     appliquer_tva = models.BooleanField(default=False)
+#     # taux_tva = models.DecimalField(max_digits=5,decimal_places=2,default=Decimal("18.00"))
+#     taux_tva = models.DecimalField(max_digits=5,decimal_places=2,null=True,blank=True,default=None)
+
+#     ninea = models.CharField(
+#         max_length=20,
+#         unique=True,
+#         null=True,
+#         blank=True,
+#         db_index=True,
+#         help_text="Numéro NINEA de la bijouterie"
+#     )
+
+#     adresse = models.CharField(max_length=255, null=True, blank=True)
+
+#     logo_blanc = models.ImageField(upload_to="logo/", default="logo_blanc.jpg", null=True, blank=True)
+#     logo_noir = models.ImageField(upload_to="logo/", default="logo_noir.jpg", null=True, blank=True)
+
+#     nom_de_domaine = models.URLField(max_length=200, null=True, blank=True)
+#     tiktok = models.URLField(max_length=200, null=True, blank=True)
+#     facebook = models.URLField(max_length=200, null=True, blank=True)
+#     instagram = models.URLField(max_length=200, null=True, blank=True)
+
+#     created_at = models.DateTimeField(auto_now_add=True)
+#     updated_at = models.DateTimeField(auto_now=True)
+
+#     class Meta:
+#         verbose_name_plural = "Bijouteries"
+
+#     def __str__(self):
+#         return self.nom or "Bijouterie sans nom"
+
+#     def clean(self):
+#         super().clean()
+
+#         if self.ninea:
+#             self.ninea = self.ninea.strip().upper()
+
+#             if not re.match(r"^[A-Z0-9]+$", self.ninea):
+#                 raise ValidationError({
+#                     "ninea": "Le NINEA doit contenir uniquement des lettres et chiffres."
+#                 })
+
+#         if not self.appliquer_tva:
+#             self.taux_tva = None
+
+#         if self.appliquer_tva and self.taux_tva is None:
+#             raise ValidationError({
+#                 "taux_tva": "Le taux de TVA est obligatoire si la TVA est activée."
+#             })
+        
+#         if (
+#             self.taux_tva is not None
+#             and self.taux_tva < 0
+#         ):
+#             raise ValidationError({
+#                 "taux_tva": (
+#                     "Le taux de TVA ne peut pas être négatif."
+#                 )
+#             })
+        
+#     def save(self, *args, **kwargs):
+#         self.full_clean()
+#         super().save(*args, **kwargs)
+        
+    
+# class Bijouterie(models.Model):
+#     nom = models.CharField(
+#         max_length=100,
+#         unique=True,
+#     )
+
+#     telephone_portable_1 = models.CharField(
+#         max_length=30,
+#         null=True,
+#         blank=True,
+#     )
+#     telephone_portable_2 = models.CharField(
+#         max_length=30,
+#         null=True,
+#         blank=True,
+#     )
+#     telephone_portable_3 = models.CharField(
+#         max_length=30,
+#         null=True,
+#         blank=True,
+#     )
+#     telephone_portable_4 = models.CharField(
+#         max_length=30,
+#         null=True,
+#         blank=True,
+#     )
+#     telephone_portable_5 = models.CharField(
+#         max_length=30,
+#         null=True,
+#         blank=True,
+#     )
+#     telephone_fix = models.CharField(
+#         max_length=30,
+#         null=True,
+#         blank=True,
+#     )
+
+#     # =========================================================
+#     # TVA
+#     # =========================================================
+
+#     appliquer_tva = models.BooleanField(
+#         default=False,
+#     )
+
+#     taux_tva = models.DecimalField(
+#         max_digits=5,
+#         decimal_places=2,
+#         null=True,
+#         blank=True,
+#         default=None,
+#     )
+
+#     # =========================================================
+#     # INFORMATIONS LÉGALES
+#     # =========================================================
+
+#     ninea = models.CharField(
+#         max_length=20,
+#         unique=True,
+#         null=True,
+#         blank=True,
+#         db_index=True,
+#         help_text="Numéro NINEA de la bijouterie",
+#     )
+
+#     adresse = models.CharField(
+#         max_length=255,
+#         null=True,
+#         blank=True,
+#     )
+
+#     # =========================================================
+#     # LOGOS
+#     # =========================================================
+
+#     logo_blanc = models.ImageField(
+#         upload_to="logo/",
+#         default="logo_blanc.jpg",
+#         null=True,
+#         blank=True,
+#     )
+
+#     logo_noir = models.ImageField(
+#         upload_to="logo/",
+#         default="logo_noir.jpg",
+#         null=True,
+#         blank=True,
+#     )
+
+#     # =========================================================
+#     # WEB / RÉSEAUX SOCIAUX
+#     # =========================================================
+
+#     nom_de_domaine = models.URLField(
+#         max_length=200,
+#         null=True,
+#         blank=True,
+#     )
+
+#     tiktok = models.URLField(
+#         max_length=200,
+#         null=True,
+#         blank=True,
+#     )
+
+#     facebook = models.URLField(
+#         max_length=200,
+#         null=True,
+#         blank=True,
+#     )
+
+#     instagram = models.URLField(
+#         max_length=200,
+#         null=True,
+#         blank=True,
+#     )
+
+#     # =========================================================
+#     # DATES
+#     # =========================================================
+
+#     created_at = models.DateTimeField(
+#         auto_now_add=True,
+#     )
+
+#     updated_at = models.DateTimeField(
+#         auto_now=True,
+#     )
+
+#     # =========================================================
+#     # META
+#     # =========================================================
+
+#     class Meta:
+#         verbose_name = "Bijouterie"
+#         verbose_name_plural = "Bijouteries"
+#         ordering = ["nom"]
+
+#     # =========================================================
+#     # STRING
+#     # =========================================================
+
+#     def __str__(self):
+#         return self.nom or f"Bijouterie #{self.pk}"
+
+#     # =========================================================
+#     # VALIDATION
+#     # =========================================================
+
+#     def clean(self):
+#         super().clean()
+
+#         errors = {}
+
+#         # -----------------------------------------------------
+#         # NOM
+#         # -----------------------------------------------------
+
+#         if self.nom:
+#             self.nom = self.nom.strip()
+
+#         if not self.nom:
+#             errors["nom"] = (
+#                 "Le nom de la bijouterie est obligatoire."
+#             )
+
+#         # -----------------------------------------------------
+#         # NINEA
+#         # -----------------------------------------------------
+
+#         if self.ninea:
+#             self.ninea = self.ninea.strip().upper()
+
+#             if not re.fullmatch(
+#                 r"[A-Z0-9]+",
+#                 self.ninea,
+#             ):
+#                 errors["ninea"] = (
+#                     "Le NINEA doit contenir uniquement "
+#                     "des lettres et des chiffres."
+#                 )
+
+#         # -----------------------------------------------------
+#         # TVA
+#         # -----------------------------------------------------
+
+#         if not self.appliquer_tva:
+#             self.taux_tva = None
+
+#         else:
+#             if self.taux_tva is None:
+#                 errors["taux_tva"] = (
+#                     "Le taux de TVA est obligatoire "
+#                     "si la TVA est activée."
+#                 )
+
+#             elif not (
+#                 Decimal("0.00")
+#                 <= self.taux_tva
+#                 <= Decimal("100.00")
+#             ):
+#                 errors["taux_tva"] = (
+#                     "Le taux de TVA doit être compris "
+#                     "entre 0 et 100."
+#                 )
+
+#         if errors:
+#             raise ValidationError(errors)
+
+#     # =========================================================
+#     # SAVE
+#     # =========================================================
+
+#     def save(self, *args, **kwargs):
+#         self.full_clean()
+
+#         return super().save(*args, **kwargs)
+
+
 class Bijouterie(models.Model):
-    nom = models.CharField(max_length=30, unique=True, null=True)
+    nom = models.CharField(
+        max_length=100,
+        unique=True,
+    )
 
-    telephone_portable_1 = models.CharField(max_length=30, null=True, blank=True)
-    telephone_portable_2 = models.CharField(max_length=30, null=True, blank=True)
-    telephone_portable_3 = models.CharField(max_length=30, null=True, blank=True)
-    telephone_portable_4 = models.CharField(max_length=30, null=True, blank=True)
-    telephone_portable_5 = models.CharField(max_length=30, null=True, blank=True)
-    telephone_fix = models.CharField(max_length=30, null=True, blank=True)
+    # ============================================================
+    # CONTACT
+    # ============================================================
 
-    # appliquer_tva = models.BooleanField(default=True)
-    appliquer_tva = models.BooleanField(default=False)
-    # taux_tva = models.DecimalField(max_digits=5,decimal_places=2,default=Decimal("18.00"))
-    taux_tva = models.DecimalField(max_digits=5,decimal_places=2,null=True,blank=True,default=None)
+    telephone_portable_1 = models.CharField(
+        max_length=30,
+        null=True,
+        blank=True,
+    )
+
+    telephone_portable_2 = models.CharField(
+        max_length=30,
+        null=True,
+        blank=True,
+    )
+
+    telephone_portable_3 = models.CharField(
+        max_length=30,
+        null=True,
+        blank=True,
+    )
+
+    telephone_portable_4 = models.CharField(
+        max_length=30,
+        null=True,
+        blank=True,
+    )
+
+    telephone_portable_5 = models.CharField(
+        max_length=30,
+        null=True,
+        blank=True,
+    )
+
+    telephone_fix = models.CharField(
+        max_length=30,
+        null=True,
+        blank=True,
+    )
+
+    adresse = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+
+    # ============================================================
+    # INFORMATIONS LÉGALES
+    # ============================================================
 
     ninea = models.CharField(
         max_length=20,
@@ -84,54 +422,165 @@ class Bijouterie(models.Model):
         null=True,
         blank=True,
         db_index=True,
-        help_text="Numéro NINEA de la bijouterie"
+        help_text="Numéro NINEA de la bijouterie",
     )
 
-    adresse = models.CharField(max_length=255, null=True, blank=True)
+    # ============================================================
+    # TVA
+    # ============================================================
 
-    logo_blanc = models.ImageField(upload_to="logo/", default="logo_blanc.jpg", null=True, blank=True)
-    logo_noir = models.ImageField(upload_to="logo/", default="logo_noir.jpg", null=True, blank=True)
+    appliquer_tva = models.BooleanField(
+        default=False,
+    )
 
-    nom_de_domaine = models.URLField(max_length=200, null=True, blank=True)
-    tiktok = models.URLField(max_length=200, null=True, blank=True)
-    facebook = models.URLField(max_length=200, null=True, blank=True)
-    instagram = models.URLField(max_length=200, null=True, blank=True)
+    taux_tva = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        default=None,
+    )
 
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    # ============================================================
+    # LOGOS
+    # ============================================================
+
+    logo_blanc = models.ImageField(
+        upload_to="logo/",
+        default="logo_blanc.jpg",
+        null=True,
+        blank=True,
+    )
+
+    logo_noir = models.ImageField(
+        upload_to="logo/",
+        default="logo_noir.jpg",
+        null=True,
+        blank=True,
+    )
+
+    # ============================================================
+    # WEB / RÉSEAUX SOCIAUX
+    # ============================================================
+
+    nom_de_domaine = models.URLField(
+        max_length=200,
+        null=True,
+        blank=True,
+    )
+
+    tiktok = models.URLField(
+        max_length=200,
+        null=True,
+        blank=True,
+    )
+
+    facebook = models.URLField(
+        max_length=200,
+        null=True,
+        blank=True,
+    )
+
+    instagram = models.URLField(
+        max_length=200,
+        null=True,
+        blank=True,
+    )
+
+    # ============================================================
+    # DATES
+    # ============================================================
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
+
+    # ============================================================
+    # META
+    # ============================================================
 
     class Meta:
+        verbose_name = "Bijouterie"
         verbose_name_plural = "Bijouteries"
+        ordering = ["nom"]
 
     def __str__(self):
-        return self.nom or "Bijouterie sans nom"
+        return self.nom or f"Bijouterie #{self.pk}"
+
+    # ============================================================
+    # VALIDATION
+    # ============================================================
 
     def clean(self):
         super().clean()
 
+        errors = {}
+
+        # --------------------------------------------------------
+        # NOM
+        # --------------------------------------------------------
+
+        if self.nom:
+            self.nom = self.nom.strip()
+
+        if not self.nom:
+            errors["nom"] = (
+                "Le nom de la bijouterie est obligatoire."
+            )
+
+        # --------------------------------------------------------
+        # NINEA
+        # --------------------------------------------------------
+
         if self.ninea:
             self.ninea = self.ninea.strip().upper()
 
-            if not re.match(r"^[A-Z0-9]+$", self.ninea):
-                raise ValidationError({
-                    "ninea": "Le NINEA doit contenir uniquement des lettres et chiffres."
-                })
+            if not re.fullmatch(r"[A-Z0-9]+", self.ninea):
+                errors["ninea"] = (
+                    "Le NINEA doit contenir uniquement "
+                    "des lettres et des chiffres."
+                )
+
+        # --------------------------------------------------------
+        # TVA
+        # --------------------------------------------------------
 
         if not self.appliquer_tva:
             self.taux_tva = None
 
-        if self.appliquer_tva and self.taux_tva is None:
-            raise ValidationError({
-                "taux_tva": "Le taux de TVA est obligatoire si la TVA est activée."
-            })
-        
-        
+        else:
+            if self.taux_tva is None:
+                errors["taux_tva"] = (
+                    "Le taux de TVA est obligatoire "
+                    "si la TVA est activée."
+                )
+
+            elif not (
+                Decimal("0.00")
+                <= self.taux_tva
+                <= Decimal("100.00")
+            ):
+                errors["taux_tva"] = (
+                    "Le taux de TVA doit être compris "
+                    "entre 0 et 100."
+                )
+
+        if errors:
+            raise ValidationError(errors)
+
+    # ============================================================
+    # SAVE
+    # ============================================================
+
     def save(self, *args, **kwargs):
         self.full_clean()
-        super().save(*args, **kwargs)
-        
+        return super().save(*args, **kwargs)
     
-
+    
 # Model for Produit Categories
 class Categorie(models.Model):
     nom = models.CharField(max_length=30, unique=True, blank=True, default="")
@@ -155,20 +604,23 @@ class Categorie(models.Model):
 
 # Type model
 class Modele(models.Model):
-    modele = models.CharField(max_length=55, unique=True, null=True)
-    categorie = models.ForeignKey(Categorie, on_delete=models.PROTECT, null=True, blank=True, related_name="modele_categorie")
-    
-    
+    modele = models.CharField(
+        max_length=55,
+        unique=True,
+        null=True,
+    )
+
+    categorie = models.ForeignKey(
+        Categorie,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="modele_categorie",
+    )
+
     def __str__(self):
-        # Affiche : "Bague (Catégorie: Bijoux)" ou "Bague (Catégorie: Aucune)"
-        return f"{self.modele} (Catégorie: {self.categorie.nom if self.categorie else 'Aucune'})"
-
-    @property
-    def categorie_id(self):
-        # Permet d'accéder à modele.categorie_id directement (int ou None)
-        return self.categorie.id if self.categorie else None
-
-
+        categorie = self.categorie.nom if self.categorie else "Aucune"
+        return f"{self.modele or 'Sans modèle'} (Catégorie: {categorie})"
 
 # Purity model
 class Purete(models.Model):
@@ -304,48 +756,257 @@ class MarquePuretePrixHistory(models.Model):
         )
 
 
+# class Produit(models.Model):
+#     # uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+#     uuid = models.UUIDField(default=uuid.uuid4, unique=True,editable=False)
+#     # uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
+#     nom = models.CharField(max_length=100, blank=True, default="")
+#     image = models.ImageField(upload_to="produits/", blank=True, null=True)
+#     description = models.TextField(null=True, blank=True)
+
+#     # QR code sera généré via signal post_save (transaction.on_commit)
+#     # qr_code = models.ImageField(upload_to="qr_codes/", null=True, blank=True)
+
+#     # categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit", null=True, blank=True)
+#     # purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit",null=True, blank=True)
+#     # marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",null=True, blank=True)
+#     # modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True, blank=True)
+
+#     categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit")
+#     purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit")
+#     marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit")
+#     # modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit")
+#     # Au cas ou on a un produit sans modèle
+#     modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True,blank=True,)
+    
+    
+#     matiere = models.CharField(choices=MATIERE,max_length=50,default="or",)
+#     poids = models.DecimalField(decimal_places=2, max_digits=12)
+#     taille = models.DecimalField(blank=True, null=True, decimal_places=2, max_digits=12)
+
+#     genre = models.CharField(choices=GENRE, default="F", max_length=10)
+#     etat = models.CharField(choices=ETAT, max_length=10, default="N")
+    
+#     reduction_occasion = models.DecimalField(
+#         max_digits=5,
+#         decimal_places=2,
+#         choices=REDUCTION_OCCASION_CHOICES,
+#         null=True,
+#         blank=True,
+#         help_text="Réduction appliquée uniquement aux produits d'occasion.",
+#     )
+
+#     sku = models.SlugField(unique=True,max_length=120,null=True,blank=True,)
+#     slug = models.SlugField(max_length=120,unique=True,null=True,blank=True,)
+
+#     date_ajout = models.DateTimeField(auto_now_add=True)
+#     date_modification = models.DateTimeField(auto_now=True)
+
+#     class Meta:
+#         ordering = ["-id"]
+#         verbose_name_plural = "Produits"
+
+#     def __str__(self):
+#         return self.sku or self.nom or (self.slug or f"Produit#{self.pk}")
+
+#     @property
+#     def produit_url(self):
+#         base_url = getattr(settings, "SITE_URL", "https://www.rio-gold.com")
+#         return f"{base_url}/produit/{self.slug}" if self.slug else None
+
+#     def clean(self):
+#         super().clean()
+
+#         if self.poids is None or self.poids <= 0:
+#             raise ValidationError({
+#                 "poids": "Le poids doit être supérieur à zéro."
+#             })
+
+#         if self.taille is not None and self.taille < 0:
+#             raise ValidationError({
+#                 "taille": "La taille ne peut pas être négative."
+#             })
+            
+#         if self.etat != "O" and self.reduction_occasion:
+#             raise ValidationError({
+#                 "reduction_occasion": (
+#                     "Le pourcentage occasion est réservé aux produits d'occasion."
+#                 )
+#             })
+
+#         if self.etat == "O" and not self.reduction_occasion:
+#             raise ValidationError({
+#                 "reduction_occasion": (
+#                     "Veuillez choisir une réduction : 5%, 10%, 15% ou 20%."
+#                 )
+#             })
+
+
+#     def skuGet(self):
+#         poids_str = f"{self.poids:.2f}".replace(".", "-")
+
+#         taille = self.taille or Decimal("0.00")
+#         taille_str = f"{taille:.2f}".replace(".", "-")
+
+#         return (
+#             f"{self.categorie.nom[:3].upper()}-"
+#             f"{self.modele.modele[:3].upper()}-"
+#             f"{self.etat}-"
+#             f"{self.purete.purete}-"
+#             f"{self.marque.marque[:3].upper()}-"
+#             f"P{poids_str}-T{taille_str}"
+#         )
+
+
+#     def _make_unique_sku(self, base_sku: str) -> str:
+#         if not base_sku:
+#             return base_sku
+
+#         # 🔥 sécurise définitivement (slug valide)
+#         base_sku = slugify(base_sku).upper()
+
+#         sku = base_sku
+#         i = 2
+
+#         while Produit.objects.filter(sku=sku).exclude(pk=self.pk).exists():
+#             sku = f"{base_sku}-{i}"
+#             i += 1
+
+#         return sku
+
+#     def save(self, *args, **kwargs):
+#         if not self.nom and self.categorie and self.modele and self.marque:
+#             self.nom = (
+#                 f"{self.categorie.nom} "
+#                 f"{self.modele.modele} "
+#                 f"{self.marque.marque}"
+#             )
+
+#         if not self.slug:
+#             base_slug = slugify(self.nom or "produit")
+#             self.slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
+
+#         if not self.sku:
+#             sku = self.skuGet()
+#             if sku:
+#                 self.sku = self._make_unique_sku(sku)
+
+#         self.full_clean()
+#         super().save(*args, **kwargs)
+
+#     # # Admin helper
+#     # def qr_code_url(self):
+#     #     return self.qr_code.url if self.qr_code else "Aucun QR code"
+
+#     # qr_code_url.short_description = "QR Code"
+
+
 class Produit(models.Model):
-    # uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    uuid = models.UUIDField(default=uuid.uuid4, unique=True,editable=False)
-    # uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
-    nom = models.CharField(max_length=100, blank=True, default="")
-    image = models.ImageField(upload_to="produits/", blank=True, null=True)
-    description = models.TextField(null=True, blank=True)
+    uuid = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+    )
 
-    # QR code sera généré via signal post_save (transaction.on_commit)
-    # qr_code = models.ImageField(upload_to="qr_codes/", null=True, blank=True)
+    nom = models.CharField(
+        max_length=100,
+        blank=True,
+        default="",
+    )
 
-    # categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit", null=True, blank=True)
-    # purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit",null=True, blank=True)
-    # marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit",null=True, blank=True)
-    # modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True, blank=True)
+    image = models.ImageField(
+        upload_to="produits/",
+        blank=True,
+        null=True,
+    )
 
-    categorie = models.ForeignKey("Categorie",on_delete=models.PROTECT,related_name="categorie_produit")
-    purete = models.ForeignKey("Purete",on_delete=models.PROTECT,related_name="purete_produit")
-    marque = models.ForeignKey("Marque",on_delete=models.PROTECT,related_name="marque_produit")
-    # modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit")
-    # Au cas ou on a un produit sans modèle
-    modele = models.ForeignKey("Modele",on_delete=models.PROTECT,related_name="modele_produit",null=True,blank=True,)
-    
-    
-    matiere = models.CharField(choices=MATIERE,max_length=50,default="or",)
-    poids = models.DecimalField(decimal_places=2, max_digits=12)
-    taille = models.DecimalField(blank=True, null=True, decimal_places=2, max_digits=12)
+    description = models.TextField(
+        null=True,
+        blank=True,
+    )
 
-    genre = models.CharField(choices=GENRE, default="F", max_length=10)
-    etat = models.CharField(choices=ETAT, max_length=10, default="N")
-    
+    categorie = models.ForeignKey(
+        "Categorie",
+        on_delete=models.PROTECT,
+        related_name="categorie_produit",
+    )
+
+    purete = models.ForeignKey(
+        "Purete",
+        on_delete=models.PROTECT,
+        related_name="purete_produit",
+    )
+
+    marque = models.ForeignKey(
+        "Marque",
+        on_delete=models.PROTECT,
+        related_name="marque_produit",
+    )
+
+    # Le modèle reste facultatif.
+    modele = models.ForeignKey(
+        "Modele",
+        on_delete=models.PROTECT,
+        related_name="modele_produit",
+        null=True,
+        blank=True,
+    )
+
+    matiere = models.CharField(
+        choices=MATIERE,
+        max_length=50,
+        default="or",
+    )
+
+    poids = models.DecimalField(
+        decimal_places=2,
+        max_digits=12,
+    )
+
+    taille = models.DecimalField(
+        blank=True,
+        null=True,
+        decimal_places=2,
+        max_digits=12,
+    )
+
+    genre = models.CharField(
+        choices=GENRE,
+        default="F",
+        max_length=10,
+    )
+
+    etat = models.CharField(
+        choices=ETAT,
+        max_length=10,
+        default="N",
+    )
+
     reduction_occasion = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         choices=REDUCTION_OCCASION_CHOICES,
         null=True,
         blank=True,
-        help_text="Réduction appliquée uniquement aux produits d'occasion.",
+        help_text=(
+            "Réduction appliquée uniquement "
+            "aux produits d'occasion."
+        ),
     )
 
-    sku = models.SlugField(unique=True,max_length=120,null=True,blank=True,)
-    slug = models.SlugField(max_length=120,unique=True,null=True,blank=True,)
+    sku = models.SlugField(
+        unique=True,
+        max_length=120,
+        null=True,
+        blank=True,
+    )
+
+    slug = models.SlugField(
+        max_length=120,
+        unique=True,
+        null=True,
+        blank=True,
+    )
 
     date_ajout = models.DateTimeField(auto_now_add=True)
     date_modification = models.DateTimeField(auto_now=True)
@@ -353,139 +1014,297 @@ class Produit(models.Model):
     class Meta:
         ordering = ["-id"]
         verbose_name_plural = "Produits"
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(poids__gt=0),
+                name="ck_produit_poids_gt_0",
+            ),
+            models.CheckConstraint(
+                condition=Q(taille__isnull=True) | Q(taille__gte=0),
+                name="ck_produit_taille_gte_0",
+            ),
+        ]
 
     def __str__(self):
-        return self.sku or self.nom or (self.slug or f"Produit#{self.pk}")
+        return (
+            self.sku
+            or self.nom
+            or self.slug
+            or f"Produit#{self.pk}"
+        )
 
     @property
     def produit_url(self):
-        base_url = getattr(settings, "SITE_URL", "https://www.rio-gold.com")
-        return f"{base_url}/produit/{self.slug}" if self.slug else None
+        if not self.slug:
+            return None
+
+        base_url = getattr(
+            settings,
+            "SITE_URL",
+            "https://www.rio-gold.com",
+        )
+
+        return f"{base_url.rstrip('/')}/produit/{self.slug}"
 
     def clean(self):
         super().clean()
 
+        errors = {}
+
+        # -----------------------------------------------------
+        # POIDS
+        # -----------------------------------------------------
+
         if self.poids is None or self.poids <= 0:
-            raise ValidationError({
-                "poids": "Le poids doit être supérieur à zéro."
-            })
+            errors["poids"] = (
+                "Le poids doit être supérieur à zéro."
+            )
+
+        # -----------------------------------------------------
+        # TAILLE
+        # -----------------------------------------------------
 
         if self.taille is not None and self.taille < 0:
-            raise ValidationError({
-                "taille": "La taille ne peut pas être négative."
-            })
-            
-        if self.etat != "O" and self.reduction_occasion:
-            raise ValidationError({
-                "reduction_occasion": (
-                    "Le pourcentage occasion est réservé aux produits d'occasion."
-                )
-            })
+            errors["taille"] = (
+                "La taille ne peut pas être négative."
+            )
 
-        if self.etat == "O" and not self.reduction_occasion:
-            raise ValidationError({
-                "reduction_occasion": (
-                    "Veuillez choisir une réduction : 5%, 10%, 15% ou 20%."
-                )
-            })
+        # -----------------------------------------------------
+        # COHÉRENCE CATÉGORIE / MODÈLE
+        # -----------------------------------------------------
 
+        if self.modele_id and self.categorie_id:
+            modele_categorie_id = self.modele.categorie_id
+
+            if (
+                modele_categorie_id is not None
+                and modele_categorie_id != self.categorie_id
+            ):
+                errors["modele"] = (
+                    "Le modèle sélectionné n'appartient pas "
+                    "à la catégorie du produit."
+                )
+
+        # -----------------------------------------------------
+        # PRODUIT D'OCCASION
+        # -----------------------------------------------------
+
+        if self.etat != "O" and self.reduction_occasion is not None:
+            errors["reduction_occasion"] = (
+                "Le pourcentage occasion est réservé "
+                "aux produits d'occasion."
+            )
+
+        if self.etat == "O" and self.reduction_occasion is None:
+            errors["reduction_occasion"] = (
+                "Veuillez choisir une réduction : "
+                "5%, 10%, 15% ou 20%."
+            )
+
+        if errors:
+            raise ValidationError(errors)
 
     def skuGet(self):
-        poids_str = f"{self.poids:.2f}".replace(".", "-")
+        """
+        Génère la base du SKU.
 
-        taille = self.taille or Decimal("0.00")
-        taille_str = f"{taille:.2f}".replace(".", "-")
+        Le modèle étant facultatif, MOD est utilisé
+        lorsqu'aucun modèle n'est renseigné.
+        """
 
-        return (
-            f"{self.categorie.nom[:3].upper()}-"
-            f"{self.modele.modele[:3].upper()}-"
-            f"{self.etat}-"
-            f"{self.purete.purete}-"
-            f"{self.marque.marque[:3].upper()}-"
-            f"P{poids_str}-T{taille_str}"
+        if not (
+            self.categorie_id
+            and self.purete_id
+            and self.marque_id
+            and self.poids is not None
+        ):
+            return None
+
+        categorie_code = (
+            (self.categorie.nom or "CAT")[:3].upper()
         )
 
+        if self.modele_id:
+            modele_code = (
+                (self.modele.modele or "MOD")[:3].upper()
+            )
+        else:
+            modele_code = "MOD"
+
+        marque_code = (
+            (self.marque.marque or "MAR")[:3].upper()
+        )
+
+        purete_code = str(
+            self.purete.purete or "PUR"
+        ).upper()
+
+        poids_str = (
+            f"{self.poids:.2f}".replace(".", "-")
+        )
+
+        taille = self.taille or Decimal("0.00")
+
+        taille_str = (
+            f"{taille:.2f}".replace(".", "-")
+        )
+
+        return (
+            f"{categorie_code}-"
+            f"{modele_code}-"
+            f"{self.etat}-"
+            f"{purete_code}-"
+            f"{marque_code}-"
+            f"P{poids_str}-"
+            f"T{taille_str}"
+        )
 
     def _make_unique_sku(self, base_sku: str) -> str:
         if not base_sku:
             return base_sku
 
-        # 🔥 sécurise définitivement (slug valide)
         base_sku = slugify(base_sku).upper()
 
         sku = base_sku
         i = 2
 
-        while Produit.objects.filter(sku=sku).exclude(pk=self.pk).exists():
+        while (
+            Produit.objects
+            .filter(sku=sku)
+            .exclude(pk=self.pk)
+            .exists()
+        ):
             sku = f"{base_sku}-{i}"
             i += 1
 
         return sku
 
+    def _generate_nom(self):
+        """
+        Génère un nom lorsqu'il n'est pas fourni.
+        Fonctionne avec ou sans modèle.
+        """
+
+        parts = []
+
+        if self.categorie_id:
+            parts.append(self.categorie.nom)
+
+        if self.modele_id and self.modele.modele:
+            parts.append(self.modele.modele)
+
+        if self.marque_id:
+            parts.append(self.marque.marque)
+
+        return " ".join(
+            str(part).strip()
+            for part in parts
+            if part
+        )
+
+    def _generate_unique_slug(self):
+        base_slug = slugify(
+            self.nom or "produit"
+        ) or "produit"
+
+        # UUID du produit => suffixe stable et suffisamment unique.
+        suffix = self.uuid.hex[:8]
+
+        return f"{base_slug}-{suffix}"[:120]
+
     def save(self, *args, **kwargs):
-        if not self.nom and self.categorie and self.modele and self.marque:
-            self.nom = (
-                f"{self.categorie.nom} "
-                f"{self.modele.modele} "
-                f"{self.marque.marque}"
-            )
+        if not self.nom:
+            self.nom = self._generate_nom()
 
         if not self.slug:
-            base_slug = slugify(self.nom or "produit")
-            self.slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
+            self.slug = self._generate_unique_slug()
 
         if not self.sku:
-            sku = self.skuGet()
-            if sku:
-                self.sku = self._make_unique_sku(sku)
+            base_sku = self.skuGet()
+
+            if base_sku:
+                self.sku = self._make_unique_sku(
+                    base_sku
+                )
 
         self.full_clean()
-        super().save(*args, **kwargs)
 
-    # # Admin helper
-    # def qr_code_url(self):
-    #     return self.qr_code.url if self.qr_code else "Aucun QR code"
-
-    # qr_code_url.short_description = "QR Code"
+        return super().save(*args, **kwargs)
 
 
 # Model for Produit Gallery
-class Gallery(models.Model):
-    # produit = models.ForeignKey(
-    #     Produit,
-    #     on_delete=models.CASCADE,
-    #     related_name="produit_gallery",
-    # )
+# class Gallery(models.Model):
+#     # produit = models.ForeignKey(
+#     #     Produit,
+#     #     on_delete=models.CASCADE,
+#     #     related_name="produit_gallery",
+#     # )
     
+#     produit = models.ForeignKey(
+#         Produit,
+#         on_delete=models.CASCADE,
+#         related_name="produit_gallery",
+#         null=True,
+#         blank=True,
+#     )
+    
+#     # produit = models.ForeignKey(
+#     #     Produit,
+#     #     on_delete=models.CASCADE,
+#     #     related_name="produit_gallery",
+#     #     null=False,
+#     #     blank=False,
+#     # )
+
+#     image = models.ImageField(upload_to="produit_gallery/")
+#     active = models.BooleanField(default=True,db_index=True,)
+#     date = models.DateTimeField(auto_now_add=True)
+
+#     class Meta:
+#         verbose_name_plural = "Galerie"
+#         ordering = ["-date"]
+
+#     def __str__(self):
+#         return f"Image de {self.produit.nom}"
+
+#     @property
+#     def image_url(self):
+#         if self.image:
+#             return self.image.url
+#         return None
+
+class Gallery(models.Model):
     produit = models.ForeignKey(
         Produit,
         on_delete=models.CASCADE,
         related_name="produit_gallery",
-        null=True,
-        blank=True,
     )
-    
-    # produit = models.ForeignKey(
-    #     Produit,
-    #     on_delete=models.CASCADE,
-    #     related_name="produit_gallery",
-    #     null=False,
-    #     blank=False,
-    # )
 
-    image = models.ImageField(upload_to="produit_gallery/")
-    active = models.BooleanField(default=True,db_index=True,)
-    date = models.DateTimeField(auto_now_add=True)
+    image = models.ImageField(
+        upload_to="produit_gallery/",
+    )
+
+    active = models.BooleanField(
+        default=True,
+        db_index=True,
+    )
+
+    date = models.DateTimeField(
+        auto_now_add=True,
+    )
 
     class Meta:
         verbose_name_plural = "Galerie"
         ordering = ["-date"]
 
     def __str__(self):
-        return f"Image de {self.produit.nom}"
+        return f"Image de {self.produit.nom or self.produit}"
 
     @property
     def image_url(self):
         if self.image:
             return self.image.url
+
         return None
+    
+    

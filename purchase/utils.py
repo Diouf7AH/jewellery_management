@@ -36,6 +36,7 @@ def generate_numero_lot() -> str:
             sequence = int(
                 last_numero.rsplit("-", 1)[1]
             ) + 1
+
         except (IndexError, ValueError):
             sequence = 1
 

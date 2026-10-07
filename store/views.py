@@ -1348,38 +1348,73 @@ class ModeleDeleteAPIView(APIView):
     
     
     
-
-
 class ProduitListAPIView(APIView):
+    """
+    Liste des produits du catalogue.
+
+    Accessible aux utilisateurs autorisés à consulter
+    le catalogue produit.
+    """
+
     renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
-    
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+
     @swagger_auto_schema(
-        operation_description="Liste tous les produits disponibles",
-        responses={200: ProduitSerializer(many=True)},
+        operation_description=(
+            "Liste tous les produits disponibles. "
+            "Possibilité de rechercher par SKU."
+        ),
+        responses={
+            200: ProduitSerializer(many=True),
+            403: "Accès refusé",
+        },
         manual_parameters=[
             openapi.Parameter(
-                'search',
+                "search",
                 openapi.IN_QUERY,
-                description="Filtrer les produits par sku",
-                type=openapi.TYPE_STRING
-            )
-        ]
+                description="Rechercher un produit par SKU",
+                type=openapi.TYPE_STRING,
+                required=False,
+            ),
+        ],
     )
     def get(self, request):
-        user = request.user
-        if not user.user_role or user.user_role.role not in ['admin', 'manager']:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-        
-        search = request.GET.get('search')
-        queryset = Produit.objects.all()
+        search = request.query_params.get(
+            "search",
+            "",
+        ).strip()
+
+        queryset = (
+            Produit.objects
+            .select_related(
+                "categorie",
+                "purete",
+                "marque",
+                "modele",
+            )
+            .all()
+        )
+
         if search:
-            queryset = queryset.filter(sku__icontains=search)
-        serializer = ProduitSerializer(queryset, many=True)
-        return Response(serializer.data)
+            queryset = queryset.filter(
+                sku__icontains=search,
+            )
 
+        serializer = ProduitSerializer(
+            queryset,
+            many=True,
+            context={
+                "request": request,
+            },
+        )
 
-    
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class ProduitCreateAPIView(APIView):

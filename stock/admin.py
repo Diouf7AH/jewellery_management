@@ -10,7 +10,6 @@ class StockAdmin(admin.ModelAdmin):
         "produit_line",
         "produit_affiche",
         "bijouterie",
-        "quantite_totale",
         "en_stock",
         "updated_at",
     )

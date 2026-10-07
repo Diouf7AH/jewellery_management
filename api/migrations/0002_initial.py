@@ -9,14 +9,14 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('purchase', '0001_initial'),
+        ('api', '0001_initial'),
         ('store', '0001_initial'),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='achat',
+            model_name='commercialsettings',
             name='bijouterie',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='achats', related_query_name='achat', to='store.bijouterie'),
+            field=models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='commercial_settings', to='store.bijouterie'),
         ),
     ]

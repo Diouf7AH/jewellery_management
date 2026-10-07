@@ -98,9 +98,142 @@ class Client(models.Model):
 # Vente
 # =========================
 
+# class Vente(models.Model):
+#     # uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
+#     uuid = models.UUIDField(default=uuid.uuid4,editable=False,unique=True,)
+#     SOURCE_MAGASIN = "magasin"
+#     SOURCE_ECOMMERCE = "ecommerce"
+#     SOURCE_WHATSAPP = "whatsapp"
+#     SOURCE_FACEBOOK = "facebook"
+
+#     SOURCE_CHOICES = [
+#         (SOURCE_MAGASIN, "Magasin"),
+#         (SOURCE_ECOMMERCE, "E-commerce"),
+#         (SOURCE_WHATSAPP, "WhatsApp"),
+#         (SOURCE_FACEBOOK, "Facebook"),
+#     ]
+    
+#     source_vente = models.CharField(max_length=20,choices=SOURCE_CHOICES,default=SOURCE_MAGASIN,db_index=True)
+#     numero_vente = models.CharField(max_length=30, unique=True, editable=False, blank=True, null=True)
+#     client = models.ForeignKey("sale.Client", on_delete=models.SET_NULL, null=True, blank=True, related_name="ventes")
+#     created_by = models.ForeignKey(
+#         settings.AUTH_USER_MODEL, null=True, blank=True,
+#         on_delete=models.SET_NULL, related_name="ventes_creees"
+#     )
+
+#     bijouterie = models.ForeignKey(
+#         "store.Bijouterie",
+#         on_delete=models.PROTECT,
+#         related_name="ventes",
+#         db_index=True,
+#     )
+
+#     vendor = models.ForeignKey(
+#         "vendor.Vendor",
+#         on_delete=models.PROTECT,
+#         related_name="ventes",
+#         db_index=True,
+#     )
+
+#     created_at = models.DateTimeField(auto_now_add=True)
+
+#     # total vente avant TVA facture
+#     montant_total = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         default=Decimal("0.00"),
+#         # null=True,
+#     )
+
+#     delivered_at = models.DateTimeField(null=True, blank=True)
+#     delivered_by = models.ForeignKey(
+#         settings.AUTH_USER_MODEL, null=True, blank=True,
+#         on_delete=models.SET_NULL, related_name="ventes_livrees"
+#     )
+
+#     is_cancelled = models.BooleanField(default=False, db_index=True)
+#     cancelled_at = models.DateTimeField(null=True, blank=True)
+#     cancelled_by = models.ForeignKey(
+#         settings.AUTH_USER_MODEL,
+#         null=True, blank=True,
+#         on_delete=models.SET_NULL,
+#         related_name="ventes_annulees",
+#     )
+    
+#     def clean(self):
+#         super().clean()
+
+#         if (
+#             self.vendor_id
+#             and self.bijouterie_id
+#             and self.vendor.bijouterie_id != self.bijouterie_id
+#         ):
+#             raise ValidationError({
+#                 "vendor": (
+#                     "Le vendeur sélectionné n'appartient pas "
+#                     "à la bijouterie de cette vente."
+#                 )
+#             })
+
+#     class Meta:
+#         ordering = ["-created_at"]
+#         indexes = [
+#             models.Index(fields=["created_at"]),
+#             models.Index(fields=["numero_vente"]),
+#             models.Index(fields=["vendor", "created_at"]),
+#         ]
+#         constraints = [
+#             models.CheckConstraint(
+#                 check=Q(montant_total__gte=0),
+#                 name="vente_montant_total_gte_0",
+#             ),
+#         ]
+
+#     def __str__(self):
+#         nom_client = getattr(self.client, "full_name", None) or "Inconnu"
+#         date_txt = self.created_at.strftime("%d/%m/%Y") if self.created_at else ""
+#         return f"Vente #{self.numero_vente or 'N/A'} - Client: {nom_client} - {date_txt}"
+
+#     def generer_numero_vente(self) -> str:
+#         now = timezone.now()
+#         suffixe = "".join(random.choices("0123456789", k=4))
+#         return f"VENTE-{now.strftime('%m%d%Y%H%M%S')}-{suffixe}".upper()
+
+#     def save(self, *args, **kwargs):
+#         if not self.numero_vente:
+#             for _ in range(10):
+#                 self.numero_vente = self.generer_numero_vente()
+#                 try:
+#                     with transaction.atomic():
+#                         super().save(*args, **kwargs)
+#                     break
+#                 except IntegrityError:
+#                     self.numero_vente = None
+#             else:
+#                 raise ValueError("Impossible de générer un numéro de vente unique après 10 tentatives.")
+#             return
+#         return super().save(*args, **kwargs)
+
+#     def marquer_livree(self, by_user):
+#         self.delivered_at = timezone.now()
+#         if by_user and not self.delivered_by_id:
+#             self.delivered_by = by_user
+#         self.save(update_fields=["delivered_at", "delivered_by"])
+
+#     def mettre_a_jour_montant_total(self, commit: bool = True):
+#         total = self.lignes.aggregate(t=Sum("montant_total"))["t"] or Decimal("0.00")
+#         self.montant_total = total
+#         if commit:
+#             self.save(update_fields=["montant_total"])
+#         return total
+
 class Vente(models.Model):
-    # uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False,db_index=True,)
-    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
+    uuid = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+
     SOURCE_MAGASIN = "magasin"
     SOURCE_ECOMMERCE = "ecommerce"
     SOURCE_WHATSAPP = "whatsapp"
@@ -112,63 +245,112 @@ class Vente(models.Model):
         (SOURCE_WHATSAPP, "WhatsApp"),
         (SOURCE_FACEBOOK, "Facebook"),
     ]
-    
-    source_vente = models.CharField(max_length=20,choices=SOURCE_CHOICES,default=SOURCE_MAGASIN,db_index=True)
-    numero_vente = models.CharField(max_length=30, unique=True, editable=False, blank=True, null=True)
-    client = models.ForeignKey("sale.Client", on_delete=models.SET_NULL, null=True, blank=True, related_name="ventes")
+
+    source_vente = models.CharField(
+        max_length=20,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_MAGASIN,
+        db_index=True,
+    )
+
+    numero_vente = models.CharField(
+        max_length=30,
+        unique=True,
+        editable=False,
+        blank=True,
+        null=True,
+    )
+
+    client = models.ForeignKey(
+        "sale.Client",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ventes",
+    )
+
     created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="ventes_creees"
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ventes_creees",
     )
 
     bijouterie = models.ForeignKey(
         "store.Bijouterie",
         on_delete=models.PROTECT,
-        null=True, blank=True,
         related_name="ventes",
+        db_index=True,
     )
-    
+
     vendor = models.ForeignKey(
         "vendor.Vendor",
         on_delete=models.PROTECT,
         related_name="ventes",
         db_index=True,
-        null=True,
-        blank=True,
     )
 
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
 
-    # total vente avant TVA facture
+    # Total de la vente avant TVA facture.
     montant_total = models.DecimalField(
         max_digits=14,
         decimal_places=2,
         default=Decimal("0.00"),
-        # null=True,
     )
 
-    delivered_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
     delivered_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="ventes_livrees"
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ventes_livrees",
     )
 
-    is_cancelled = models.BooleanField(default=False, db_index=True)
-    cancelled_at = models.DateTimeField(null=True, blank=True)
+    is_cancelled = models.BooleanField(
+        default=False,
+        db_index=True,
+    )
+
+    cancelled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
     cancelled_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        null=True, blank=True,
+        null=True,
+        blank=True,
         on_delete=models.SET_NULL,
         related_name="ventes_annulees",
     )
 
     class Meta:
         ordering = ["-created_at"]
+
         indexes = [
-            models.Index(fields=["created_at"]),
-            models.Index(fields=["numero_vente"]),
-            models.Index(fields=["vendor", "created_at"]),
+            models.Index(
+                fields=["created_at"],
+            ),
+            models.Index(
+                fields=["numero_vente"],
+            ),
+            models.Index(
+                fields=["vendor", "created_at"],
+            ),
+            models.Index(
+                fields=["bijouterie", "created_at"],
+            ),
         ]
+
         constraints = [
             models.CheckConstraint(
                 check=Q(montant_total__gte=0),
@@ -177,54 +359,505 @@ class Vente(models.Model):
         ]
 
     def __str__(self):
-        nom_client = getattr(self.client, "full_name", None) or "Inconnu"
-        date_txt = self.created_at.strftime("%d/%m/%Y") if self.created_at else ""
-        return f"Vente #{self.numero_vente or 'N/A'} - Client: {nom_client} - {date_txt}"
+        nom_client = (
+            getattr(self.client, "full_name", None)
+            or "Inconnu"
+        )
+
+        date_txt = (
+            self.created_at.strftime("%d/%m/%Y")
+            if self.created_at
+            else ""
+        )
+
+        return (
+            f"Vente #{self.numero_vente or 'N/A'} "
+            f"- Client: {nom_client} "
+            f"- {date_txt}"
+        )
+
+    def clean(self):
+        super().clean()
+
+        if not self.vendor_id or not self.bijouterie_id:
+            return
+
+        vendor_bijouterie_id = (
+            self.vendor.bijouterie_id
+        )
+
+        if vendor_bijouterie_id != self.bijouterie_id:
+            raise ValidationError({
+                "vendor": (
+                    "Le vendeur sélectionné n'appartient pas "
+                    "à la bijouterie de cette vente."
+                )
+            })
 
     def generer_numero_vente(self) -> str:
         now = timezone.now()
-        suffixe = "".join(random.choices("0123456789", k=4))
-        return f"VENTE-{now.strftime('%m%d%Y%H%M%S')}-{suffixe}".upper()
+
+        suffixe = "".join(
+            random.choices(
+                "0123456789",
+                k=4,
+            )
+        )
+
+        return (
+            f"VENTE-"
+            f"{now.strftime('%m%d%Y%H%M%S')}-"
+            f"{suffixe}"
+        ).upper()
 
     def save(self, *args, **kwargs):
         if not self.numero_vente:
             for _ in range(10):
-                self.numero_vente = self.generer_numero_vente()
+                self.numero_vente = (
+                    self.generer_numero_vente()
+                )
+
                 try:
                     with transaction.atomic():
-                        super().save(*args, **kwargs)
+                        super().save(
+                            *args,
+                            **kwargs,
+                        )
                     break
+
                 except IntegrityError:
                     self.numero_vente = None
+
             else:
-                raise ValueError("Impossible de générer un numéro de vente unique après 10 tentatives.")
+                raise ValueError(
+                    "Impossible de générer un numéro "
+                    "de vente unique après 10 tentatives."
+                )
+
             return
-        return super().save(*args, **kwargs)
+
+        return super().save(
+            *args,
+            **kwargs,
+        )
 
     def marquer_livree(self, by_user):
         self.delivered_at = timezone.now()
+
         if by_user and not self.delivered_by_id:
             self.delivered_by = by_user
-        self.save(update_fields=["delivered_at", "delivered_by"])
 
-    def mettre_a_jour_montant_total(self, commit: bool = True):
-        total = self.lignes.aggregate(t=Sum("montant_total"))["t"] or Decimal("0.00")
+        self.save(
+            update_fields=[
+                "delivered_at",
+                "delivered_by",
+            ]
+        )
+
+    def mettre_a_jour_montant_total(
+        self,
+        commit: bool = True,
+    ):
+        total = (
+            self.lignes
+            .aggregate(
+                t=Sum("montant_total")
+            )["t"]
+            or Decimal("0.00")
+        )
+
         self.montant_total = total
-        if commit:
-            self.save(update_fields=["montant_total"])
-        return total
 
+        if commit:
+            self.save(
+                update_fields=[
+                    "montant_total",
+                ]
+            )
+
+        return total
+    
+
+# class VenteProduit(models.Model):
+#     vente = models.ForeignKey(
+#         "sale.Vente",
+#         on_delete=models.CASCADE,
+#         related_name="lignes",
+#     )
+
+#     produit_line = models.ForeignKey(
+#         "purchase.ProduitLine",
+#         on_delete=models.PROTECT,
+#         related_name="vente_lignes",
+#     )
+    
+#     produit = models.ForeignKey(
+#         "store.Produit",
+#         on_delete=models.PROTECT,
+#     )
+
+#     vendor = models.ForeignKey(
+#         "vendor.Vendor",
+#         on_delete=models.PROTECT,
+#         related_name="vente_produits",
+#         null=True,
+#         blank=True,
+#         db_index=True,
+#     )
+
+#     quantite = models.PositiveIntegerField(default=1)
+
+#     # Prix du gramme figé au moment de la vente
+#     prix_vente_grammes = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         default=ZERO,
+#     )
+
+#     # Montant brut avant réduction/remise
+#     montant_ht = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         default=ZERO,
+#     )
+
+#     # Montant final de la ligne avant TVA facture
+#     montant_total = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         default=ZERO,
+#     )
+
+#     remise = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         default=ZERO,
+#         null=True,
+#         blank=True,
+#     )
+
+#     autres = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         default=ZERO,
+#     )
+
+#     # Snapshot de la réduction occasion
+#     pourcentage_occasion = models.DecimalField(
+#         max_digits=5,
+#         decimal_places=2,
+#         default=ZERO,
+#     )
+
+#     class Meta:
+#         indexes = [
+#             models.Index(fields=["vente"]),
+#             models.Index(fields=["vendor"]),
+#             models.Index(fields=["produit"]),
+#         ]
+#         constraints = [
+#             CheckConstraint(
+#                 check=Q(quantite__gte=1),
+#                 name="ck_venteproduit_qty_gte_1",
+#             ),
+#             CheckConstraint(
+#                 check=Q(prix_vente_grammes__gte=0),
+#                 name="ck_venteproduit_prix_gte_0",
+#             ),
+#             CheckConstraint(
+#                 check=Q(montant_ht__gte=0),
+#                 name="ck_venteproduit_montant_ht_gte_0",
+#             ),
+#             CheckConstraint(
+#                 check=Q(montant_total__gte=0),
+#                 name="ck_venteproduit_montant_total_gte_0",
+#             ),
+#             CheckConstraint(
+#                 check=Q(pourcentage_occasion__gte=0),
+#                 name="ck_venteproduit_occasion_gte_0",
+#             ),
+#         ]
+
+#     def clean(self):
+#         super().clean()
+
+#         # =====================================================
+#         # Quantité
+#         # =====================================================
+
+#         if self.quantite < 1:
+#             raise ValidationError({
+#                 "quantite": "Doit être ≥ 1."
+#             })
+
+#         # =====================================================
+#         # Valeurs non négatives
+#         # =====================================================
+
+#         for field in (
+#             "prix_vente_grammes",
+#             "remise",
+#             "autres",
+#             "pourcentage_occasion",
+#         ):
+#             value = getattr(self, field)
+
+#             if (
+#                 value is not None
+#                 and Decimal(str(value)) < ZERO
+#             ):
+#                 raise ValidationError({
+#                     field: "Ne peut pas être négatif."
+#                 })
+
+#         # =====================================================
+#         # Pourcentage occasion
+#         # =====================================================
+
+#         allowed = {
+#             Decimal("0.00"),
+#             Decimal("5.00"),
+#             Decimal("10.00"),
+#             Decimal("15.00"),
+#             Decimal("20.00"),
+#         }
+
+#         pourcentage = Decimal(
+#             str(self.pourcentage_occasion or ZERO)
+#         )
+
+#         if pourcentage not in allowed:
+#             raise ValidationError({
+#                 "pourcentage_occasion": (
+#                     "Valeur autorisée : "
+#                     "0%, 5%, 10%, 15% ou 20%."
+#                 )
+#             })
+
+#         # =====================================================
+#         # Produit occasion / neuf
+#         # =====================================================
+
+#         if self.produit_id:
+#             etat = getattr(self.produit, "etat", None)
+
+#             if etat == "O":
+#                 if pourcentage == ZERO:
+#                     raise ValidationError({
+#                         "pourcentage_occasion": (
+#                             "Un produit d'occasion doit avoir "
+#                             "une réduction de 5%, 10%, 15% ou 20%."
+#                         )
+#                     })
+
+#             elif pourcentage != ZERO:
+#                 raise ValidationError({
+#                     "pourcentage_occasion": (
+#                         "La réduction occasion est réservée "
+#                         "aux produits d'occasion."
+#                     )
+#                 })
+
+#         # =====================================================
+#         # Cohérence vendeur / vente
+#         # =====================================================
+
+#         if self.vente_id:
+#             if (
+#                 self.vente.vendor_id
+#                 and self.vendor_id
+#                 and self.vendor_id != self.vente.vendor_id
+#             ):
+#                 raise ValidationError({
+#                     "vendor": (
+#                         "Le vendeur doit être identique "
+#                         "à celui de la vente."
+#                     )
+#                 })
+
+#             # Héritage automatique du vendeur de la vente
+#             if self.vente.vendor_id and not self.vendor_id:
+#                 self.vendor = self.vente.vendor
+
+#     def _resolve_unit_price(self) -> Decimal:
+#         """
+#         Le prix/gramme doit déjà être résolu par
+#         create_sale_one_vendor().
+#         """
+
+#         prix = Decimal(
+#             str(self.prix_vente_grammes or ZERO)
+#         )
+
+#         if prix <= ZERO:
+#             raise ValidationError({
+#                 "prix_vente_grammes": (
+#                     "Prix de vente obligatoire."
+#                 )
+#             })
+
+#         return prix
+
+#     def _get_produit_weight(self) -> Decimal:
+#         """
+#         Retourne le poids du produit en grammes.
+#         """
+
+#         if not self.produit_id:
+#             raise ValidationError({
+#                 "produit": "Produit obligatoire."
+#             })
+
+#         produit = self.produit
+
+#         poids = (
+#             getattr(produit, "poids", None)
+#             or getattr(produit, "poids_grammes", None)
+#         )
+
+#         if poids is None:
+#             raise ValidationError({
+#                 "produit": (
+#                     f"Poids manquant pour le produit "
+#                     f"{produit.nom}."
+#                 )
+#             })
+
+#         poids = Decimal(str(poids))
+
+#         if poids <= ZERO:
+#             raise ValidationError({
+#                 "produit": (
+#                     f"Poids invalide pour le produit "
+#                     f"{produit.nom}."
+#                 )
+#             })
+
+#         return poids
+
+#     def save(self, *args, **kwargs):
+#         # =====================================================
+#         # Validation
+#         # =====================================================
+
+#         self.full_clean()
+
+#         # =====================================================
+#         # Données de calcul
+#         # =====================================================
+
+#         unit_price = self._resolve_unit_price()
+#         weight = self._get_produit_weight()
+#         qte = int(self.quantite or 0)
+
+#         # =====================================================
+#         # Montant HT brut
+#         # prix gramme × poids × quantité
+#         # =====================================================
+
+#         base_ht = unit_price * weight * qte
+
+#         self.montant_ht = base_ht.quantize(
+#             TWOPLACES,
+#             rounding=ROUND_HALF_UP,
+#         )
+
+#         # =====================================================
+#         # Valeurs complémentaires
+#         # =====================================================
+
+#         remise_v = Decimal(
+#             str(self.remise or ZERO)
+#         )
+
+#         autres_v = Decimal(
+#             str(self.autres or ZERO)
+#         )
+
+#         pourcentage_occasion_v = Decimal(
+#             str(self.pourcentage_occasion or ZERO)
+#         )
+
+#         # =====================================================
+#         # Réduction occasion
+#         # =====================================================
+
+#         reduction_occasion = ZERO
+
+#         if (
+#             self.produit_id
+#             and getattr(self.produit, "etat", None) == "O"
+#         ):
+#             reduction_occasion = (
+#                 self.montant_ht
+#                 * pourcentage_occasion_v
+#                 / Decimal("100")
+#             ).quantize(
+#                 TWOPLACES,
+#                 rounding=ROUND_HALF_UP,
+#             )
+
+#         # =====================================================
+#         # Montant final ligne
+#         #
+#         # HT
+#         # - réduction occasion
+#         # - remise
+#         # + autres
+#         #
+#         # TVA NON appliquée ici.
+#         # =====================================================
+
+#         total = (
+#             self.montant_ht
+#             - reduction_occasion
+#             - remise_v
+#             + autres_v
+#         )
+
+#         if total < ZERO:
+#             total = ZERO
+
+#         self.montant_total = total.quantize(
+#             TWOPLACES,
+#             rounding=ROUND_HALF_UP,
+#         )
+
+#         # =====================================================
+#         # Sauvegarde
+#         # =====================================================
+
+#         super().save(*args, **kwargs)
+
+#         # =====================================================
+#         # Recalcul total Vente
+#         # =====================================================
+
+#         if (
+#             self.vente_id
+#             and hasattr(
+#                 self.vente,
+#                 "mettre_a_jour_montant_total",
+#             )
+#         ):
+#             self.vente.mettre_a_jour_montant_total()
+            
 
 class VenteProduit(models.Model):
+
     vente = models.ForeignKey(
         "sale.Vente",
         on_delete=models.CASCADE,
         related_name="lignes",
     )
 
-    produit = models.ForeignKey(
-        "store.Produit",
+    # Source de vérité de la ligne vendue.
+    # Le Produit est accessible avec :
+    # self.produit_line.produit
+    produit_line = models.ForeignKey(
+        "purchase.ProduitLine",
         on_delete=models.PROTECT,
+        related_name="vente_lignes",
     )
 
     vendor = models.ForeignKey(
@@ -236,7 +869,9 @@ class VenteProduit(models.Model):
         db_index=True,
     )
 
-    quantite = models.PositiveIntegerField(default=1)
+    quantite = models.PositiveIntegerField(
+        default=1,
+    )
 
     # Prix du gramme figé au moment de la vente
     prix_vente_grammes = models.DecimalField(
@@ -284,8 +919,9 @@ class VenteProduit(models.Model):
         indexes = [
             models.Index(fields=["vente"]),
             models.Index(fields=["vendor"]),
-            models.Index(fields=["produit"]),
+            models.Index(fields=["produit_line"]),
         ]
+
         constraints = [
             CheckConstraint(
                 check=Q(quantite__gte=1),
@@ -309,14 +945,56 @@ class VenteProduit(models.Model):
             ),
         ]
 
+    def __str__(self):
+        produit = (
+            self.produit_line.produit
+            if self.produit_line_id
+            else None
+        )
+
+        nom = (
+            getattr(produit, "nom", None)
+            or f"ProduitLine #{self.produit_line_id}"
+        )
+
+        return (
+            f"{nom} - "
+            f"Qté {self.quantite} - "
+            f"{self.montant_total} FCFA"
+        )
+
+    @property
+    def produit(self):
+        """
+        Compatibilité pratique :
+        permet encore d'utiliser ligne.produit,
+        mais sans stocker une deuxième FK Produit.
+        """
+        if not self.produit_line_id:
+            return None
+
+        return self.produit_line.produit
+
     def clean(self):
         super().clean()
+
+        # =====================================================
+        # ProduitLine obligatoire
+        # =====================================================
+
+        if not self.produit_line_id:
+            raise ValidationError({
+                "produit_line": (
+                    "La ProduitLine est obligatoire "
+                    "pour une ligne de vente."
+                )
+            })
 
         # =====================================================
         # Quantité
         # =====================================================
 
-        if self.quantite < 1:
+        if self.quantite is None or self.quantite < 1:
             raise ValidationError({
                 "quantite": "Doit être ≥ 1."
             })
@@ -366,34 +1044,47 @@ class VenteProduit(models.Model):
             })
 
         # =====================================================
+        # Produit obtenu depuis ProduitLine
+        # =====================================================
+
+        produit = self.produit_line.produit
+
+        etat = getattr(
+            produit,
+            "etat",
+            None,
+        )
+
+        # =====================================================
         # Produit occasion / neuf
         # =====================================================
 
-        if self.produit_id:
-            etat = getattr(self.produit, "etat", None)
+        if etat == "O":
 
-            if etat == "O":
-                if pourcentage == ZERO:
-                    raise ValidationError({
-                        "pourcentage_occasion": (
-                            "Un produit d'occasion doit avoir "
-                            "une réduction de 5%, 10%, 15% ou 20%."
-                        )
-                    })
-
-            elif pourcentage != ZERO:
+            if pourcentage == ZERO:
                 raise ValidationError({
                     "pourcentage_occasion": (
-                        "La réduction occasion est réservée "
-                        "aux produits d'occasion."
+                        "Un produit d'occasion doit avoir "
+                        "une réduction de 5%, 10%, 15% ou 20%."
                     )
                 })
+
+        elif pourcentage != ZERO:
+
+            raise ValidationError({
+                "pourcentage_occasion": (
+                    "La réduction occasion est réservée "
+                    "aux produits d'occasion."
+                )
+            })
 
         # =====================================================
         # Cohérence vendeur / vente
         # =====================================================
 
         if self.vente_id:
+
+            # Le vendeur de la ligne doit être celui de la vente.
             if (
                 self.vente.vendor_id
                 and self.vendor_id
@@ -406,9 +1097,29 @@ class VenteProduit(models.Model):
                     )
                 })
 
-            # Héritage automatique du vendeur de la vente
-            if self.vente.vendor_id and not self.vendor_id:
+            # Héritage automatique du vendeur de la vente.
+            if (
+                self.vente.vendor_id
+                and not self.vendor_id
+            ):
                 self.vendor = self.vente.vendor
+
+            # =================================================
+            # Cohérence bijouterie vendeur / vente
+            # =================================================
+
+            if (
+                self.vendor_id
+                and self.vente.bijouterie_id
+                and self.vendor.bijouterie_id
+                != self.vente.bijouterie_id
+            ):
+                raise ValidationError({
+                    "vendor": (
+                        "Le vendeur n'appartient pas "
+                        "à la bijouterie de cette vente."
+                    )
+                })
 
     def _resolve_unit_price(self) -> Decimal:
         """
@@ -431,15 +1142,18 @@ class VenteProduit(models.Model):
 
     def _get_produit_weight(self) -> Decimal:
         """
-        Retourne le poids du produit en grammes.
+        Retourne le poids du Produit associé
+        à la ProduitLine.
         """
 
-        if not self.produit_id:
+        if not self.produit_line_id:
             raise ValidationError({
-                "produit": "Produit obligatoire."
+                "produit_line": (
+                    "La ProduitLine est obligatoire."
+                )
             })
 
-        produit = self.produit
+        produit = self.produit_line.produit
 
         poids = (
             getattr(produit, "poids", None)
@@ -448,7 +1162,7 @@ class VenteProduit(models.Model):
 
         if poids is None:
             raise ValidationError({
-                "produit": (
+                "produit_line": (
                     f"Poids manquant pour le produit "
                     f"{produit.nom}."
                 )
@@ -458,7 +1172,7 @@ class VenteProduit(models.Model):
 
         if poids <= ZERO:
             raise ValidationError({
-                "produit": (
+                "produit_line": (
                     f"Poids invalide pour le produit "
                     f"{produit.nom}."
                 )
@@ -467,6 +1181,7 @@ class VenteProduit(models.Model):
         return poids
 
     def save(self, *args, **kwargs):
+
         # =====================================================
         # Validation
         # =====================================================
@@ -483,10 +1198,15 @@ class VenteProduit(models.Model):
 
         # =====================================================
         # Montant HT brut
+        #
         # prix gramme × poids × quantité
         # =====================================================
 
-        base_ht = unit_price * weight * qte
+        base_ht = (
+            unit_price
+            * weight
+            * qte
+        )
 
         self.montant_ht = base_ht.quantize(
             TWOPLACES,
@@ -510,15 +1230,18 @@ class VenteProduit(models.Model):
         )
 
         # =====================================================
+        # Produit depuis ProduitLine
+        # =====================================================
+
+        produit = self.produit_line.produit
+
+        # =====================================================
         # Réduction occasion
         # =====================================================
 
         reduction_occasion = ZERO
 
-        if (
-            self.produit_id
-            and getattr(self.produit, "etat", None) == "O"
-        ):
+        if getattr(produit, "etat", None) == "O":
             reduction_occasion = (
                 self.montant_ht
                 * pourcentage_occasion_v
@@ -558,7 +1281,10 @@ class VenteProduit(models.Model):
         # Sauvegarde
         # =====================================================
 
-        super().save(*args, **kwargs)
+        super().save(
+            *args,
+            **kwargs,
+        )
 
         # =====================================================
         # Recalcul total Vente
@@ -574,12 +1300,287 @@ class VenteProduit(models.Model):
             self.vente.mettre_a_jour_montant_total()
             
 
+# class Facture(models.Model):
+#     TYPE_PROFORMA = "proforma"
+#     TYPE_FACTURE = "facture"
+#     TYPE_ACOMPTE = "acompte"
+#     TYPE_FINALE = "finale"
+
+#     STAT_NON_PAYE = "non_paye"
+#     STAT_PARTIEL = "partiel"
+#     STAT_PAYE = "paye"
+
+#     STATUS = (
+#         (STAT_NON_PAYE, "Non payé"),
+#         (STAT_PARTIEL, "Partiellement payé"),
+#         (STAT_PAYE, "Payé"),
+#     )
+
+#     TYPES_FACTURE = (
+#         (TYPE_PROFORMA, "Proforma"),
+#         (TYPE_FACTURE, "Facture"),
+#         (TYPE_ACOMPTE, "Facture d’acompte"),
+#         (TYPE_FINALE, "Facture finale"),
+#     )
+
+#     # uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+#     # uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False,db_index=True,)
+#     uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
+#     numero_facture = models.CharField(max_length=32, editable=False)
+
+#     vente = models.OneToOneField(
+#         "sale.Vente",
+#         on_delete=models.SET_NULL,
+#         null=True,
+#         blank=True,
+#         related_name="facture_vente",
+#     )
+
+#     bijouterie = models.ForeignKey(
+#         "store.Bijouterie",
+#         on_delete=models.PROTECT,
+#         related_name="factures",
+#     )
+
+#     date_creation = models.DateTimeField(auto_now_add=True)
+
+#     # Base HT figée venant de la vente
+#     montant_ht = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         default=ZERO,
+#     )
+
+#     # Configuration TVA figée au moment d'émission
+#     appliquer_tva = models.BooleanField(default=False)
+
+#     taux_tva = models.DecimalField(
+#         max_digits=5,
+#         decimal_places=2,
+#         null=True,
+#         blank=True,
+#         default=None
+#     )
+
+#     # Montants calculés
+#     # montant_tva = models.DecimalField(
+#     #     max_digits=12,
+#     #     decimal_places=2,
+#     #     null=True,
+#     #     blank=True,
+#     #     default=None
+#     # )
+    
+#     montant_tva = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         null=True,
+#         blank=True,
+#         default=None,
+#     )
+        
+#     frais_transaction = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         default=Decimal("0.00"),
+#     )
+
+#     montant_total = models.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         default=ZERO,
+#     )
+
+#     status = models.CharField(
+#         max_length=20,
+#         choices=STATUS,
+#         default=STAT_NON_PAYE,
+#     )
+
+#     facture_pdf = models.FileField(
+#         upload_to="factures/",
+#         null=True,
+#         blank=True,
+#     )
+
+#     type_facture = models.CharField(
+#         max_length=20,
+#         choices=TYPES_FACTURE,
+#         default=TYPE_PROFORMA,
+#     )
+
+#     integrity_hash = models.CharField(
+#         max_length=128,
+#         null=True,
+#         blank=True,
+#         db_index=True,
+#     )
+
+#     qr_code_image = models.ImageField(
+#         upload_to="factures/qr/",
+#         null=True,
+#         blank=True,
+#     )
+
+#     signed_at = models.DateTimeField(null=True, blank=True)
+
+#     is_locked = models.BooleanField(default=False)
+#     locked_at = models.DateTimeField(null=True, blank=True)
+
+#     commande_client = models.ForeignKey(
+#         "order.CommandeClient",
+#         on_delete=models.SET_NULL,
+#         null=True,
+#         blank=True,
+#         related_name="factures",
+#     )
+
+#     stock_consumed = models.BooleanField(default=False, db_index=True)
+
+#     class Meta:
+#         ordering = ["-id"]
+#         indexes = [
+#             models.Index(fields=["numero_facture"]),
+#             models.Index(fields=["date_creation"]),
+#             models.Index(fields=["status"]),
+#             models.Index(fields=["type_facture"]),
+#             models.Index(fields=["bijouterie", "date_creation"]),
+#             models.Index(fields=["commande_client"]),
+#         ]
+#         constraints = [
+#             CheckConstraint(check=Q(montant_ht__gte=0), name="facture_montant_ht_gte_0"),
+#             CheckConstraint(check=Q(taux_tva__isnull=True) | Q(taux_tva__lte=100),name="facture_taux_tva_lte_100",),
+#             CheckConstraint(check=Q(montant_tva__isnull=True) | Q(montant_tva__gte=0),name="facture_montant_tva_gte_0",),
+#             CheckConstraint(check=Q(montant_total__gte=0), name="facture_montant_total_gte_0"),
+#             models.UniqueConstraint(
+#                 fields=["bijouterie", "numero_facture"],
+#                 name="uniq_invoice_per_shop",
+#             ),
+#         ]
+
+#     def __str__(self):
+#         return self.numero_facture
+
+#     @staticmethod
+#     def generer_numero_unique(bijouterie) -> str:
+#         seq = InvoiceCounter.next_for_today(bijouterie)
+#         day = timezone.localdate().strftime("%Y%m%d")
+#         return f"FAC-{day}-{seq:04d}"
+
+#     def recalculer_totaux(self):
+#         ht = Decimal(str(self.montant_ht or ZERO))
+#         frais = Decimal(str(self.frais_transaction or ZERO))
+
+#         if not self.appliquer_tva:
+#             self.taux_tva = None
+#             self.montant_tva = None
+
+#             self.montant_total = (
+#                 ht + frais
+#             ).quantize(
+#                 TWOPLACES,
+#                 rounding=ROUND_HALF_UP,
+#             )
+#             return
+
+#         taux = Decimal(str(self.taux_tva or ZERO))
+
+#         self.taux_tva = taux.quantize(
+#             TWOPLACES,
+#             rounding=ROUND_HALF_UP,
+#         )
+
+#         self.montant_tva = (
+#             ht * self.taux_tva / Decimal("100")
+#         ).quantize(
+#             TWOPLACES,
+#             rounding=ROUND_HALF_UP,
+#         )
+
+#         self.montant_total = (
+#             ht
+#             + self.montant_tva
+#             + frais
+#         ).quantize(
+#             TWOPLACES,
+#             rounding=ROUND_HALF_UP,
+#         )
+
+#     @staticmethod
+#     def recompute_facture_status(facture):
+
+#         total_paye = Decimal(str(facture.total_paye or ZERO))
+#         reste = Decimal(str(facture.reste_a_payer or ZERO))
+
+#         # ✅ Facture totalement payée
+#         if reste <= ZERO:
+#             new_status = facture.__class__.STAT_PAYE
+
+#         # ✅ Aucun paiement
+#         elif total_paye <= ZERO:
+#             new_status = facture.__class__.STAT_NON_PAYE
+
+#         # ✅ Paiement partiel
+#         else:
+#             new_status = facture.__class__.STAT_PARTIEL
+
+#         if facture.status != new_status:
+#             facture.status = new_status
+#             facture.save(update_fields=["status"])
+
+#     def save(self, *args, **kwargs):
+#         if self.pk:
+#             old = Facture.objects.filter(pk=self.pk).only("is_locked").first()
+#             if old and old.is_locked:
+#                 raise ValidationError("Facture verrouillée")
+
+#         if not self.numero_facture:
+#             if not self.bijouterie_id:
+#                 raise ValueError("La bijouterie est obligatoire pour numéroter la facture.")
+
+#             self.numero_facture = self.generer_numero_unique(self.bijouterie)
+
+#         self.recalculer_totaux()
+#         super().save(*args, **kwargs)
+
+#     @property
+#     def total_paye(self) -> Decimal:
+#         PaiementLigne = apps.get_model("sale", "PaiementLigne")
+#         total = PaiementLigne.objects.filter(
+#             paiement__facture=self
+#         ).aggregate(total=Sum("montant_paye"))["total"]
+#         return total or ZERO
+
+#     @property
+#     def reste_a_payer(self) -> Decimal:
+#         return max((self.montant_total or ZERO) - self.total_paye, ZERO)
+
+#     def est_reglee(self) -> bool:
+#         return self.status == self.STAT_PAYE
+
+
 
 class Facture(models.Model):
+
+    # =========================================================
+    # TYPES
+    # =========================================================
+
     TYPE_PROFORMA = "proforma"
     TYPE_FACTURE = "facture"
     TYPE_ACOMPTE = "acompte"
     TYPE_FINALE = "finale"
+
+    TYPES_FACTURE = (
+        (TYPE_PROFORMA, "Proforma"),
+        (TYPE_FACTURE, "Facture"),
+        (TYPE_ACOMPTE, "Facture d’acompte"),
+        (TYPE_FINALE, "Facture finale"),
+    )
+
+    # =========================================================
+    # STATUTS
+    # =========================================================
 
     STAT_NON_PAYE = "non_paye"
     STAT_PARTIEL = "partiel"
@@ -591,17 +1592,25 @@ class Facture(models.Model):
         (STAT_PAYE, "Payé"),
     )
 
-    TYPES_FACTURE = (
-        (TYPE_PROFORMA, "Proforma"),
-        (TYPE_FACTURE, "Facture"),
-        (TYPE_ACOMPTE, "Facture d’acompte"),
-        (TYPE_FINALE, "Facture finale"),
+    # =========================================================
+    # IDENTIFICATION
+    # =========================================================
+
+    uuid = models.UUIDField(
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
     )
 
-    # uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    # uuid = models.UUIDField(default=uuid.uuid4,unique=True,editable=False,db_index=True,)
-    uuid = models.UUIDField(default=uuid.uuid4,editable=False,null=True,blank=True,)
-    numero_facture = models.CharField(max_length=32, editable=False)
+    numero_facture = models.CharField(
+        max_length=32,
+        editable=False,
+        blank=True,
+    )
+
+    # =========================================================
+    # VENTE
+    # =========================================================
 
     vente = models.OneToOneField(
         "sale.Vente",
@@ -617,35 +1626,34 @@ class Facture(models.Model):
         related_name="factures",
     )
 
-    date_creation = models.DateTimeField(auto_now_add=True)
+    date_creation = models.DateTimeField(
+        auto_now_add=True,
+    )
 
-    # Base HT figée venant de la vente
+    # =========================================================
+    # MONTANTS
+    # =========================================================
+
+    # Base HT figée venant de la vente.
     montant_ht = models.DecimalField(
         max_digits=14,
         decimal_places=2,
         default=ZERO,
     )
 
-    # Configuration TVA figée au moment d'émission
-    appliquer_tva = models.BooleanField(default=False)
+    # Configuration TVA figée au moment d'émission.
+    appliquer_tva = models.BooleanField(
+        default=False,
+    )
 
     taux_tva = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         null=True,
         blank=True,
-        default=None
+        default=None,
     )
 
-    # Montants calculés
-    # montant_tva = models.DecimalField(
-    #     max_digits=12,
-    #     decimal_places=2,
-    #     null=True,
-    #     blank=True,
-    #     default=None
-    # )
-    
     montant_tva = models.DecimalField(
         max_digits=14,
         decimal_places=2,
@@ -653,11 +1661,11 @@ class Facture(models.Model):
         blank=True,
         default=None,
     )
-        
+
     frais_transaction = models.DecimalField(
         max_digits=14,
         decimal_places=2,
-        default=Decimal("0.00"),
+        default=ZERO,
     )
 
     montant_total = models.DecimalField(
@@ -666,22 +1674,32 @@ class Facture(models.Model):
         default=ZERO,
     )
 
+    # =========================================================
+    # STATUT / TYPE
+    # =========================================================
+
     status = models.CharField(
         max_length=20,
         choices=STATUS,
         default=STAT_NON_PAYE,
-    )
-
-    facture_pdf = models.FileField(
-        upload_to="factures/",
-        null=True,
-        blank=True,
+        db_index=True,
     )
 
     type_facture = models.CharField(
         max_length=20,
         choices=TYPES_FACTURE,
         default=TYPE_PROFORMA,
+        db_index=True,
+    )
+
+    # =========================================================
+    # PDF / INTÉGRITÉ / QR
+    # =========================================================
+
+    facture_pdf = models.FileField(
+        upload_to="factures/",
+        null=True,
+        blank=True,
     )
 
     integrity_hash = models.CharField(
@@ -697,10 +1715,28 @@ class Facture(models.Model):
         blank=True,
     )
 
-    signed_at = models.DateTimeField(null=True, blank=True)
+    signed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
 
-    is_locked = models.BooleanField(default=False)
-    locked_at = models.DateTimeField(null=True, blank=True)
+    # =========================================================
+    # VERROUILLAGE
+    # =========================================================
+
+    is_locked = models.BooleanField(
+        default=False,
+        db_index=True,
+    )
+
+    locked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
+    # =========================================================
+    # COMMANDE CLIENT
+    # =========================================================
 
     commande_client = models.ForeignKey(
         "order.CommandeClient",
@@ -710,41 +1746,192 @@ class Facture(models.Model):
         related_name="factures",
     )
 
-    stock_consumed = models.BooleanField(default=False, db_index=True)
+    # =========================================================
+    # CONSOMMATION STOCK
+    # =========================================================
+
+    # True lorsque les SALE_OUT correspondant à cette facture
+    # ont déjà été appliqués au stock vendeur.
+    #
+    # Ce champ protège contre une double consommation du stock.
+    stock_consumed = models.BooleanField(
+        default=False,
+        db_index=True,
+    )
+
+    # =========================================================
+    # META
+    # =========================================================
 
     class Meta:
         ordering = ["-id"]
+
         indexes = [
-            models.Index(fields=["numero_facture"]),
-            models.Index(fields=["date_creation"]),
-            models.Index(fields=["status"]),
-            models.Index(fields=["type_facture"]),
-            models.Index(fields=["bijouterie", "date_creation"]),
-            models.Index(fields=["commande_client"]),
+            models.Index(
+                fields=["numero_facture"],
+            ),
+            models.Index(
+                fields=["date_creation"],
+            ),
+            models.Index(
+                fields=["status"],
+            ),
+            models.Index(
+                fields=["type_facture"],
+            ),
+            models.Index(
+                fields=["bijouterie", "date_creation"],
+            ),
+            models.Index(
+                fields=["commande_client"],
+            ),
         ]
+
         constraints = [
-            CheckConstraint(check=Q(montant_ht__gte=0), name="facture_montant_ht_gte_0"),
-            CheckConstraint(check=Q(taux_tva__isnull=True) | Q(taux_tva__lte=100),name="facture_taux_tva_lte_100",),
-            CheckConstraint(check=Q(montant_tva__isnull=True) | Q(montant_tva__gte=0),name="facture_montant_tva_gte_0",),
-            CheckConstraint(check=Q(montant_total__gte=0), name="facture_montant_total_gte_0"),
+            CheckConstraint(
+                check=Q(montant_ht__gte=0),
+                name="facture_montant_ht_gte_0",
+            ),
+
+            CheckConstraint(
+                check=Q(frais_transaction__gte=0),
+                name="facture_frais_transaction_gte_0",
+            ),
+
+            CheckConstraint(
+                check=(
+                    Q(taux_tva__isnull=True)
+                    | (
+                        Q(taux_tva__gte=0)
+                        & Q(taux_tva__lte=100)
+                    )
+                ),
+                name="facture_taux_tva_range",
+            ),
+
+            CheckConstraint(
+                check=(
+                    Q(montant_tva__isnull=True)
+                    | Q(montant_tva__gte=0)
+                ),
+                name="facture_montant_tva_gte_0",
+            ),
+
+            CheckConstraint(
+                check=Q(montant_total__gte=0),
+                name="facture_montant_total_gte_0",
+            ),
+
             models.UniqueConstraint(
-                fields=["bijouterie", "numero_facture"],
+                fields=[
+                    "bijouterie",
+                    "numero_facture",
+                ],
                 name="uniq_invoice_per_shop",
             ),
         ]
 
+    # =========================================================
+    # STRING
+    # =========================================================
+
     def __str__(self):
-        return self.numero_facture
+        return (
+            self.numero_facture
+            or f"Facture #{self.pk or 'N/A'}"
+        )
+
+    # =========================================================
+    # VALIDATION
+    # =========================================================
+
+    def clean(self):
+        super().clean()
+
+        # -----------------------------------------------------
+        # Cohérence vente / bijouterie
+        # -----------------------------------------------------
+
+        if (
+            self.vente_id
+            and self.bijouterie_id
+            and self.vente.bijouterie_id
+            != self.bijouterie_id
+        ):
+            raise ValidationError({
+                "bijouterie": (
+                    "La bijouterie de la facture doit être "
+                    "identique à celle de la vente."
+                )
+            })
+
+        # -----------------------------------------------------
+        # TVA
+        # -----------------------------------------------------
+
+        if self.appliquer_tva:
+            taux = Decimal(
+                str(
+                    self.taux_tva
+                    if self.taux_tva is not None
+                    else ZERO
+                )
+            )
+
+            if taux < ZERO or taux > Decimal("100"):
+                raise ValidationError({
+                    "taux_tva": (
+                        "Le taux de TVA doit être compris "
+                        "entre 0 et 100."
+                    )
+                })
+
+    # =========================================================
+    # NUMÉROTATION
+    # =========================================================
 
     @staticmethod
     def generer_numero_unique(bijouterie) -> str:
-        seq = InvoiceCounter.next_for_today(bijouterie)
-        day = timezone.localdate().strftime("%Y%m%d")
-        return f"FAC-{day}-{seq:04d}"
+        if not bijouterie:
+            raise ValueError(
+                "La bijouterie est obligatoire "
+                "pour générer le numéro de facture."
+            )
+
+        seq = InvoiceCounter.next_for_today(
+            bijouterie
+        )
+
+        day = timezone.localdate().strftime(
+            "%Y%m%d"
+        )
+
+        return (
+            f"FAC-{day}-{seq:04d}"
+        )
+
+    # =========================================================
+    # CALCUL DES TOTAUX
+    # =========================================================
 
     def recalculer_totaux(self):
-        ht = Decimal(str(self.montant_ht or ZERO))
-        frais = Decimal(str(self.frais_transaction or ZERO))
+        ht = Decimal(
+            str(
+                self.montant_ht
+                or ZERO
+            )
+        )
+
+        frais = Decimal(
+            str(
+                self.frais_transaction
+                or ZERO
+            )
+        )
+
+        # -----------------------------------------------------
+        # Sans TVA
+        # -----------------------------------------------------
 
         if not self.appliquer_tva:
             self.taux_tva = None
@@ -756,17 +1943,31 @@ class Facture(models.Model):
                 TWOPLACES,
                 rounding=ROUND_HALF_UP,
             )
+
             return
 
-        taux = Decimal(str(self.taux_tva or ZERO))
+        # -----------------------------------------------------
+        # Avec TVA
+        # -----------------------------------------------------
 
-        self.taux_tva = taux.quantize(
-            TWOPLACES,
-            rounding=ROUND_HALF_UP,
+        taux = Decimal(
+            str(
+                self.taux_tva
+                or ZERO
+            )
+        )
+
+        self.taux_tva = (
+            taux.quantize(
+                TWOPLACES,
+                rounding=ROUND_HALF_UP,
+            )
         )
 
         self.montant_tva = (
-            ht * self.taux_tva / Decimal("100")
+            ht
+            * self.taux_tva
+            / Decimal("100")
         ).quantize(
             TWOPLACES,
             rounding=ROUND_HALF_UP,
@@ -781,75 +1982,247 @@ class Facture(models.Model):
             rounding=ROUND_HALF_UP,
         )
 
+    # =========================================================
+    # STATUT PAIEMENT
+    # =========================================================
+
     @staticmethod
     def recompute_facture_status(facture):
 
-        total_paye = Decimal(str(facture.total_paye or ZERO))
-        reste = Decimal(str(facture.reste_a_payer or ZERO))
+        total_paye = Decimal(
+            str(
+                facture.total_paye
+                or ZERO
+            )
+        )
 
-        # ✅ Facture totalement payée
+        reste = Decimal(
+            str(
+                facture.reste_a_payer
+                or ZERO
+            )
+        )
+
         if reste <= ZERO:
-            new_status = facture.__class__.STAT_PAYE
+            new_status = (
+                facture.__class__.STAT_PAYE
+            )
 
-        # ✅ Aucun paiement
         elif total_paye <= ZERO:
-            new_status = facture.__class__.STAT_NON_PAYE
+            new_status = (
+                facture.__class__.STAT_NON_PAYE
+            )
 
-        # ✅ Paiement partiel
         else:
-            new_status = facture.__class__.STAT_PARTIEL
+            new_status = (
+                facture.__class__.STAT_PARTIEL
+            )
 
         if facture.status != new_status:
             facture.status = new_status
-            facture.save(update_fields=["status"])
+
+            facture.save(
+                update_fields=[
+                    "status",
+                ]
+            )
+
+    # =========================================================
+    # SAVE
+    # =========================================================
 
     def save(self, *args, **kwargs):
+
+        # -----------------------------------------------------
+        # Protection facture verrouillée
+        # -----------------------------------------------------
+
         if self.pk:
-            old = Facture.objects.filter(pk=self.pk).only("is_locked").first()
+            old = (
+                Facture.objects
+                .filter(pk=self.pk)
+                .only("is_locked")
+                .first()
+            )
+
             if old and old.is_locked:
-                raise ValidationError("Facture verrouillée")
+                raise ValidationError(
+                    "Facture verrouillée."
+                )
+
+        # -----------------------------------------------------
+        # Numéro facture
+        # -----------------------------------------------------
 
         if not self.numero_facture:
-            if not self.bijouterie_id:
-                raise ValueError("La bijouterie est obligatoire pour numéroter la facture.")
 
-            self.numero_facture = self.generer_numero_unique(self.bijouterie)
+            if not self.bijouterie_id:
+                raise ValueError(
+                    "La bijouterie est obligatoire "
+                    "pour numéroter la facture."
+                )
+
+            self.numero_facture = (
+                self.generer_numero_unique(
+                    self.bijouterie
+                )
+            )
+
+        # -----------------------------------------------------
+        # Validation
+        # -----------------------------------------------------
+
+        self.full_clean()
+
+        # -----------------------------------------------------
+        # Calcul montants
+        # -----------------------------------------------------
 
         self.recalculer_totaux()
-        super().save(*args, **kwargs)
+
+        # -----------------------------------------------------
+        # Sauvegarde
+        # -----------------------------------------------------
+
+        super().save(
+            *args,
+            **kwargs,
+        )
+
+    # =========================================================
+    # TOTAL PAYÉ
+    # =========================================================
 
     @property
     def total_paye(self) -> Decimal:
-        PaiementLigne = apps.get_model("sale", "PaiementLigne")
-        total = PaiementLigne.objects.filter(
-            paiement__facture=self
-        ).aggregate(total=Sum("montant_paye"))["total"]
+
+        PaiementLigne = apps.get_model(
+            "sale",
+            "PaiementLigne",
+        )
+
+        total = (
+            PaiementLigne.objects
+            .filter(
+                paiement__facture=self
+            )
+            .aggregate(
+                total=Sum("montant_paye")
+            )["total"]
+        )
+
         return total or ZERO
+
+    # =========================================================
+    # RESTE À PAYER
+    # =========================================================
 
     @property
     def reste_a_payer(self) -> Decimal:
-        return max((self.montant_total or ZERO) - self.total_paye, ZERO)
+
+        montant_total = Decimal(
+            str(
+                self.montant_total
+                or ZERO
+            )
+        )
+
+        total_paye = Decimal(
+            str(
+                self.total_paye
+                or ZERO
+            )
+        )
+
+        return max(
+            montant_total - total_paye,
+            ZERO,
+        )
+
+    # =========================================================
+    # FACTURE RÉGLÉE
+    # =========================================================
 
     def est_reglee(self) -> bool:
-        return self.status == self.STAT_PAYE
+        return (
+            self.status
+            == self.STAT_PAYE
+        )
+        
 
+# class Paiement(models.Model):
+#     facture = models.ForeignKey(
+#         "sale.Facture",
+#         on_delete=models.CASCADE,
+#         related_name="paiements"
+#     )
+
+#     date_paiement = models.DateTimeField(auto_now_add=True)
+
+#     cashier = models.ForeignKey(
+#         "staff.Cashier",
+#         null=True,
+#         blank=True,
+#         on_delete=models.SET_NULL,
+#         related_name="paiements"
+#     )
+
+#     created_by = models.ForeignKey(
+#         settings.AUTH_USER_MODEL,
+#         null=True,
+#         blank=True,
+#         on_delete=models.SET_NULL,
+#         related_name="paiements_validation"
+#     )
+
+
+#     class Meta:
+#         ordering = ["-date_paiement"]
+
+#     def __str__(self):
+#         num = getattr(self.facture, "numero_facture", None) or "Aucune facture"
+#         return f"Paiement - {num}"
+
+#     @property
+#     def montant_total_paye(self):
+#         """
+#         Total payé pour cette opération de paiement
+#         (somme des lignes de paiement).
+#         """
+#         return self.lignes.aggregate(
+#             total=Sum("montant_paye")
+#         )["total"] or Decimal("0.00")
+
+#     def save(self, *args, **kwargs):
+#         """
+#         Si cashier non fourni, on le déduit de l'utilisateur connecté.
+#         """
+#         if not self.cashier_id and self.created_by_id:
+#             Cashier = apps.get_model("staff", "Cashier")
+#             self.cashier = Cashier.objects.filter(user_id=self.created_by_id).first()
+
+#         super().save(*args, **kwargs)
+        
 
 
 class Paiement(models.Model):
+
     facture = models.ForeignKey(
         "sale.Facture",
         on_delete=models.CASCADE,
-        related_name="paiements"
+        related_name="paiements",
     )
 
-    date_paiement = models.DateTimeField(auto_now_add=True)
+    date_paiement = models.DateTimeField(
+        auto_now_add=True,
+    )
 
     cashier = models.ForeignKey(
         "staff.Cashier",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="paiements"
+        related_name="paiements",
     )
 
     created_by = models.ForeignKey(
@@ -857,40 +2230,229 @@ class Paiement(models.Model):
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="paiements_validation"
+        related_name="paiements_validation",
     )
 
-
     class Meta:
-        ordering = ["-date_paiement"]
+        ordering = [
+            "-date_paiement",
+        ]
+
+        indexes = [
+            models.Index(
+                fields=["facture", "date_paiement"],
+            ),
+            models.Index(
+                fields=["cashier", "date_paiement"],
+            ),
+        ]
 
     def __str__(self):
-        num = getattr(self.facture, "numero_facture", None) or "Aucune facture"
+        num = (
+            getattr(
+                self.facture,
+                "numero_facture",
+                None,
+            )
+            or "Aucune facture"
+        )
+
         return f"Paiement - {num}"
 
+    # =========================================================
+    # VALIDATION
+    # =========================================================
+
+    def clean(self):
+        super().clean()
+
+        # -----------------------------------------------------
+        # Cohérence cashier / created_by
+        # -----------------------------------------------------
+
+        if (
+            self.cashier_id
+            and self.created_by_id
+            and self.cashier.user_id != self.created_by_id
+        ):
+            raise ValidationError({
+                "cashier": (
+                    "Le caissier doit correspondre "
+                    "à l'utilisateur qui valide le paiement."
+                )
+            })
+
+        # -----------------------------------------------------
+        # Caissier actif
+        # -----------------------------------------------------
+
+        if self.cashier_id:
+            if not self.cashier.is_active_staff:
+                raise ValidationError({
+                    "cashier": (
+                        "Ce caissier est désactivé "
+                        "et ne peut pas valider de paiement."
+                    )
+                })
+
+        # -----------------------------------------------------
+        # Cohérence bijouterie
+        # -----------------------------------------------------
+
+        if (
+            self.cashier_id
+            and self.facture_id
+        ):
+            facture_bijouterie_id = (
+                self.facture.bijouterie_id
+            )
+
+            cashier_bijouterie_id = (
+                self.cashier.bijouterie_id
+            )
+
+            if not cashier_bijouterie_id:
+                raise ValidationError({
+                    "cashier": (
+                        "Le caissier n'est rattaché "
+                        "à aucune bijouterie."
+                    )
+                })
+
+            if (
+                cashier_bijouterie_id
+                != facture_bijouterie_id
+            ):
+                raise ValidationError({
+                    "cashier": (
+                        "Le caissier n'appartient pas "
+                        "à la bijouterie de cette facture."
+                    )
+                })
+
+    # =========================================================
+    # TOTAL DE CETTE OPÉRATION DE PAIEMENT
+    # =========================================================
+
     @property
-    def montant_total_paye(self):
+    def montant_total_paye(self) -> Decimal:
         """
-        Total payé pour cette opération de paiement
-        (somme des lignes de paiement).
+        Total payé pour cette opération de paiement.
+
+        Il s'agit de la somme des PaiementLigne
+        appartenant à ce Paiement.
         """
-        return self.lignes.aggregate(
-            total=Sum("montant_paye")
-        )["total"] or Decimal("0.00")
+
+        total = (
+            self.lignes
+            .aggregate(
+                total=Sum("montant_paye")
+            )["total"]
+        )
+
+        return total or ZERO
+
+    # =========================================================
+    # SAVE
+    # =========================================================
 
     def save(self, *args, **kwargs):
         """
-        Si cashier non fourni, on le déduit de l'utilisateur connecté.
-        """
-        if not self.cashier_id and self.created_by_id:
-            Cashier = apps.get_model("staff", "Cashier")
-            self.cashier = Cashier.objects.filter(user_id=self.created_by_id).first()
+        Si le caissier n'est pas fourni explicitement,
+        il est déduit de created_by lorsqu'un profil
+        Cashier existe pour cet utilisateur.
 
-        super().save(*args, **kwargs)
+        Important :
+        aucune consommation de stock n'est effectuée ici.
+        """
+
+        # -----------------------------------------------------
+        # Résolution automatique du caissier
+        # -----------------------------------------------------
+
+        if (
+            not self.cashier_id
+            and self.created_by_id
+        ):
+            Cashier = apps.get_model(
+                "staff",
+                "Cashier",
+            )
+
+            self.cashier = (
+                Cashier.objects
+                .filter(
+                    user_id=self.created_by_id
+                )
+                .first()
+            )
+
+        # -----------------------------------------------------
+        # Validation
+        # -----------------------------------------------------
+
+        self.full_clean()
+
+        # -----------------------------------------------------
+        # Sauvegarde
+        # -----------------------------------------------------
+
+        super().save(
+            *args,
+            **kwargs,
+        )
         
 
+# def get_default_mode_paiement():
+#     return ModePaiement.objects.get_or_create(
+#         code="cash",
+#         defaults={
+#             "nom": "Cash",
+#             "active": True,
+#             "ordre_affichage": 1,
+#             "necessite_reference": False,
+#             "est_mode_depot": False,
+#         }
+#     )[0].id
+
+
+# class ModePaiement(models.Model):
+#     nom = models.CharField(max_length=100, unique=True)
+#     code = models.SlugField(max_length=50, unique=True, db_index=True)
+#     active = models.BooleanField(default=True)
+
+#     est_mode_depot = models.BooleanField(default=False)
+#     necessite_reference = models.BooleanField(default=False)
+
+#     ordre_affichage = models.PositiveIntegerField(default=0)
+#     description = models.TextField(blank=True, null=True)
+
+#     class Meta:
+#         ordering = ["ordre_affichage", "nom"]
+
+#     def __str__(self):
+#         return f"{self.nom} ({self.code})"
+
+#     def clean(self):
+#         super().clean()
+
+#         if self.code:
+#             self.code = slugify(self.code).replace("-", "_")
+
+#         if self.est_mode_depot and self.code != "depot":
+#             raise ValidationError({
+#                 "code": "Un mode de dépôt doit avoir le code 'depot'."
+#             })
+
+
 def get_default_mode_paiement():
-    return ModePaiement.objects.get_or_create(
+    """
+    Retourne l'ID du mode de paiement Cash.
+
+    Utilisable comme callable default dans une ForeignKey.
+    """
+
+    mode, _ = ModePaiement.objects.get_or_create(
         code="cash",
         defaults={
             "nom": "Cash",
@@ -898,23 +2460,61 @@ def get_default_mode_paiement():
             "ordre_affichage": 1,
             "necessite_reference": False,
             "est_mode_depot": False,
-        }
-    )[0].id
+        },
+    )
+
+    return mode.id
 
 
 class ModePaiement(models.Model):
-    nom = models.CharField(max_length=100, unique=True)
-    code = models.SlugField(max_length=50, unique=True, db_index=True)
-    active = models.BooleanField(default=True)
 
-    est_mode_depot = models.BooleanField(default=False)
-    necessite_reference = models.BooleanField(default=False)
+    nom = models.CharField(
+        max_length=100,
+        unique=True,
+    )
 
-    ordre_affichage = models.PositiveIntegerField(default=0)
-    description = models.TextField(blank=True, null=True)
+    code = models.SlugField(
+        max_length=50,
+        unique=True,
+        db_index=True,
+    )
+
+    active = models.BooleanField(
+        default=True,
+        db_index=True,
+    )
+
+    # Indique que ce mode utilise le compte dépôt client.
+    est_mode_depot = models.BooleanField(
+        default=False,
+    )
+
+    # Ex. Wave, Orange Money, TPE :
+    # une référence de transaction peut être obligatoire.
+    necessite_reference = models.BooleanField(
+        default=False,
+    )
+
+    ordre_affichage = models.PositiveIntegerField(
+        default=0,
+    )
+
+    description = models.TextField(
+        blank=True,
+        null=True,
+    )
 
     class Meta:
-        ordering = ["ordre_affichage", "nom"]
+        ordering = [
+            "ordre_affichage",
+            "nom",
+        ]
+
+        indexes = [
+            models.Index(
+                fields=["active", "ordre_affichage"],
+            ),
+        ]
 
     def __str__(self):
         return f"{self.nom} ({self.code})"
@@ -922,47 +2522,250 @@ class ModePaiement(models.Model):
     def clean(self):
         super().clean()
 
-        if self.code:
-            self.code = slugify(self.code).replace("-", "_")
+        # =====================================================
+        # Normalisation du code
+        # =====================================================
 
-        if self.est_mode_depot and self.code != "depot":
+        if self.code:
+            self.code = (
+                slugify(self.code)
+                .replace("-", "_")
+                .lower()
+            )
+
+        # =====================================================
+        # Mode compte dépôt
+        # =====================================================
+
+        if (
+            self.est_mode_depot
+            and self.code != "depot"
+        ):
             raise ValidationError({
-                "code": "Un mode de dépôt doit avoir le code 'depot'."
+                "code": (
+                    "Un mode de dépôt doit avoir "
+                    "le code 'depot'."
+                )
             })
+
+    def save(self, *args, **kwargs):
+
+        # Normalisation avant full_clean().
+        if self.code:
+            self.code = (
+                slugify(self.code)
+                .replace("-", "_")
+                .lower()
+            )
+
+        self.full_clean()
+
+        return super().save(
+            *args,
+            **kwargs,
+        )
+        
+        
+
+# class PaiementLigne(models.Model):
+
+#     paiement = models.ForeignKey(
+#         "sale.Paiement",
+#         on_delete=models.CASCADE,
+#         related_name="lignes"
+#     )
+
+#     montant_paye = models.DecimalField(
+#         max_digits=10,
+#         decimal_places=2
+#     )
+
+#     mode_paiement = models.ForeignKey(
+#         "sale.ModePaiement",
+#         on_delete=models.PROTECT,
+#         related_name="lignes_paiement",
+#         default=get_default_mode_paiement
+#     )
+
+#     reference = models.CharField(
+#         max_length=255,
+#         null=True,
+#         blank=True,
+#         help_text="Référence transaction Wave / OM / banque / TPE"
+#     )
+
+#     compte_depot = models.ForeignKey(
+#         "compte_depot.CompteDepot",
+#         null=True,
+#         blank=True,
+#         on_delete=models.SET_NULL,
+#         related_name="lignes_paiement"
+#     )
+
+#     transaction_depot = models.ForeignKey(
+#         "compte_depot.CompteDepotTransaction",
+#         null=True,
+#         blank=True,
+#         on_delete=models.SET_NULL,
+#         related_name="lignes_paiement"
+#     )
+
+#     provider_reference = models.CharField(
+#         max_length=255,
+#         blank=True,
+#         null=True,
+#         db_index=True,
+#         help_text="Référence retournée par Stripe, PayDunya, CinetPay, banque ou TPE"
+#     )
+
+#     checkout_url = models.URLField(
+#         blank=True,
+#         null=True,
+#         help_text="Lien de paiement en ligne si applicable"
+#     )
+
+#     payment_token = models.CharField(
+#         max_length=255,
+#         blank=True,
+#         null=True,
+#         help_text="Token de paiement externe"
+#     )
+
+#     callback_received = models.BooleanField(
+#         default=False,
+#         help_text="Indique si le callback/confirmation_paiement du fournisseur a été reçu"
+#     )
+    
+# #     banque = models.CharField(
+# #     max_length=100,
+# #     blank=True,
+# #     null=True,
+# # )
+
+# # numero_carte_masque = models.CharField(
+# #     max_length=30,
+# #     blank=True,
+# #     null=True,
+# # )
+    
+#     class Meta:
+#         ordering = ["id"]
+
+#         constraints = [
+#             models.CheckConstraint(
+#                 check=Q(montant_paye__gt=0),
+#                 name="paiement_ligne_montant_paye_gt_0"
+#             ),
+
+#             models.UniqueConstraint(
+#                 fields=["paiement", "mode_paiement"],
+#                 name="uniq_mode_par_paiement"
+#             ),
+#         ]
+
+#         indexes = [
+#             models.Index(fields=["paiement"]),
+#             models.Index(fields=["mode_paiement"]),
+#         ]
+
+#     def __str__(self):
+#         return f"{self.mode_paiement} - {self.montant_paye} FCFA"
+
+#     def clean(self):
+#         super().clean()
+
+#         if self.montant_paye is None or Decimal(str(self.montant_paye)) <= 0:
+#             raise ValidationError(
+#                 "Le montant payé doit être strictement positif."
+#             )
+
+#         if not self.mode_paiement_id:
+#             raise ValidationError({
+#                 "mode_paiement": "Le mode de paiement est obligatoire."
+#             })
+
+#         mode = self.mode_paiement
+
+#         if not mode.active:
+#             raise ValidationError({
+#                 "mode_paiement": "Ce mode de paiement est inactif."
+#             })
+
+#         if mode.necessite_reference and not self.reference:
+#             raise ValidationError({
+#                 "reference": f"Une référence est obligatoire pour le mode '{mode.nom}'."
+#             })
+
+#         if mode.est_mode_depot:
+#             if not self.compte_depot_id:
+#                 raise ValidationError(
+#                     "Le compte dépôt est obligatoire pour une ligne dépôt."
+#                 )
+
+#             if not self.transaction_depot_id:
+#                 raise ValidationError(
+#                     "La transaction dépôt est obligatoire pour une ligne dépôt."
+#                 )
+#         else:
+#             if self.compte_depot_id or self.transaction_depot_id:
+#                 raise ValidationError(
+#                     "compte_depot et transaction_depot sont réservés au mode dépôt."
+#                 )
+
+#     def save(self, *args, **kwargs):
+
+#         if self.montant_paye is not None:
+#             self.montant_paye = Decimal(self.montant_paye).quantize(
+#                 Decimal("0.01"),
+#                 rounding=ROUND_HALF_UP
+#             )
+
+#         self.full_clean()
+
+#         super().save(*args, **kwargs)
+        
+        
 
 class PaiementLigne(models.Model):
 
     paiement = models.ForeignKey(
         "sale.Paiement",
         on_delete=models.CASCADE,
-        related_name="lignes"
+        related_name="lignes",
     )
 
     montant_paye = models.DecimalField(
-        max_digits=10,
-        decimal_places=2
+        max_digits=14,
+        decimal_places=2,
     )
 
     mode_paiement = models.ForeignKey(
         "sale.ModePaiement",
         on_delete=models.PROTECT,
         related_name="lignes_paiement",
-        default=get_default_mode_paiement
+        default=get_default_mode_paiement,
     )
 
     reference = models.CharField(
         max_length=255,
         null=True,
         blank=True,
-        help_text="Référence transaction Wave / OM / banque / TPE"
+        help_text=(
+            "Référence transaction Wave / "
+            "Orange Money / banque / TPE"
+        ),
     )
+
+    # =========================================================
+    # COMPTE DÉPÔT
+    # =========================================================
 
     compte_depot = models.ForeignKey(
         "compte_depot.CompteDepot",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="lignes_paiement"
+        related_name="lignes_paiement",
     )
 
     transaction_depot = models.ForeignKey(
@@ -970,122 +2773,328 @@ class PaiementLigne(models.Model):
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
-        related_name="lignes_paiement"
+        related_name="lignes_paiement",
     )
+
+    # =========================================================
+    # PAIEMENT EXTERNE
+    # =========================================================
 
     provider_reference = models.CharField(
         max_length=255,
         blank=True,
         null=True,
         db_index=True,
-        help_text="Référence retournée par Stripe, PayDunya, CinetPay, banque ou TPE"
+        help_text=(
+            "Référence retournée par Stripe, PayDunya, "
+            "CinetPay, banque ou TPE"
+        ),
     )
 
     checkout_url = models.URLField(
         blank=True,
         null=True,
-        help_text="Lien de paiement en ligne si applicable"
+        help_text=(
+            "Lien de paiement en ligne si applicable"
+        ),
     )
 
     payment_token = models.CharField(
         max_length=255,
         blank=True,
         null=True,
-        help_text="Token de paiement externe"
+        help_text="Token de paiement externe",
     )
 
     callback_received = models.BooleanField(
         default=False,
-        help_text="Indique si le callback/confirmation_paiement du fournisseur a été reçu"
+        db_index=True,
+        help_text=(
+            "Indique si le callback/confirmation du "
+            "fournisseur a été reçu."
+        ),
     )
-    
-#     banque = models.CharField(
-#     max_length=100,
-#     blank=True,
-#     null=True,
-# )
 
-# numero_carte_masque = models.CharField(
-#     max_length=30,
-#     blank=True,
-#     null=True,
-# )
-    
+    # =========================================================
+    # META
+    # =========================================================
+
     class Meta:
         ordering = ["id"]
 
         constraints = [
             models.CheckConstraint(
                 check=Q(montant_paye__gt=0),
-                name="paiement_ligne_montant_paye_gt_0"
+                name="paiement_ligne_montant_paye_gt_0",
             ),
 
             models.UniqueConstraint(
-                fields=["paiement", "mode_paiement"],
-                name="uniq_mode_par_paiement"
+                fields=[
+                    "paiement",
+                    "mode_paiement",
+                ],
+                name="uniq_mode_par_paiement",
             ),
         ]
 
         indexes = [
-            models.Index(fields=["paiement"]),
-            models.Index(fields=["mode_paiement"]),
+            models.Index(
+                fields=["paiement"],
+            ),
+            models.Index(
+                fields=["mode_paiement"],
+            ),
         ]
 
+    # =========================================================
+    # STRING
+    # =========================================================
+
     def __str__(self):
-        return f"{self.mode_paiement} - {self.montant_paye} FCFA"
+        return (
+            f"{self.mode_paiement} - "
+            f"{self.montant_paye} FCFA"
+        )
+
+    # =========================================================
+    # VALIDATION
+    # =========================================================
 
     def clean(self):
         super().clean()
 
-        if self.montant_paye is None or Decimal(str(self.montant_paye)) <= 0:
-            raise ValidationError(
-                "Le montant payé doit être strictement positif."
-            )
+        # -----------------------------------------------------
+        # Montant
+        # -----------------------------------------------------
+
+        if self.montant_paye is None:
+            raise ValidationError({
+                "montant_paye": (
+                    "Le montant payé est obligatoire."
+                )
+            })
+
+        montant_paye = Decimal(
+            str(self.montant_paye)
+        ).quantize(
+            TWOPLACES,
+            rounding=ROUND_HALF_UP,
+        )
+
+        if montant_paye <= ZERO:
+            raise ValidationError({
+                "montant_paye": (
+                    "Le montant payé doit être "
+                    "strictement positif."
+                )
+            })
+
+        # -----------------------------------------------------
+        # Mode de paiement
+        # -----------------------------------------------------
 
         if not self.mode_paiement_id:
             raise ValidationError({
-                "mode_paiement": "Le mode de paiement est obligatoire."
+                "mode_paiement": (
+                    "Le mode de paiement est obligatoire."
+                )
             })
 
         mode = self.mode_paiement
 
         if not mode.active:
             raise ValidationError({
-                "mode_paiement": "Ce mode de paiement est inactif."
+                "mode_paiement": (
+                    "Ce mode de paiement est inactif."
+                )
             })
 
-        if mode.necessite_reference and not self.reference:
+        # -----------------------------------------------------
+        # Référence
+        # -----------------------------------------------------
+
+        if self.reference:
+            self.reference = self.reference.strip()
+
+        if (
+            mode.necessite_reference
+            and not self.reference
+        ):
             raise ValidationError({
-                "reference": f"Une référence est obligatoire pour le mode '{mode.nom}'."
+                "reference": (
+                    f"Une référence est obligatoire "
+                    f"pour le mode '{mode.nom}'."
+                )
             })
+
+        # =====================================================
+        # MODE COMPTE DÉPÔT
+        # =====================================================
 
         if mode.est_mode_depot:
+
+            # -------------------------------------------------
+            # Compte obligatoire
+            # -------------------------------------------------
+
             if not self.compte_depot_id:
-                raise ValidationError(
-                    "Le compte dépôt est obligatoire pour une ligne dépôt."
-                )
+                raise ValidationError({
+                    "compte_depot": (
+                        "Le compte dépôt est obligatoire "
+                        "pour un paiement par compte dépôt."
+                    )
+                })
+
+            # -------------------------------------------------
+            # Transaction obligatoire
+            # -------------------------------------------------
 
             if not self.transaction_depot_id:
-                raise ValidationError(
-                    "La transaction dépôt est obligatoire pour une ligne dépôt."
-                )
+                raise ValidationError({
+                    "transaction_depot": (
+                        "La transaction dépôt est obligatoire "
+                        "pour un paiement par compte dépôt."
+                    )
+                })
+
+            transaction = self.transaction_depot
+
+            # -------------------------------------------------
+            # Transaction ↔ compte
+            # -------------------------------------------------
+
+            if (
+                transaction.compte_id
+                != self.compte_depot_id
+            ):
+                raise ValidationError({
+                    "transaction_depot": (
+                        "La transaction dépôt n'appartient pas "
+                        "au compte dépôt sélectionné."
+                    )
+                })
+
+            # -------------------------------------------------
+            # Un paiement par dépôt = RETRAIT
+            # -------------------------------------------------
+
+            if (
+                transaction.type_transaction
+                != transaction.TYPE_RETRAIT
+            ):
+                raise ValidationError({
+                    "transaction_depot": (
+                        "La transaction utilisée pour payer "
+                        "doit être un retrait du compte dépôt."
+                    )
+                })
+
+            # -------------------------------------------------
+            # Transaction terminée
+            # -------------------------------------------------
+
+            if (
+                transaction.statut
+                != transaction.STAT_TERMINE
+            ):
+                raise ValidationError({
+                    "transaction_depot": (
+                        "La transaction du compte dépôt "
+                        "doit être terminée."
+                    )
+                })
+
+            # -------------------------------------------------
+            # Montant transaction = montant payé
+            # -------------------------------------------------
+
+            montant_transaction = Decimal(
+                str(transaction.montant)
+            ).quantize(
+                TWOPLACES,
+                rounding=ROUND_HALF_UP,
+            )
+
+            if montant_transaction != montant_paye:
+                raise ValidationError({
+                    "montant_paye": (
+                        "Le montant payé doit être identique "
+                        "au montant retiré du compte dépôt."
+                    )
+                })
+
+        # =====================================================
+        # AUTRES MODES
+        # =====================================================
+
         else:
-            if self.compte_depot_id or self.transaction_depot_id:
-                raise ValidationError(
-                    "compte_depot et transaction_depot sont réservés au mode dépôt."
-                )
+
+            if self.compte_depot_id:
+                raise ValidationError({
+                    "compte_depot": (
+                        "Le compte dépôt est réservé "
+                        "au mode de paiement dépôt."
+                    )
+                })
+
+            if self.transaction_depot_id:
+                raise ValidationError({
+                    "transaction_depot": (
+                        "La transaction dépôt est réservée "
+                        "au mode de paiement dépôt."
+                    )
+                })
+
+    # =========================================================
+    # SAVE
+    # =========================================================
 
     def save(self, *args, **kwargs):
 
+        # -----------------------------------------------------
+        # Normalisation montant
+        # -----------------------------------------------------
+
         if self.montant_paye is not None:
-            self.montant_paye = Decimal(self.montant_paye).quantize(
-                Decimal("0.01"),
-                rounding=ROUND_HALF_UP
+            self.montant_paye = Decimal(
+                str(self.montant_paye)
+            ).quantize(
+                TWOPLACES,
+                rounding=ROUND_HALF_UP,
             )
+
+        # -----------------------------------------------------
+        # Normalisation références
+        # -----------------------------------------------------
+
+        if self.reference:
+            self.reference = (
+                self.reference.strip()
+            )
+
+        if self.provider_reference:
+            self.provider_reference = (
+                self.provider_reference.strip()
+            )
+
+        if self.payment_token:
+            self.payment_token = (
+                self.payment_token.strip()
+            )
+
+        # -----------------------------------------------------
+        # Validation
+        # -----------------------------------------------------
 
         self.full_clean()
 
-        super().save(*args, **kwargs)
-        
+        # -----------------------------------------------------
+        # Sauvegarde
+        # -----------------------------------------------------
+
+        return super().save(
+            *args,
+            **kwargs,
+        )
         
 

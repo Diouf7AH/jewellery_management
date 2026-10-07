@@ -1,0 +1,36 @@
+ SCAN
+                  │
+                  ▼
+        PL:<ProduitLine.uuid>
+                  │
+                  ▼
+             ProduitLine
+             │         │
+             ▼         ▼
+           Lot       Produit
+                       │
+                       ▼
+                VendorStock
+                       │
+                       ▼
+                    Vente
+                       │
+                       ▼
+                  PROFORMA
+                       │
+                       ▼
+                    PAIEMENT
+                       │
+             facture = PAYE
+                       │
+                       ▼
+             select_for_update()
+                       │
+                       ▼
+       VendorStock.quantite_vendue += N
+                       │
+                       ▼
+                  SALE_OUT
+                       │
+                       ▼
+          facture.stock_consumed=True
