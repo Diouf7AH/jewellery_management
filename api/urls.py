@@ -141,7 +141,6 @@ urlpatterns = [
     path("stocks/magasin/produits-disponibles/", stock_views.MagasinProduitDisponibleListView.as_view(),name="magasin-produits-disponibles",),
     # path("stocks/assign/vendor/",stock_views.BijouterieToVendorAssignmentView.as_view(),name="magasin-to-vendor-assignment",),
     path("stocks/bijouterie/affecter-vendeur/",stock_views.BijouterieToVendorAssignmentView.as_view(),name="stock-bijouterie-affecter-vendeur",),
-    path("stocks/disponibles-pour-vendeur/", stock_views.StockDisponiblePourVendeurView.as_view(),name="stock-disponibles-pour-vendeur",),
     
     
     # INVENTORY
@@ -177,7 +176,6 @@ urlpatterns = [
     # path("vendor/by-slug/<slug:slug>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail-by-slug"),
     # path("vendor/<int:vendor_id>/update", vendor_views.VendorUpdateView.as_view(), name="vendor-update"),
     # path('vendor/association-produit-to-vendor', vendor_views.VendorProduitAssociationAPIView.as_view(), name='association-du-produit-au-vendor'),
-    path("api/vendor-stocks/dashboar", vendor_views.VendorDashboardView.as_view(), name="vendor-stocks-dashboard"),
     # path("api/vendor-stocks-summary-by-produit", vendor_views.VendorStockSummaryByProduitView.as_view(), name="vendor-stocks-summary-by-produit"),
     # path("api/vendor-stocks-summary-by-vendor-produit", vendor_views.VendorStockSummaryByVendorProduitView.as_view(), name="vendor-stocks-summary-by-vendor-produit"),
     # path("dashboard/vendeur/stats/", vendor_views.DashboardVendeurStatsView.as_view(), name="dashboard-vendeur-stats"),

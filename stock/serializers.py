@@ -5,8 +5,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from rest_framework import serializers
-
-from stock.models import Stock
+from stock.models import Stock, VendorStock
 
 
 # ============================================================
@@ -500,3 +499,322 @@ class StockDisponiblePourVendeurSerializer(
         return str(marque)
     
     
+# class VendorStockSerializer(serializers.ModelSerializer):
+#     """
+#     Une ligne de stock actuellement attribuée à un vendeur.
+#     """
+
+#     # ------------------------------------------------------------
+#     # ProduitLine
+#     # ------------------------------------------------------------
+
+#     produit_line_id = serializers.IntegerField(
+#         source="produit_line.id",
+#         read_only=True,
+#     )
+
+#     # ------------------------------------------------------------
+#     # Produit
+#     # ------------------------------------------------------------
+
+#     produit_id = serializers.IntegerField(
+#         source="produit_line.produit.id",
+#         read_only=True,
+#     )
+
+#     produit_nom = serializers.CharField(
+#         source="produit_line.produit.nom",
+#         read_only=True,
+#     )
+
+#     sku = serializers.CharField(
+#         source="produit_line.produit.sku",
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     # ------------------------------------------------------------
+#     # Catégorie
+#     # ------------------------------------------------------------
+
+#     categorie = serializers.CharField(
+#         source="produit_line.produit.categorie.nom",
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     # ------------------------------------------------------------
+#     # Marque
+#     # ------------------------------------------------------------
+
+#     marque_id = serializers.IntegerField(
+#         source="produit_line.produit.marque.id",
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     marque = serializers.CharField(
+#         source="produit_line.produit.marque.marque",
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     # ------------------------------------------------------------
+#     # Pureté
+#     # ------------------------------------------------------------
+
+#     purete_id = serializers.IntegerField(
+#         source="produit_line.produit.purete.id",
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     purete = serializers.CharField(
+#         source="produit_line.produit.purete.purete",
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     # ------------------------------------------------------------
+#     # Modèle
+#     # ------------------------------------------------------------
+
+#     modele = serializers.CharField(
+#         source="produit_line.produit.modele.modele",
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     # ------------------------------------------------------------
+#     # Poids
+#     # ------------------------------------------------------------
+
+#     poids_unitaire = serializers.DecimalField(
+#         source="produit_line.produit.poids",
+#         max_digits=12,
+#         decimal_places=2,
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     poids_disponible = serializers.SerializerMethodField()
+
+#     # ------------------------------------------------------------
+#     # Lot
+#     # ------------------------------------------------------------
+
+#     lot_id = serializers.IntegerField(
+#         source="produit_line.lot.id",
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     numero_lot = serializers.CharField(
+#         source="produit_line.lot.numero_lot",
+#         read_only=True,
+#         allow_null=True,
+#     )
+
+#     # ------------------------------------------------------------
+#     # Quantité disponible
+#     # ------------------------------------------------------------
+
+#     quantite_disponible = serializers.IntegerField(
+#         read_only=True,
+#     )
+
+#     class Meta:
+#         model = VendorStock
+
+#         fields = [
+#             "id",
+
+#             "produit_line_id",
+
+#             "produit_id",
+#             "produit_nom",
+#             "sku",
+
+#             "categorie",
+
+#             "marque_id",
+#             "marque",
+
+#             "purete_id",
+#             "purete",
+
+#             "modele",
+
+#             "poids_unitaire",
+#             "poids_disponible",
+
+#             "lot_id",
+#             "numero_lot",
+
+#             "quantite_allouee",
+#             "quantite_vendue",
+#             "quantite_disponible",
+
+#             "created_at",
+#             "updated_at",
+#         ]
+
+#         read_only_fields = fields
+
+#     def get_poids_disponible(self, obj):
+#         produit = obj.produit_line.produit
+
+#         if produit.poids is None:
+#             return None
+
+#         return str(
+#             produit.poids
+#             * obj.quantite_disponible
+#         )
+
+
+class VendorStockSerializer(serializers.ModelSerializer):
+    """
+    Détail d'une ligne de stock vendeur.
+    """
+
+    produit_line_id = serializers.IntegerField(
+        source="produit_line.id",
+        read_only=True,
+    )
+
+    produit_id = serializers.IntegerField(
+        source="produit_line.produit.id",
+        read_only=True,
+    )
+
+    produit_nom = serializers.CharField(
+        source="produit_line.produit.nom",
+        read_only=True,
+        allow_null=True,
+    )
+
+    sku = serializers.CharField(
+        source="produit_line.produit.sku",
+        read_only=True,
+        allow_null=True,
+    )
+
+    categorie = serializers.CharField(
+        source="produit_line.produit.categorie.nom",
+        read_only=True,
+        allow_null=True,
+    )
+
+    marque_id = serializers.IntegerField(
+        source="produit_line.produit.marque.id",
+        read_only=True,
+        allow_null=True,
+    )
+
+    marque = serializers.CharField(
+        source="produit_line.produit.marque.marque",
+        read_only=True,
+        allow_null=True,
+    )
+
+    purete_id = serializers.IntegerField(
+        source="produit_line.produit.purete.id",
+        read_only=True,
+        allow_null=True,
+    )
+
+    purete = serializers.CharField(
+        source="produit_line.produit.purete.purete",
+        read_only=True,
+        allow_null=True,
+    )
+
+    modele = serializers.CharField(
+        source="produit_line.produit.modele.modele",
+        read_only=True,
+        allow_null=True,
+    )
+
+    poids_unitaire = serializers.DecimalField(
+        source="produit_line.produit.poids",
+        max_digits=12,
+        decimal_places=3,
+        read_only=True,
+        allow_null=True,
+    )
+
+    poids_disponible = serializers.SerializerMethodField()
+
+    lot_id = serializers.IntegerField(
+        source="produit_line.lot.id",
+        read_only=True,
+        allow_null=True,
+    )
+
+    numero_lot = serializers.CharField(
+        source="produit_line.lot.numero_lot",
+        read_only=True,
+        allow_null=True,
+    )
+
+    quantite_disponible = serializers.IntegerField(
+        read_only=True,
+    )
+
+    class Meta:
+        model = VendorStock
+
+        fields = [
+            "id",
+            "produit_line_id",
+
+            "produit_id",
+            "produit_nom",
+            "sku",
+
+            "categorie",
+
+            "marque_id",
+            "marque",
+
+            "purete_id",
+            "purete",
+
+            "modele",
+
+            "poids_unitaire",
+            "poids_disponible",
+
+            "lot_id",
+            "numero_lot",
+
+            "quantite_allouee",
+            "quantite_vendue",
+            "quantite_disponible",
+
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = fields
+
+    def get_poids_disponible(self, obj):
+        produit = getattr(
+            obj.produit_line,
+            "produit",
+            None,
+        )
+
+        if not produit or produit.poids is None:
+            return None
+
+        poids = Decimal(str(produit.poids))
+
+        quantite = Decimal(
+            str(obj.quantite_disponible)
+        )
+
+        return poids * quantite
+    
+
