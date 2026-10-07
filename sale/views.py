@@ -188,7 +188,880 @@ def error_response(
     )
 
 
+# class VenteProduitCreateView(APIView):
+
+#     permission_classes = [CanCreateSale]
+#     http_method_names = ["post", "options"]
+
+#     # =========================================================
+#     # VENDEUR CONNECTÉ
+#     # =========================================================
+
+#     def _get_vendor_for_user(self, user):
+#         return (
+#             Vendor.objects
+#             .select_related(
+#                 "bijouterie",
+#                 "user",
+#             )
+#             .filter(
+#                 user=user,
+#                 verifie=True,
+#             )
+#             .first()
+#         )
+
+#     # =========================================================
+#     # VÉRIFICATION STOCK VENDEUR EXACT
+#     # =========================================================
+
+#     def _ensure_produit_line_in_vendor_stock(
+#         self,
+#         *,
+#         user,
+#         role,
+#         produit_line,
+#     ):
+#         """
+#         Pour un vendeur connecté, vérifie que la ProduitLine
+#         scannée lui est réellement affectée et qu'il reste
+#         au moins une unité disponible.
+
+#         Aucun FIFO.
+#         Aucun fallback vers une autre ProduitLine.
+#         """
+
+#         if role != ROLE_VENDOR:
+#             return
+
+#         vendor = self._get_vendor_for_user(
+#             user
+#         )
+
+#         if not vendor:
+#             raise ValidationError({
+#                 "vendor": (
+#                     "Profil vendeur introuvable."
+#                 )
+#             })
+
+#         exists = (
+#             VendorStock.objects
+#             .filter(
+#                 vendor=vendor,
+#                 bijouterie=vendor.bijouterie,
+#                 produit_line=produit_line,
+#                 quantite_allouee__gt=F(
+#                     "quantite_vendue"
+#                 ),
+#             )
+#             .exists()
+#         )
+
+#         if not exists:
+
+#             produit = produit_line.produit
+
+#             identifiant = (
+#                 getattr(
+#                     produit_line,
+#                     "uuid",
+#                     None,
+#                 )
+#                 or produit_line.pk
+#             )
+
+#             raise ValidationError({
+#                 "produit_line": (
+#                     f"Le produit '{produit.nom}' "
+#                     f"(ProduitLine {identifiant}) "
+#                     "n'est plus disponible dans "
+#                     "le stock de ce vendeur."
+#                 )
+#             })
+
+#     # =========================================================
+#     # RÉSOLUTION PRODUIT_LINE
+#     # =========================================================
+
+#     def _resolve_produit_line_id(
+#         self,
+#         item,
+#         *,
+#         user,
+#         role,
+#     ):
+#         """
+#         Résout obligatoirement une ProduitLine précise.
+
+#         Entrées acceptées :
+
+#         - produit_line_id
+#         - QR de ProduitLine
+#         - UUID de ProduitLine
+
+#         La vente ne résout plus directement un Produit.
+#         """
+
+#         produit_line_id = item.get(
+#             "produit_line_id"
+#         )
+
+#         qr = (
+#             item.get("qr")
+#             or item.get("qr_code")
+#         )
+
+#         produit_line = None
+
+#         # =====================================================
+#         # 1. ID ProduitLine
+#         # =====================================================
+
+#         if produit_line_id:
+
+#             try:
+#                 produit_line_id = int(
+#                     produit_line_id
+#                 )
+
+#             except (TypeError, ValueError):
+#                 raise ValidationError({
+#                     "produit_line_id": (
+#                         "Identifiant ProduitLine invalide."
+#                     )
+#                 })
+
+#             produit_line = (
+#                 ProduitLine.objects
+#                 .select_related(
+#                     "produit",
+#                     "lot",
+#                 )
+#                 .filter(
+#                     id=produit_line_id,
+#                 )
+#                 .first()
+#             )
+
+#         # =====================================================
+#         # 2. QR / UUID ProduitLine
+#         # =====================================================
+
+#         else:
+
+#             scan_value = qr
+
+#             if scan_value:
+
+#                 scan_value = (
+#                     str(scan_value)
+#                     .replace("\n", "")
+#                     .replace("\r", "")
+#                     .strip()
+#                 )
+
+#                 # ---------------------------------------------
+#                 # Formats acceptés :
+#                 #
+#                 # PL:<uuid>
+#                 # <uuid>
+#                 # ---------------------------------------------
+
+#                 if scan_value.startswith("PL:"):
+#                     raw_uuid = (
+#                         scan_value
+#                         .removeprefix("PL:")
+#                         .strip()
+#                     )
+
+#                 else:
+#                     raw_uuid = scan_value
+
+#                 try:
+#                     produit_line_uuid = UUID(
+#                         raw_uuid
+#                     )
+
+#                 except (
+#                     ValueError,
+#                     TypeError,
+#                     AttributeError,
+#                 ):
+#                     raise ValidationError({
+#                         "produit_line": (
+#                             "Le QR code contient un UUID "
+#                             "ProduitLine invalide."
+#                         )
+#                     })
+
+#                 produit_line = (
+#                     ProduitLine.objects
+#                     .select_related(
+#                         "produit",
+#                         "lot",
+#                     )
+#                     .filter(
+#                         uuid=produit_line_uuid,
+#                     )
+#                     .first()
+#                 )
+
+#         # =====================================================
+#         # 3. OBLIGATOIRE
+#         # =====================================================
+
+#         if not produit_line:
+#             raise ValidationError({
+#                 "produit_line": (
+#                     "ProduitLine introuvable "
+#                     "ou code invalide."
+#                 )
+#             })
+
+#         # =====================================================
+#         # 4. COHÉRENCE ProduitLine
+#         # =====================================================
+
+#         if not produit_line.produit_id:
+#             raise ValidationError({
+#                 "produit_line": (
+#                     "Cette ProduitLine n'est associée "
+#                     "à aucun produit."
+#                 )
+#             })
+
+#         if not produit_line.lot_id:
+#             raise ValidationError({
+#                 "produit_line": (
+#                     "Cette ProduitLine n'est associée "
+#                     "à aucun lot."
+#                 )
+#             })
+
+#         # =====================================================
+#         # 5. STOCK VENDEUR
+#         # =====================================================
+
+#         self._ensure_produit_line_in_vendor_stock(
+#             user=user,
+#             role=role,
+#             produit_line=produit_line,
+#         )
+
+#         return produit_line.id
+
+#     # =========================================================
+#     # NORMALISATION PRODUITS
+#     # =========================================================
+
+#     def _normalize_produits(
+#         self,
+#         produits,
+#         *,
+#         user,
+#         role,
+#     ):
+#         normalized = []
+
+#         for item in produits:
+
+#             item = dict(item)
+
+#             item["produit_line_id"] = (
+#                 self._resolve_produit_line_id(
+#                     item,
+#                     user=user,
+#                     role=role,
+#                 )
+#             )
+
+#             # ---------------------------------------------
+#             # Anciennes clés supprimées
+#             # ---------------------------------------------
+
+#             item.pop(
+#                 "produit_id",
+#                 None,
+#             )
+
+#             item.pop(
+#                 "sku",
+#                 None,
+#             )
+
+#             item.pop(
+#                 "qr",
+#                 None,
+#             )
+
+#             item.pop(
+#                 "qr_code",
+#                 None,
+#             )
+
+#             normalized.append(
+#                 item
+#             )
+
+#         return normalized
+
+#     # =========================================================
+#     # SWAGGER
+#     # =========================================================
+
+#     @swagger_auto_schema(
+#         operation_summary=(
+#             "Créer une vente (1 vendeur) "
+#             "+ facture PROFORMA "
+#             "(stock non consommé)"
+#         ),
+#         request_body=VenteCreateInSerializer,
+#         responses={
+#             201: openapi.Response("Créé"),
+#             400: "Erreur validation",
+#             403: "Accès refusé",
+#         },
+#         tags=["Ventes"],
+#     )
+
+#     # =========================================================
+#     # POST
+#     # =========================================================
+
+#     @transaction.atomic
+#     def post(self, request):
+
+#         # =====================================================
+#         # 1. VALIDATION PAYLOAD
+#         # =====================================================
+
+#         serializer = VenteCreateInSerializer(
+#             data=request.data,
+#             context={
+#                 "request": request,
+#             },
+#         )
+
+#         serializer.is_valid(
+#             raise_exception=True
+#         )
+
+#         validated = (
+#             serializer.validated_data
+#         )
+
+#         role = (
+#             get_role_name(
+#                 request.user
+#             )
+#             or ""
+#         ).lower().strip()
+
+#         # =====================================================
+#         # 2. NORMALISATION ProduitLine
+#         # =====================================================
+
+#         try:
+
+#             produits_normalized = (
+#                 self._normalize_produits(
+#                     validated["produits"],
+#                     user=request.user,
+#                     role=role,
+#                 )
+#             )
+
+#         except ValidationError as e:
+
+#             detail = (
+#                 getattr(
+#                     e,
+#                     "message_dict",
+#                     None,
+#                 )
+#                 or getattr(
+#                     e,
+#                     "messages",
+#                     None,
+#                 )
+#                 or str(e)
+#             )
+
+#             return Response(
+#                 {
+#                     "detail": detail,
+#                 },
+#                 status=(
+#                     status.HTTP_400_BAD_REQUEST
+#                 ),
+#             )
+
+#         payload = {
+#             "client": (
+#                 validated.get("client")
+#                 or {}
+#             ),
+#             "produits": (
+#                 produits_normalized
+#             ),
+#         }
+
+#         # =====================================================
+#         # 3. ADMIN / MANAGER : VENDEUR CIBLE
+#         # =====================================================
+
+#         if role in {
+#             ROLE_ADMIN,
+#             ROLE_MANAGER,
+#         }:
+
+#             vendor_email = (
+#                 validated.get(
+#                     "vendor_email"
+#                 )
+#                 or ""
+#             ).strip()
+
+#             if not vendor_email:
+
+#                 return Response(
+#                     {
+#                         "detail": (
+#                             "vendor_email est requis "
+#                             "pour admin/manager."
+#                         )
+#                     },
+#                     status=(
+#                         status.HTTP_400_BAD_REQUEST
+#                     ),
+#                 )
+
+#             vendor = (
+#                 Vendor.objects
+#                 .select_related(
+#                     "bijouterie",
+#                     "user",
+#                 )
+#                 .filter(
+#                     user__email__iexact=(
+#                         vendor_email
+#                     ),
+#                     verifie=True,
+#                 )
+#                 .first()
+#             )
+
+#             if not vendor:
+
+#                 return Response(
+#                     {
+#                         "detail": (
+#                             "Vendeur introuvable pour "
+#                             "ce vendor_email."
+#                         )
+#                     },
+#                     status=(
+#                         status.HTTP_400_BAD_REQUEST
+#                     ),
+#                 )
+
+#             # =================================================
+#             # MANAGER : CONTRÔLE BIJOUTERIE
+#             # =================================================
+
+#             if role == ROLE_MANAGER:
+
+#                 manager_profile = getattr(
+#                     request.user,
+#                     "staff_manager_profile",
+#                     None,
+#                 )
+
+#                 if (
+#                     not manager_profile
+#                     or (
+#                         hasattr(
+#                             manager_profile,
+#                             "verifie",
+#                         )
+#                         and not manager_profile.verifie
+#                     )
+#                 ):
+
+#                     return Response(
+#                         {
+#                             "detail": (
+#                                 "Profil manager invalide."
+#                             )
+#                         },
+#                         status=(
+#                             status.HTTP_403_FORBIDDEN
+#                         ),
+#                     )
+
+#                 if not (
+#                     manager_profile
+#                     .bijouteries
+#                     .filter(
+#                         id=vendor.bijouterie_id
+#                     )
+#                     .exists()
+#                 ):
+
+#                     return Response(
+#                         {
+#                             "detail": (
+#                                 "⛔ Vous ne pouvez pas "
+#                                 "créer une vente pour un "
+#                                 "vendeur hors de vos "
+#                                 "bijouteries."
+#                             )
+#                         },
+#                         status=(
+#                             status.HTTP_403_FORBIDDEN
+#                         ),
+#                     )
+
+#             payload[
+#                 "vendor_email"
+#             ] = vendor_email
+
+#         # =====================================================
+#         # 4. CRÉATION VENTE + PROFORMA
+#         # =====================================================
+
+#         try:
+
+#             (
+#                 vente,
+#                 facture,
+#                 audit_created,
+#             ) = create_sale_one_vendor(
+#                 user=request.user,
+#                 role=role,
+#                 payload=payload,
+#             )
+
+#         except ValidationError as e:
+
+#             detail = (
+#                 getattr(
+#                     e,
+#                     "message_dict",
+#                     None,
+#                 )
+#                 or getattr(
+#                     e,
+#                     "messages",
+#                     None,
+#                 )
+#                 or str(e)
+#             )
+
+#             return Response(
+#                 {
+#                     "detail": detail,
+#                 },
+#                 status=(
+#                     status.HTTP_400_BAD_REQUEST
+#                 ),
+#             )
+
+#         # =====================================================
+#         # 5. LIGNES RÉPONSE
+#         # =====================================================
+
+#         lignes = []
+
+#         vente_lignes = (
+#             vente.lignes
+#             .select_related(
+#                 "produit_line",
+#                 "produit_line__produit",
+#                 "produit_line__lot",
+#             )
+#             .all()
+#         )
+
+#         for ligne in vente_lignes:
+
+#             produit_line = (
+#                 ligne.produit_line
+#             )
+
+#             produit = (
+#                 produit_line.produit
+#             )
+
+#             pourcentage_occasion = Decimal(
+#                 str(
+#                     ligne.pourcentage_occasion
+#                     or "0.00"
+#                 )
+#             )
+
+#             montant_ht = Decimal(
+#                 str(
+#                     ligne.montant_ht
+#                     or "0.00"
+#                 )
+#             )
+
+#             reduction_occasion = (
+#                 montant_ht
+#                 * pourcentage_occasion
+#                 / Decimal("100")
+#             ).quantize(
+#                 Decimal("0.01"),
+#                 rounding=ROUND_HALF_UP,
+#             )
+
+#             lignes.append({
+
+#                 # -----------------------------------------
+#                 # Ligne vente
+#                 # -----------------------------------------
+
+#                 "ligne_id": ligne.id,
+
+#                 # -----------------------------------------
+#                 # ProduitLine = source de vérité
+#                 # -----------------------------------------
+
+#                 "produit_line_id": (
+#                     produit_line.id
+#                 ),
+
+#                 "produit_line_uuid": str(
+#                     produit_line.uuid
+#                 ),
+
+#                 # -----------------------------------------
+#                 # Produit dérivé de ProduitLine
+#                 # -----------------------------------------
+
+#                 "produit_id": (
+#                     produit.id
+#                 ),
+
+#                 "produit_nom": getattr(
+#                     produit,
+#                     "nom",
+#                     None,
+#                 ),
+
+#                 "sku": getattr(
+#                     produit,
+#                     "sku",
+#                     None,
+#                 ),
+
+#                 "etat": getattr(
+#                     produit,
+#                     "etat",
+#                     None,
+#                 ),
+
+#                 # -----------------------------------------
+#                 # Quantité / prix
+#                 # -----------------------------------------
+
+#                 "quantite": (
+#                     ligne.quantite
+#                 ),
+
+#                 "prix_vente_grammes": str(
+#                     ligne.prix_vente_grammes
+#                 ),
+
+#                 # -----------------------------------------
+#                 # Brut
+#                 # -----------------------------------------
+
+#                 "montant_ht": str(
+#                     ligne.montant_ht
+#                 ),
+
+#                 # -----------------------------------------
+#                 # Occasion
+#                 # -----------------------------------------
+
+#                 "pourcentage_occasion": str(
+#                     pourcentage_occasion
+#                 ),
+
+#                 "reduction_occasion": str(
+#                     reduction_occasion
+#                 ),
+
+#                 # -----------------------------------------
+#                 # Remise / autres
+#                 # -----------------------------------------
+
+#                 "remise": str(
+#                     ligne.remise
+#                     or Decimal("0.00")
+#                 ),
+
+#                 "autres": str(
+#                     ligne.autres
+#                     or Decimal("0.00")
+#                 ),
+
+#                 # -----------------------------------------
+#                 # Total ligne avant TVA facture
+#                 # -----------------------------------------
+
+#                 "montant_total": str(
+#                     ligne.montant_total
+#                     or Decimal("0.00")
+#                 ),
+#             })
+
+#         # =====================================================
+#         # 6. CLIENT
+#         # =====================================================
+
+#         client = getattr(
+#             vente,
+#             "client",
+#             None,
+#         )
+
+#         # =====================================================
+#         # 7. RESPONSE
+#         # =====================================================
+
+#         return Response(
+#             {
+#                 "message": (
+#                     "Vente créée avec succès."
+#                 ),
+
+#                 "vente_id": vente.id,
+
+#                 "numero_vente": (
+#                     vente.numero_vente
+#                 ),
+
+#                 "facture": {
+#                     "facture_id": (
+#                         facture.id
+#                     ),
+
+#                     "numero_facture": (
+#                         facture.numero_facture
+#                     ),
+
+#                     "type_facture": (
+#                         facture.type_facture
+#                     ),
+
+#                     "status_facture": (
+#                         facture.status
+#                     ),
+
+#                     "montant_ht": str(
+#                         facture.montant_ht
+#                     ),
+
+#                     "taux_tva": str(
+#                         facture.taux_tva
+#                     ),
+
+#                     "montant_tva": str(
+#                         facture.montant_tva
+#                     ),
+
+#                     "montant_total": str(
+#                         facture.montant_total
+#                     ),
+#                 },
+
+#                 "audit_created": bool(
+#                     audit_created
+#                 ),
+
+#                 "bijouterie": {
+#                     "id": (
+#                         facture.bijouterie_id
+#                     ),
+
+#                     "nom": getattr(
+#                         facture.bijouterie,
+#                         "nom",
+#                         None,
+#                     ),
+#                 },
+
+#                 "client": {
+#                     "id": (
+#                         client.id
+#                         if client
+#                         else None
+#                     ),
+
+#                     "nom": (
+#                         getattr(
+#                             client,
+#                             "nom",
+#                             None,
+#                         )
+#                         if client
+#                         else None
+#                     ),
+
+#                     "prenom": (
+#                         getattr(
+#                             client,
+#                             "prenom",
+#                             None,
+#                         )
+#                         if client
+#                         else None
+#                     ),
+
+#                     "telephone": (
+#                         getattr(
+#                             client,
+#                             "telephone",
+#                             None,
+#                         )
+#                         if client
+#                         else None
+#                     ),
+#                 },
+
+#                 "lignes": lignes,
+#             },
+#             status=(
+#                 status.HTTP_201_CREATED
+#             ),
+#         )
+        
+
 class VenteProduitCreateView(APIView):
+    """
+    Création d'une vente pour un seul vendeur.
+
+    Architecture :
+        ProduitLine
+            ↓
+        VendorStock exact
+            ↓
+        VenteProduit
+            ↓
+        PROFORMA
+
+    IMPORTANT :
+    - Aucun SALE_OUT ici.
+    - Aucun stock vendeur consommé ici.
+    - Le stock sera consommé uniquement lorsque la facture
+      sera totalement payée.
+    - Aucun FIFO.
+    - Une ProduitLine précise doit être identifiée.
+    """
 
     permission_classes = [CanCreateSale]
     http_method_names = ["post", "options"]
@@ -223,9 +1096,10 @@ class VenteProduitCreateView(APIView):
         produit_line,
     ):
         """
-        Pour un vendeur connecté, vérifie que la ProduitLine
-        scannée lui est réellement affectée et qu'il reste
-        au moins une unité disponible.
+        Pour un vendeur connecté :
+
+        vérifie que la ProduitLine exacte lui est affectée
+        et qu'au moins une unité reste disponible.
 
         Aucun FIFO.
         Aucun fallback vers une autre ProduitLine.
@@ -234,14 +1108,13 @@ class VenteProduitCreateView(APIView):
         if role != ROLE_VENDOR:
             return
 
-        vendor = self._get_vendor_for_user(
-            user
-        )
+        vendor = self._get_vendor_for_user(user)
 
         if not vendor:
             raise ValidationError({
                 "vendor": (
-                    "Profil vendeur introuvable."
+                    "Profil vendeur introuvable "
+                    "ou vendeur désactivé."
                 )
             })
 
@@ -259,7 +1132,6 @@ class VenteProduitCreateView(APIView):
         )
 
         if not exists:
-
             produit = produit_line.produit
 
             identifiant = (
@@ -297,10 +1169,15 @@ class VenteProduitCreateView(APIView):
         Entrées acceptées :
 
         - produit_line_id
-        - QR de ProduitLine
-        - UUID de ProduitLine
+        - qr
+        - qr_code
 
-        La vente ne résout plus directement un Produit.
+        QR acceptés :
+
+        - PL:<uuid>
+        - <uuid>
+
+        La vente ne résout jamais directement un Produit.
         """
 
         produit_line_id = item.get(
@@ -361,20 +1238,12 @@ class VenteProduitCreateView(APIView):
                     .strip()
                 )
 
-                # ---------------------------------------------
-                # Formats acceptés :
-                #
-                # PL:<uuid>
-                # <uuid>
-                # ---------------------------------------------
-
                 if scan_value.startswith("PL:"):
                     raw_uuid = (
                         scan_value
                         .removeprefix("PL:")
                         .strip()
                     )
-
                 else:
                     raw_uuid = scan_value
 
@@ -408,7 +1277,7 @@ class VenteProduitCreateView(APIView):
                 )
 
         # =====================================================
-        # 3. OBLIGATOIRE
+        # 3. PRODUIT_LINE OBLIGATOIRE
         # =====================================================
 
         if not produit_line:
@@ -420,7 +1289,7 @@ class VenteProduitCreateView(APIView):
             })
 
         # =====================================================
-        # 4. COHÉRENCE ProduitLine
+        # 4. COHÉRENCE PRODUIT_LINE
         # =====================================================
 
         if not produit_line.produit_id:
@@ -462,6 +1331,13 @@ class VenteProduitCreateView(APIView):
         user,
         role,
     ):
+        """
+        Convertit chaque entrée en produit_line_id.
+
+        Les anciennes clés Produit/QR ne sont pas transmises
+        au service métier.
+        """
+
         normalized = []
 
         for item in produits:
@@ -476,10 +1352,7 @@ class VenteProduitCreateView(APIView):
                 )
             )
 
-            # ---------------------------------------------
-            # Anciennes clés supprimées
-            # ---------------------------------------------
-
+            # Anciennes / temporaires clés d'entrée
             item.pop(
                 "produit_id",
                 None,
@@ -518,7 +1391,9 @@ class VenteProduitCreateView(APIView):
         ),
         request_body=VenteCreateInSerializer,
         responses={
-            201: openapi.Response("Créé"),
+            201: openapi.Response(
+                "Vente créée"
+            ),
             400: "Erreur validation",
             403: "Accès refusé",
         },
@@ -559,7 +1434,7 @@ class VenteProduitCreateView(APIView):
         ).lower().strip()
 
         # =====================================================
-        # 2. NORMALISATION ProduitLine
+        # 2. NORMALISATION PRODUIT_LINE
         # =====================================================
 
         try:
@@ -578,6 +1453,11 @@ class VenteProduitCreateView(APIView):
                 getattr(
                     e,
                     "message_dict",
+                    None,
+                )
+                or getattr(
+                    e,
+                    "detail",
                     None,
                 )
                 or getattr(
@@ -624,7 +1504,6 @@ class VenteProduitCreateView(APIView):
             ).strip()
 
             if not vendor_email:
-
                 return Response(
                     {
                         "detail": (
@@ -653,12 +1532,12 @@ class VenteProduitCreateView(APIView):
             )
 
             if not vendor:
-
                 return Response(
                     {
                         "detail": (
-                            "Vendeur introuvable pour "
-                            "ce vendor_email."
+                            "Vendeur introuvable ou "
+                            "désactivé pour ce "
+                            "vendor_email."
                         )
                     },
                     status=(
@@ -680,19 +1559,17 @@ class VenteProduitCreateView(APIView):
 
                 if (
                     not manager_profile
-                    or (
-                        hasattr(
-                            manager_profile,
-                            "verifie",
-                        )
-                        and not manager_profile.verifie
+                    or not getattr(
+                        manager_profile,
+                        "verifie",
+                        False,
                     )
                 ):
-
                     return Response(
                         {
                             "detail": (
-                                "Profil manager invalide."
+                                "Profil manager invalide "
+                                "ou désactivé."
                             )
                         },
                         status=(
@@ -708,14 +1585,12 @@ class VenteProduitCreateView(APIView):
                     )
                     .exists()
                 ):
-
                     return Response(
                         {
                             "detail": (
-                                "⛔ Vous ne pouvez pas "
-                                "créer une vente pour un "
-                                "vendeur hors de vos "
-                                "bijouteries."
+                                "Vous ne pouvez pas créer "
+                                "une vente pour un vendeur "
+                                "hors de vos bijouteries."
                             )
                         },
                         status=(
@@ -749,6 +1624,11 @@ class VenteProduitCreateView(APIView):
                 getattr(
                     e,
                     "message_dict",
+                    None,
+                )
+                or getattr(
+                    e,
+                    "detail",
                     None,
                 )
                 or getattr(
@@ -819,15 +1699,15 @@ class VenteProduitCreateView(APIView):
 
             lignes.append({
 
-                # -----------------------------------------
-                # Ligne vente
-                # -----------------------------------------
+                # ---------------------------------------------
+                # VenteProduit
+                # ---------------------------------------------
 
                 "ligne_id": ligne.id,
 
-                # -----------------------------------------
+                # ---------------------------------------------
                 # ProduitLine = source de vérité
-                # -----------------------------------------
+                # ---------------------------------------------
 
                 "produit_line_id": (
                     produit_line.id
@@ -837,9 +1717,9 @@ class VenteProduitCreateView(APIView):
                     produit_line.uuid
                 ),
 
-                # -----------------------------------------
-                # Produit dérivé de ProduitLine
-                # -----------------------------------------
+                # ---------------------------------------------
+                # Produit dérivé
+                # ---------------------------------------------
 
                 "produit_id": (
                     produit.id
@@ -863,9 +1743,9 @@ class VenteProduitCreateView(APIView):
                     None,
                 ),
 
-                # -----------------------------------------
+                # ---------------------------------------------
                 # Quantité / prix
-                # -----------------------------------------
+                # ---------------------------------------------
 
                 "quantite": (
                     ligne.quantite
@@ -875,17 +1755,13 @@ class VenteProduitCreateView(APIView):
                     ligne.prix_vente_grammes
                 ),
 
-                # -----------------------------------------
-                # Brut
-                # -----------------------------------------
+                # ---------------------------------------------
+                # Montants
+                # ---------------------------------------------
 
                 "montant_ht": str(
                     ligne.montant_ht
                 ),
-
-                # -----------------------------------------
-                # Occasion
-                # -----------------------------------------
 
                 "pourcentage_occasion": str(
                     pourcentage_occasion
@@ -894,10 +1770,6 @@ class VenteProduitCreateView(APIView):
                 "reduction_occasion": str(
                     reduction_occasion
                 ),
-
-                # -----------------------------------------
-                # Remise / autres
-                # -----------------------------------------
 
                 "remise": str(
                     ligne.remise
@@ -908,10 +1780,6 @@ class VenteProduitCreateView(APIView):
                     ligne.autres
                     or Decimal("0.00")
                 ),
-
-                # -----------------------------------------
-                # Total ligne avant TVA facture
-                # -----------------------------------------
 
                 "montant_total": str(
                     ligne.montant_total
@@ -1039,8 +1907,6 @@ class VenteProduitCreateView(APIView):
                 status.HTTP_201_CREATED
             ),
         )
-        
-
 
 class VenteListAPIView(APIView):
 

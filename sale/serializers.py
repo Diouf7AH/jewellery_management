@@ -271,23 +271,144 @@ class ClientInSerializer(serializers.Serializer):
     prenom = serializers.CharField(required=True, allow_blank=False)
     telephone = serializers.CharField(required=False, allow_blank=True)
 
-class VenteProduitInSerializer(serializers.Serializer):
-    produit_id = serializers.IntegerField(
-        min_value=1,
-        required=False,
-    )
+# class VenteProduitInSerializer(serializers.Serializer):
+#     produit_id = serializers.IntegerField(
+#         min_value=1,
+#         required=False,
+#     )
 
-    sku = serializers.CharField(
+#     sku = serializers.CharField(
+#         required=False,
+#         allow_blank=True,
+#     )
+
+#     qr = serializers.CharField(
+#         required=False,
+#         allow_blank=True,
+#     )
+
+#     quantite = serializers.IntegerField(
+#         min_value=1,
+#     )
+
+#     prix_vente_grammes = serializers.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         required=False,
+#         allow_null=True,
+#         default=None,
+#     )
+
+#     remise = serializers.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         required=False,
+#         allow_null=True,
+#         default=Decimal("0.00"),
+#     )
+
+#     autres = serializers.DecimalField(
+#         max_digits=14,
+#         decimal_places=2,
+#         required=False,
+#         allow_null=True,
+#         default=Decimal("0.00"),
+#     )
+
+#     def validate(self, attrs):
+#         produit_id = attrs.get("produit_id")
+#         sku = (attrs.get("sku") or "").strip()
+#         qr = (attrs.get("qr") or "").strip()
+
+#         identifiers = [
+#             bool(produit_id),
+#             bool(sku),
+#             bool(qr),
+#         ]
+
+#         if sum(identifiers) == 0:
+#             raise serializers.ValidationError(
+#                 "Vous devez fournir produit_id, sku ou qr."
+#             )
+
+#         if sum(identifiers) > 1:
+#             raise serializers.ValidationError(
+#                 "Fournissez un seul identifiant produit : produit_id, sku ou qr."
+#             )
+
+#         attrs["sku"] = sku
+#         attrs["qr"] = qr
+
+#         return attrs
+    
+    
+# class VenteCreateInSerializer(serializers.Serializer):
+#     """
+#     - vendor : vendor_email non utilisé
+#     - manager/admin : vendor_email requis
+#     """
+#     vendor_email = serializers.EmailField(required=False)
+#     client = ClientOptionalInSerializer(required=False)
+#     produits = VenteProduitInSerializer(many=True)
+
+#     class Meta:
+#         ref_name = "VenteCreateIn"
+
+#     def validate(self, attrs):
+#         request = self.context.get("request")
+#         role = ""
+
+#         if request and request.user and request.user.is_authenticated:
+#             from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
+#             role = (get_role_name(request.user) or "").lower().strip()
+
+#         if role in {ROLE_ADMIN, ROLE_MANAGER} and not attrs.get("vendor_email"):
+#             raise serializers.ValidationError({
+#                 "vendor_email": "vendor_email est requis pour manager/admin."
+#             })
+
+#         if not attrs.get("produits"):
+#             raise serializers.ValidationError({
+#                 "produits": "Au moins un produit est requis."
+#             })
+
+#         return attrs
+
+
+class VenteProduitInSerializer(serializers.Serializer):
+    """
+    Une ligne de vente doit identifier exactement
+    une ProduitLine.
+
+    Identification possible :
+    - produit_line_id
+    - qr
+    - qr_code
+
+    La résolution réelle de la ProduitLine est effectuée
+    ensuite dans VenteProduitCreateView.
+    """
+
+    produit_line_id = serializers.IntegerField(
         required=False,
-        allow_blank=True,
+        min_value=1,
     )
 
     qr = serializers.CharField(
         required=False,
-        allow_blank=True,
+        allow_blank=False,
+        trim_whitespace=True,
+    )
+
+    qr_code = serializers.CharField(
+        required=False,
+        allow_blank=False,
+        trim_whitespace=True,
     )
 
     quantite = serializers.IntegerField(
+        required=False,
+        default=1,
         min_value=1,
     )
 
@@ -296,80 +417,148 @@ class VenteProduitInSerializer(serializers.Serializer):
         decimal_places=2,
         required=False,
         allow_null=True,
-        default=None,
     )
 
     remise = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
         required=False,
-        allow_null=True,
         default=Decimal("0.00"),
+        min_value=Decimal("0.00"),
     )
 
     autres = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
         required=False,
-        allow_null=True,
         default=Decimal("0.00"),
+        min_value=Decimal("0.00"),
+    )
+
+    pourcentage_occasion = serializers.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        required=False,
+        default=Decimal("0.00"),
+        min_value=Decimal("0.00"),
     )
 
     def validate(self, attrs):
-        produit_id = attrs.get("produit_id")
-        sku = (attrs.get("sku") or "").strip()
-        qr = (attrs.get("qr") or "").strip()
+        produit_line_id = attrs.get(
+            "produit_line_id"
+        )
 
-        identifiers = [
-            bool(produit_id),
-            bool(sku),
+        qr = attrs.get("qr")
+        qr_code = attrs.get("qr_code")
+
+        identifiants = sum([
+            bool(produit_line_id),
             bool(qr),
-        ]
+            bool(qr_code),
+        ])
 
-        if sum(identifiers) == 0:
-            raise serializers.ValidationError(
-                "Vous devez fournir produit_id, sku ou qr."
-            )
+        if identifiants == 0:
+            raise serializers.ValidationError({
+                "produit_line": (
+                    "Vous devez fournir produit_line_id, "
+                    "qr ou qr_code."
+                )
+            })
 
-        if sum(identifiers) > 1:
-            raise serializers.ValidationError(
-                "Fournissez un seul identifiant produit : produit_id, sku ou qr."
-            )
-
-        attrs["sku"] = sku
-        attrs["qr"] = qr
+        if identifiants > 1:
+            raise serializers.ValidationError({
+                "produit_line": (
+                    "Fournissez un seul identifiant : "
+                    "produit_line_id, qr ou qr_code."
+                )
+            })
 
         return attrs
-    
-    
+
 class VenteCreateInSerializer(serializers.Serializer):
     """
-    - vendor : vendor_email non utilisé
-    - manager/admin : vendor_email requis
+    Création d'une vente.
+
+    Règles :
+    - vendeur connecté :
+        vendor_email ignoré / non requis
+
+    - manager / admin :
+        vendor_email obligatoire
+
+    - chaque produit doit identifier une ProduitLine précise
+      via produit_line_id, qr ou qr_code
     """
-    vendor_email = serializers.EmailField(required=False)
-    client = ClientOptionalInSerializer(required=False)
-    produits = VenteProduitInSerializer(many=True)
+
+    vendor_email = serializers.EmailField(
+        required=False,
+        allow_blank=False,
+    )
+
+    client = ClientOptionalInSerializer(
+        required=False,
+    )
+
+    produits = VenteProduitInSerializer(
+        many=True,
+        required=True,
+        allow_empty=False,
+    )
 
     class Meta:
         ref_name = "VenteCreateIn"
 
     def validate(self, attrs):
         request = self.context.get("request")
+
         role = ""
 
-        if request and request.user and request.user.is_authenticated:
+        if (
+            request
+            and request.user
+            and request.user.is_authenticated
+        ):
             from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
-            role = (get_role_name(request.user) or "").lower().strip()
 
-        if role in {ROLE_ADMIN, ROLE_MANAGER} and not attrs.get("vendor_email"):
-            raise serializers.ValidationError({
-                "vendor_email": "vendor_email est requis pour manager/admin."
-            })
+            role = (
+                get_role_name(request.user)
+                or ""
+            ).lower().strip()
 
-        if not attrs.get("produits"):
+        # =====================================================
+        # ADMIN / MANAGER
+        # =====================================================
+
+        if role in {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+        }:
+            vendor_email = (
+                attrs.get("vendor_email")
+                or ""
+            ).strip()
+
+            if not vendor_email:
+                raise serializers.ValidationError({
+                    "vendor_email": (
+                        "vendor_email est requis "
+                        "pour manager/admin."
+                    )
+                })
+
+            attrs["vendor_email"] = vendor_email
+
+        # =====================================================
+        # PRODUITS
+        # =====================================================
+
+        produits = attrs.get("produits")
+
+        if not produits:
             raise serializers.ValidationError({
-                "produits": "Au moins un produit est requis."
+                "produits": (
+                    "Au moins un produit est requis."
+                )
             })
 
         return attrs
