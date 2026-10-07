@@ -307,26 +307,30 @@ class StockToVendorAssignmentLineOutSerializer(
 ):
     produit_line_id = serializers.IntegerField()
 
+    # Quantité affectée pendant CETTE opération.
     quantite_affectee = serializers.IntegerField(
         min_value=1,
     )
 
+    # Stock restant dans la bijouterie après affectation.
     magasin_en_stock = serializers.IntegerField(
         min_value=0,
     )
 
+    # Cumul de toutes les quantités affectées au vendeur.
     vendor_quantite_allouee = serializers.IntegerField(
         min_value=0,
     )
 
+    # Cumul vendu par le vendeur.
     vendor_quantite_vendue = serializers.IntegerField(
         min_value=0,
     )
 
-    vendor_en_stock = serializers.IntegerField(
+    # Stock actuellement disponible chez le vendeur.
+    quantite_disponible = serializers.IntegerField(
         min_value=0,
     )
-    
 
 
 class StockToVendorAssignmentOutSerializer(

@@ -196,6 +196,13 @@ class VendorStock(models.Model):
         auto_now=True
     )
 
+    @property
+    def quantite_disponible(self) -> int:
+        return max(
+            0,
+            self.quantite_allouee - self.quantite_vendue,
+        )
+        
     class Meta:
         ordering = [
             "produit_line_id",
@@ -262,16 +269,9 @@ class VendorStock(models.Model):
         return (
             f"{self.vendor} - "
             f"PL#{self.produit_line_id} - "
-            f"stock:{self.en_stock}"
+            f"disponible:{self.quantite_disponible}"
         )
 
-    @property
-    def en_stock(self) -> int:
-        return max(
-            0,
-            int(self.quantite_allouee or 0)
-            - int(self.quantite_vendue or 0),
-        )
 
     @property
     def produit_id(self):
