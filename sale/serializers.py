@@ -377,16 +377,14 @@ class ClientInSerializer(serializers.Serializer):
 
 class VenteProduitInSerializer(serializers.Serializer):
     """
-    Une ligne de vente doit identifier exactement
-    une ProduitLine.
+    Ligne produit pour la création d'une vente.
 
-    Identification possible :
+    Une ProduitLine exacte doit être identifiée par :
     - produit_line_id
+    OU
     - qr
+    OU
     - qr_code
-
-    La résolution réelle de la ProduitLine est effectuée
-    ensuite dans VenteProduitCreateView.
     """
 
     produit_line_id = serializers.IntegerField(
@@ -415,8 +413,8 @@ class VenteProduitInSerializer(serializers.Serializer):
     prix_vente_grammes = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
-        required=False,
-        allow_null=True,
+        required=True,
+        min_value=Decimal("0.00"),
     )
 
     remise = serializers.DecimalField(
@@ -443,37 +441,50 @@ class VenteProduitInSerializer(serializers.Serializer):
         min_value=Decimal("0.00"),
     )
 
+    def validate_pourcentage_occasion(self, value):
+        allowed = {
+            Decimal("0.00"),
+            Decimal("5.00"),
+            Decimal("10.00"),
+            Decimal("15.00"),
+            Decimal("20.00"),
+        }
+
+        if value not in allowed:
+            raise serializers.ValidationError(
+                "Valeur autorisée : 0%, 5%, 10%, 15% ou 20%."
+            )
+
+        return value
+
     def validate(self, attrs):
         produit_line_id = attrs.get(
             "produit_line_id"
         )
 
-        qr = attrs.get("qr")
-        qr_code = attrs.get("qr_code")
+        qr = (
+            attrs.get("qr")
+            or attrs.get("qr_code")
+        )
 
-        identifiants = sum([
-            bool(produit_line_id),
-            bool(qr),
-            bool(qr_code),
-        ])
-
-        if identifiants == 0:
+        if not produit_line_id and not qr:
             raise serializers.ValidationError({
                 "produit_line": (
-                    "Vous devez fournir produit_line_id, "
-                    "qr ou qr_code."
+                    "Vous devez fournir produit_line_id "
+                    "ou un QR/UUID de ProduitLine."
                 )
             })
 
-        if identifiants > 1:
+        if produit_line_id and qr:
             raise serializers.ValidationError({
                 "produit_line": (
-                    "Fournissez un seul identifiant : "
-                    "produit_line_id, qr ou qr_code."
+                    "Fournissez soit produit_line_id, "
+                    "soit qr/qr_code, pas les deux."
                 )
             })
 
         return attrs
+    
 
 class VenteCreateInSerializer(serializers.Serializer):
     """
