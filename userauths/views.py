@@ -10,6 +10,7 @@ from django.core.cache import cache
 from django.core.paginator import EmptyPage, Paginator
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.db.models.deletion import ProtectedError, RestrictedError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -37,7 +38,8 @@ from store.serializers import BijouterieMiniSerializer
 from .models import Profile, Role
 from .serializers import (ProfileSerializer, ProfileUpdateSerializer,
                           RoleSerializer, UserDetailSerializer,
-                          UserLoginSerializer, UserRegistrationSerializer)
+                          UserDetailUpdateSerializer, UserLoginSerializer,
+                          UserRegistrationSerializer)
 from .utils import (generate_email_token, send_confirmation_email,
                     verify_email_token)
 
@@ -742,16 +744,50 @@ class ValidateTokenView(APIView):
             status=status.HTTP_200_OK,
         )
 
-
-
 class UserDetailUpdateView(APIView):
+    """
+    Consultation, modification et suppression d'utilisateur.
+
+    ADMIN :
+        - Consulte tous les utilisateurs.
+        - Modifie les informations générales.
+        - Peut demander une suppression définitive.
+
+    MANAGER :
+        - Profil vérifié obligatoire.
+        - Accès limité aux utilisateurs de ses bijouteries.
+        - Peut consulter les profils désactivés.
+        - Ne peut pas gérer un administrateur.
+        - Ne peut pas supprimer définitivement un utilisateur.
+
+    Les rôles, affectations, statuts et permissions
+    sont gérés par des API dédiées.
+    """
+
     renderer_classes = [UserRenderer]
+
     permission_classes = [
         IsAuthenticated,
         IsAdminOrManager,
     ]
 
+    # ==================================================
+    # CHAMPS MODIFIABLES
+    # ==================================================
+
+    ALLOWED_UPDATE_FIELDS = {
+        "username",
+        "telephone",
+        "first_name",
+        "last_name",
+    }
+
+    # ==================================================
+    # CONTRÔLE D'ACCÈS
+    # ==================================================
+
     def _get_target_user(self, request, pk):
+
         target_user = get_object_or_404(
             User.objects.select_related("user_role"),
             pk=pk,
@@ -760,87 +796,113 @@ class UserDetailUpdateView(APIView):
         requester_role = get_role_name(request.user)
         target_role = get_role_name(target_user)
 
-        # L'administrateur a un accès global.
+        # ADMIN : accès global
         if requester_role == "admin":
             return target_user
 
-        # Un manager ne peut jamais gérer un administrateur.
-        if target_role == "admin":
+        # Seuls les managers peuvent accéder
+        # aux utilisateurs de leurs bijouteries.
+        if requester_role != "manager":
             raise PermissionDenied(
-                "Un manager ne peut pas gérer un administrateur."
+                "Accès refusé."
             )
 
-        # Le manager ne peut gérer que les utilisateurs
-        # rattachés à l'une de ses bijouteries.
+        # related_name du modèle Manager
         manager_profile = getattr(
             request.user,
             "staff_manager_profile",
             None,
         )
 
-        if not manager_profile or not getattr(
-            manager_profile,
-            "verifie",
-            False,
+        if (
+            manager_profile is None
+            or not manager_profile.verifie
         ):
             raise PermissionDenied(
-                "Profil manager invalide ou désactivé."
+                "Profil manager introuvable ou désactivé."
             )
 
-        manager_bijouterie_ids = set(
+        # Un manager ne peut jamais gérer
+        # un administrateur.
+        if (
+            target_role == "admin"
+            or target_user.is_superuser
+        ):
+            raise PermissionDenied(
+                "Un manager ne peut pas gérer "
+                "un administrateur."
+            )
+
+        bijouterie_ids = list(
             manager_profile.bijouteries.values_list(
                 "id",
                 flat=True,
             )
         )
 
-        belongs_to_manager_scope = User.objects.filter(
-            pk=target_user.pk,
-        ).filter(
-            Q(
-                vendor_profile__verifie=True,
-                vendor_profile__bijouterie_id__in=manager_bijouterie_ids,
+        if not bijouterie_ids:
+            raise PermissionDenied(
+                "Aucune bijouterie affectée à ce manager."
             )
-            |
-            Q(
-                cashier_profile__verifie=True,
-                cashier_profile__bijouterie_id__in=manager_bijouterie_ids,
+
+        # Les noms ci-dessous sont les
+        # related_query_name des profils staff.
+        #
+        # On ne filtre pas sur verifie=True,
+        # afin d'inclure les profils désactivés.
+
+        belongs_to_manager_scope = (
+            User.objects
+            .filter(pk=target_user.pk)
+            .filter(
+                Q(
+                    vendor_profile__bijouterie_id__in=bijouterie_ids
+                )
+                |
+                Q(
+                    cashier_profile__bijouterie_id__in=bijouterie_ids
+                )
+                |
+                Q(
+                    buyer_profile__bijouterie_id__in=bijouterie_ids
+                )
+                |
+                Q(
+                    manager_profile__bijouteries__id__in=bijouterie_ids
+                )
             )
-            |
-            Q(
-                buyer_profile__verifie=True,
-                buyer_profile__bijouterie_id__in=manager_bijouterie_ids,
-            )
-            |
-            Q(
-                manager_profile__verifie=True,
-                manager_profile__bijouteries__id__in=manager_bijouterie_ids,
-            )
-        ).distinct().exists()
+            .exists()
+        )
 
         if not belongs_to_manager_scope:
             raise PermissionDenied(
-                "Cet utilisateur ne dépend pas "
-                "de l'une de vos bijouteries."
+                "Cet utilisateur n'appartient pas "
+                "à l'une de vos bijouteries."
             )
-            
+
         return target_user
 
-    
+    # ==================================================
+    # GET : CONSULTER UN UTILISATEUR
+    # ==================================================
+
     @swagger_auto_schema(
         operation_summary="Consulter un utilisateur",
         operation_description=(
-            "L'administrateur peut consulter tous les utilisateurs. "
-            "Un manager peut uniquement consulter les utilisateurs "
-            "de ses bijouteries."
+            "L'administrateur consulte tous les utilisateurs. "
+            "Le manager vérifié consulte les utilisateurs "
+            "rattachés à ses bijouteries, y compris "
+            "les profils staff désactivés."
         ),
         responses={
             200: UserDetailSerializer,
+            401: "Authentification requise",
             403: "Accès refusé",
             404: "Utilisateur introuvable",
         },
     )
     def get(self, request, pk):
+
         user = self._get_target_user(
             request,
             pk,
@@ -856,57 +918,109 @@ class UserDetailUpdateView(APIView):
             status=status.HTTP_200_OK,
         )
 
+    # ==================================================
+    # PUT : MODIFIER UN UTILISATEUR
+    # ==================================================
+
     @swagger_auto_schema(
         operation_summary="Modifier un utilisateur",
         operation_description=(
-            "Modifie les informations générales d'un utilisateur. "
-            "Les rôles staff doivent être gérés via l'API Staff."
+            "Modifie uniquement les informations générales "
+            "autorisées. Les rôles, permissions, mots de passe "
+            "et affectations staff sont exclus."
         ),
-        request_body=UserDetailSerializer,
+        request_body=UserDetailUpdateSerializer,
         responses={
             200: UserDetailSerializer,
             400: "Données invalides",
+            401: "Authentification requise",
             403: "Accès refusé",
             404: "Utilisateur introuvable",
         },
     )
     def put(self, request, pk):
+
         user = self._get_target_user(
             request,
             pk,
         )
 
-        serializer = UserDetailSerializer(
+        # Refuser explicitement tout champ
+        # non autorisé, même s'il est normalement
+        # ignoré par ModelSerializer.
+
+        unknown_fields = (
+            set(request.data.keys())
+            - self.ALLOWED_UPDATE_FIELDS
+        )
+
+        if unknown_fields:
+            return Response(
+                {
+                    "detail": (
+                        "Certains champs ne sont pas "
+                        "modifiables via cette API."
+                    ),
+                    "champs_interdits": sorted(
+                        unknown_fields
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = UserDetailUpdateSerializer(
             user,
             data=request.data,
+            partial=True,
             context={"request": request},
         )
 
         serializer.is_valid(
             raise_exception=True,
         )
-        serializer.save()
+
+        with transaction.atomic():
+            serializer.save()
+
+        output_serializer = UserDetailSerializer(
+            user,
+            context={"request": request},
+        )
 
         return Response(
-            serializer.data,
+            output_serializer.data,
             status=status.HTTP_200_OK,
         )
+
+    # ==================================================
+    # DELETE : SUPPRIMER UN UTILISATEUR
+    # ==================================================
 
     @swagger_auto_schema(
         operation_summary="Supprimer un utilisateur",
         operation_description=(
-            "Supprime un utilisateur. "
-            "Un manager ne peut supprimer que les utilisateurs "
-            "de ses bijouteries."
+            "Suppression définitive réservée "
+            "aux administrateurs. "
+            "Les comptes liés à des données protégées "
+            "ne peuvent pas être supprimés."
         ),
         responses={
             204: "Utilisateur supprimé",
             400: "Suppression interdite",
-            403: "Accès refusé",
+            401: "Authentification requise",
+            403: "Accès réservé aux administrateurs",
             404: "Utilisateur introuvable",
+            409: "Utilisateur lié à des données existantes",
         },
     )
     def delete(self, request, pk):
+
+        if get_role_name(request.user) != "admin":
+            raise PermissionDenied(
+                "Seul un administrateur peut "
+                "supprimer définitivement un utilisateur."
+            )
+
         user = self._get_target_user(
             request,
             pk,
@@ -923,7 +1037,22 @@ class UserDetailUpdateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user.delete()
+        try:
+            with transaction.atomic():
+                user.delete()
+
+        except (ProtectedError, RestrictedError):
+            return Response(
+                {
+                    "detail": (
+                        "Impossible de supprimer cet utilisateur : "
+                        "il est lié à des données existantes. "
+                        "Utilisez la désactivation du compte "
+                        "ou du profil staff."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         return Response(
             status=status.HTTP_204_NO_CONTENT,
@@ -935,16 +1064,17 @@ class UsersView(APIView):
     Liste paginée des utilisateurs.
 
     ADMIN :
-        Peut consulter tous les utilisateurs.
+        - Consulte tous les utilisateurs.
 
     MANAGER :
-        Peut consulter uniquement les utilisateurs
-        rattachés à ses bijouteries.
-        Les administrateurs sont exclus.
+        - Profil manager vérifié obligatoire.
+        - Consulte les utilisateurs de ses bijouteries.
+        - Voit les profils actifs et désactivés.
+        - Ne peut pas consulter les administrateurs.
 
     PAGINATION :
-        DEFAULT_PAGE_SIZE défini dans settings.py.
-        MAX_PAGE_SIZE défini dans settings.py.
+        - DEFAULT_PAGE_SIZE depuis settings.py
+        - MAX_PAGE_SIZE depuis settings.py
     """
 
     renderer_classes = [UserRenderer]
@@ -958,8 +1088,9 @@ class UsersView(APIView):
         operation_summary="Liste paginée des utilisateurs",
         operation_description=(
             "L'administrateur consulte tous les utilisateurs. "
-            "Le manager consulte les utilisateurs rattachés "
-            "à ses bijouteries, sauf les administrateurs."
+            "Le manager vérifié consulte les utilisateurs "
+            "rattachés à ses bijouteries, y compris les "
+            "profils désactivés, sauf les administrateurs."
         ),
         manual_parameters=[
             openapi.Parameter(
@@ -1014,34 +1145,32 @@ class UsersView(APIView):
     def get(self, request):
         role = get_role_name(request.user)
 
+        # ==============================================
+        # 1. QUERYSET
+        # ==============================================
+
         queryset = (
             User.objects
             .select_related(
                 "user_role",
-                "vendor_profile__bijouterie",
-                "cashier_profile__bijouterie",
-                "buyer_profile__bijouterie",
-                "manager_profile",
-            )
-            .prefetch_related(
-                "manager_profile__bijouteries",
             )
             .order_by("-id")
         )
 
-
-        # ==================================================
-        # 1. ADMIN : TOUS LES UTILISATEURS
-        # ==================================================
+        # ==============================================
+        # 2. ADMIN : ACCÈS GLOBAL
+        # ==============================================
 
         if role == "admin":
             users = queryset
 
-        # ==================================================
-        # 2. MANAGER : UTILISATEURS DE SES BIJOUTERIES
-        # ==================================================
+        # ==============================================
+        # 3. MANAGER : ACCÈS LIMITÉ
+        # ==============================================
 
         elif role == "manager":
+
+            # related_name du modèle Manager
             manager_profile = getattr(
                 request.user,
                 "staff_manager_profile",
@@ -1073,26 +1202,25 @@ class UsersView(APIView):
                 users = queryset.none()
 
             else:
+                # related_query_name des modèles staff.
+                # On inclut les profils désactivés.
+
                 users = (
                     queryset
                     .filter(
                         Q(
-                            vendor_profile__verifie=True,
                             vendor_profile__bijouterie_id__in=bijouterie_ids,
                         )
                         |
                         Q(
-                            cashier_profile__verifie=True,
                             cashier_profile__bijouterie_id__in=bijouterie_ids,
                         )
                         |
                         Q(
-                            buyer_profile__verifie=True,
                             buyer_profile__bijouterie_id__in=bijouterie_ids,
                         )
                         |
                         Q(
-                            manager_profile__verifie=True,
                             manager_profile__bijouteries__id__in=bijouterie_ids,
                         )
                     )
@@ -1103,17 +1231,19 @@ class UsersView(APIView):
                     .distinct()
                 )
 
+        # ==============================================
+        # 4. AUTRES RÔLES
+        # ==============================================
+
         else:
             return Response(
-                {
-                    "detail": "Accès refusé."
-                },
+                {"detail": "Accès refusé."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # ==================================================
-        # 3. PARAMÈTRES DE PAGINATION
-        # ==================================================
+        # ==============================================
+        # 5. PAGINATION
+        # ==============================================
 
         default_page_size = getattr(
             settings,
@@ -1143,8 +1273,8 @@ class UsersView(APIView):
             return Response(
                 {
                     "detail": (
-                        "Les paramètres page et page_size "
-                        "doivent être des entiers."
+                        "page et page_size doivent "
+                        "être des entiers."
                     )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -1172,10 +1302,6 @@ class UsersView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ==================================================
-        # 4. PAGINATION
-        # ==================================================
-
         paginator = Paginator(
             users,
             page_size,
@@ -1186,15 +1312,13 @@ class UsersView(APIView):
 
         except EmptyPage:
             return Response(
-                {
-                    "detail": "Page inexistante."
-                },
+                {"detail": "Page inexistante."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ==================================================
-        # 5. SÉRIALISATION
-        # ==================================================
+        # ==============================================
+        # 6. SÉRIALISATION
+        # ==============================================
 
         serializer = UserDetailSerializer(
             page_obj.object_list,
@@ -1202,9 +1326,9 @@ class UsersView(APIView):
             context={"request": request},
         )
 
-        # ==================================================
-        # 6. RÉPONSE
-        # ==================================================
+        # ==============================================
+        # 7. RÉPONSE
+        # ==============================================
 
         return Response(
             {
@@ -1216,6 +1340,7 @@ class UsersView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
 
 
 class ListRolesAPIView(APIView):

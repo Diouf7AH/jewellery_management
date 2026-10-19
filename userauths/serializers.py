@@ -596,4 +596,88 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
 
         return instance
     
+
+
+
+class UserDetailUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = [
+            "username",
+            "telephone",
+            "first_name",
+            "last_name",
+        ]
+        extra_kwargs = {
+            "username": {
+                "required": False,
+                "allow_blank": True,
+                "allow_null": True,
+            },
+            "telephone": {
+                "required": False,
+                "allow_blank": True,
+                "allow_null": True,
+            },
+            "first_name": {"required": False},
+            "last_name": {"required": False},
+        }
+
+    def validate_username(self, value):
+        value = (value or "").strip()
+
+        if not value:
+            return None
+
+        queryset = User.objects.filter(
+            username__iexact=value,
+        )
+
+        if self.instance:
+            queryset = queryset.exclude(
+                pk=self.instance.pk,
+            )
+
+        if queryset.exists():
+            raise serializers.ValidationError(
+                "Ce nom d'utilisateur est déjà utilisé."
+            )
+
+        return value
+
+    def validate_telephone(self, value):
+        value = (value or "").strip().replace(" ", "")
+
+        if not value:
+            return None
+
+        if value.startswith("+"):
+            value = value[1:]
+
+        if not value.isdigit():
+            raise serializers.ValidationError(
+                "Le téléphone doit contenir uniquement des chiffres."
+            )
+
+        if not 9 <= len(value) <= 15:
+            raise serializers.ValidationError(
+                "Le téléphone doit contenir entre 9 et 15 chiffres."
+            )
+
+        queryset = User.objects.filter(
+            telephone=value,
+        )
+
+        if self.instance:
+            queryset = queryset.exclude(
+                pk=self.instance.pk,
+            )
+
+        if queryset.exists():
+            raise serializers.ValidationError(
+                "Ce numéro de téléphone est déjà utilisé."
+            )
+
+        return value
+
 # end profile
