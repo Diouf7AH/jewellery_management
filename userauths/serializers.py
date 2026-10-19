@@ -598,7 +598,6 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
     
 
 
-
 class UserDetailUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -607,7 +606,9 @@ class UserDetailUpdateSerializer(serializers.ModelSerializer):
             "telephone",
             "first_name",
             "last_name",
+            "is_active",
         ]
+
         extra_kwargs = {
             "username": {
                 "required": False,
@@ -619,8 +620,15 @@ class UserDetailUpdateSerializer(serializers.ModelSerializer):
                 "allow_blank": True,
                 "allow_null": True,
             },
-            "first_name": {"required": False},
-            "last_name": {"required": False},
+            "first_name": {
+                "required": False,
+            },
+            "last_name": {
+                "required": False,
+            },
+            "is_active": {
+                "required": False,
+            },
         }
 
     def validate_username(self, value):
@@ -679,5 +687,4 @@ class UserDetailUpdateSerializer(serializers.ModelSerializer):
             )
 
         return value
-
 # end profile

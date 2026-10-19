@@ -744,24 +744,29 @@ class ValidateTokenView(APIView):
             status=status.HTTP_200_OK,
         )
 
+
+
 class UserDetailUpdateView(APIView):
     """
     Consultation, modification et suppression d'utilisateur.
 
     ADMIN :
-        - Consulte tous les utilisateurs.
-        - Modifie les informations générales.
-        - Peut demander une suppression définitive.
+        - Accès global.
+        - Modification des informations générales.
+        - Activation et désactivation des comptes.
+        - Suppression définitive sous contraintes.
 
     MANAGER :
-        - Profil vérifié obligatoire.
-        - Accès limité aux utilisateurs de ses bijouteries.
-        - Peut consulter les profils désactivés.
-        - Ne peut pas gérer un administrateur.
-        - Ne peut pas supprimer définitivement un utilisateur.
+        - Profil manager vérifié obligatoire.
+        - Accès limité à ses bijouteries.
+        - Consultation des profils désactivés.
+        - Modification des informations générales.
+        - Interdiction de modifier is_active.
+        - Interdiction de gérer les administrateurs.
+        - Suppression définitive interdite.
 
-    Les rôles, affectations, statuts et permissions
-    sont gérés par des API dédiées.
+    Les rôles et profils staff sont gérés
+    par des API dédiées.
     """
 
     renderer_classes = [UserRenderer]
@@ -771,15 +776,12 @@ class UserDetailUpdateView(APIView):
         IsAdminOrManager,
     ]
 
-    # ==================================================
-    # CHAMPS MODIFIABLES
-    # ==================================================
-
     ALLOWED_UPDATE_FIELDS = {
         "username",
         "telephone",
         "first_name",
         "last_name",
+        "is_active",
     }
 
     # ==================================================
@@ -800,8 +802,6 @@ class UserDetailUpdateView(APIView):
         if requester_role == "admin":
             return target_user
 
-        # Seuls les managers peuvent accéder
-        # aux utilisateurs de leurs bijouteries.
         if requester_role != "manager":
             raise PermissionDenied(
                 "Accès refusé."
@@ -822,8 +822,7 @@ class UserDetailUpdateView(APIView):
                 "Profil manager introuvable ou désactivé."
             )
 
-        # Un manager ne peut jamais gérer
-        # un administrateur.
+        # Un manager ne peut pas gérer un administrateur.
         if (
             target_role == "admin"
             or target_user.is_superuser
@@ -845,11 +844,8 @@ class UserDetailUpdateView(APIView):
                 "Aucune bijouterie affectée à ce manager."
             )
 
-        # Les noms ci-dessous sont les
         # related_query_name des profils staff.
-        #
-        # On ne filtre pas sur verifie=True,
-        # afin d'inclure les profils désactivés.
+        # Les profils désactivés sont inclus.
 
         belongs_to_manager_scope = (
             User.objects
@@ -890,9 +886,9 @@ class UserDetailUpdateView(APIView):
         operation_summary="Consulter un utilisateur",
         operation_description=(
             "L'administrateur consulte tous les utilisateurs. "
-            "Le manager vérifié consulte les utilisateurs "
-            "rattachés à ses bijouteries, y compris "
-            "les profils staff désactivés."
+            "Le manager vérifié consulte uniquement "
+            "les utilisateurs de ses bijouteries, "
+            "y compris les profils staff désactivés."
         ),
         responses={
             200: UserDetailSerializer,
@@ -925,9 +921,11 @@ class UserDetailUpdateView(APIView):
     @swagger_auto_schema(
         operation_summary="Modifier un utilisateur",
         operation_description=(
-            "Modifie uniquement les informations générales "
-            "autorisées. Les rôles, permissions, mots de passe "
-            "et affectations staff sont exclus."
+            "Modifie les informations générales. "
+            "Seul l'administrateur peut activer ou "
+            "désactiver un compte avec is_active. "
+            "Les rôles, permissions et profils staff "
+            "ne sont pas modifiables."
         ),
         request_body=UserDetailUpdateSerializer,
         responses={
@@ -945,10 +943,7 @@ class UserDetailUpdateView(APIView):
             pk,
         )
 
-        # Refuser explicitement tout champ
-        # non autorisé, même s'il est normalement
-        # ignoré par ModelSerializer.
-
+        # Refuser les champs non autorisés.
         unknown_fields = (
             set(request.data.keys())
             - self.ALLOWED_UPDATE_FIELDS
@@ -968,6 +963,14 @@ class UserDetailUpdateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Seul l'admin peut modifier is_active.
+        if "is_active" in request.data:
+            if get_role_name(request.user) != "admin":
+                raise PermissionDenied(
+                    "Seul un administrateur peut "
+                    "activer ou désactiver un compte."
+                )
+
         serializer = UserDetailUpdateSerializer(
             user,
             data=request.data,
@@ -978,6 +981,23 @@ class UserDetailUpdateView(APIView):
         serializer.is_valid(
             raise_exception=True,
         )
+
+        # Vérification après conversion du booléen.
+        new_is_active = serializer.validated_data.get(
+            "is_active",
+            user.is_active,
+        )
+
+        if (
+            user.pk == request.user.pk
+            and new_is_active is False
+        ):
+            raise ValidationError({
+                "is_active": (
+                    "Vous ne pouvez pas désactiver "
+                    "votre propre compte."
+                )
+            })
 
         with transaction.atomic():
             serializer.save()
@@ -1001,14 +1021,14 @@ class UserDetailUpdateView(APIView):
         operation_description=(
             "Suppression définitive réservée "
             "aux administrateurs. "
-            "Les comptes liés à des données protégées "
-            "ne peuvent pas être supprimés."
+            "Les utilisateurs liés à des données "
+            "protégées ne peuvent pas être supprimés."
         ),
         responses={
             204: "Utilisateur supprimé",
             400: "Suppression interdite",
             401: "Authentification requise",
-            403: "Accès réservé aux administrateurs",
+            403: "Accès refusé",
             404: "Utilisateur introuvable",
             409: "Utilisateur lié à des données existantes",
         },
@@ -1046,7 +1066,7 @@ class UserDetailUpdateView(APIView):
                 {
                     "detail": (
                         "Impossible de supprimer cet utilisateur : "
-                        "il est lié à des données existantes. "
+                        "il est lié à des données protégées. "
                         "Utilisez la désactivation du compte "
                         "ou du profil staff."
                     )
@@ -1057,6 +1077,7 @@ class UserDetailUpdateView(APIView):
         return Response(
             status=status.HTTP_204_NO_CONTENT,
         )
+
 
 
 class UsersView(APIView):
