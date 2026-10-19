@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from reportlab.lib.units import mm
 
-from ..theme_riogold import (DARK, GOLD, LINE, MID, MUTED, WHITE, money_fcfa,
-                             safe)
 from .header import draw_header
 from .helpers import dec, etat_label, format_purete, to_int, truncate
+from .theme import DARK, GOLD, LINE, MID, MUTED, WHITE, money_fcfa, safe
 
 # ============================================================
 # EN-TÊTE TABLEAU

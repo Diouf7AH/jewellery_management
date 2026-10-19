@@ -6,10 +6,10 @@ from reportlab.lib.pagesizes import A5
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
 
-from ..theme_riogold import DARK, safe
 from .bottom import draw_invoice_bottom
 from .header import draw_client_vendor, draw_header, draw_invoice_info
 from .table import draw_lines_paginated
+from .theme import DARK, safe
 
 PAGE = A5
 

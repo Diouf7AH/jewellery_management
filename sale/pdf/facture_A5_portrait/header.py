@@ -2,25 +2,82 @@
 
 from __future__ import annotations
 
-import os
-
-from django.conf import settings
 from reportlab.lib.units import mm
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
-from ..theme_riogold import DARK, GOLD, LINE, WHITE, safe
 from .helpers import truncate
+from .theme import DARK, GOLD, LINE, WHITE, get_logo_gold, safe
+
+# ============================================================
+# HELPERS D'AFFICHAGE
+# ============================================================
+
+def _fit_text(text, font_name, font_size, max_width):
+    """
+    Réduit un texte à la largeur disponible dans le PDF.
+    """
+    text = safe(text).strip()
+
+    if not text:
+        return ""
+
+    if max_width <= 0:
+        return ""
+
+    if stringWidth(text, font_name, font_size) <= max_width:
+        return text
+
+    suffix = "..."
+
+    while text and stringWidth(
+        text + suffix,
+        font_name,
+        font_size,
+    ) > max_width:
+        text = text[:-1]
+
+    return text + suffix if text else ""
+
+
+def _phone_display(value):
+    """
+    Affiche le numéro sans répéter l'indicatif +221.
+    """
+    phone = safe(value).strip()
+
+    if not phone:
+        return ""
+
+    normalized = phone.replace(" ", "")
+
+    if normalized.startswith(("+221", "00221")):
+        return phone
+
+    if normalized.startswith("221") and len(normalized) == 12:
+        return f"+{normalized}"
+
+    return f"(+221) {phone}"
+
 
 # ============================================================
 # HEADER BIJOUTERIE
 # ============================================================
 
-def draw_header(
-    c,
-    w,
-    h,
-    data,
-):
-    # Fond
+def draw_header(c, w, h, data):
+    """
+    Dessine :
+    - fond blanc ;
+    - logo Rio-Gold ;
+    - nom de la bijouterie ;
+    - téléphone ;
+    - adresse ;
+    - NINEA.
+    """
+
+    # --------------------------------------------------------
+    # FOND
+    # --------------------------------------------------------
+
     c.setFillColor(WHITE)
 
     c.rect(
@@ -32,19 +89,13 @@ def draw_header(
         fill=1,
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # LOGO
-    # ========================================================
+    # --------------------------------------------------------
 
-    logo_path = os.path.join(
-        settings.MEDIA_ROOT,
-        "logo",
-        "gold_logo.png",
-    )
+    logo_path = get_logo_gold()
 
-    if os.path.exists(
-        logo_path
-    ):
+    if logo_path:
         c.drawImage(
             logo_path,
             7 * mm,
@@ -52,244 +103,232 @@ def draw_header(
             width=29 * mm,
             height=27 * mm,
             preserveAspectRatio=True,
+            anchor="c",
             mask="auto",
         )
 
-    # ========================================================
-    # BIJOUTERIE
-    # ========================================================
+    # --------------------------------------------------------
+    # NOM BIJOUTERIE
+    # --------------------------------------------------------
 
     info_x = 40 * mm
+    right_x = w - 7 * mm
 
-    c.setFillColor(
-        GOLD
-    )
+    shop_name = safe(
+        data.get("shop_name") or "RIO-GOLD"
+    ).strip()
 
-    c.setFont(
-        "Helvetica-Bold",
-        13,
-    )
+    if shop_name.lower().startswith("bijouterie"):
+        display_name = shop_name
+    else:
+        display_name = f"Bijouterie {shop_name}"
 
-    shop_name = (
-        data.get("shop_name")
-        or "RIO-GOLD"
-    )
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica-Bold", 13)
 
     c.drawString(
         info_x,
         h - 11 * mm,
-        truncate(
-            f"Bijouterie {shop_name}",
-            31,
+        _fit_text(
+            display_name,
+            "Helvetica-Bold",
+            13,
+            right_x - info_x,
         ),
     )
 
-    # Ligne dorée
-    c.setStrokeColor(
-        GOLD
-    )
+    # --------------------------------------------------------
+    # LIGNE DORÉE
+    # --------------------------------------------------------
 
-    c.setLineWidth(
-        0.9
-    )
+    c.setStrokeColor(GOLD)
+    c.setLineWidth(0.9)
 
     c.line(
         info_x,
         h - 14 * mm,
-        w - 7 * mm,
+        right_x,
         h - 14 * mm,
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # COORDONNÉES
-    # ========================================================
-
-    c.setFillColor(
-        DARK
-    )
+    # --------------------------------------------------------
 
     y = h - 20 * mm
 
-    shop_phone = safe(
-        data.get(
-            "shop_phone"
-        )
+    c.setFillColor(DARK)
+
+    shop_phone = _phone_display(
+        data.get("shop_phone")
     )
 
     if shop_phone:
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(info_x, y, "Tél :")
 
-        c.setFont(
-            "Helvetica-Bold",
-            8,
-        )
-
-        c.drawString(
-            info_x,
-            y,
-            "Tél :",
-        )
-
-        c.setFont(
-            "Helvetica",
-            8,
-        )
-
+        c.setFont("Helvetica", 8)
         c.drawString(
             info_x + 11 * mm,
             y,
-            f"(+221) {shop_phone}",
+            _fit_text(
+                shop_phone,
+                "Helvetica",
+                8,
+                right_x - (info_x + 11 * mm),
+            ),
         )
 
         y -= 4.3 * mm
 
     shop_address = safe(
-        data.get(
-            "shop_address"
-        )
-    )
+        data.get("shop_address")
+    ).strip()
 
     if shop_address:
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(info_x, y, "Adresse :")
 
-        c.setFont(
-            "Helvetica-Bold",
-            8,
-        )
-
-        c.drawString(
-            info_x,
-            y,
-            "Adresse :",
-        )
-
-        c.setFont(
-            "Helvetica",
-            8,
-        )
-
+        c.setFont("Helvetica", 8)
         c.drawString(
             info_x + 15 * mm,
             y,
-            truncate(
+            _fit_text(
                 shop_address,
-                35,
+                "Helvetica",
+                8,
+                right_x - (info_x + 15 * mm),
             ),
         )
 
         y -= 4.3 * mm
 
     shop_ninea = safe(
-        data.get(
-            "shop_ninea"
-        )
-    )
+        data.get("shop_ninea")
+    ).strip()
 
     if shop_ninea:
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(info_x, y, "NINEA :")
 
-        c.setFont(
-            "Helvetica-Bold",
-            8,
-        )
-
-        c.drawString(
-            info_x,
-            y,
-            "NINEA :",
-        )
-
-        c.setFont(
-            "Helvetica",
-            8,
-        )
-
+        c.setFont("Helvetica", 8)
         c.drawString(
             info_x + 14 * mm,
             y,
-            shop_ninea,
+            _fit_text(
+                shop_ninea,
+                "Helvetica",
+                8,
+                right_x - (info_x + 14 * mm),
+            ),
         )
 
 
 # ============================================================
-# FACTURE
+# INFORMATIONS FACTURE
 # ============================================================
 
-def draw_invoice_info(
-    c,
-    w,
-    h,
-    data,
-):
-    top = (
-        h - 43 * mm
-    )
+def draw_invoice_info(c, w, h, data):
+    """
+    Affiche :
+    - type de facture ;
+    - numéro ;
+    - date ;
+    - séparateur.
+    """
 
-    c.setFillColor(
-        DARK
+    top = h - 43 * mm
+    left_x = 7 * mm
+    right_x = w - 7 * mm
+
+    invoice_no = safe(
+        data.get("invoice_no")
+    ).strip()
+
+    date_value = safe(
+        data.get("date")
+    ).strip()
+
+    invoice_type = safe(
+        data.get("invoice_type") or "FACTURE"
+    ).strip().upper()
+
+    if invoice_type not in {
+        "FACTURE",
+        "FACTURE PROFORMA",
+    }:
+        invoice_type = "FACTURE"
+
+    # --------------------------------------------------------
+    # TITRE
+    # --------------------------------------------------------
+
+    c.setFillColor(DARK)
+
+    title_size = (
+        13 if invoice_type == "FACTURE PROFORMA"
+        else 17
     )
 
     c.setFont(
         "Helvetica-Bold",
-        17,
+        title_size,
     )
 
     c.drawString(
-        7 * mm,
+        left_x,
         top,
-        "FACTURE",
+        invoice_type,
     )
 
-    # Numéro facture
-    c.setFont(
-        "Helvetica-Bold",
-        9,
-    )
+    # --------------------------------------------------------
+    # NUMÉRO
+    # --------------------------------------------------------
+
+    c.setFont("Helvetica-Bold", 9)
 
     c.drawRightString(
-        w - 7 * mm,
+        right_x,
         top,
-        (
-            f"N° "
-            f"{safe(data.get('invoice_no'))}"
+        _fit_text(
+            f"N° {invoice_no}",
+            "Helvetica-Bold",
+            9,
+            58 * mm,
         ),
     )
 
-    # Date
-    c.setFont(
-        "Helvetica-Bold",
-        8,
-    )
+    # --------------------------------------------------------
+    # DATE
+    # --------------------------------------------------------
+
+    c.setFont("Helvetica-Bold", 8)
 
     c.drawString(
-        7 * mm,
+        left_x,
         top - 7 * mm,
         "Date",
     )
 
-    c.setFont(
-        "Helvetica",
-        8,
-    )
+    c.setFont("Helvetica", 8)
 
     c.drawRightString(
-        w - 7 * mm,
+        right_x,
         top - 7 * mm,
-        safe(
-            data.get("date")
-        ),
+        date_value,
     )
 
-    # Séparateur
-    c.setStrokeColor(
-        LINE
-    )
+    # --------------------------------------------------------
+    # SÉPARATEUR
+    # --------------------------------------------------------
 
-    c.setLineWidth(
-        0.6
-    )
+    c.setStrokeColor(LINE)
+    c.setLineWidth(0.6)
 
     c.line(
-        7 * mm,
+        left_x,
         top - 10 * mm,
-        w - 7 * mm,
+        right_x,
         top - 10 * mm,
     )
 
@@ -298,36 +337,26 @@ def draw_invoice_info(
 # CLIENT + VENDEUR
 # ============================================================
 
-def draw_client_vendor(
-    c,
-    w,
-    h,
-    data,
-):
-    y_title = (
-        h - 63 * mm
-    )
+def draw_client_vendor(c, w, h, data):
+    """
+    Affiche les informations du client et du vendeur
+    dans deux colonnes.
+    """
 
-    left_x = (
-        7 * mm
-    )
+    y_title = h - 63 * mm
 
-    right_x = (
-        82 * mm
-    )
+    left_x = 7 * mm
+    right_x = 82 * mm
 
-    # ========================================================
+    left_width = 69 * mm
+    right_width = w - right_x - 7 * mm
+
+    # --------------------------------------------------------
     # CLIENT
-    # ========================================================
+    # --------------------------------------------------------
 
-    c.setFillColor(
-        GOLD
-    )
-
-    c.setFont(
-        "Helvetica-Bold",
-        9.5,
-    )
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica-Bold", 9.5)
 
     c.drawString(
         left_x,
@@ -335,82 +364,65 @@ def draw_client_vendor(
         "CLIENT",
     )
 
-    c.setFillColor(
-        DARK
-    )
-
-    c.setFont(
-        "Helvetica-Bold",
-        9,
-    )
-
-    client_name = (
-        data.get(
-            "client_name"
-        )
+    client_name = safe(
+        data.get("client_name")
         or "Client non renseigné"
     )
+
+    c.setFillColor(DARK)
+    c.setFont("Helvetica-Bold", 9)
 
     c.drawString(
         left_x,
         y_title - 6 * mm,
-        truncate(
+        _fit_text(
             client_name,
-            28,
+            "Helvetica-Bold",
+            9,
+            left_width,
         ),
     )
 
-    c.setFont(
-        "Helvetica",
-        7.5,
-    )
-
     client_phone = safe(
-        data.get(
-            "client_phone"
-        )
-    )
+        data.get("client_phone")
+    ).strip()
+
+    c.setFont("Helvetica", 7.5)
 
     if client_phone:
-
         c.drawString(
             left_x,
             y_title - 11 * mm,
-            f"Tél : {client_phone}",
-        )
-
-    client_address = safe(
-        data.get(
-            "client_address"
-        )
-    )
-
-    if client_address:
-
-        c.drawString(
-            left_x,
-            y_title - 16 * mm,
-            truncate(
-                (
-                    f"Adresse : "
-                    f"{client_address}"
-                ),
-                35,
+            _fit_text(
+                f"Tél : {client_phone}",
+                "Helvetica",
+                7.5,
+                left_width,
             ),
         )
 
-    # ========================================================
+    client_address = safe(
+        data.get("client_address")
+    ).strip()
+
+    if client_address:
+        c.drawString(
+            left_x,
+            y_title - 16 * mm,
+            _fit_text(
+                f"Adresse : {client_address}",
+                "Helvetica",
+                7.5,
+                left_width,
+            ),
+        )
+
+    # --------------------------------------------------------
     # VENDEUR
-    # ========================================================
+    # --------------------------------------------------------
 
-    c.setFillColor(
-        GOLD
-    )
-
-    c.setFont(
-        "Helvetica-Bold",
-        9.5,
-    )
+    c.setFillColor(GOLD)
+    c.setFont("Helvetica-Bold", 9.5)
 
     c.drawString(
         right_x,
@@ -418,49 +430,44 @@ def draw_client_vendor(
         "VENDEUR",
     )
 
-    c.setFillColor(
-        DARK
+    vendor_name = safe(
+        data.get("vendor") or "-"
     )
 
-    c.setFont(
-        "Helvetica-Bold",
-        9,
-    )
-
-    vendor_name = (
-        data.get("vendor")
-        or "-"
-    )
+    c.setFillColor(DARK)
+    c.setFont("Helvetica-Bold", 9)
 
     c.drawString(
         right_x,
         y_title - 6 * mm,
-        truncate(
+        _fit_text(
             vendor_name,
-            24,
+            "Helvetica-Bold",
+            9,
+            right_width,
         ),
     )
 
+    # --------------------------------------------------------
+    # NUMÉRO DE VENTE
+    # --------------------------------------------------------
+
     sale_no = safe(
-        data.get(
-            "sale_no"
-        )
-    )
+        data.get("sale_no")
+    ).strip()
 
     if sale_no:
-
-        c.setFont(
-            "Helvetica",
-            7,
-        )
+        c.setFont("Helvetica", 7)
 
         c.drawString(
             right_x,
             y_title - 11 * mm,
-            truncate(
+            _fit_text(
                 f"Vente : {sale_no}",
-                27,
+                "Helvetica",
+                7,
+                right_width,
             ),
         )
-        
-        
+
+

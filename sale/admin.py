@@ -34,7 +34,6 @@ class VenteProduitAdmin(admin.ModelAdmin):
             "quantite",
             "prix_vente_grammes",
             "remise",
-            "autres",
             "montant_ht",
             "montant_total",
             "client_full_name",

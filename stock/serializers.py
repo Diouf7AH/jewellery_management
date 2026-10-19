@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from rest_framework import serializers
+
 from stock.models import Stock, VendorStock
 
 
@@ -300,36 +301,37 @@ class StockToVendorAssignmentInSerializer(
         return lignes
     
 
-
 class StockToVendorAssignmentLineOutSerializer(
     serializers.Serializer
 ):
     produit_line_id = serializers.IntegerField()
 
-    # Quantité affectée pendant CETTE opération.
+    # Quantité transférée pendant cette opération
     quantite_affectee = serializers.IntegerField(
         min_value=1,
     )
 
-    # Stock restant dans la bijouterie après affectation.
+    # Quantité restante dans la bijouterie
     magasin_en_stock = serializers.IntegerField(
         min_value=0,
     )
 
-    # Cumul de toutes les quantités affectées au vendeur.
+    # Quantité totale affectée au vendeur
     vendor_quantite_allouee = serializers.IntegerField(
         min_value=0,
     )
 
-    # Cumul vendu par le vendeur.
+    # Quantité totale vendue par le vendeur
     vendor_quantite_vendue = serializers.IntegerField(
         min_value=0,
     )
 
-    # Stock actuellement disponible chez le vendeur.
+    # Alias de vendor_en_stock dans la réponse
     quantite_disponible = serializers.IntegerField(
-        min_value=0,
+        source="vendor_en_stock",
+        read_only=True,
     )
+
 
 
 class StockToVendorAssignmentOutSerializer(

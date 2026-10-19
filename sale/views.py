@@ -1,12 +1,13 @@
-# from weasyprint import HTML
-# import weasyprint
+# sale/views.py
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from io import BytesIO
 from uuid import UUID
 
+logger = logging.getLogger(__name__)
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -18,10 +19,9 @@ from django.db.models.functions import Coalesce
 from django.http import FileResponse, HttpResponse
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.text import get_valid_filename
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from openpyxl import Workbook
-from openpyxl.styles import Font, numbers
 from rest_framework import permissions, status
 from rest_framework.exceptions import APIException
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -48,8 +48,10 @@ from sale.models import (Client, Facture, ModePaiement, Paiement,
 from sale.pdf.escpos_ticket_58mm import build_escpos_ticket_proforma_58mm
 from sale.pdf.escpos_ticket_80mm import build_escpos_recu_paiement_80mm
 from sale.pdf.facture_A5_portrait import build_facture_a5_portrait_pdf
+from sale.pdf.facture_A5_portrait.builder import build_facture_a5_portrait_pdf
 from sale.serializers import (CancelProformaVenteSerializer,
                               FactureListSerializer,
+                              PaiementMultiModeSerializer,
                               RetourVenteProduitSerializer,
                               UpdateVenteProduitSerializer,
                               VenteCreateInSerializer, VenteDetailSerializer,
@@ -69,11 +71,16 @@ from staff.models import Cashier
 from stock.models import Stock, VendorStock
 from vendor.models import Vendor
 
-# Adapte ce chemin à l'emplacement réel du fichier.
+# ============================================================
+# PYTHON STANDARD LIBRARY
+# ============================================================
+
+
 
 # ============================================================
 # DJANGO
 # ============================================================
+
 
 
 # ============================================================
@@ -81,9 +88,11 @@ from vendor.models import Vendor
 # ============================================================
 
 
+
 # ============================================================
 # SWAGGER
 # ============================================================
+
 
 
 # ============================================================
@@ -91,9 +100,11 @@ from vendor.models import Vendor
 # ============================================================
 
 
+
 # ============================================================
 # BACKEND
 # ============================================================
+
 
 
 # ============================================================
@@ -101,9 +112,11 @@ from vendor.models import Vendor
 # ============================================================
 
 
+
 # ============================================================
 # INVENTORY
 # ============================================================
+
 
 
 # ============================================================
@@ -111,9 +124,11 @@ from vendor.models import Vendor
 # ============================================================
 
 
+
 # ============================================================
 # SALE MODELS
 # ============================================================
+
 
 
 # ============================================================
@@ -121,9 +136,11 @@ from vendor.models import Vendor
 # ============================================================
 
 
+
 # ============================================================
 # SALE SERIALIZERS
 # ============================================================
+
 
 
 # ============================================================
@@ -131,9 +148,11 @@ from vendor.models import Vendor
 # ============================================================
 
 
+
 # ============================================================
 # STAFF
 # ============================================================
+
 
 
 # ============================================================
@@ -152,6 +171,19 @@ from vendor.models import Vendor
 # CONSTANTES
 # ============================================================
 
+# DEFAULT_PAGE_SIZE = getattr(
+#     settings,
+#     "DEFAULT_PAGE_SIZE",
+#     20,
+# )
+
+# MAX_PAGE_SIZE = getattr(
+#     settings,
+#     "MAX_PAGE_SIZE",
+#     100,
+# )
+
+
 DEFAULT_PAGE_SIZE = getattr(
     settings,
     "DEFAULT_PAGE_SIZE",
@@ -165,6 +197,10 @@ MAX_PAGE_SIZE = getattr(
 )
 
 ZERO = Decimal("0.00")
+
+# ============================================================
+# RÉPONSES D'ERREUR STANDARDISÉES
+# ============================================================
 
 def error_response(
     code,
@@ -186,897 +222,43 @@ def error_response(
         data,
         status=status_code,
     )
-
-
-# class VenteProduitCreateView(APIView):
-
-#     permission_classes = [CanCreateSale]
-#     http_method_names = ["post", "options"]
-
-#     # =========================================================
-#     # VENDEUR CONNECTÉ
-#     # =========================================================
-
-#     def _get_vendor_for_user(self, user):
-#         return (
-#             Vendor.objects
-#             .select_related(
-#                 "bijouterie",
-#                 "user",
-#             )
-#             .filter(
-#                 user=user,
-#                 verifie=True,
-#             )
-#             .first()
-#         )
-
-#     # =========================================================
-#     # VÉRIFICATION STOCK VENDEUR EXACT
-#     # =========================================================
-
-#     def _ensure_produit_line_in_vendor_stock(
-#         self,
-#         *,
-#         user,
-#         role,
-#         produit_line,
-#     ):
-#         """
-#         Pour un vendeur connecté, vérifie que la ProduitLine
-#         scannée lui est réellement affectée et qu'il reste
-#         au moins une unité disponible.
-
-#         Aucun FIFO.
-#         Aucun fallback vers une autre ProduitLine.
-#         """
-
-#         if role != ROLE_VENDOR:
-#             return
-
-#         vendor = self._get_vendor_for_user(
-#             user
-#         )
-
-#         if not vendor:
-#             raise ValidationError({
-#                 "vendor": (
-#                     "Profil vendeur introuvable."
-#                 )
-#             })
-
-#         exists = (
-#             VendorStock.objects
-#             .filter(
-#                 vendor=vendor,
-#                 bijouterie=vendor.bijouterie,
-#                 produit_line=produit_line,
-#                 quantite_allouee__gt=F(
-#                     "quantite_vendue"
-#                 ),
-#             )
-#             .exists()
-#         )
-
-#         if not exists:
-
-#             produit = produit_line.produit
-
-#             identifiant = (
-#                 getattr(
-#                     produit_line,
-#                     "uuid",
-#                     None,
-#                 )
-#                 or produit_line.pk
-#             )
-
-#             raise ValidationError({
-#                 "produit_line": (
-#                     f"Le produit '{produit.nom}' "
-#                     f"(ProduitLine {identifiant}) "
-#                     "n'est plus disponible dans "
-#                     "le stock de ce vendeur."
-#                 )
-#             })
-
-#     # =========================================================
-#     # RÉSOLUTION PRODUIT_LINE
-#     # =========================================================
-
-#     def _resolve_produit_line_id(
-#         self,
-#         item,
-#         *,
-#         user,
-#         role,
-#     ):
-#         """
-#         Résout obligatoirement une ProduitLine précise.
-
-#         Entrées acceptées :
-
-#         - produit_line_id
-#         - QR de ProduitLine
-#         - UUID de ProduitLine
-
-#         La vente ne résout plus directement un Produit.
-#         """
-
-#         produit_line_id = item.get(
-#             "produit_line_id"
-#         )
-
-#         qr = (
-#             item.get("qr")
-#             or item.get("qr_code")
-#         )
-
-#         produit_line = None
-
-#         # =====================================================
-#         # 1. ID ProduitLine
-#         # =====================================================
-
-#         if produit_line_id:
-
-#             try:
-#                 produit_line_id = int(
-#                     produit_line_id
-#                 )
-
-#             except (TypeError, ValueError):
-#                 raise ValidationError({
-#                     "produit_line_id": (
-#                         "Identifiant ProduitLine invalide."
-#                     )
-#                 })
-
-#             produit_line = (
-#                 ProduitLine.objects
-#                 .select_related(
-#                     "produit",
-#                     "lot",
-#                 )
-#                 .filter(
-#                     id=produit_line_id,
-#                 )
-#                 .first()
-#             )
-
-#         # =====================================================
-#         # 2. QR / UUID ProduitLine
-#         # =====================================================
-
-#         else:
-
-#             scan_value = qr
-
-#             if scan_value:
-
-#                 scan_value = (
-#                     str(scan_value)
-#                     .replace("\n", "")
-#                     .replace("\r", "")
-#                     .strip()
-#                 )
-
-#                 # ---------------------------------------------
-#                 # Formats acceptés :
-#                 #
-#                 # PL:<uuid>
-#                 # <uuid>
-#                 # ---------------------------------------------
-
-#                 if scan_value.startswith("PL:"):
-#                     raw_uuid = (
-#                         scan_value
-#                         .removeprefix("PL:")
-#                         .strip()
-#                     )
-
-#                 else:
-#                     raw_uuid = scan_value
-
-#                 try:
-#                     produit_line_uuid = UUID(
-#                         raw_uuid
-#                     )
-
-#                 except (
-#                     ValueError,
-#                     TypeError,
-#                     AttributeError,
-#                 ):
-#                     raise ValidationError({
-#                         "produit_line": (
-#                             "Le QR code contient un UUID "
-#                             "ProduitLine invalide."
-#                         )
-#                     })
-
-#                 produit_line = (
-#                     ProduitLine.objects
-#                     .select_related(
-#                         "produit",
-#                         "lot",
-#                     )
-#                     .filter(
-#                         uuid=produit_line_uuid,
-#                     )
-#                     .first()
-#                 )
-
-#         # =====================================================
-#         # 3. OBLIGATOIRE
-#         # =====================================================
-
-#         if not produit_line:
-#             raise ValidationError({
-#                 "produit_line": (
-#                     "ProduitLine introuvable "
-#                     "ou code invalide."
-#                 )
-#             })
-
-#         # =====================================================
-#         # 4. COHÉRENCE ProduitLine
-#         # =====================================================
-
-#         if not produit_line.produit_id:
-#             raise ValidationError({
-#                 "produit_line": (
-#                     "Cette ProduitLine n'est associée "
-#                     "à aucun produit."
-#                 )
-#             })
-
-#         if not produit_line.lot_id:
-#             raise ValidationError({
-#                 "produit_line": (
-#                     "Cette ProduitLine n'est associée "
-#                     "à aucun lot."
-#                 )
-#             })
-
-#         # =====================================================
-#         # 5. STOCK VENDEUR
-#         # =====================================================
-
-#         self._ensure_produit_line_in_vendor_stock(
-#             user=user,
-#             role=role,
-#             produit_line=produit_line,
-#         )
-
-#         return produit_line.id
-
-#     # =========================================================
-#     # NORMALISATION PRODUITS
-#     # =========================================================
-
-#     def _normalize_produits(
-#         self,
-#         produits,
-#         *,
-#         user,
-#         role,
-#     ):
-#         normalized = []
-
-#         for item in produits:
-
-#             item = dict(item)
-
-#             item["produit_line_id"] = (
-#                 self._resolve_produit_line_id(
-#                     item,
-#                     user=user,
-#                     role=role,
-#                 )
-#             )
-
-#             # ---------------------------------------------
-#             # Anciennes clés supprimées
-#             # ---------------------------------------------
-
-#             item.pop(
-#                 "produit_id",
-#                 None,
-#             )
-
-#             item.pop(
-#                 "sku",
-#                 None,
-#             )
-
-#             item.pop(
-#                 "qr",
-#                 None,
-#             )
-
-#             item.pop(
-#                 "qr_code",
-#                 None,
-#             )
-
-#             normalized.append(
-#                 item
-#             )
-
-#         return normalized
-
-#     # =========================================================
-#     # SWAGGER
-#     # =========================================================
-
-#     @swagger_auto_schema(
-#         operation_summary=(
-#             "Créer une vente (1 vendeur) "
-#             "+ facture PROFORMA "
-#             "(stock non consommé)"
-#         ),
-#         request_body=VenteCreateInSerializer,
-#         responses={
-#             201: openapi.Response("Créé"),
-#             400: "Erreur validation",
-#             403: "Accès refusé",
-#         },
-#         tags=["Ventes"],
-#     )
-
-#     # =========================================================
-#     # POST
-#     # =========================================================
-
-#     @transaction.atomic
-#     def post(self, request):
-
-#         # =====================================================
-#         # 1. VALIDATION PAYLOAD
-#         # =====================================================
-
-#         serializer = VenteCreateInSerializer(
-#             data=request.data,
-#             context={
-#                 "request": request,
-#             },
-#         )
-
-#         serializer.is_valid(
-#             raise_exception=True
-#         )
-
-#         validated = (
-#             serializer.validated_data
-#         )
-
-#         role = (
-#             get_role_name(
-#                 request.user
-#             )
-#             or ""
-#         ).lower().strip()
-
-#         # =====================================================
-#         # 2. NORMALISATION ProduitLine
-#         # =====================================================
-
-#         try:
-
-#             produits_normalized = (
-#                 self._normalize_produits(
-#                     validated["produits"],
-#                     user=request.user,
-#                     role=role,
-#                 )
-#             )
-
-#         except ValidationError as e:
-
-#             detail = (
-#                 getattr(
-#                     e,
-#                     "message_dict",
-#                     None,
-#                 )
-#                 or getattr(
-#                     e,
-#                     "messages",
-#                     None,
-#                 )
-#                 or str(e)
-#             )
-
-#             return Response(
-#                 {
-#                     "detail": detail,
-#                 },
-#                 status=(
-#                     status.HTTP_400_BAD_REQUEST
-#                 ),
-#             )
-
-#         payload = {
-#             "client": (
-#                 validated.get("client")
-#                 or {}
-#             ),
-#             "produits": (
-#                 produits_normalized
-#             ),
-#         }
-
-#         # =====================================================
-#         # 3. ADMIN / MANAGER : VENDEUR CIBLE
-#         # =====================================================
-
-#         if role in {
-#             ROLE_ADMIN,
-#             ROLE_MANAGER,
-#         }:
-
-#             vendor_email = (
-#                 validated.get(
-#                     "vendor_email"
-#                 )
-#                 or ""
-#             ).strip()
-
-#             if not vendor_email:
-
-#                 return Response(
-#                     {
-#                         "detail": (
-#                             "vendor_email est requis "
-#                             "pour admin/manager."
-#                         )
-#                     },
-#                     status=(
-#                         status.HTTP_400_BAD_REQUEST
-#                     ),
-#                 )
-
-#             vendor = (
-#                 Vendor.objects
-#                 .select_related(
-#                     "bijouterie",
-#                     "user",
-#                 )
-#                 .filter(
-#                     user__email__iexact=(
-#                         vendor_email
-#                     ),
-#                     verifie=True,
-#                 )
-#                 .first()
-#             )
-
-#             if not vendor:
-
-#                 return Response(
-#                     {
-#                         "detail": (
-#                             "Vendeur introuvable pour "
-#                             "ce vendor_email."
-#                         )
-#                     },
-#                     status=(
-#                         status.HTTP_400_BAD_REQUEST
-#                     ),
-#                 )
-
-#             # =================================================
-#             # MANAGER : CONTRÔLE BIJOUTERIE
-#             # =================================================
-
-#             if role == ROLE_MANAGER:
-
-#                 manager_profile = getattr(
-#                     request.user,
-#                     "staff_manager_profile",
-#                     None,
-#                 )
-
-#                 if (
-#                     not manager_profile
-#                     or (
-#                         hasattr(
-#                             manager_profile,
-#                             "verifie",
-#                         )
-#                         and not manager_profile.verifie
-#                     )
-#                 ):
-
-#                     return Response(
-#                         {
-#                             "detail": (
-#                                 "Profil manager invalide."
-#                             )
-#                         },
-#                         status=(
-#                             status.HTTP_403_FORBIDDEN
-#                         ),
-#                     )
-
-#                 if not (
-#                     manager_profile
-#                     .bijouteries
-#                     .filter(
-#                         id=vendor.bijouterie_id
-#                     )
-#                     .exists()
-#                 ):
-
-#                     return Response(
-#                         {
-#                             "detail": (
-#                                 "⛔ Vous ne pouvez pas "
-#                                 "créer une vente pour un "
-#                                 "vendeur hors de vos "
-#                                 "bijouteries."
-#                             )
-#                         },
-#                         status=(
-#                             status.HTTP_403_FORBIDDEN
-#                         ),
-#                     )
-
-#             payload[
-#                 "vendor_email"
-#             ] = vendor_email
-
-#         # =====================================================
-#         # 4. CRÉATION VENTE + PROFORMA
-#         # =====================================================
-
-#         try:
-
-#             (
-#                 vente,
-#                 facture,
-#                 audit_created,
-#             ) = create_sale_one_vendor(
-#                 user=request.user,
-#                 role=role,
-#                 payload=payload,
-#             )
-
-#         except ValidationError as e:
-
-#             detail = (
-#                 getattr(
-#                     e,
-#                     "message_dict",
-#                     None,
-#                 )
-#                 or getattr(
-#                     e,
-#                     "messages",
-#                     None,
-#                 )
-#                 or str(e)
-#             )
-
-#             return Response(
-#                 {
-#                     "detail": detail,
-#                 },
-#                 status=(
-#                     status.HTTP_400_BAD_REQUEST
-#                 ),
-#             )
-
-#         # =====================================================
-#         # 5. LIGNES RÉPONSE
-#         # =====================================================
-
-#         lignes = []
-
-#         vente_lignes = (
-#             vente.lignes
-#             .select_related(
-#                 "produit_line",
-#                 "produit_line__produit",
-#                 "produit_line__lot",
-#             )
-#             .all()
-#         )
-
-#         for ligne in vente_lignes:
-
-#             produit_line = (
-#                 ligne.produit_line
-#             )
-
-#             produit = (
-#                 produit_line.produit
-#             )
-
-#             pourcentage_occasion = Decimal(
-#                 str(
-#                     ligne.pourcentage_occasion
-#                     or "0.00"
-#                 )
-#             )
-
-#             montant_ht = Decimal(
-#                 str(
-#                     ligne.montant_ht
-#                     or "0.00"
-#                 )
-#             )
-
-#             reduction_occasion = (
-#                 montant_ht
-#                 * pourcentage_occasion
-#                 / Decimal("100")
-#             ).quantize(
-#                 Decimal("0.01"),
-#                 rounding=ROUND_HALF_UP,
-#             )
-
-#             lignes.append({
-
-#                 # -----------------------------------------
-#                 # Ligne vente
-#                 # -----------------------------------------
-
-#                 "ligne_id": ligne.id,
-
-#                 # -----------------------------------------
-#                 # ProduitLine = source de vérité
-#                 # -----------------------------------------
-
-#                 "produit_line_id": (
-#                     produit_line.id
-#                 ),
-
-#                 "produit_line_uuid": str(
-#                     produit_line.uuid
-#                 ),
-
-#                 # -----------------------------------------
-#                 # Produit dérivé de ProduitLine
-#                 # -----------------------------------------
-
-#                 "produit_id": (
-#                     produit.id
-#                 ),
-
-#                 "produit_nom": getattr(
-#                     produit,
-#                     "nom",
-#                     None,
-#                 ),
-
-#                 "sku": getattr(
-#                     produit,
-#                     "sku",
-#                     None,
-#                 ),
-
-#                 "etat": getattr(
-#                     produit,
-#                     "etat",
-#                     None,
-#                 ),
-
-#                 # -----------------------------------------
-#                 # Quantité / prix
-#                 # -----------------------------------------
-
-#                 "quantite": (
-#                     ligne.quantite
-#                 ),
-
-#                 "prix_vente_grammes": str(
-#                     ligne.prix_vente_grammes
-#                 ),
-
-#                 # -----------------------------------------
-#                 # Brut
-#                 # -----------------------------------------
-
-#                 "montant_ht": str(
-#                     ligne.montant_ht
-#                 ),
-
-#                 # -----------------------------------------
-#                 # Occasion
-#                 # -----------------------------------------
-
-#                 "pourcentage_occasion": str(
-#                     pourcentage_occasion
-#                 ),
-
-#                 "reduction_occasion": str(
-#                     reduction_occasion
-#                 ),
-
-#                 # -----------------------------------------
-#                 # Remise / autres
-#                 # -----------------------------------------
-
-#                 "remise": str(
-#                     ligne.remise
-#                     or Decimal("0.00")
-#                 ),
-
-#                 "autres": str(
-#                     ligne.autres
-#                     or Decimal("0.00")
-#                 ),
-
-#                 # -----------------------------------------
-#                 # Total ligne avant TVA facture
-#                 # -----------------------------------------
-
-#                 "montant_total": str(
-#                     ligne.montant_total
-#                     or Decimal("0.00")
-#                 ),
-#             })
-
-#         # =====================================================
-#         # 6. CLIENT
-#         # =====================================================
-
-#         client = getattr(
-#             vente,
-#             "client",
-#             None,
-#         )
-
-#         # =====================================================
-#         # 7. RESPONSE
-#         # =====================================================
-
-#         return Response(
-#             {
-#                 "message": (
-#                     "Vente créée avec succès."
-#                 ),
-
-#                 "vente_id": vente.id,
-
-#                 "numero_vente": (
-#                     vente.numero_vente
-#                 ),
-
-#                 "facture": {
-#                     "facture_id": (
-#                         facture.id
-#                     ),
-
-#                     "numero_facture": (
-#                         facture.numero_facture
-#                     ),
-
-#                     "type_facture": (
-#                         facture.type_facture
-#                     ),
-
-#                     "status_facture": (
-#                         facture.status
-#                     ),
-
-#                     "montant_ht": str(
-#                         facture.montant_ht
-#                     ),
-
-#                     "taux_tva": str(
-#                         facture.taux_tva
-#                     ),
-
-#                     "montant_tva": str(
-#                         facture.montant_tva
-#                     ),
-
-#                     "montant_total": str(
-#                         facture.montant_total
-#                     ),
-#                 },
-
-#                 "audit_created": bool(
-#                     audit_created
-#                 ),
-
-#                 "bijouterie": {
-#                     "id": (
-#                         facture.bijouterie_id
-#                     ),
-
-#                     "nom": getattr(
-#                         facture.bijouterie,
-#                         "nom",
-#                         None,
-#                     ),
-#                 },
-
-#                 "client": {
-#                     "id": (
-#                         client.id
-#                         if client
-#                         else None
-#                     ),
-
-#                     "nom": (
-#                         getattr(
-#                             client,
-#                             "nom",
-#                             None,
-#                         )
-#                         if client
-#                         else None
-#                     ),
-
-#                     "prenom": (
-#                         getattr(
-#                             client,
-#                             "prenom",
-#                             None,
-#                         )
-#                         if client
-#                         else None
-#                     ),
-
-#                     "telephone": (
-#                         getattr(
-#                             client,
-#                             "telephone",
-#                             None,
-#                         )
-#                         if client
-#                         else None
-#                     ),
-#                 },
-
-#                 "lignes": lignes,
-#             },
-#             status=(
-#                 status.HTTP_201_CREATED
-#             ),
-#         )
-        
+    
 
 class VenteProduitCreateView(APIView):
     """
     Création d'une vente pour un seul vendeur.
 
-    Architecture :
-        ProduitLine
-            ↓
-        VendorStock exact
-            ↓
-        VenteProduit
-            ↓
-        PROFORMA
+    TYPES :
+    - Bijoux uniquement : proforma.
+    - Prestations uniquement : sans facture.
+    - Bijoux + prestations : proforma.
 
-    IMPORTANT :
-    - Aucun SALE_OUT ici.
-    - Aucun stock vendeur consommé ici.
-    - Le stock sera consommé uniquement lorsque la facture
-      sera totalement payée.
+    IDENTIFICATION :
+    - produit_line_id : recherche manuelle.
+    - qr : recherche automatique.
+
+    STOCK :
+    - ProduitLine exacte.
+    - Vérification VendorStock.
     - Aucun FIFO.
-    - Une ProduitLine précise doit être identifiée.
+    - Aucun SALE_OUT à la création.
+
+    PAIEMENT :
+    - Bijoux / mixte : circuit facture.
+    - Prestations seules : paiement direct avec reçu.
     """
 
     permission_classes = [CanCreateSale]
     http_method_names = ["post", "options"]
 
-    # =========================================================
-    # VENDEUR CONNECTÉ
-    # =========================================================
+    # ========================================================
+    # 1. VENDEUR CONNECTÉ
+    # ========================================================
 
     def _get_vendor_for_user(self, user):
         return (
             Vendor.objects
-            .select_related(
-                "bijouterie",
-                "user",
-            )
+            .select_related("bijouterie", "user")
             .filter(
                 user=user,
                 verifie=True,
@@ -1084,9 +266,9 @@ class VenteProduitCreateView(APIView):
             .first()
         )
 
-    # =========================================================
-    # VÉRIFICATION STOCK VENDEUR EXACT
-    # =========================================================
+    # ========================================================
+    # 2. VÉRIFICATION PRÉLIMINAIRE DU STOCK
+    # ========================================================
 
     def _ensure_produit_line_in_vendor_stock(
         self,
@@ -1096,13 +278,11 @@ class VenteProduitCreateView(APIView):
         produit_line,
     ):
         """
-        Pour un vendeur connecté :
+        Vérifie que le bijou est présent dans le stock
+        du vendeur connecté.
 
-        vérifie que la ProduitLine exacte lui est affectée
-        et qu'au moins une unité reste disponible.
-
-        Aucun FIFO.
-        Aucun fallback vers une autre ProduitLine.
+        Le service create_sale_one_vendor() vérifie
+        ensuite la quantité totale sous verrou.
         """
 
         if role != ROLE_VENDOR:
@@ -1110,11 +290,11 @@ class VenteProduitCreateView(APIView):
 
         vendor = self._get_vendor_for_user(user)
 
-        if not vendor:
+        if vendor is None:
             raise ValidationError({
                 "vendor": (
                     "Profil vendeur introuvable "
-                    "ou vendeur désactivé."
+                    "ou désactivé."
                 )
             })
 
@@ -1132,29 +312,16 @@ class VenteProduitCreateView(APIView):
         )
 
         if not exists:
-            produit = produit_line.produit
-
-            identifiant = (
-                getattr(
-                    produit_line,
-                    "uuid",
-                    None,
-                )
-                or produit_line.pk
-            )
-
             raise ValidationError({
                 "produit_line": (
-                    f"Le produit '{produit.nom}' "
-                    f"(ProduitLine {identifiant}) "
-                    "n'est plus disponible dans "
-                    "le stock de ce vendeur."
+                    "Ce bijou n'est pas disponible "
+                    "dans le stock du vendeur."
                 )
             })
 
-    # =========================================================
-    # RÉSOLUTION PRODUIT_LINE
-    # =========================================================
+    # ========================================================
+    # 3. RECHERCHE MANUELLE OU QR CODE
+    # ========================================================
 
     def _resolve_produit_line_id(
         self,
@@ -1164,44 +331,39 @@ class VenteProduitCreateView(APIView):
         role,
     ):
         """
-        Résout obligatoirement une ProduitLine précise.
+        Retourne l'identifiant d'une ProduitLine.
 
-        Entrées acceptées :
+        Recherche manuelle :
+            produit_line_id
 
-        - produit_line_id
-        - qr
-        - qr_code
-
-        QR acceptés :
-
-        - PL:<uuid>
-        - <uuid>
-
-        La vente ne résout jamais directement un Produit.
+        Recherche automatique :
+            qr = UUID
+            qr = PL:<uuid>
         """
 
-        produit_line_id = item.get(
-            "produit_line_id"
-        )
+        produit_line_id = item.get("produit_line_id")
+        qr = item.get("qr")
 
-        qr = (
-            item.get("qr")
-            or item.get("qr_code")
-        )
+        if produit_line_id is not None and qr:
+            raise ValidationError({
+                "produit_line": (
+                    "Fournissez produit_line_id ou qr, "
+                    "pas les deux."
+                )
+            })
 
-        produit_line = None
+        if produit_line_id is None and not qr:
+            raise ValidationError({
+                "produit_line": (
+                    "Vous devez fournir "
+                    "produit_line_id ou qr."
+                )
+            })
 
-        # =====================================================
-        # 1. ID ProduitLine
-        # =====================================================
-
-        if produit_line_id:
+        if produit_line_id is not None:
 
             try:
-                produit_line_id = int(
-                    produit_line_id
-                )
-
+                produit_line_id = int(produit_line_id)
             except (TypeError, ValueError):
                 raise ValidationError({
                     "produit_line_id": (
@@ -1209,108 +371,69 @@ class VenteProduitCreateView(APIView):
                     )
                 })
 
+            if produit_line_id <= 0:
+                raise ValidationError({
+                    "produit_line_id": (
+                        "L'identifiant doit être positif."
+                    )
+                })
+
             produit_line = (
                 ProduitLine.objects
-                .select_related(
-                    "produit",
-                    "lot",
-                )
-                .filter(
-                    id=produit_line_id,
-                )
+                .select_related("produit", "lot")
+                .filter(pk=produit_line_id)
                 .first()
             )
 
-        # =====================================================
-        # 2. QR / UUID ProduitLine
-        # =====================================================
-
         else:
 
-            scan_value = qr
+            scan_value = (
+                str(qr)
+                .replace("\n", "")
+                .replace("\r", "")
+                .strip()
+            )
 
-            if scan_value:
+            if scan_value.upper().startswith("PL:"):
+                scan_value = scan_value[3:].strip()
 
-                scan_value = (
-                    str(scan_value)
-                    .replace("\n", "")
-                    .replace("\r", "")
-                    .strip()
-                )
-
-                if scan_value.startswith("PL:"):
-                    raw_uuid = (
-                        scan_value
-                        .removeprefix("PL:")
-                        .strip()
+            try:
+                produit_line_uuid = UUID(scan_value)
+            except (ValueError, TypeError, AttributeError):
+                raise ValidationError({
+                    "qr": (
+                        "QR code invalide. "
+                        "UUID ProduitLine attendu."
                     )
-                else:
-                    raw_uuid = scan_value
+                })
 
-                try:
-                    produit_line_uuid = UUID(
-                        raw_uuid
-                    )
+            produit_line = (
+                ProduitLine.objects
+                .select_related("produit", "lot")
+                .filter(uuid=produit_line_uuid)
+                .first()
+            )
 
-                except (
-                    ValueError,
-                    TypeError,
-                    AttributeError,
-                ):
-                    raise ValidationError({
-                        "produit_line": (
-                            "Le QR code contient un UUID "
-                            "ProduitLine invalide."
-                        )
-                    })
-
-                produit_line = (
-                    ProduitLine.objects
-                    .select_related(
-                        "produit",
-                        "lot",
-                    )
-                    .filter(
-                        uuid=produit_line_uuid,
-                    )
-                    .first()
-                )
-
-        # =====================================================
-        # 3. PRODUIT_LINE OBLIGATOIRE
-        # =====================================================
-
-        if not produit_line:
+        if produit_line is None:
             raise ValidationError({
                 "produit_line": (
-                    "ProduitLine introuvable "
-                    "ou code invalide."
+                    "ProduitLine introuvable."
                 )
             })
-
-        # =====================================================
-        # 4. COHÉRENCE PRODUIT_LINE
-        # =====================================================
 
         if not produit_line.produit_id:
             raise ValidationError({
                 "produit_line": (
-                    "Cette ProduitLine n'est associée "
-                    "à aucun produit."
+                    "Cette ProduitLine n'a aucun produit."
                 )
             })
 
         if not produit_line.lot_id:
             raise ValidationError({
                 "produit_line": (
-                    "Cette ProduitLine n'est associée "
-                    "à aucun lot."
+                    "Cette ProduitLine n'a aucun lot."
                 )
             })
-
-        # =====================================================
-        # 5. STOCK VENDEUR
-        # =====================================================
 
         self._ensure_produit_line_in_vendor_stock(
             user=user,
@@ -1318,11 +441,11 @@ class VenteProduitCreateView(APIView):
             produit_line=produit_line,
         )
 
-        return produit_line.id
+        return produit_line.pk
 
-    # =========================================================
-    # NORMALISATION PRODUITS
-    # =========================================================
+    # ========================================================
+    # 4. NORMALISATION DES BIJOUX
+    # ========================================================
 
     def _normalize_produits(
         self,
@@ -1332,10 +455,10 @@ class VenteProduitCreateView(APIView):
         role,
     ):
         """
-        Convertit chaque entrée en produit_line_id.
+        Convertit les QR codes en produit_line_id.
 
-        Les anciennes clés Produit/QR ne sont pas transmises
-        au service métier.
+        Le service de création reçoit uniquement
+        des identifiants ProduitLine.
         """
 
         normalized = []
@@ -1352,202 +475,142 @@ class VenteProduitCreateView(APIView):
                 )
             )
 
-            # Anciennes / temporaires clés d'entrée
-            item.pop(
-                "produit_id",
-                None,
-            )
+            item.pop("qr", None)
+            item.pop("produit_id", None)
+            item.pop("sku", None)
 
-            item.pop(
-                "sku",
-                None,
-            )
-
-            item.pop(
-                "qr",
-                None,
-            )
-
-            item.pop(
-                "qr_code",
-                None,
-            )
-
-            normalized.append(
-                item
-            )
+            normalized.append(item)
 
         return normalized
 
-    # =========================================================
-    # SWAGGER
-    # =========================================================
+    # ========================================================
+    # 5. SWAGGER
+    # ========================================================
 
     @swagger_auto_schema(
+        operation_id="creer_vente_rio_gold",
         operation_summary=(
-            "Créer une vente (1 vendeur) "
-            "+ facture PROFORMA "
-            "(stock non consommé)"
+            "Créer une vente : bijoux, prestations ou mixte"
         ),
+        operation_description="""
+        Création d'une vente Rio-Gold pour un seul vendeur.
+
+        IDENTIFICATION DES BIJOUX
+        ------------------------
+        Recherche manuelle :
+        - produit_line_id : identifiant de ProduitLine.
+
+        Recherche automatique :
+        - qr : UUID de ProduitLine.
+        - qr : PL:<uuid>.
+
+        Un seul identifiant par bijou.
+
+        TYPES DE VENTES
+        ---------------
+        1. Bijoux uniquement :
+           création d'une facture proforma.
+
+        2. Prestations uniquement :
+           aucune facture, paiement direct avec reçu.
+
+        3. Bijoux + prestations :
+           création d'une facture proforma.
+
+        RÉDUCTIONS
+        ----------
+        - Bijou neuf : remise fixe en FCFA.
+        - Bijou occasion : pourcentage automatique
+          depuis ProduitLine.pourcentage_occasion.
+
+        STOCK
+        -----
+        - Vérification VendorStock.
+        - Aucun FIFO.
+        - Aucun SALE_OUT à la création.
+        - Consommation après paiement intégral.
+
+        AUTORISATIONS
+        -------------
+        - Vendeur : utilise son propre profil.
+        - Admin / Manager : vendor_email obligatoire.
+        - Manager : vendeur dans une bijouterie autorisée.
+        """,
         request_body=VenteCreateInSerializer,
         responses={
             201: openapi.Response(
-                "Vente créée"
+                description="Vente créée avec succès",
             ),
-            400: "Erreur validation",
-            403: "Accès refusé",
+            400: openapi.Response(
+                description="Erreur de validation",
+            ),
+            403: openapi.Response(
+                description="Accès refusé",
+            ),
         },
         tags=["Ventes"],
     )
-
-    # =========================================================
-    # POST
-    # =========================================================
-
     @transaction.atomic
     def post(self, request):
 
-        # =====================================================
-        # 1. VALIDATION PAYLOAD
-        # =====================================================
+        # ====================================================
+        # 6. VALIDATION DU PAYLOAD
+        # ====================================================
 
         serializer = VenteCreateInSerializer(
             data=request.data,
-            context={
-                "request": request,
-            },
+            context={"request": request},
         )
 
-        serializer.is_valid(
-            raise_exception=True
-        )
+        serializer.is_valid(raise_exception=True)
 
-        validated = (
-            serializer.validated_data
-        )
+        validated = serializer.validated_data
 
         role = (
-            get_role_name(
-                request.user
-            )
-            or ""
+            get_role_name(request.user) or ""
         ).lower().strip()
 
-        # =====================================================
-        # 2. NORMALISATION PRODUIT_LINE
-        # =====================================================
+        # ====================================================
+        # 7. VENDEUR POUR ADMIN / MANAGER
+        # ====================================================
 
-        try:
+        vendor_email = (
+            validated.get("vendor_email") or ""
+        ).strip()
 
-            produits_normalized = (
-                self._normalize_produits(
-                    validated["produits"],
-                    user=request.user,
-                    role=role,
-                )
-            )
-
-        except ValidationError as e:
-
-            detail = (
-                getattr(
-                    e,
-                    "message_dict",
-                    None,
-                )
-                or getattr(
-                    e,
-                    "detail",
-                    None,
-                )
-                or getattr(
-                    e,
-                    "messages",
-                    None,
-                )
-                or str(e)
-            )
-
-            return Response(
-                {
-                    "detail": detail,
-                },
-                status=(
-                    status.HTTP_400_BAD_REQUEST
-                ),
-            )
-
-        payload = {
-            "client": (
-                validated.get("client")
-                or {}
-            ),
-            "produits": (
-                produits_normalized
-            ),
-        }
-
-        # =====================================================
-        # 3. ADMIN / MANAGER : VENDEUR CIBLE
-        # =====================================================
-
-        if role in {
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-        }:
-
-            vendor_email = (
-                validated.get(
-                    "vendor_email"
-                )
-                or ""
-            ).strip()
+        if role in {ROLE_ADMIN, ROLE_MANAGER}:
 
             if not vendor_email:
                 return Response(
                     {
                         "detail": (
-                            "vendor_email est requis "
+                            "vendor_email est obligatoire "
                             "pour admin/manager."
                         )
                     },
-                    status=(
-                        status.HTTP_400_BAD_REQUEST
-                    ),
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             vendor = (
                 Vendor.objects
-                .select_related(
-                    "bijouterie",
-                    "user",
-                )
+                .select_related("bijouterie", "user")
                 .filter(
-                    user__email__iexact=(
-                        vendor_email
-                    ),
+                    user__email__iexact=vendor_email,
                     verifie=True,
                 )
                 .first()
             )
 
-            if not vendor:
+            if vendor is None:
                 return Response(
                     {
                         "detail": (
-                            "Vendeur introuvable ou "
-                            "désactivé pour ce "
-                            "vendor_email."
+                            "Vendeur introuvable "
+                            "ou désactivé."
                         )
                     },
-                    status=(
-                        status.HTTP_400_BAD_REQUEST
-                    ),
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-
-            # =================================================
-            # MANAGER : CONTRÔLE BIJOUTERIE
-            # =================================================
 
             if role == ROLE_MANAGER:
 
@@ -1558,7 +621,7 @@ class VenteProduitCreateView(APIView):
                 )
 
                 if (
-                    not manager_profile
+                    manager_profile is None
                     or not getattr(
                         manager_profile,
                         "verifie",
@@ -1572,107 +635,149 @@ class VenteProduitCreateView(APIView):
                                 "ou désactivé."
                             )
                         },
-                        status=(
-                            status.HTTP_403_FORBIDDEN
-                        ),
+                        status=status.HTTP_403_FORBIDDEN,
                     )
 
                 if not (
-                    manager_profile
-                    .bijouteries
-                    .filter(
-                        id=vendor.bijouterie_id
-                    )
+                    manager_profile.bijouteries
+                    .filter(pk=vendor.bijouterie_id)
                     .exists()
                 ):
                     return Response(
                         {
                             "detail": (
-                                "Vous ne pouvez pas créer "
-                                "une vente pour un vendeur "
-                                "hors de vos bijouteries."
+                                "Ce vendeur n'appartient pas "
+                                "à une bijouterie autorisée."
                             )
                         },
-                        status=(
-                            status.HTTP_403_FORBIDDEN
-                        ),
+                        status=status.HTTP_403_FORBIDDEN,
                     )
 
-            payload[
-                "vendor_email"
-            ] = vendor_email
+        # ====================================================
+        # 8. PRODUITS ET PRESTATIONS
+        # ====================================================
 
-        # =====================================================
-        # 4. CRÉATION VENTE + PROFORMA
-        # =====================================================
+        produits_in = validated.get("produits") or []
+        autres = validated.get("autres") or []
 
-        try:
-
-            (
-                vente,
-                facture,
-                audit_created,
-            ) = create_sale_one_vendor(
-                user=request.user,
-                role=role,
-                payload=payload,
-            )
-
-        except ValidationError as e:
-
-            detail = (
-                getattr(
-                    e,
-                    "message_dict",
-                    None,
-                )
-                or getattr(
-                    e,
-                    "detail",
-                    None,
-                )
-                or getattr(
-                    e,
-                    "messages",
-                    None,
-                )
-                or str(e)
-            )
-
+        if not produits_in and not autres:
             return Response(
                 {
-                    "detail": detail,
+                    "detail": (
+                        "La vente doit contenir au moins "
+                        "un bijou ou une prestation."
+                    )
                 },
-                status=(
-                    status.HTTP_400_BAD_REQUEST
-                ),
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # =====================================================
-        # 5. LIGNES RÉPONSE
-        # =====================================================
+        # ====================================================
+        # 9. NORMALISATION PRODUITLINE
+        # ====================================================
 
-        lignes = []
+        try:
+            produits_normalized = (
+                self._normalize_produits(
+                    produits_in,
+                    user=request.user,
+                    role=role,
+                )
+            )
+
+        except ValidationError as exc:
+            return Response(
+                {
+                    "detail": (
+                        getattr(exc, "message_dict", None)
+                        or getattr(exc, "messages", None)
+                        or str(exc)
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ====================================================
+        # 10. PAYLOAD SERVICE
+        # ====================================================
+
+        payload = {
+            "vendor_email": (
+                vendor_email
+                if role in {ROLE_ADMIN, ROLE_MANAGER}
+                else None
+            ),
+            "client": validated.get("client") or {},
+            "produits": produits_normalized,
+            "autres": autres,
+        }
+
+        # ====================================================
+        # 11. CRÉATION DE LA VENTE
+        # ====================================================
+
+        try:
+            vente, facture, audit_created = (
+                create_sale_one_vendor(
+                    user=request.user,
+                    role=role,
+                    payload=payload,
+                )
+            )
+
+        except ValidationError as exc:
+            return Response(
+                {
+                    "detail": (
+                        getattr(exc, "message_dict", None)
+                        or getattr(exc, "messages", None)
+                        or str(exc)
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ====================================================
+        # 12. TYPE DE VENTE
+        # ====================================================
+
+        contient_bijoux = bool(produits_normalized)
+        contient_prestations = bool(autres)
+
+        if contient_bijoux and contient_prestations:
+            type_vente = "mixte"
+
+        elif contient_bijoux:
+            type_vente = "bijoux"
+
+        else:
+            type_vente = "prestations"
+
+        paiement_direct = (
+            type_vente == "prestations"
+        )
+
+        # ====================================================
+        # 13. PRODUITS POUR LA RÉPONSE
+        # ====================================================
+
+        produits_response = []
 
         vente_lignes = (
             vente.lignes
             .select_related(
                 "produit_line",
                 "produit_line__produit",
-                "produit_line__lot",
             )
             .all()
         )
 
         for ligne in vente_lignes:
 
-            produit_line = (
-                ligne.produit_line
-            )
+            produit_line = ligne.produit_line
+            produit = produit_line.produit
 
-            produit = (
-                produit_line.produit
-            )
+            # Snapshot historique de la vente.
+            etat = ligne.etat_vente
 
             pourcentage_occasion = Decimal(
                 str(
@@ -1682,233 +787,191 @@ class VenteProduitCreateView(APIView):
             )
 
             montant_ht = Decimal(
+                str(ligne.montant_ht or "0.00")
+            )
+
+            montant_reduction = Decimal(
                 str(
-                    ligne.montant_ht
+                    ligne.montant_reduction
                     or "0.00"
                 )
             )
 
             reduction_occasion = (
-                montant_ht
-                * pourcentage_occasion
-                / Decimal("100")
-            ).quantize(
-                Decimal("0.01"),
-                rounding=ROUND_HALF_UP,
+                montant_reduction
+                if etat == "O"
+                else Decimal("0.00")
             )
 
-            lignes.append({
-
-                # ---------------------------------------------
-                # VenteProduit
-                # ---------------------------------------------
-
-                "ligne_id": ligne.id,
-
-                # ---------------------------------------------
-                # ProduitLine = source de vérité
-                # ---------------------------------------------
-
-                "produit_line_id": (
-                    produit_line.id
-                ),
-
+            produits_response.append({
+                "ligne_id": ligne.pk,
+                "produit_line_id": produit_line.pk,
                 "produit_line_uuid": str(
                     produit_line.uuid
                 ),
-
-                # ---------------------------------------------
-                # Produit dérivé
-                # ---------------------------------------------
-
-                "produit_id": (
-                    produit.id
-                ),
-
-                "produit_nom": getattr(
-                    produit,
-                    "nom",
-                    None,
-                ),
-
+                "produit_id": produit.pk,
+                "produit_nom": produit.nom,
                 "sku": getattr(
                     produit,
                     "sku",
                     None,
                 ),
-
-                "etat": getattr(
-                    produit,
-                    "etat",
-                    None,
+                "etat": etat,
+                "quantite": ligne.quantite,
+                "poids_unitaire_vente": str(
+                    ligne.poids_unitaire_vente
                 ),
-
-                # ---------------------------------------------
-                # Quantité / prix
-                # ---------------------------------------------
-
-                "quantite": (
-                    ligne.quantite
-                ),
-
                 "prix_vente_grammes": str(
                     ligne.prix_vente_grammes
                 ),
-
-                # ---------------------------------------------
-                # Montants
-                # ---------------------------------------------
-
-                "montant_ht": str(
-                    ligne.montant_ht
-                ),
-
+                "montant_ht": str(montant_ht),
                 "pourcentage_occasion": str(
                     pourcentage_occasion
                 ),
-
                 "reduction_occasion": str(
                     reduction_occasion
                 ),
-
+                "montant_reduction": str(
+                    montant_reduction
+                ),
                 "remise": str(
                     ligne.remise
                     or Decimal("0.00")
                 ),
-
-                "autres": str(
-                    ligne.autres
-                    or Decimal("0.00")
-                ),
-
                 "montant_total": str(
                     ligne.montant_total
                     or Decimal("0.00")
                 ),
             })
 
-        # =====================================================
-        # 6. CLIENT
-        # =====================================================
+        # ====================================================
+        # 14. PRESTATIONS POUR LA RÉPONSE
+        # ====================================================
 
-        client = getattr(
-            vente,
-            "client",
-            None,
-        )
+        autres_response = [
+            {
+                "id": autre.pk,
+                "type_autre": autre.type_autre,
+                "type_autre_label": (
+                    autre.get_type_autre_display()
+                ),
+                "quantite": autre.quantite,
+                "prix_unitaire": str(
+                    autre.prix_unitaire
+                ),
+                "montant_total": str(
+                    autre.montant_total
+                ),
+            }
+            for autre in vente.autres.all()
+        ]
 
-        # =====================================================
-        # 7. RESPONSE
-        # =====================================================
+        # ====================================================
+        # 15. FACTURE OPTIONNELLE
+        # ====================================================
+
+        facture_response = None
+
+        if facture is not None:
+
+            facture_response = {
+                "facture_id": facture.pk,
+                "numero_facture": (
+                    facture.numero_facture
+                ),
+                "type_facture": (
+                    facture.type_facture
+                ),
+                "status_facture": (
+                    facture.status
+                ),
+                "montant_ht": str(
+                    facture.montant_ht
+                ),
+                "taux_tva": (
+                    str(facture.taux_tva)
+                    if facture.taux_tva is not None
+                    else None
+                ),
+                "montant_tva": (
+                    str(facture.montant_tva)
+                    if facture.montant_tva is not None
+                    else None
+                ),
+                "montant_total": str(
+                    facture.montant_total
+                ),
+            }
+
+        # ====================================================
+        # 16. RÉPONSE FINALE
+        # ====================================================
+
+        client = vente.client
+        bijouterie = vente.bijouterie
 
         return Response(
             {
                 "message": (
-                    "Vente créée avec succès."
+                    "Vente créée. Paiement direct requis."
+                    if paiement_direct
+                    else "Vente créée avec proforma."
                 ),
-
-                "vente_id": vente.id,
-
-                "numero_vente": (
-                    vente.numero_vente
+                "vente_id": vente.pk,
+                "numero_vente": vente.numero_vente,
+                "type_vente": type_vente,
+                "paiement_direct": paiement_direct,
+                "paiement_effectue": False,
+                "recu_paiement": None,
+                "montant_total_vente": str(
+                    vente.montant_total
+                    or Decimal("0.00")
                 ),
-
-                "facture": {
-                    "facture_id": (
-                        facture.id
-                    ),
-
-                    "numero_facture": (
-                        facture.numero_facture
-                    ),
-
-                    "type_facture": (
-                        facture.type_facture
-                    ),
-
-                    "status_facture": (
-                        facture.status
-                    ),
-
-                    "montant_ht": str(
-                        facture.montant_ht
-                    ),
-
-                    "taux_tva": str(
-                        facture.taux_tva
-                    ),
-
-                    "montant_tva": str(
-                        facture.montant_tva
-                    ),
-
-                    "montant_total": str(
-                        facture.montant_total
-                    ),
-                },
-
-                "audit_created": bool(
-                    audit_created
-                ),
-
+                "facture": facture_response,
+                "audit_created": bool(audit_created),
                 "bijouterie": {
-                    "id": (
-                        facture.bijouterie_id
-                    ),
-
-                    "nom": getattr(
-                        facture.bijouterie,
-                        "nom",
-                        None,
-                    ),
+                    "id": bijouterie.pk,
+                    "nom": bijouterie.nom,
                 },
-
                 "client": {
                     "id": (
-                        client.id
-                        if client
-                        else None
+                        client.pk
+                        if client else None
                     ),
-
                     "nom": (
-                        getattr(
-                            client,
-                            "nom",
-                            None,
-                        )
-                        if client
-                        else None
+                        client.nom
+                        if client else None
                     ),
-
                     "prenom": (
-                        getattr(
-                            client,
-                            "prenom",
-                            None,
-                        )
-                        if client
-                        else None
+                        client.prenom
+                        if client else None
                     ),
-
                     "telephone": (
-                        getattr(
-                            client,
-                            "telephone",
-                            None,
-                        )
-                        if client
-                        else None
+                        client.telephone
+                        if client else None
                     ),
                 },
-
-                "lignes": lignes,
+                "produits": produits_response,
+                "autres": autres_response,
             },
-            status=(
-                status.HTTP_201_CREATED
-            ),
+            status=status.HTTP_201_CREATED,
         )
 
+
 class VenteListAPIView(APIView):
+    """
+    Liste paginée des ventes Rio-Gold.
+
+    Rôles :
+    - admin : toutes les ventes accessibles
+    - manager : ventes de ses bijouteries
+    - vendor : uniquement ses ventes
+    - cashier : ventes de sa bijouterie
+
+    Comprend :
+    - bijoux : vente.lignes
+    - prestations : vente.autres
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -1917,15 +980,15 @@ class VenteListAPIView(APIView):
         operation_description="""
 Liste les ventes selon le rôle connecté.
 
-Règles :
-- admin : voit toutes les ventes
-- manager : voit les ventes de ses bijouteries
-- vendor : voit seulement ses propres ventes
-- cashier : voit les ventes de sa bijouterie
+Par défaut, affiche les ventes de l'année en cours.
 
-La liste est limitée aux ventes de l’année en cours.
+Les ventes peuvent contenir :
+- uniquement des bijoux ;
+- uniquement des prestations ;
+- des bijoux et des prestations.
 
 Filtres disponibles :
+- annee
 - numero_vente
 - client_q
 - vendor_id
@@ -1935,6 +998,12 @@ Filtres disponibles :
         """,
         manual_parameters=[
             openapi.Parameter(
+                "annee",
+                openapi.IN_QUERY,
+                description="Année des ventes. Par défaut : année en cours.",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
                 "numero_vente",
                 openapi.IN_QUERY,
                 description="Recherche par numéro de vente",
@@ -1943,10 +1012,7 @@ Filtres disponibles :
             openapi.Parameter(
                 "client_q",
                 openapi.IN_QUERY,
-                description=(
-                    "Recherche client par nom, prénom "
-                    "ou téléphone"
-                ),
+                description="Recherche client par nom, prénom ou téléphone",
                 type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
@@ -1958,10 +1024,7 @@ Filtres disponibles :
             openapi.Parameter(
                 "status_facture",
                 openapi.IN_QUERY,
-                description=(
-                    "Statut facture : "
-                    "non_paye, partiel ou paye"
-                ),
+                description="Statut facture : non_paye, partiel ou paye",
                 type=openapi.TYPE_STRING,
                 enum=[
                     "non_paye",
@@ -1978,13 +1041,13 @@ Filtres disponibles :
             openapi.Parameter(
                 "page_size",
                 openapi.IN_QUERY,
-                description="Nombre d’éléments par page",
+                description="Nombre d'éléments par page",
                 type=openapi.TYPE_INTEGER,
             ),
         ],
         responses={
             200: openapi.Response(
-                description="Liste des ventes",
+                description="Liste des ventes"
             ),
             400: "Erreur de filtre",
             403: "Accès refusé",
@@ -1993,16 +1056,15 @@ Filtres disponibles :
     )
     def get(self, request):
 
+        # =====================================================
+        # 1. UTILISATEUR ET RÔLE
+        # =====================================================
+
         user = request.user
 
         role = (
-            get_role_name(user)
-            or ""
+            get_role_name(user) or ""
         ).lower().strip()
-
-        # =====================================================
-        # 1. RÔLES AUTORISÉS
-        # =====================================================
 
         allowed_roles = {
             ROLE_ADMIN,
@@ -2019,7 +1081,7 @@ Filtres disponibles :
             )
 
         # =====================================================
-        # 2. PROFIL VENDEUR CONNECTÉ
+        # 2. PROFIL VENDEUR
         # =====================================================
 
         my_vendor = None
@@ -2034,11 +1096,7 @@ Filtres disponibles :
 
             if not (
                 my_vendor
-                and getattr(
-                    my_vendor,
-                    "verifie",
-                    False,
-                )
+                and getattr(my_vendor, "verifie", False)
                 and my_vendor.bijouterie_id
             ):
                 return error_response(
@@ -2064,12 +1122,16 @@ Filtres disponibles :
                 "facture_vente",
             )
             .prefetch_related(
+                # Bijoux
                 "lignes",
                 "lignes__produit_line",
                 "lignes__produit_line__produit",
                 "lignes__produit_line__lot",
                 "lignes__vendor",
                 "lignes__vendor__user",
+
+                # Prestations et autres lignes
+                "autres",
             )
             .filter(
                 scope_bijouterie_q(
@@ -2084,31 +1146,46 @@ Filtres disponibles :
         )
 
         # =====================================================
-        # 4. VENDEUR : UNIQUEMENT SES VENTES
+        # 4. VENDEUR : SES VENTES UNIQUEMENT
         # =====================================================
 
         if role == ROLE_VENDOR:
             qs = qs.filter(
-                vendor_id=my_vendor.id,
+                vendor_id=my_vendor.id
             )
 
         # =====================================================
-        # 5. ANNÉE EN COURS
+        # 5. FILTRE ANNÉE
         # =====================================================
 
-        today = timezone.localdate()
+        current_year = timezone.localdate().year
 
-        start_date = timezone.make_aware(
-            datetime(
-                today.year,
-                1,
-                1,
-            ),
-            timezone.get_current_timezone(),
+        annee_raw = (
+            request.query_params.get("annee")
+            or str(current_year)
         )
 
+        try:
+            annee = int(annee_raw)
+        except (TypeError, ValueError):
+            return error_response(
+                code="INVALID_YEAR",
+                message="annee doit être une année valide.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if annee < 2000 or annee > current_year:
+            return error_response(
+                code="INVALID_YEAR",
+                message=(
+                    f"annee doit être comprise entre "
+                    f"2000 et {current_year}."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
         qs = qs.filter(
-            created_at__gte=start_date,
+            created_at__year=annee
         )
 
         # =====================================================
@@ -2116,17 +1193,14 @@ Filtres disponibles :
         # =====================================================
 
         numero_vente = (
-            request.query_params
-            .get(
-                "numero_vente",
-                "",
-            )
-            .strip()
-        )
+            request.query_params.get(
+                "numero_vente", ""
+            ) or ""
+        ).strip()
 
         if numero_vente:
             qs = qs.filter(
-                numero_vente__icontains=numero_vente,
+                numero_vente__icontains=numero_vente
             )
 
         # =====================================================
@@ -2134,74 +1208,43 @@ Filtres disponibles :
         # =====================================================
 
         client_q = (
-            request.query_params
-            .get(
-                "client_q",
-                "",
-            )
-            .strip()
-        )
+            request.query_params.get(
+                "client_q", ""
+            ) or ""
+        ).strip()
 
         if client_q:
             qs = qs.filter(
-                Q(
-                    client__nom__icontains=client_q
-                )
-                |
-                Q(
-                    client__prenom__icontains=client_q
-                )
-                |
-                Q(
-                    client__telephone__icontains=client_q
-                )
+                Q(client__nom__icontains=client_q)
+                | Q(client__prenom__icontains=client_q)
+                | Q(client__telephone__icontains=client_q)
             )
 
         # =====================================================
         # 8. FILTRE VENDEUR
         # =====================================================
 
-        vendor_id_raw = (
-            request.query_params.get(
-                "vendor_id"
-            )
+        vendor_id_raw = request.query_params.get(
+            "vendor_id"
         )
 
-        if vendor_id_raw not in {
-            None,
-            "",
-        }:
+        if vendor_id_raw not in (None, ""):
 
             try:
-                vendor_id = int(
-                    vendor_id_raw
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
+                vendor_id = int(vendor_id_raw)
+            except (TypeError, ValueError):
                 return error_response(
                     code="INVALID_VENDOR_ID",
-                    message=(
-                        "vendor_id doit être "
-                        "un entier positif."
-                    ),
+                    message="vendor_id doit être un entier positif.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             if vendor_id <= 0:
                 return error_response(
                     code="INVALID_VENDOR_ID",
-                    message=(
-                        "vendor_id doit être "
-                        "un entier positif."
-                    ),
+                    message="vendor_id doit être un entier positif.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
-
-            # -------------------------------------------------
-            # Un vendeur ne peut demander les ventes
-            # d'un autre vendeur.
-            # -------------------------------------------------
 
             if (
                 role == ROLE_VENDOR
@@ -2217,7 +1260,7 @@ Filtres disponibles :
                 )
 
             qs = qs.filter(
-                vendor_id=vendor_id,
+                vendor_id=vendor_id
             )
 
         # =====================================================
@@ -2225,13 +1268,10 @@ Filtres disponibles :
         # =====================================================
 
         status_facture = (
-            request.query_params
-            .get(
-                "status_facture",
-                "",
-            )
-            .strip()
-        )
+            request.query_params.get(
+                "status_facture", ""
+            ) or ""
+        ).strip()
 
         allowed_invoice_statuses = {
             Facture.STAT_NON_PAYE,
@@ -2241,21 +1281,18 @@ Filtres disponibles :
 
         if status_facture:
 
-            if (
-                status_facture
-                not in allowed_invoice_statuses
-            ):
+            if status_facture not in allowed_invoice_statuses:
                 return error_response(
                     code="INVALID_INVOICE_STATUS",
                     message=(
                         "status_facture invalide. "
-                        "Utiliser non_paye, "
-                        "partiel ou paye."
+                        "Utiliser non_paye, partiel ou paye."
                     ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             qs = qs.filter(
-                facture_vente__status=status_facture,
+                facture_vente__status=status_facture
             )
 
         # =====================================================
@@ -2267,33 +1304,17 @@ Filtres disponibles :
             default: int,
         ) -> int:
 
-            raw_value = (
-                request.query_params.get(
-                    name
-                )
-            )
+            raw_value = request.query_params.get(name)
 
-            if raw_value in {
-                None,
-                "",
-            }:
+            if raw_value in (None, ""):
                 return default
 
             try:
-                value = int(
-                    raw_value
-                )
-
-            except (
-                TypeError,
-                ValueError,
-            ):
+                value = int(raw_value)
+            except (TypeError, ValueError):
                 return default
 
-            return max(
-                1,
-                value,
-            )
+            return max(1, value)
 
         page = parse_positive_int(
             "page",
@@ -2324,6 +1345,7 @@ Filtres disponibles :
                     "page": 1,
                     "page_size": page_size,
                     "num_pages": 0,
+                    "annee": annee,
                     "results": [],
                 },
                 status=status.HTTP_200_OK,
@@ -2334,10 +1356,7 @@ Filtres disponibles :
         # =====================================================
 
         try:
-            page_obj = paginator.page(
-                page
-            )
-
+            page_obj = paginator.page(page)
         except EmptyPage:
             page_obj = paginator.page(
                 paginator.num_pages
@@ -2353,7 +1372,7 @@ Filtres disponibles :
         )
 
         # =====================================================
-        # 14. RESPONSE
+        # 14. RÉPONSE
         # =====================================================
 
         return Response(
@@ -2362,27 +1381,125 @@ Filtres disponibles :
                 "page": page_obj.number,
                 "page_size": page_size,
                 "num_pages": paginator.num_pages,
+                "annee": annee,
                 "results": serializer.data,
             },
             status=status.HTTP_200_OK,
         )
-        
 
 
 class ListFacturesAPayerView(APIView):
+    """
+    Liste les factures non payées ou partiellement payées.
+
+    Règles :
+    - Admin : factures de son scope.
+    - Manager : factures de ses bijouteries.
+    - Vendor : factures de ses propres ventes.
+    - Cashier : factures de sa bijouterie.
+
+    Une facture est éligible uniquement si la vente
+    contient au moins une ligne de bijou.
+
+    Les ventes mixtes (bijoux + prestations)
+    sont autorisées.
+    """
+
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary="Lister les factures à payer",
+        operation_description="""
+Liste les factures non payées ou partiellement payées.
+
+Règles :
+- admin : factures autorisées par son scope
+- manager : factures de ses bijouteries
+- vendor : factures de ses propres ventes
+- cashier : factures de sa bijouterie
+
+Seules les ventes contenant au moins un bijou sont incluses.
+
+Les ventes mixtes (bijoux + prestations) sont autorisées.
+Les ventes contenant uniquement des prestations sont exclues.
+
+Par défaut, les factures de l'année en cours sont affichées.
+
+Filtres :
+- annee
+- numero_facture
+- client_q
+- payment_mode
+- page
+- page_size
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                "annee",
+                openapi.IN_QUERY,
+                description=(
+                    "Année des factures. "
+                    "Par défaut : année en cours."
+                ),
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "numero_facture",
+                openapi.IN_QUERY,
+                description="Recherche par numéro de facture",
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "client_q",
+                openapi.IN_QUERY,
+                description=(
+                    "Recherche client par nom, prénom "
+                    "ou téléphone"
+                ),
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "payment_mode",
+                openapi.IN_QUERY,
+                description=(
+                    "Filtrer par code du mode de paiement "
+                    "(cash, wave, orange_money, etc.)"
+                ),
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "page",
+                openapi.IN_QUERY,
+                description="Numéro de page",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "page_size",
+                openapi.IN_QUERY,
+                description="Nombre d'éléments par page",
+                type=openapi.TYPE_INTEGER,
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Liste des factures à payer"
+            ),
+            400: "Erreur de filtre",
+            403: "Accès refusé",
+        },
+        tags=["Factures"],
+    )
     def get(self, request):
+
+        # =====================================================
+        # 1. UTILISATEUR ET RÔLE
+        # =====================================================
+
         user = request.user
 
         role = (
-            get_role_name(user)
-            or ""
+            get_role_name(user) or ""
         ).lower().strip()
-
-        # =====================================================
-        # 1. CONTRÔLE RÔLE
-        # =====================================================
 
         allowed_roles = {
             ROLE_ADMIN,
@@ -2412,36 +1529,37 @@ class ListFacturesAPayerView(APIView):
                 "vente__vendor__user",
             )
             .prefetch_related(
+                # Paiements
                 "paiements",
 
-                # ---------------------------------------------
-                # Lignes de vente
-                # ---------------------------------------------
+                # Bijoux
                 "vente__lignes",
                 "vente__lignes__vendor",
                 "vente__lignes__vendor__user",
 
-                # ---------------------------------------------
-                # ProduitLine = source de vérité
-                # ---------------------------------------------
+                # ProduitLine : source de vérité
                 "vente__lignes__produit_line",
                 "vente__lignes__produit_line__lot",
 
-                # ---------------------------------------------
-                # Produit dérivé de ProduitLine
-                # ---------------------------------------------
+                # Produit associé à ProduitLine
                 "vente__lignes__produit_line__produit",
                 "vente__lignes__produit_line__produit__categorie",
                 "vente__lignes__produit_line__produit__marque",
                 "vente__lignes__produit_line__produit__purete",
                 "vente__lignes__produit_line__produit__modele",
+
+                # Prestations et autres lignes
+                "vente__autres",
             )
             .filter(
                 status__in=[
                     Facture.STAT_NON_PAYE,
                     Facture.STAT_PARTIEL,
-                ]
+                ],
+                # Au moins un bijou est obligatoire
+                vente__lignes__isnull=False,
             )
+            .distinct()
         )
 
         # =====================================================
@@ -2456,7 +1574,7 @@ class ListFacturesAPayerView(APIView):
         )
 
         # =====================================================
-        # 4. VENDEUR : UNIQUEMENT SES PROPRES FACTURES
+        # 4. VENDEUR : UNIQUEMENT SES FACTURES
         # =====================================================
 
         if role == ROLE_VENDOR:
@@ -2469,11 +1587,7 @@ class ListFacturesAPayerView(APIView):
 
             if not (
                 vendor
-                and getattr(
-                    vendor,
-                    "verifie",
-                    False,
-                )
+                and getattr(vendor, "verifie", False)
                 and vendor.bijouterie_id
             ):
                 return error_response(
@@ -2486,26 +1600,41 @@ class ListFacturesAPayerView(APIView):
                 )
 
             qs = qs.filter(
-                vente__vendor_id=vendor.id,
+                vente__vendor_id=vendor.id
             )
 
         # =====================================================
-        # 5. ANNÉE EN COURS
+        # 5. FILTRE ANNÉE
         # =====================================================
 
-        today = timezone.localdate()
+        current_year = timezone.localdate().year
 
-        start_date = timezone.make_aware(
-            datetime(
-                today.year,
-                1,
-                1,
-            ),
-            timezone.get_current_timezone(),
+        annee_raw = (
+            request.query_params.get("annee")
+            or str(current_year)
         )
 
+        try:
+            annee = int(annee_raw)
+        except (TypeError, ValueError):
+            return error_response(
+                code="INVALID_YEAR",
+                message="annee doit être une année valide.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if annee < 2000 or annee > current_year:
+            return error_response(
+                code="INVALID_YEAR",
+                message=(
+                    f"annee doit être comprise entre "
+                    f"2000 et {current_year}."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
         qs = qs.filter(
-            date_creation__gte=start_date,
+            date_creation__year=annee
         )
 
         # =====================================================
@@ -2513,17 +1642,14 @@ class ListFacturesAPayerView(APIView):
         # =====================================================
 
         numero = (
-            request.query_params
-            .get(
-                "numero_facture",
-                "",
-            )
-            .strip()
-        )
+            request.query_params.get(
+                "numero_facture", ""
+            ) or ""
+        ).strip()
 
         if numero:
             qs = qs.filter(
-                numero_facture__icontains=numero,
+                numero_facture__icontains=numero
             )
 
         # =====================================================
@@ -2531,25 +1657,20 @@ class ListFacturesAPayerView(APIView):
         # =====================================================
 
         client_q = (
-            request.query_params
-            .get(
-                "client_q",
-                "",
-            )
-            .strip()
-        )
+            request.query_params.get(
+                "client_q", ""
+            ) or ""
+        ).strip()
 
         if client_q:
             qs = qs.filter(
                 Q(
                     vente__client__nom__icontains=client_q
                 )
-                |
-                Q(
+                | Q(
                     vente__client__prenom__icontains=client_q
                 )
-                |
-                Q(
+                | Q(
                     vente__client__telephone__icontains=client_q
                 )
             )
@@ -2559,18 +1680,14 @@ class ListFacturesAPayerView(APIView):
         # =====================================================
 
         payment_mode = (
-            request.query_params
-            .get(
-                "payment_mode",
-                "",
-            )
-            .strip()
-        )
+            request.query_params.get(
+                "payment_mode", ""
+            ) or ""
+        ).strip()
 
         if payment_mode:
             qs = (
-                qs
-                .filter(
+                qs.filter(
                     paiements__lignes__mode_paiement__code__iexact=(
                         payment_mode
                     )
@@ -2595,29 +1712,18 @@ class ListFacturesAPayerView(APIView):
             name: str,
             default: int,
         ) -> int:
-            value = request.query_params.get(
-                name
-            )
 
-            if value in {
-                None,
-                "",
-            }:
+            value = request.query_params.get(name)
+
+            if value in (None, ""):
                 return default
 
             try:
                 value = int(value)
-
-            except (
-                TypeError,
-                ValueError,
-            ):
+            except (TypeError, ValueError):
                 return default
 
-            return max(
-                1,
-                value,
-            )
+            return max(1, value)
 
         page = parse_positive_int(
             "page",
@@ -2648,6 +1754,7 @@ class ListFacturesAPayerView(APIView):
                     "page": 1,
                     "page_size": page_size,
                     "num_pages": 0,
+                    "annee": annee,
                     "results": [],
                 },
                 status=status.HTTP_200_OK,
@@ -2658,10 +1765,7 @@ class ListFacturesAPayerView(APIView):
         # =====================================================
 
         try:
-            page_obj = paginator.page(
-                page
-            )
-
+            page_obj = paginator.page(page)
         except EmptyPage:
             page_obj = paginator.page(
                 paginator.num_pages
@@ -2686,27 +1790,131 @@ class ListFacturesAPayerView(APIView):
                 "page": page_obj.number,
                 "page_size": page_size,
                 "num_pages": paginator.num_pages,
+                "annee": annee,
                 "results": serializer.data,
             },
             status=status.HTTP_200_OK,
         )
         
-
-
 class ListFacturePayeesView(APIView):
+    """
+    Liste les factures entièrement payées.
+
+    Règles :
+    - Admin : factures accessibles selon son scope.
+    - Manager : factures de ses bijouteries.
+    - Vendor : factures de ses propres ventes.
+    - Cashier : factures de sa bijouterie.
+
+    Seules les ventes contenant au moins un bijou
+    sont éligibles à une facture.
+
+    Les ventes mixtes (bijoux + prestations)
+    sont autorisées.
+    """
+
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary="Lister les factures payées",
+        operation_description="""
+Liste les factures entièrement payées.
+
+Rôles :
+- admin : factures autorisées par son scope
+- manager : factures de ses bijouteries
+- vendor : factures de ses propres ventes
+- cashier : factures de sa bijouterie
+
+Seules les ventes contenant au moins un bijou sont incluses.
+
+Les ventes mixtes (bijoux + prestations) sont autorisées.
+Les ventes avec prestations uniquement sont exclues.
+
+Par défaut, les factures de l'année en cours sont affichées.
+
+Filtres disponibles :
+- annee
+- numero_facture
+- vendor_id
+- client_q
+- payment_mode
+- page
+- page_size
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                "annee",
+                openapi.IN_QUERY,
+                description=(
+                    "Année des factures. "
+                    "Par défaut : année en cours."
+                ),
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "numero_facture",
+                openapi.IN_QUERY,
+                description="Recherche par numéro de facture",
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "vendor_id",
+                openapi.IN_QUERY,
+                description="Filtrer par vendeur",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "client_q",
+                openapi.IN_QUERY,
+                description=(
+                    "Recherche client par nom, prénom "
+                    "ou téléphone"
+                ),
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "payment_mode",
+                openapi.IN_QUERY,
+                description=(
+                    "Filtrer par code du mode de paiement "
+                    "(cash, wave, orange_money, etc.)"
+                ),
+                type=openapi.TYPE_STRING,
+            ),
+            openapi.Parameter(
+                "page",
+                openapi.IN_QUERY,
+                description="Numéro de page",
+                type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "page_size",
+                openapi.IN_QUERY,
+                description="Nombre d'éléments par page",
+                type=openapi.TYPE_INTEGER,
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Liste des factures payées"
+            ),
+            400: "Erreur de filtre",
+            403: "Accès refusé",
+        },
+        tags=["Factures"],
+    )
     def get(self, request):
+
+        # =====================================================
+        # 1. UTILISATEUR ET RÔLE
+        # =====================================================
+
         user = request.user
 
         role = (
-            get_role_name(user)
-            or ""
+            get_role_name(user) or ""
         ).lower().strip()
-
-        # =====================================================
-        # 1. CONTRÔLE RÔLE
-        # =====================================================
 
         allowed_roles = {
             ROLE_ADMIN,
@@ -2729,6 +1937,7 @@ class ListFacturePayeesView(APIView):
         my_vendor = None
 
         if role == ROLE_VENDOR:
+
             my_vendor = getattr(
                 user,
                 "staff_vendor_profile",
@@ -2737,11 +1946,7 @@ class ListFacturePayeesView(APIView):
 
             if not (
                 my_vendor
-                and getattr(
-                    my_vendor,
-                    "verifie",
-                    False,
-                )
+                and getattr(my_vendor, "verifie", False)
                 and my_vendor.bijouterie_id
             ):
                 return error_response(
@@ -2767,33 +1972,36 @@ class ListFacturePayeesView(APIView):
                 "vente__vendor__user",
             )
             .prefetch_related(
+                # Paiements
                 "paiements",
 
-                # ---------------------------------------------
-                # Ligne de vente / vendeur
-                # ---------------------------------------------
+                # Bijoux
                 "vente__lignes",
                 "vente__lignes__vendor",
                 "vente__lignes__vendor__user",
 
-                # ---------------------------------------------
-                # ProduitLine = source de vérité
-                # ---------------------------------------------
+                # ProduitLine : source de vérité
                 "vente__lignes__produit_line",
                 "vente__lignes__produit_line__lot",
 
-                # ---------------------------------------------
                 # Produit dérivé de ProduitLine
-                # ---------------------------------------------
                 "vente__lignes__produit_line__produit",
                 "vente__lignes__produit_line__produit__categorie",
                 "vente__lignes__produit_line__produit__marque",
                 "vente__lignes__produit_line__produit__purete",
                 "vente__lignes__produit_line__produit__modele",
+
+                # Prestations et autres lignes
+                "vente__autres",
             )
             .filter(
                 status=Facture.STAT_PAYE,
+
+                # Facture autorisée uniquement
+                # si la vente contient un bijou.
+                vente__lignes__isnull=False,
             )
+            .distinct()
         )
 
         # =====================================================
@@ -2808,31 +2016,46 @@ class ListFacturePayeesView(APIView):
         )
 
         # =====================================================
-        # 5. VENDEUR : UNIQUEMENT SES PROPRES FACTURES
+        # 5. VENDEUR : SES PROPRES FACTURES
         # =====================================================
 
         if role == ROLE_VENDOR:
             qs = qs.filter(
-                vente__vendor_id=my_vendor.id,
+                vente__vendor_id=my_vendor.id
             )
 
         # =====================================================
-        # 6. ANNÉE EN COURS
+        # 6. FILTRE ANNÉE
         # =====================================================
 
-        today = timezone.localdate()
+        current_year = timezone.localdate().year
 
-        start_date = timezone.make_aware(
-            datetime(
-                today.year,
-                1,
-                1,
-            ),
-            timezone.get_current_timezone(),
+        annee_raw = (
+            request.query_params.get("annee")
+            or str(current_year)
         )
 
+        try:
+            annee = int(annee_raw)
+        except (TypeError, ValueError):
+            return error_response(
+                code="INVALID_YEAR",
+                message="annee doit être une année valide.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if annee < 2000 or annee > current_year:
+            return error_response(
+                code="INVALID_YEAR",
+                message=(
+                    f"annee doit être comprise entre "
+                    f"2000 et {current_year}."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
         qs = qs.filter(
-            date_creation__gte=start_date,
+            date_creation__year=annee
         )
 
         # =====================================================
@@ -2840,63 +2063,43 @@ class ListFacturePayeesView(APIView):
         # =====================================================
 
         numero = (
-            request.query_params
-            .get(
-                "numero_facture",
-                "",
-            )
-            .strip()
-        )
+            request.query_params.get(
+                "numero_facture", ""
+            ) or ""
+        ).strip()
 
         if numero:
             qs = qs.filter(
-                numero_facture__icontains=numero,
+                numero_facture__icontains=numero
             )
 
         # =====================================================
         # 8. FILTRE VENDEUR
         # =====================================================
 
-        vendor_id_raw = (
-            request.query_params.get(
-                "vendor_id"
-            )
+        vendor_id_raw = request.query_params.get(
+            "vendor_id"
         )
 
-        if vendor_id_raw not in {
-            None,
-            "",
-        }:
-            try:
-                vendor_id = int(
-                    vendor_id_raw
-                )
+        if vendor_id_raw not in (None, ""):
 
-            except (
-                TypeError,
-                ValueError,
-            ):
+            try:
+                vendor_id = int(vendor_id_raw)
+            except (TypeError, ValueError):
                 return error_response(
                     code="INVALID_VENDOR_ID",
-                    message=(
-                        "vendor_id doit être "
-                        "un entier positif."
-                    ),
+                    message="vendor_id doit être un entier positif.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             if vendor_id <= 0:
                 return error_response(
                     code="INVALID_VENDOR_ID",
-                    message=(
-                        "vendor_id doit être "
-                        "un entier positif."
-                    ),
+                    message="vendor_id doit être un entier positif.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # =================================================
-            # VENDEUR : IL NE PEUT FILTRER QUE LUI-MÊME
-            # =================================================
-
+            # Le vendeur ne peut filtrer que lui-même.
             if (
                 role == ROLE_VENDOR
                 and vendor_id != my_vendor.id
@@ -2910,11 +2113,10 @@ class ListFacturePayeesView(APIView):
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
-            # =================================================
-            # MANAGER : VENDEUR DANS SES BIJOUTERIES
-            # =================================================
-
+            # Vérifier que le vendeur demandé appartient
+            # à une bijouterie du manager.
             if role == ROLE_MANAGER:
+
                 manager_profile = getattr(
                     user,
                     "staff_manager_profile",
@@ -2954,16 +2156,8 @@ class ListFacturePayeesView(APIView):
                         status_code=status.HTTP_403_FORBIDDEN,
                     )
 
-            # =================================================
-            # FILTRE VENDEUR
-            #
-            # Une vente possède déjà son vendeur principal.
-            # Il n'est donc plus nécessaire d'utiliser
-            # Exists(VenteProduit...).
-            # =================================================
-
             qs = qs.filter(
-                vente__vendor_id=vendor_id,
+                vente__vendor_id=vendor_id
             )
 
         # =====================================================
@@ -2971,25 +2165,20 @@ class ListFacturePayeesView(APIView):
         # =====================================================
 
         client_q = (
-            request.query_params
-            .get(
-                "client_q",
-                "",
-            )
-            .strip()
-        )
+            request.query_params.get(
+                "client_q", ""
+            ) or ""
+        ).strip()
 
         if client_q:
             qs = qs.filter(
                 Q(
                     vente__client__nom__icontains=client_q
                 )
-                |
-                Q(
+                | Q(
                     vente__client__prenom__icontains=client_q
                 )
-                |
-                Q(
+                | Q(
                     vente__client__telephone__icontains=client_q
                 )
             )
@@ -2999,24 +2188,17 @@ class ListFacturePayeesView(APIView):
         # =====================================================
 
         payment_mode = (
-            request.query_params
-            .get(
-                "payment_mode",
-                "",
-            )
-            .strip()
-        )
+            request.query_params.get(
+                "payment_mode", ""
+            ) or ""
+        ).strip()
 
         if payment_mode:
-            qs = (
-                qs
-                .filter(
-                    paiements__lignes__mode_paiement__code__iexact=(
-                        payment_mode
-                    )
+            qs = qs.filter(
+                paiements__lignes__mode_paiement__code__iexact=(
+                    payment_mode
                 )
-                .distinct()
-            )
+            ).distinct()
 
         # =====================================================
         # 11. TRI
@@ -3035,29 +2217,18 @@ class ListFacturePayeesView(APIView):
             name: str,
             default: int,
         ) -> int:
-            value = request.query_params.get(
-                name
-            )
 
-            if value in {
-                None,
-                "",
-            }:
+            value = request.query_params.get(name)
+
+            if value in (None, ""):
                 return default
 
             try:
                 value = int(value)
-
-            except (
-                TypeError,
-                ValueError,
-            ):
+            except (TypeError, ValueError):
                 return default
 
-            return max(
-                1,
-                value,
-            )
+            return max(1, value)
 
         page = parse_positive_int(
             "page",
@@ -3088,6 +2259,7 @@ class ListFacturePayeesView(APIView):
                     "page": 1,
                     "page_size": page_size,
                     "num_pages": 0,
+                    "annee": annee,
                     "results": [],
                 },
                 status=status.HTTP_200_OK,
@@ -3098,10 +2270,7 @@ class ListFacturePayeesView(APIView):
         # =====================================================
 
         try:
-            page_obj = paginator.page(
-                page
-            )
-
+            page_obj = paginator.page(page)
         except EmptyPage:
             page_obj = paginator.page(
                 paginator.num_pages
@@ -3126,14 +2295,30 @@ class ListFacturePayeesView(APIView):
                 "page": page_obj.number,
                 "page_size": page_size,
                 "num_pages": paginator.num_pages,
+                "annee": annee,
                 "results": serializer.data,
             },
             status=status.HTTP_200_OK,
         )
-        
-
 
 class PaiementFactureMultiModeView(APIView):
+    """
+    Encaissement d'une facture avec plusieurs modes de paiement.
+
+    Réservé aux ventes contenant des bijoux.
+
+    Règles :
+    - Manager ou caissier autorisé.
+    - Vérification de la bijouterie.
+    - Facture payable.
+    - Paiement partiel ou intégral.
+    - Un seul paiement par mode dans une requête.
+    - Contrôle des références.
+    - Contrôle et retrait du compte dépôt.
+    - Stock consommé uniquement après paiement intégral.
+    - Conversion proforma -> facture définitive.
+    - Génération du PDF après paiement intégral.
+    """
 
     permission_classes = [
         IsAuthenticated,
@@ -3154,129 +2339,34 @@ class PaiementFactureMultiModeView(APIView):
         return str(exc)
 
     @swagger_auto_schema(
-        operation_summary="Paiement facture multi-mode",
-        operation_description="""
-Permet au manager ou au caissier d'encaisser une facture.
-
-### Règles
-- Seuls le manager et le caissier peuvent effectuer un paiement.
-- L'utilisateur doit avoir accès à la bijouterie de la facture.
-- La facture doit être encore payable.
-- Un montant doit être strictement supérieur à zéro.
-- Le cumul du paiement ne peut pas dépasser le reste à payer.
-- Un même mode de paiement ne peut apparaître qu'une seule fois.
-- Les modes nécessitant une référence doivent recevoir une référence.
-- Pour `depot`, `numero_compte` est obligatoire.
-- Le compte dépôt doit exister.
-- Le compte dépôt doit appartenir à la même bijouterie.
-- Le solde du compte dépôt doit être suffisant.
-- Le retrait dépôt est effectué avec verrouillage transactionnel.
-- Lorsque la facture est totalement payée, le stock vendeur est consommé.
-- Le PDF définitif est généré uniquement lorsque la facture est payée.
-        """,
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=[
-                "numero_facture",
-                "lignes",
-            ],
-            properties={
-                "numero_facture": openapi.Schema(
-                    type=openapi.TYPE_STRING,
-                    example="FAC-20260902-0003",
-                ),
-                "client": openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "nom": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            example="Diop",
-                        ),
-                        "prenom": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            example="Awa",
-                        ),
-                        "telephone": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            example="770000000",
-                        ),
-                    },
-                ),
-                "lignes": openapi.Schema(
-                    type=openapi.TYPE_ARRAY,
-                    items=openapi.Schema(
-                        type=openapi.TYPE_OBJECT,
-                        required=[
-                            "mode",
-                            "montant",
-                        ],
-                        properties={
-                            "mode": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                example="cash",
-                                description=(
-                                    "Code du mode : cash, wave, "
-                                    "orange_money, tpe, depot..."
-                                ),
-                            ),
-                            "montant": openapi.Schema(
-                                type=openapi.TYPE_NUMBER,
-                                example=10000,
-                            ),
-                            "numero_compte": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                example="DEP-2026-00045",
-                                description=(
-                                    "Obligatoire uniquement pour "
-                                    "le mode compte dépôt."
-                                ),
-                            ),
-                            "reference": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                example="WAVE-123456",
-                            ),
-                            "provider_reference": openapi.Schema(
-                                type=openapi.TYPE_STRING,
-                                example="AUTH-458796",
-                            ),
-                        },
-                    ),
-                ),
-            },
+        operation_summary="Paiement facture multimode",
+        operation_description=(
+            "Permet au manager ou au caissier de payer "
+            "une facture avec un ou plusieurs modes de paiement. "
+            "Le paiement peut être partiel ou intégral. "
+            "La facture définitive et la consommation du stock "
+            "interviennent après paiement intégral."
         ),
+        request_body=PaiementMultiModeSerializer,
         responses={
-            201: openapi.Response(
-                description="Paiement effectué avec succès."
-            ),
-            400: openapi.Response(
-                description=(
-                    "Erreur de validation ou "
-                    "solde insuffisant."
-                )
-            ),
-            403: openapi.Response(
-                description="Accès refusé."
-            ),
-            404: openapi.Response(
-                description=(
-                    "Facture ou compte introuvable."
-                )
-            ),
+            201: "Paiement effectué avec succès.",
+            400: "Données invalides ou solde insuffisant.",
+            403: "Accès refusé.",
+            404: "Facture introuvable.",
         },
         tags=["Paiements"],
     )
     @transaction.atomic
     def post(self, request):
 
-        # =====================================================
-        # 1. RÔLE
-        # =====================================================
+        # ====================================================
+        # 1. AUTORISATION
+        # ====================================================
 
         user = request.user
 
         role = (
-            get_role_name(user)
-            or ""
+            get_role_name(user) or ""
         ).lower().strip()
 
         if role not in {
@@ -3292,50 +2382,26 @@ Permet au manager ou au caissier d'encaisser une facture.
                 status_code=status.HTTP_403_FORBIDDEN,
             )
 
-        # =====================================================
-        # 2. DONNÉES ENTRANTES
-        # =====================================================
+        # ====================================================
+        # 2. VALIDATION DES DONNÉES
+        # ====================================================
 
-        numero_facture = str(
-            request.data.get(
-                "numero_facture"
-            )
-            or ""
-        ).strip()
-
-        client_data = (
-            request.data.get("client")
-            or {}
+        serializer = PaiementMultiModeSerializer(
+            data=request.data,
+            context={"request": request},
         )
 
-        lignes_data = (
-            request.data.get("lignes")
-            or []
-        )
+        serializer.is_valid(raise_exception=True)
 
-        if not numero_facture:
-            return error_response(
-                code="NUMERO_FACTURE_REQUIRED",
-                message=(
-                    "Le numéro de facture est obligatoire."
-                ),
-            )
+        data = serializer.validated_data
 
-        if (
-            not isinstance(lignes_data, list)
-            or not lignes_data
-        ):
-            return error_response(
-                code="PAYMENT_LINES_REQUIRED",
-                message=(
-                    "Au moins une ligne de paiement "
-                    "est obligatoire."
-                ),
-            )
-
-        # =====================================================
-        # 3. FACTURE + VERROU
-        # =====================================================
+        numero_facture = data["numero_facture"]
+        client_data = data.get("client") or {}
+        lignes_data = data["lignes"]
+        total_paiement = data["total_paiement"]
+        # ====================================================
+        # 3. FACTURE + VERROU TRANSACTIONNEL
+        # ====================================================
 
         facture = (
             Facture.objects
@@ -3346,28 +2412,22 @@ Permet au manager ou au caissier d'encaisser une facture.
                 "vente__vendor",
                 "bijouterie",
             )
-            .prefetch_related(
-                "paiements__lignes",
-            )
             .filter(
                 numero_facture__iexact=numero_facture,
             )
             .first()
         )
 
-        if not facture:
+        if facture is None:
             return error_response(
                 code="FACTURE_NOT_FOUND",
-                message=(
-                    f"Facture introuvable : "
-                    f"{numero_facture}."
-                ),
+                message="Facture introuvable.",
                 status_code=status.HTTP_404_NOT_FOUND,
             )
 
-        # =====================================================
-        # 4. SCOPE BIJOUTERIE
-        # =====================================================
+        # ====================================================
+        # 4. BIJOUTERIE
+        # ====================================================
 
         if not user_can_access_bijouterie(
             user,
@@ -3382,25 +2442,18 @@ Permet au manager ou au caissier d'encaisser une facture.
                 status_code=status.HTTP_403_FORBIDDEN,
             )
 
-        # =====================================================
+        # ====================================================
         # 5. FACTURE PAYABLE
-        # =====================================================
+        # ====================================================
 
         try:
-            validate_facture_payable(
-                facture
-            )
+            validate_facture_payable(facture)
 
         except DjangoValidationError as exc:
             return error_response(
                 code="FACTURE_NOT_PAYABLE",
-                message=(
-                    "Cette facture ne peut pas "
-                    "être encaissée."
-                ),
-                details=(
-                    self._validation_error_detail(exc)
-                ),
+                message="Cette facture ne peut pas être encaissée.",
+                details=self._validation_error_detail(exc),
             )
 
         if facture.status == Facture.STAT_PAYE:
@@ -3409,143 +2462,88 @@ Permet au manager ou au caissier d'encaisser une facture.
                 message="Cette facture est déjà payée.",
             )
 
-        reste_a_payer = Decimal(
-            str(
-                facture.reste_a_payer
-                or "0.00"
+        vente = facture.vente
+
+        if vente is None or not vente.lignes.exists():
+            return error_response(
+                code="SALE_WITHOUT_JEWELRY",
+                message=(
+                    "Le paiement par facture est réservé "
+                    "aux ventes contenant des bijoux."
+                ),
             )
+
+        # Recalcul du solde APRÈS verrouillage.
+        reste_a_payer = Decimal(
+            str(facture.reste_a_payer or "0.00")
         )
 
         if reste_a_payer <= Decimal("0.00"):
             return error_response(
                 code="NOTHING_TO_PAY",
-                message=(
-                    "Cette facture ne présente "
-                    "aucun reste à payer."
-                ),
+                message="Aucun montant ne reste à payer.",
             )
 
-        # =====================================================
-        # 6. CLIENT
-        # =====================================================
+        # ====================================================
+        # 6. CAISSIER
+        # ====================================================
 
-        try:
-            client = upsert_client_for_payment(
-                facture=facture,
-                client_data=client_data,
+        cashier = None
+
+        if role == ROLE_CASHIER:
+            cashier = (
+                Cashier.objects
+                .select_related("bijouterie", "user")
+                .filter(
+                    user=user,
+                    verifie=True,
+                )
+                .first()
             )
 
-        except DjangoValidationError as exc:
-            return error_response(
-                code="CLIENT_INVALID",
-                message=(
-                    "Les informations du client "
-                    "sont invalides."
-                ),
-                details=(
-                    self._validation_error_detail(exc)
-                ),
-            )
+            if cashier is None:
+                return error_response(
+                    code="CASHIER_PROFILE_INVALID",
+                    message=(
+                        "Profil caissier introuvable "
+                        "ou désactivé."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
 
-        # =====================================================
-        # 7. NORMALISATION DES LIGNES
-        # =====================================================
+            if cashier.bijouterie_id != facture.bijouterie_id:
+                return error_response(
+                    code="CASHIER_OUT_OF_SCOPE",
+                    message=(
+                        "Cette facture n'appartient pas "
+                        "à la bijouterie du caissier."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
 
+        # ====================================================
+        # 7. VALIDATION DES LIGNES APRÈS VERROU
+        # ====================================================
+
+        total_paiement = Decimal("0.00")
         normalized_lignes = []
-
-        total_paiement = Decimal(
-            "0.00"
-        )
-
         modes_utilises = set()
 
-        for index, raw_item in enumerate(
-            lignes_data,
-            start=1,
-        ):
+        for index, item in enumerate(lignes_data, start=1):
 
-            if not isinstance(raw_item, dict):
-                return error_response(
-                    code="INVALID_PAYMENT_LINE",
-                    message=(
-                        f"La ligne de paiement "
-                        f"{index} est invalide."
-                    ),
-                )
-
-            # =================================================
-            # MODE
-            # =================================================
-
-            mode_code = str(
-                raw_item.get("mode")
-                or ""
-            ).lower().strip()
-
-            if not mode_code:
-                return error_response(
-                    code="PAYMENT_MODE_REQUIRED",
-                    message=(
-                        "Le mode de paiement est "
-                        f"obligatoire à la ligne {index}."
-                    ),
-                )
+            mode_code = str(item["mode"]).lower().strip()
+            montant = Decimal(str(item["montant"]))
 
             if mode_code in modes_utilises:
                 return error_response(
                     code="DUPLICATE_PAYMENT_MODE",
                     message=(
-                        f"Le mode '{mode_code}' est "
-                        "présent plusieurs fois. "
-                        "Regroupez les montants."
-                    ),
-                    details={
-                        "mode": mode_code,
-                    },
-                )
-
-            modes_utilises.add(
-                mode_code
-            )
-
-            # =================================================
-            # MONTANT
-            # =================================================
-
-            try:
-                montant = Decimal(
-                    str(
-                        raw_item.get("montant")
-                        or "0"
-                    )
-                )
-
-            except (
-                InvalidOperation,
-                TypeError,
-                ValueError,
-            ):
-                return error_response(
-                    code="INVALID_AMOUNT",
-                    message=(
-                        f"Montant invalide à "
-                        f"la ligne {index}."
+                        f"Le mode '{mode_code}' "
+                        "est présent plusieurs fois."
                     ),
                 )
 
-            if montant <= Decimal("0.00"):
-                return error_response(
-                    code="AMOUNT_MUST_BE_POSITIVE",
-                    message=(
-                        f"Le montant de la ligne "
-                        f"{index} doit être "
-                        "supérieur à zéro."
-                    ),
-                )
-
-            # =================================================
-            # MODE ACTIF
-            # =================================================
+            modes_utilises.add(mode_code)
 
             mode_obj = (
                 ModePaiement.objects
@@ -3556,33 +2554,25 @@ Permet au manager ou au caissier d'encaisser une facture.
                 .first()
             )
 
-            if not mode_obj:
+            if mode_obj is None:
                 return error_response(
                     code="INVALID_PAYMENT_MODE",
                     message=(
-                        "Mode de paiement invalide "
-                        f"ou inactif : {mode_code}."
+                        f"Mode invalide ou inactif : {mode_code}."
                     ),
-                    details={
-                        "mode": mode_code,
-                    },
                 )
 
-            # =================================================
-            # RÉFÉRENCES
-            # =================================================
-
-            reference = str(
-                raw_item.get("reference")
-                or ""
-            ).strip()
-
-            provider_reference = str(
-                raw_item.get(
-                    "provider_reference"
+            if montant <= Decimal("0.00"):
+                return error_response(
+                    code="INVALID_AMOUNT",
+                    message=(
+                        f"Montant invalide à la ligne {index}."
+                    ),
                 )
-                or ""
-            ).strip()
+
+            reference = item.get("reference")
+            provider_reference = item.get("provider_reference")
+            numero_compte = item.get("numero_compte")
 
             if (
                 mode_obj.necessite_reference
@@ -3592,26 +2582,12 @@ Permet au manager ou au caissier d'encaisser une facture.
                 return error_response(
                     code="PAYMENT_REFERENCE_REQUIRED",
                     message=(
-                        "Une référence est obligatoire "
+                        f"Une référence est obligatoire "
                         f"pour le mode '{mode_obj.nom}'."
                     ),
-                    details={
-                        "mode": mode_obj.code,
-                    },
                 )
-
-            numero_compte = str(
-                raw_item.get(
-                    "numero_compte"
-                )
-                or ""
-            ).strip()
 
             compte = None
-
-            # =================================================
-            # COMPTE DÉPÔT
-            # =================================================
 
             if mode_obj.est_mode_depot:
 
@@ -3632,180 +2608,81 @@ Permet au manager ou au caissier d'encaisser une facture.
                         "client__bijouterie",
                     )
                     .filter(
-                        numero_compte__iexact=(
-                            numero_compte
-                        )
+                        numero_compte__iexact=numero_compte,
                     )
                     .first()
                 )
 
-                if not compte:
+                if compte is None:
                     return error_response(
                         code="DEPOT_ACCOUNT_NOT_FOUND",
-                        message=(
-                            "Aucun compte dépôt trouvé "
-                            "avec le numéro "
-                            f"{numero_compte}."
-                        ),
-                        status_code=(
-                            status.HTTP_404_NOT_FOUND
-                        ),
-                        details={
-                            "numero_compte": (
-                                numero_compte
-                            ),
-                        },
+                        message="Compte dépôt introuvable.",
+                        status_code=status.HTTP_404_NOT_FOUND,
                     )
 
                 if not compte.client_id:
                     return error_response(
-                        code=(
-                            "DEPOT_ACCOUNT_WITHOUT_CLIENT"
-                        ),
+                        code="DEPOT_ACCOUNT_WITHOUT_CLIENT",
                         message=(
-                            "Ce compte dépôt n'est "
-                            "associé à aucun client."
+                            "Ce compte dépôt n'est associé "
+                            "à aucun client."
                         ),
-                        details={
-                            "numero_compte": (
-                                numero_compte
-                            ),
-                        },
                     )
 
-                # =============================================
-                # BIJOUTERIE DU COMPTE
-                # =============================================
-
-                compte_bijouterie_id = getattr(
-                    compte.client,
-                    "bijouterie_id",
-                    None,
-                )
-
+                # Refuser également l'absence de bijouterie.
                 if (
-                    compte_bijouterie_id
-                    and compte_bijouterie_id
+                    compte.client.bijouterie_id
                     != facture.bijouterie_id
                 ):
                     return error_response(
-                        code=(
-                            "DEPOT_ACCOUNT_OUT_OF_SCOPE"
-                        ),
+                        code="DEPOT_ACCOUNT_OUT_OF_SCOPE",
                         message=(
-                            "Ce compte dépôt appartient "
-                            "à une autre bijouterie."
+                            "Ce compte dépôt n'appartient pas "
+                            "à la bijouterie de la facture."
                         ),
-                        status_code=(
-                            status.HTTP_403_FORBIDDEN
-                        ),
-                        details={
-                            "numero_compte": (
-                                numero_compte
-                            ),
-                        },
+                        status_code=status.HTTP_403_FORBIDDEN,
                     )
-
-                # =============================================
-                # SOLDE
-                # =============================================
 
                 solde_disponible = Decimal(
-                    str(
-                        compte.solde
-                        or "0.00"
-                    )
+                    str(compte.solde or "0.00")
                 )
 
                 if montant > solde_disponible:
-
-                    montant_manquant = (
-                        montant
-                        - solde_disponible
-                    )
-
                     return error_response(
-                        code=(
-                            "SOLDE_COMPTE_DEPOT_INSUFFISANT"
-                        ),
-                        message=(
-                            "Solde insuffisant sur "
-                            "le compte dépôt."
-                        ),
+                        code="SOLDE_COMPTE_DEPOT_INSUFFISANT",
+                        message="Solde du compte dépôt insuffisant.",
                         details={
-                            "numero_compte": (
-                                compte.numero_compte
-                            ),
-                            "solde_disponible": str(
-                                solde_disponible
-                            ),
-                            "montant_demande": str(
-                                montant
-                            ),
-                            "montant_manquant": str(
-                                montant_manquant
-                            ),
+                            "numero_compte": compte.numero_compte,
+                            "solde_disponible": str(solde_disponible),
+                            "montant_demande": str(montant),
                         },
                     )
 
-            else:
-
-                # =============================================
-                # numero_compte interdit hors mode dépôt
-                # =============================================
-
-                if numero_compte:
-                    return error_response(
-                        code=(
-                            "DEPOT_ACCOUNT_NOT_ALLOWED"
-                        ),
-                        message=(
-                            "numero_compte est réservé "
-                            "au mode compte dépôt."
-                        ),
-                        details={
-                            "mode": mode_obj.code,
-                        },
-                    )
-
-            # =================================================
-            # NORMALISATION
-            # =================================================
+            elif numero_compte:
+                return error_response(
+                    code="DEPOT_ACCOUNT_NOT_ALLOWED",
+                    message=(
+                        "numero_compte est réservé "
+                        "au mode compte dépôt."
+                    ),
+                )
 
             total_paiement += montant
 
-            normalized_lignes.append(
-                {
-                    "mode_obj": mode_obj,
-                    "mode": mode_obj.code,
-                    "montant": montant,
-                    "reference": (
-                        reference
-                        or None
-                    ),
-                    "provider_reference": (
-                        provider_reference
-                        or None
-                    ),
-                    "numero_compte": (
-                        numero_compte
-                        or None
-                    ),
-                    "compte": compte,
-                }
-            )
+            normalized_lignes.append({
+                "mode_obj": mode_obj,
+                "montant": montant,
+                "reference": reference,
+                "provider_reference": provider_reference,
+                "numero_compte": numero_compte,
+                "compte": compte,
+            })
 
-        # =====================================================
-        # 8. TOTAL VS RESTE À PAYER
-        # =====================================================
+        # ====================================================
+        # 8. CONTRÔLE DU SOLDE
+        # ====================================================
 
         if total_paiement > reste_a_payer:
-
-            depassement = (
-                total_paiement
-                - reste_a_payer
-            )
-
             return error_response(
                 code="PAYMENT_EXCEEDS_BALANCE",
                 message=(
@@ -3813,281 +2690,149 @@ Permet au manager ou au caissier d'encaisser une facture.
                     "le reste à payer."
                 ),
                 details={
-                    "reste_a_payer": str(
-                        reste_a_payer
-                    ),
-                    "montant_recu": str(
-                        total_paiement
-                    ),
+                    "reste_a_payer": str(reste_a_payer),
+                    "montant_recu": str(total_paiement),
                     "depassement": str(
-                        depassement
+                        total_paiement - reste_a_payer
                     ),
                 },
             )
 
-        # =====================================================
-        # 9. CAISSIER
-        # =====================================================
+        # ====================================================
+        # 9. CLIENT
+        # ====================================================
 
-        cashier = None
-
-        if role == ROLE_CASHIER:
-
-            cashier = (
-                Cashier.objects
-                .select_related(
-                    "bijouterie",
-                    "user",
-                )
-                .filter(
-                    user=user,
-                    verifie=True,
-                )
-                .first()
+        try:
+            client = upsert_client_for_payment(
+                facture=facture,
+                client_data=client_data,
             )
 
-            if not cashier:
-                return error_response(
-                    code="CASHIER_PROFILE_INVALID",
-                    message=(
-                        "Profil caissier introuvable "
-                        "ou désactivé."
-                    ),
-                    status_code=(
-                        status.HTTP_403_FORBIDDEN
-                    ),
-                )
+        except DjangoValidationError as exc:
+            transaction.set_rollback(True)
 
-            if (
-                cashier.bijouterie_id
-                != facture.bijouterie_id
-            ):
-                return error_response(
-                    code="CASHIER_OUT_OF_SCOPE",
-                    message=(
-                        "Cette facture n'appartient "
-                        "pas à la bijouterie "
-                        "du caissier."
-                    ),
-                    status_code=(
-                        status.HTTP_403_FORBIDDEN
-                    ),
-                )
+            return error_response(
+                code="CLIENT_INVALID",
+                message="Informations client invalides.",
+                details=self._validation_error_detail(exc),
+            )
 
-        # =====================================================
-        # 10. CRÉATION PAIEMENT
-        # =====================================================
+        # ====================================================
+        # 10. CRÉATION DU PAIEMENT
+        # ====================================================
 
         paiement = Paiement.objects.create(
             facture=facture,
+            vente=vente,
             created_by=user,
             cashier=cashier,
         )
 
         lignes_creees = []
 
-        # =====================================================
-        # 11. LIGNES + RETRAIT COMPTE DÉPÔT
-        # =====================================================
+        # ====================================================
+        # 11. LIGNES ET RETRAITS DÉPÔT
+        # ====================================================
 
         for item in normalized_lignes:
 
-            mode_obj = item[
-                "mode_obj"
-            ]
-
-            # =================================================
-            # COMPTE DÉPÔT
-            # =================================================
+            mode_obj = item["mode_obj"]
+            montant = item["montant"]
 
             if mode_obj.est_mode_depot:
 
-                compte = item[
-                    "compte"
-                ]
+                compte = item["compte"]
 
-                # ---------------------------------------------
-                # Le compte a déjà été verrouillé par
-                # select_for_update().
-                # ---------------------------------------------
-
+                # Le compte est déjà verrouillé.
                 compte.refresh_from_db()
 
-                solde_disponible = Decimal(
-                    str(
-                        compte.solde
-                        or "0.00"
-                    )
-                )
-
-                if (
-                    item["montant"]
-                    > solde_disponible
-                ):
-                    transaction.set_rollback(
-                        True
-                    )
+                if montant > Decimal(str(compte.solde or "0.00")):
+                    transaction.set_rollback(True)
 
                     return error_response(
-                        code=(
-                            "SOLDE_COMPTE_DEPOT_INSUFFISANT"
-                        ),
+                        code="SOLDE_COMPTE_DEPOT_INSUFFISANT",
                         message=(
                             "Le solde du compte dépôt "
-                            "a changé et est devenu "
-                            "insuffisant."
+                            "est devenu insuffisant."
                         ),
-                        details={
-                            "numero_compte": (
-                                compte.numero_compte
-                            ),
-                            "solde_disponible": str(
-                                solde_disponible
-                            ),
-                            "montant_demande": str(
-                                item["montant"]
-                            ),
-                        },
                     )
 
                 try:
                     tx = effectuer_retrait(
                         compte_id=compte.id,
-                        montant=item["montant"],
+                        montant=montant,
                         user=user,
                         reference=(
-                            "FACTURE-"
-                            f"{facture.numero_facture}"
+                            f"FACTURE-{facture.numero_facture}"
                         ),
                         commentaire=(
-                            "Paiement facture "
+                            f"Paiement facture "
                             f"{facture.numero_facture}"
                         ),
                     )
 
                 except DjangoValidationError as exc:
-
-                    transaction.set_rollback(
-                        True
-                    )
+                    transaction.set_rollback(True)
 
                     return error_response(
                         code="DEPOT_WITHDRAWAL_FAILED",
-                        message=(
-                            "Le retrait du compte dépôt "
-                            "a échoué."
-                        ),
-                        details=(
-                            self
-                            ._validation_error_detail(
-                                exc
-                            )
-                        ),
+                        message="Le retrait du compte dépôt a échoué.",
+                        details=self._validation_error_detail(exc),
                     )
 
-                ligne = (
-                    PaiementLigne.objects.create(
-                        paiement=paiement,
-                        mode_paiement=mode_obj,
-                        montant_paye=(
-                            item["montant"]
-                        ),
-                        reference=(
-                            "COMPTE_DEPOT-"
-                            f"{compte.numero_compte}"
-                        ),
-                        compte_depot=compte,
-                        transaction_depot=tx,
-                    )
+                ligne = PaiementLigne.objects.create(
+                    paiement=paiement,
+                    mode_paiement=mode_obj,
+                    montant_paye=montant,
+                    reference=(
+                        f"COMPTE_DEPOT-{compte.numero_compte}"
+                    ),
+                    compte_depot=compte,
+                    transaction_depot=tx,
                 )
 
                 transaction.on_commit(
                     lambda tx=tx: (
-                        send_compte_depot_facture_notification(
-                            tx
-                        )
+                        send_compte_depot_facture_notification(tx)
                     )
                 )
-
-            # =================================================
-            # AUTRES MODES
-            # =================================================
 
             else:
-
-                ligne = (
-                    PaiementLigne.objects.create(
-                        paiement=paiement,
-                        mode_paiement=mode_obj,
-                        montant_paye=(
-                            item["montant"]
-                        ),
-                        reference=(
-                            item["reference"]
-                        ),
-                        provider_reference=(
-                            item[
-                                "provider_reference"
-                            ]
-                        ),
-                    )
+                ligne = PaiementLigne.objects.create(
+                    paiement=paiement,
+                    mode_paiement=mode_obj,
+                    montant_paye=montant,
+                    reference=item["reference"],
+                    provider_reference=item["provider_reference"],
                 )
 
-            lignes_creees.append(
-                ligne
-            )
+            lignes_creees.append(ligne)
 
-        # =====================================================
-        # 12. STATUT FACTURE
-        # =====================================================
+        # ====================================================
+        # 12. RECALCUL DU STATUT
+        # ====================================================
 
-        Facture.recompute_facture_status(
-            facture
-        )
+        Facture.recompute_facture_status(facture)
 
         facture.refresh_from_db()
 
-        # =====================================================
-        # 13. PROFORMA -> FACTURE
-        # =====================================================
+        # ====================================================
+        # 13. PROFORMA -> FACTURE DÉFINITIVE
+        # ====================================================
 
         if (
-            facture.type_facture
-            == Facture.TYPE_PROFORMA
-            and facture.status
-            == Facture.STAT_PAYE
+            facture.type_facture == Facture.TYPE_PROFORMA
+            and facture.status == Facture.STAT_PAYE
         ):
-            facture.type_facture = (
-                Facture.TYPE_FACTURE
-            )
+            facture.type_facture = Facture.TYPE_FACTURE
 
             facture.save(
-                update_fields=[
-                    "type_facture",
-                ]
+                update_fields=["type_facture"]
             )
 
-        # =====================================================
-        # 14. STOCK VENDEUR
-        # =====================================================
-        #
-        # confirm_sale_out_from_vendor() doit maintenant
-        # travailler uniquement avec :
-        #
-        # VenteProduit.produit_line
-        #
-        # puis :
-        #
-        # consume_vendor_stock(
-        #     vendor=...,
-        #     bijouterie=...,
-        #     produit_line=ligne.produit_line,
-        #     quantite=ligne.quantite,
-        # )
-        #
-        # Aucun FIFO.
-        # Aucun fallback par Produit.
-        # =====================================================
+        # ====================================================
+        # 14. CONSOMMATION DU STOCK
+        # ====================================================
 
         audit = {
             "created": 0,
@@ -4096,43 +2841,32 @@ Permet au manager ou au caissier d'encaisser une facture.
         }
 
         if (
-            facture.status
-            == Facture.STAT_PAYE
+            facture.status == Facture.STAT_PAYE
             and not facture.stock_consumed
         ):
             try:
-                audit = (
-                    confirm_sale_out_from_vendor(
-                        facture=facture,
-                        by_user=user,
-                    )
+                audit = confirm_sale_out_from_vendor(
+                    facture=facture,
+                    by_user=user,
                 )
 
                 facture.refresh_from_db()
 
             except DjangoValidationError as exc:
-
-                transaction.set_rollback(
-                    True
-                )
+                transaction.set_rollback(True)
 
                 return error_response(
                     code="STOCK_CONSUMPTION_FAILED",
                     message=(
-                        "La consommation du stock "
-                        "vendeur a échoué."
+                        "La consommation du stock vendeur "
+                        "a échoué."
                     ),
-                    details=(
-                        self
-                        ._validation_error_detail(
-                            exc
-                        )
-                    ),
+                    details=self._validation_error_detail(exc),
                 )
 
-        # =====================================================
-        # 15. PDF FINAL
-        # =====================================================
+        # ====================================================
+        # 15. PDF DÉFINITIF
+        # ====================================================
 
         facture_pdf_url = None
 
@@ -4141,18 +2875,12 @@ Permet au manager ou au caissier d'encaisser une facture.
             if not facture.facture_pdf:
 
                 if not facture.integrity_hash:
-                    generate_facture_hash(
-                        facture
-                    )
+                    generate_facture_hash(facture)
 
                 if not facture.qr_code_image:
-                    generate_facture_qr(
-                        facture
-                    )
+                    generate_facture_qr(facture)
 
-                generate_facture_pdf(
-                    facture
-                )
+                generate_facture_pdf(facture)
 
                 facture.refresh_from_db()
 
@@ -4163,25 +2891,21 @@ Permet au manager ou au caissier d'encaisser une facture.
                     )
 
             try:
-                facture_pdf_url = (
-                    request.build_absolute_uri(
-                        facture.facture_pdf.url
-                    )
+                facture_pdf_url = request.build_absolute_uri(
+                    facture.facture_pdf.url
                 )
-
-            except Exception:
+            except (AttributeError, ValueError):
                 facture_pdf_url = None
 
-            # =================================================
-            # VERROUILLAGE FACTURE
-            # =================================================
+        # ====================================================
+        # 16. VERROUILLAGE DE LA FACTURE
+        # ====================================================
+
+        if facture.status == Facture.STAT_PAYE:
 
             if not facture.is_locked:
-
                 facture.is_locked = True
-                facture.locked_at = (
-                    timezone.now()
-                )
+                facture.locked_at = timezone.now()
 
                 facture.save(
                     update_fields=[
@@ -4190,203 +2914,93 @@ Permet au manager ou au caissier d'encaisser une facture.
                     ]
                 )
 
-        # =====================================================
-        # 16. URL FACTURE
-        # =====================================================
+        # ====================================================
+        # 17. URL DE TÉLÉCHARGEMENT
+        # ====================================================
 
-        facture_download_url = (
-            request.build_absolute_uri(
-                reverse(
-                    "facture-a5-paysage",
-                    kwargs={
-                        "numero_facture": (
-                            facture.numero_facture
-                        )
-                    },
-                )
+        facture_download_url = request.build_absolute_uri(
+            reverse(
+                "facture-a5-paysage",
+                kwargs={
+                    "numero_facture": facture.numero_facture,
+                },
             )
         )
 
-        # =====================================================
-        # 17. RÉPONSE
-        # =====================================================
+        # ====================================================
+        # 18. RÉPONSE
+        # ====================================================
 
         return Response(
             {
                 "status": "success",
-                "message": (
-                    "Paiement effectué avec succès."
-                ),
-
+                "message": "Paiement effectué avec succès.",
                 "paiement_id": paiement.id,
-
                 "vente": {
-                    "id": (
-                        facture.vente_id
-                        if facture.vente
-                        else None
-                    ),
-
-                    "numero_vente": (
-                        facture.vente.numero_vente
-                        if facture.vente
-                        else None
-                    ),
-
-                    "montant_total": (
-                        str(
-                            facture
-                            .vente
-                            .montant_total
-                        )
-                        if facture.vente
-                        else "0.00"
-                    ),
+                    "id": vente.id,
+                    "numero_vente": vente.numero_vente,
+                    "montant_total": str(vente.montant_total),
                 },
-
                 "facture": {
                     "id": facture.id,
-
-                    "numero_facture": (
-                        facture.numero_facture
-                    ),
-
-                    "type_facture": (
-                        facture.type_facture
-                    ),
-
-                    "status": (
-                        facture.status
-                    ),
-
-                    "montant_total": str(
-                        facture.montant_total
-                    ),
-
-                    "total_paye": str(
-                        facture.total_paye
-                    ),
-
-                    "reste_a_payer": str(
-                        facture.reste_a_payer
-                    ),
-
-                    "stock_consumed": (
-                        facture.stock_consumed
-                    ),
+                    "numero_facture": facture.numero_facture,
+                    "type_facture": facture.type_facture,
+                    "status": facture.status,
+                    "montant_total": str(facture.montant_total),
+                    "total_paye": str(facture.total_paye),
+                    "reste_a_payer": str(facture.reste_a_payer),
+                    "stock_consumed": facture.stock_consumed,
                 },
-
                 "client": {
-                    "id": (
-                        client.id
-                        if client
-                        else None
-                    ),
-
-                    "nom": (
-                        getattr(
-                            client,
-                            "nom",
-                            None,
-                        )
-                        if client
-                        else None
-                    ),
-
-                    "prenom": (
-                        getattr(
-                            client,
-                            "prenom",
-                            None,
-                        )
-                        if client
-                        else None
-                    ),
-
-                    "telephone": (
-                        getattr(
-                            client,
-                            "telephone",
-                            None,
-                        )
-                        if client
-                        else None
-                    ),
+                    "id": client.id if client else None,
+                    "nom": getattr(client, "nom", None),
+                    "prenom": getattr(client, "prenom", None),
+                    "telephone": getattr(client, "telephone", None),
                 },
-
                 "lignes": [
                     {
                         "id": ligne.id,
-
-                        "mode_paiement": (
-                            ligne
-                            .mode_paiement
-                            .code
-                        ),
-
-                        "montant_paye": str(
-                            ligne.montant_paye
-                        ),
-
-                        "reference": (
-                            ligne.reference
-                        ),
-
-                        "provider_reference": (
-                            ligne
-                            .provider_reference
-                        ),
-
+                        "mode_paiement": ligne.mode_paiement.code,
+                        "montant_paye": str(ligne.montant_paye),
+                        "reference": ligne.reference,
+                        "provider_reference": ligne.provider_reference,
                         "numero_compte": (
-                            ligne
-                            .compte_depot
-                            .numero_compte
+                            ligne.compte_depot.numero_compte
                             if ligne.compte_depot_id
                             else None
                         ),
                     }
-                    for ligne
-                    in lignes_creees
+                    for ligne in lignes_creees
                 ],
-
                 "stock": audit,
-
-                "facture_pdf_url": (
-                    facture_pdf_url
-                ),
-
-                "facture_download_url": (
-                    facture_download_url
-                ),
+                "facture_pdf_url": facture_pdf_url,
+                "facture_download_url": facture_download_url,
             },
             status=status.HTTP_201_CREATED,
         )
 
-# -------------------END PaiementFactureView-------------------
-
 
 # PDF
-
 def _can_access_facture(user, facture: Facture) -> bool:
     """
-    Vérifie si l'utilisateur peut accéder à une facture.
+    Vérifie les droits d'accès à une facture.
 
-    Règles :
-    - admin   : accès à toutes les factures ;
-    - manager : accès aux factures de ses bijouteries ;
-    - cashier : accès aux factures de sa bijouterie ;
-    - vendor  : accès uniquement aux factures de ses propres ventes.
+    Admin   : toutes les factures.
+    Manager : factures de ses bijouteries.
+    Cashier : factures de sa bijouterie.
+    Vendor  : factures de ses propres ventes.
     """
 
-    if not user or not getattr(user, "is_authenticated", False):
+    if not user or not getattr(
+        user, "is_authenticated", False
+    ):
         return False
 
     if not facture or not facture.bijouterie_id:
         return False
 
     role = (
-        get_role_name(user)
-        or ""
+        get_role_name(user) or ""
     ).lower().strip()
 
     # =====================================================
@@ -4401,6 +3015,7 @@ def _can_access_facture(user, facture: Facture) -> bool:
     # =====================================================
 
     if role == ROLE_MANAGER:
+
         manager_profile = getattr(
             user,
             "staff_manager_profile",
@@ -4410,19 +3025,14 @@ def _can_access_facture(user, facture: Facture) -> bool:
         if not (
             manager_profile
             and getattr(
-                manager_profile,
-                "verifie",
-                False,
+                manager_profile, "verifie", False
             )
         ):
             return False
 
         return (
-            manager_profile
-            .bijouteries
-            .filter(
-                id=facture.bijouterie_id,
-            )
+            manager_profile.bijouteries
+            .filter(id=facture.bijouterie_id)
             .exists()
         )
 
@@ -4431,6 +3041,7 @@ def _can_access_facture(user, facture: Facture) -> bool:
     # =====================================================
 
     if role == ROLE_CASHIER:
+
         cashier_profile = getattr(
             user,
             "staff_cashier_profile",
@@ -4440,21 +3051,13 @@ def _can_access_facture(user, facture: Facture) -> bool:
         if not (
             cashier_profile
             and getattr(
-                cashier_profile,
-                "verifie",
-                False,
+                cashier_profile, "verifie", False
             )
         ):
             return False
 
-        cashier_bijouterie_id = getattr(
-            cashier_profile,
-            "bijouterie_id",
-            None,
-        )
-
         return (
-            cashier_bijouterie_id
+            cashier_profile.bijouterie_id
             == facture.bijouterie_id
         )
 
@@ -4463,6 +3066,7 @@ def _can_access_facture(user, facture: Facture) -> bool:
     # =====================================================
 
     if role == ROLE_VENDOR:
+
         vendor_profile = getattr(
             user,
             "staff_vendor_profile",
@@ -4472,9 +3076,7 @@ def _can_access_facture(user, facture: Facture) -> bool:
         if not (
             vendor_profile
             and getattr(
-                vendor_profile,
-                "verifie",
-                False,
+                vendor_profile, "verifie", False
             )
             and vendor_profile.bijouterie_id
         ):
@@ -4489,13 +3091,7 @@ def _can_access_facture(user, facture: Facture) -> bool:
         if not vente:
             return False
 
-        # Sécurité supplémentaire :
-        # la vente et le vendeur doivent appartenir
-        # à la même bijouterie que la facture.
-        if (
-            vente.bijouterie_id
-            != facture.bijouterie_id
-        ):
+        if vente.bijouterie_id != facture.bijouterie_id:
             return False
 
         if (
@@ -4504,50 +3100,55 @@ def _can_access_facture(user, facture: Facture) -> bool:
         ):
             return False
 
-        # Le vendeur ne peut consulter que
-        # les factures de ses propres ventes.
-        return (
-            vente.vendor_id
-            == vendor_profile.id
-        )
-
-    # =====================================================
-    # AUTRE RÔLE
-    # =====================================================
+        return vente.vendor_id == vendor_profile.id
 
     return False
 
+
 class TicketProforma58mmView(APIView):
+    """
+    Génère un ticket PROFORMA ESC/POS 58 mm.
+
+    Conditions :
+    - Facture existante.
+    - Utilisateur authentifié et autorisé.
+    - Vente associée.
+    - Vente contenant au moins un bijou.
+    - Facture de type PROFORMA.
+    - Bijouterie associée.
+
+    Modes :
+    - Normal : fichier .bin pour imprimante POS.
+    - debug=1 : aperçu texte.
+
+    Règles Rio-Gold :
+    - Bijoux seuls : autorisé.
+    - Bijoux + prestations : autorisé.
+    - Prestations seules : interdit.
+    - Facture définitive : interdit.
+    """
+
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary=(
-            "Télécharger le ticket PROFORMA 58mm pour POS"
+            "Télécharger le ticket PROFORMA 58 mm pour POS"
         ),
-        operation_description="""
-Génère un ticket PROFORMA au format ESC/POS 58mm.
-
-### Utilisation
-
-- Sans `debug` :
-  retourne un fichier `.bin` destiné à l'imprimante thermique POS.
-
-- Avec `?debug=1` :
-  retourne une représentation texte lisible du ticket.
-
-### Exemple
-
-`/api/factures/FAC-20260509-0001/ticket-proforma-58mm/`
-
-### Debug
-
-`/api/factures/FAC-20260509-0001/ticket-proforma-58mm/?debug=1`
-        """,
+        operation_description=(
+            "Génère un ticket PROFORMA au format ESC/POS 58 mm.\n\n"
+            "Règles :\n"
+            "- Bijoux uniquement : autorisé.\n"
+            "- Bijoux + prestations : autorisé.\n"
+            "- Prestations uniquement : interdit.\n"
+            "- Facture définitive : interdit.\n\n"
+            "Sans debug : fichier binaire ESC/POS.\n"
+            "Avec ?debug=1 : aperçu texte lisible."
+        ),
         manual_parameters=[
             openapi.Parameter(
                 name="numero_facture",
                 in_=openapi.IN_PATH,
-                description="Numéro de la facture proforma",
+                description="Numéro de la facture proforma.",
                 type=openapi.TYPE_STRING,
                 required=True,
                 example="FAC-20260509-0001",
@@ -4566,9 +3167,11 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
         ],
         responses={
             200: openapi.Response(
-                description="Ticket PROFORMA généré avec succès."
+                description=(
+                    "Ticket PROFORMA généré avec succès."
+                )
             ),
-            400: "Aucune vente associée à cette facture.",
+            400: "Facture ou vente non éligible.",
             403: "Accès refusé.",
             404: "Facture introuvable.",
             500: "Erreur lors de la génération du ticket.",
@@ -4582,7 +3185,7 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
     ):
 
         # =====================================================
-        # 1. FACTURE
+        # 1. RECHERCHE DE LA FACTURE
         # =====================================================
 
         facture = (
@@ -4594,23 +3197,22 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
                 "bijouterie",
             )
             .filter(
-                numero_facture__iexact=numero_facture,
+                numero_facture__iexact=numero_facture
             )
             .first()
         )
 
-        if not facture:
+        if facture is None:
             return error_response(
                 code="FACTURE_NOT_FOUND",
                 message=(
-                    f"Facture introuvable : "
-                    f"{numero_facture}."
+                    f"Facture introuvable : {numero_facture}."
                 ),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
 
         # =====================================================
-        # 2. PERMISSION
+        # 2. CONTRÔLE DES PERMISSIONS
         # =====================================================
 
         if not _can_access_facture(
@@ -4619,67 +3221,73 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
         ):
             return error_response(
                 code="FACTURE_ACCESS_DENIED",
-                message=(
-                    "Accès refusé à cette facture."
-                ),
+                message="Accès refusé à cette facture.",
                 status_code=status.HTTP_403_FORBIDDEN,
             )
 
         # =====================================================
-        # 3. VENTE
+        # 3. VÉRIFICATION DE LA VENTE
         # =====================================================
 
         if not facture.vente_id:
             return error_response(
                 code="FACTURE_WITHOUT_SALE",
                 message=(
-                    "Aucune vente associée "
-                    "à cette facture."
+                    "Aucune vente associée à cette facture."
                 ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vente = facture.vente
+
+        # =====================================================
+        # 4. VÉRIFICATION DES BIJOUX
+        # =====================================================
+
+        if not vente.lignes.exists():
+            return error_response(
+                code="SALE_WITHOUT_JEWELRY",
+                message=(
+                    "Cette vente ne contient aucun bijou. "
+                    "Le ticket proforma est interdit pour "
+                    "les ventes composées uniquement de "
+                    "prestations. Utilisez le reçu de paiement."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 4. TYPE DE FACTURE
-        # =====================================================
-        #
-        # Cet endpoint est destiné au ticket PROFORMA.
-        # On évite donc de générer ce ticket pour une facture
-        # définitive déjà convertie.
+        # 5. TYPE DE FACTURE
         # =====================================================
 
-        if (
-            facture.type_facture
-            != Facture.TYPE_PROFORMA
-        ):
+        if facture.type_facture != Facture.TYPE_PROFORMA:
             return error_response(
                 code="FACTURE_NOT_PROFORMA",
                 message=(
-                    "Cette facture n'est plus "
-                    "une facture proforma."
+                    "Cette facture n'est pas une proforma. "
+                    "Le ticket proforma ne peut pas être généré."
                 ),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 5. BIJOUTERIE
+        # 6. BIJOUTERIE
         # =====================================================
 
         bijouterie = facture.bijouterie
 
-        if not bijouterie:
+        if bijouterie is None:
             return error_response(
                 code="FACTURE_WITHOUT_STORE",
                 message=(
                     "Aucune bijouterie n'est associée "
                     "à cette facture."
                 ),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         shop_name = (
-            getattr(
-                bijouterie,
-                "nom",
-                None,
-            )
+            getattr(bijouterie, "nom", None)
             or "BIJOUTERIE RIO-GOLD"
         )
 
@@ -4703,15 +3311,14 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
         )
 
         # =====================================================
-        # 6. DATE LOCALE
+        # 7. DATE LOCALE
         # =====================================================
 
         date_creation = facture.date_creation
 
         if date_creation:
-            if timezone.is_aware(
-                date_creation
-            ):
+
+            if timezone.is_aware(date_creation):
                 date_creation = timezone.localtime(
                     date_creation
                 )
@@ -4734,54 +3341,62 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
             time_txt = ""
 
         # =====================================================
-        # 7. STATUT
+        # 8. STATUT DE LA FACTURE
         # =====================================================
 
-        if (
-            facture.status
-            == Facture.STAT_NON_PAYE
-        ):
+        if facture.status == Facture.STAT_NON_PAYE:
             statut_txt = "NON PAYE"
 
-        elif (
-            facture.status
-            == Facture.STAT_PARTIEL
-        ):
+        elif facture.status == Facture.STAT_PARTIEL:
             statut_txt = "PARTIEL"
 
-        elif (
-            facture.status
-            == Facture.STAT_PAYE
-        ):
+        elif facture.status == Facture.STAT_PAYE:
             statut_txt = "PAYE"
 
         else:
             statut_txt = str(
-                facture.status
-                or ""
+                facture.status or ""
             ).upper()
 
         # =====================================================
-        # 8. MONTANT À PAYER
+        # 9. MONTANT RESTANT À PAYER
         # =====================================================
 
         montant_a_payer = Decimal(
             str(
                 facture.reste_a_payer
-                or "0.00"
+                if facture.reste_a_payer is not None
+                else "0.00"
             )
         )
 
+        if not montant_a_payer.is_finite():
+            return error_response(
+                code="INVALID_INVOICE_BALANCE",
+                message=(
+                    "Le montant restant à payer "
+                    "de cette facture est invalide."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if montant_a_payer < Decimal("0.00"):
+            return error_response(
+                code="INVALID_INVOICE_BALANCE",
+                message=(
+                    "Le montant restant à payer "
+                    "ne peut pas être négatif."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
         # =====================================================
-        # 9. MODE DEBUG
+        # 10. MODE DEBUG
         # =====================================================
 
-        if (
-            request.query_params.get(
-                "debug"
-            )
-            == "1"
-        ):
+        if request.query_params.get("debug") == "1":
+
+            separator = "-" * 32
 
             debug_text = (
                 f"{shop_name.upper()}\n"
@@ -4793,31 +3408,34 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
                 )
 
             debug_text += (
-                f"{'-' * 42}\n"
-                f"FACTURE PROFORMA    "
+                f"{separator}\n"
+                f"FACTURE PROFORMA\n"
                 f"N° {facture.numero_facture}\n"
-                f"{'-' * 42}\n"
-                f"DATE : {date_day_txt}"
-                f"              "
-                f"{time_txt}\n"
+                f"{separator}\n"
+                f"DATE : {date_day_txt} {time_txt}\n"
                 f"ETAT : {statut_txt}\n"
-                f"{'-' * 42}\n"
+                f"{separator}\n"
                 f"MONTANT A PAYER\n"
-                f"{montant_a_payer} FCFA\n"
-                f"{'-' * 42}\n"
-                f"Ticket PROFORMA a regler en caisse.\n"
-                f"Merci pour votre confiance !"
+                f"{montant_a_payer:.2f} FCFA\n"
+                f"{separator}\n"
+                f"Ticket PROFORMA\n"
+                f"A regler en caisse.\n"
+                f"Merci pour votre confiance !\n"
             )
 
-            return HttpResponse(
+            response = HttpResponse(
                 debug_text,
-                content_type=(
-                    "text/plain; charset=utf-8"
-                ),
+                content_type="text/plain; charset=utf-8",
             )
+
+            response["Cache-Control"] = "no-store"
+
+            response["X-Content-Type-Options"] = "nosniff"
+
+            return response
 
         # =====================================================
-        # 10. GÉNÉRATION ESC/POS
+        # 11. GÉNÉRATION DU TICKET ESC/POS
         # =====================================================
 
         try:
@@ -4825,13 +3443,9 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
                 build_escpos_ticket_proforma_58mm(
                     shop_name=shop_name,
                     shop_phone=shop_phone,
-                    numero_facture=(
-                        facture.numero_facture
-                    ),
+                    numero_facture=facture.numero_facture,
                     date_txt=date_txt,
-                    montant_a_payer=(
-                        montant_a_payer
-                    ),
+                    montant_a_payer=montant_a_payer,
                     statut_txt=statut_txt,
                     note=(
                         "Ticket PROFORMA "
@@ -4840,7 +3454,14 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
                 )
             )
 
-        except Exception as exc:
+        except Exception:
+            logger.exception(
+                "Erreur de génération du ticket "
+                "proforma ESC/POS 58 mm. "
+                "Facture=%s",
+                facture.numero_facture,
+            )
+
             return error_response(
                 code="PROFORMA_TICKET_GENERATION_FAILED",
                 message=(
@@ -4850,19 +3471,43 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
                 status_code=(
                     status.HTTP_500_INTERNAL_SERVER_ERROR
                 ),
-                details=str(exc),
             )
 
         # =====================================================
-        # 11. VALIDATION DU RÉSULTAT
+        # 12. VALIDATION DU TICKET GÉNÉRÉ
         # =====================================================
 
+        if not isinstance(
+            escpos_bytes,
+            (bytes, bytearray),
+        ):
+            logger.error(
+                "Ticket ESC/POS non binaire. "
+                "Facture=%s",
+                facture.numero_facture,
+            )
+
+            return error_response(
+                code="INVALID_PROFORMA_TICKET",
+                message=(
+                    "Le ticket proforma généré "
+                    "n'est pas au format binaire."
+                ),
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+            )
+
         if not escpos_bytes:
+            logger.error(
+                "Ticket ESC/POS vide. Facture=%s",
+                facture.numero_facture,
+            )
+
             return error_response(
                 code="EMPTY_PROFORMA_TICKET",
                 message=(
-                    "Le ticket proforma généré "
-                    "est vide."
+                    "Le ticket proforma généré est vide."
                 ),
                 status_code=(
                     status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -4870,65 +3515,89 @@ Génère un ticket PROFORMA au format ESC/POS 58mm.
             )
 
         # =====================================================
-        # 12. RÉPONSE POS
+        # 13. NOM DU FICHIER
+        # =====================================================
+
+        safe_numero_facture = get_valid_filename(
+            str(facture.numero_facture)
+        )
+
+        filename = (
+            f"ticket_proforma_"
+            f"{safe_numero_facture}.bin"
+        )
+
+        # =====================================================
+        # 14. RÉPONSE POUR IMPRIMANTE POS
         # =====================================================
 
         response = HttpResponse(
-            escpos_bytes,
+            bytes(escpos_bytes),
             content_type="application/octet-stream",
         )
 
-        response[
-            "Content-Disposition"
-        ] = (
-            'inline; filename="'
-            'ticket_proforma_'
-            f'{facture.numero_facture}.bin"'
+        response["Content-Disposition"] = (
+            f'inline; filename="{filename}"'
         )
 
-        response[
-            "Content-Length"
-        ] = str(
+        response["Content-Length"] = str(
             len(escpos_bytes)
         )
 
-        response[
-            "Cache-Control"
-        ] = "no-store"
+        response["Cache-Control"] = "no-store"
+
+        response["X-Content-Type-Options"] = "nosniff"
 
         return response
 
 
 class TicketPaiement80mmESCPosView(APIView):
+    """
+    Génère un reçu de paiement ESC/POS 80 mm.
+
+    Règles :
+    - Facture existante.
+    - Utilisateur autorisé.
+    - Vente contenant au moins un bijou.
+    - Dernier paiement enregistré.
+    - Paiement partiel ou complet accepté.
+    - Montant du dernier paiement uniquement.
+    - Reste à payer actuel de la facture.
+    - Aucune modification financière ou de stock.
+
+    Modes :
+    - Normal : fichier .bin ESC/POS.
+    - debug=1 : aperçu texte.
+
+    Les ventes contenant uniquement des prestations
+    utilisent le reçu de paiement direct, sans facture.
+    """
+
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary=(
-            "Télécharger le ticket de paiement 80mm pour POS"
+            "Télécharger le reçu de paiement ESC/POS 80 mm"
         ),
-        operation_description="""
-Génère un reçu de paiement au format ESC/POS 80mm.
-
-### Règles
-
-- Le ticket est disponible uniquement si la facture est entièrement payée.
-- Le ticket correspond au dernier paiement enregistré.
-- Sans `debug` : retourne un fichier `.bin` pour imprimante thermique POS.
-- Avec `?debug=1` : affiche le contenu lisible du ticket.
-
-### Exemple
-
-`/api/factures/FAC-20260509-0001/ticket-paiement-80mm/`
-
-### Debug
-
-`/api/factures/FAC-20260509-0001/ticket-paiement-80mm/?debug=1`
-        """,
+        operation_description=(
+            "Génère le reçu du dernier paiement enregistré "
+            "sur une facture.\n\n"
+            "Règles :\n"
+            "- Bijoux seuls ou bijoux + prestations.\n"
+            "- Paiements partiels acceptés.\n"
+            "- Paiements complets acceptés.\n"
+            "- Montant du dernier paiement uniquement.\n"
+            "- Reste à payer actuel de la facture.\n"
+            "- Prestations seules : reçu direct sans facture.\n\n"
+            "Sans debug : fichier ESC/POS .bin.\n"
+            "Avec ?debug=1 : aperçu texte.\n\n"
+            "Aucune modification financière ou de stock."
+        ),
         manual_parameters=[
             openapi.Parameter(
                 name="numero_facture",
                 in_=openapi.IN_PATH,
-                description="Numéro de la facture",
+                description="Numéro de la facture.",
                 type=openapi.TYPE_STRING,
                 required=True,
                 example="FAC-20260509-0001",
@@ -4937,7 +3606,7 @@ Génère un reçu de paiement au format ESC/POS 80mm.
                 name="debug",
                 in_=openapi.IN_QUERY,
                 description=(
-                    "Mettre 1 pour afficher le ticket "
+                    "Mettre 1 pour afficher le reçu "
                     "en texte lisible."
                 ),
                 type=openapi.TYPE_STRING,
@@ -4947,19 +3616,12 @@ Génère un reçu de paiement au format ESC/POS 80mm.
         ],
         responses={
             200: openapi.Response(
-                description=(
-                    "Ticket de paiement généré avec succès. "
-                    "Retourne un fichier .bin ou du texte "
-                    "si debug=1."
-                )
+                description="Reçu de paiement généré."
             ),
-            400: (
-                "Facture non entièrement payée "
-                "ou aucun paiement trouvé."
-            ),
+            400: "Facture ou paiement non éligible.",
             403: "Accès refusé.",
             404: "Facture introuvable.",
-            500: "Erreur lors de la génération du ticket.",
+            500: "Erreur de génération du ticket.",
         },
         tags=["Tickets POS"],
     )
@@ -4970,7 +3632,7 @@ Génère un reçu de paiement au format ESC/POS 80mm.
     ):
 
         # =====================================================
-        # 1. FACTURE
+        # 1. RECHERCHE DE LA FACTURE
         # =====================================================
 
         facture = (
@@ -4982,23 +3644,22 @@ Génère un reçu de paiement au format ESC/POS 80mm.
                 "bijouterie",
             )
             .filter(
-                numero_facture__iexact=numero_facture,
+                numero_facture__iexact=numero_facture
             )
             .first()
         )
 
-        if not facture:
+        if facture is None:
             return error_response(
                 code="FACTURE_NOT_FOUND",
                 message=(
-                    f"Facture introuvable : "
-                    f"{numero_facture}."
+                    f"Facture introuvable : {numero_facture}."
                 ),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
 
         # =====================================================
-        # 2. PERMISSION
+        # 2. CONTRÔLE DES PERMISSIONS
         # =====================================================
 
         if not _can_access_facture(
@@ -5007,98 +3668,58 @@ Génère un reçu de paiement au format ESC/POS 80mm.
         ):
             return error_response(
                 code="FACTURE_ACCESS_DENIED",
-                message=(
-                    "Accès refusé à cette facture."
-                ),
+                message="Accès refusé à cette facture.",
                 status_code=status.HTTP_403_FORBIDDEN,
             )
 
         # =====================================================
-        # 3. FACTURE ENTIÈREMENT PAYÉE
+        # 3. VÉRIFICATION DE LA VENTE
         # =====================================================
 
-        reste_a_payer = Decimal(
-            str(
-                facture.reste_a_payer
-                or "0.00"
+        if not facture.vente_id:
+            return error_response(
+                code="FACTURE_WITHOUT_SALE",
+                message=(
+                    "Aucune vente n'est associée "
+                    "à cette facture."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
-        )
+
+        vente = facture.vente
+
+        if not vente.lignes.exists():
+            return error_response(
+                code="SALE_WITHOUT_JEWELRY",
+                message=(
+                    "Cette vente ne contient aucun bijou. "
+                    "Les ventes de prestations seules "
+                    "utilisent un reçu de paiement direct."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================================
+        # 4. COHÉRENCE BIJOUTERIE
+        # =====================================================
 
         if (
-            facture.status != Facture.STAT_PAYE
-            or reste_a_payer > Decimal("0.00")
+            not facture.bijouterie_id
+            or vente.bijouterie_id != facture.bijouterie_id
         ):
             return error_response(
-                code="FACTURE_NOT_FULLY_PAID",
+                code="INVOICE_STORE_MISMATCH",
                 message=(
-                    "Le ticket de paiement 80mm "
-                    "ne peut être imprimé que si "
-                    "la facture est entièrement payée."
+                    "La bijouterie de la facture "
+                    "est absente ou incohérente."
                 ),
-                details={
-                    "status_facture": facture.status,
-                    "reste_a_payer": str(
-                        reste_a_payer
-                    ),
-                },
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
-
-        # =====================================================
-        # 4. DERNIER PAIEMENT
-        # =====================================================
-
-        paiement = (
-            Paiement.objects
-            .filter(
-                facture=facture,
-            )
-            .select_related(
-                "facture",
-                "cashier",
-                "cashier__user",
-                "created_by",
-            )
-            .prefetch_related(
-                "lignes",
-                "lignes__mode_paiement",
-            )
-            .order_by(
-                "-date_paiement",
-                "-id",
-            )
-            .first()
-        )
-
-        if not paiement:
-            return error_response(
-                code="PAYMENT_NOT_FOUND",
-                message=(
-                    "Aucun paiement trouvé "
-                    "pour cette facture."
-                ),
-            )
-
-        # =====================================================
-        # 5. BIJOUTERIE
-        # =====================================================
 
         bijouterie = facture.bijouterie
 
-        if not bijouterie:
-            return error_response(
-                code="FACTURE_WITHOUT_STORE",
-                message=(
-                    "Aucune bijouterie n'est associée "
-                    "à cette facture."
-                ),
-            )
-
         shop_name = (
-            getattr(
-                bijouterie,
-                "nom",
-                None,
-            )
+            getattr(bijouterie, "nom", None)
             or "RIO-GOLD"
         )
 
@@ -5122,18 +3743,48 @@ Génère un reçu de paiement au format ESC/POS 80mm.
         )
 
         # =====================================================
-        # 6. MONTANT DU PAIEMENT
+        # 5. DERNIER PAIEMENT
         # =====================================================
-        #
-        # Ici on imprime le montant du paiement sélectionné,
-        # donc uniquement les lignes de CE paiement.
+
+        paiement = (
+            Paiement.objects
+            .filter(
+                facture_id=facture.pk,
+            )
+            .select_related(
+                "facture",
+                "cashier",
+                "cashier__user",
+                "created_by",
+            )
+            .prefetch_related(
+                "lignes",
+                "lignes__mode_paiement",
+            )
+            .order_by(
+                "-date_paiement",
+                "-id",
+            )
+            .first()
+        )
+
+        if paiement is None:
+            return error_response(
+                code="PAYMENT_NOT_FOUND",
+                message=(
+                    "Aucun paiement enregistré "
+                    "pour cette facture."
+                ),
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        # =====================================================
+        # 6. MONTANT DU DERNIER PAIEMENT
         # =====================================================
 
         montant_paye = (
             paiement.lignes.aggregate(
-                total=Sum(
-                    "montant_paye"
-                )
+                total=Sum("montant_paye")
             )["total"]
             or Decimal("0.00")
         )
@@ -5142,134 +3793,256 @@ Génère un reçu de paiement au format ESC/POS 80mm.
             str(montant_paye)
         )
 
-        if montant_paye <= Decimal("0.00"):
+        if (
+            not montant_paye.is_finite()
+            or montant_paye <= Decimal("0.00")
+        ):
             return error_response(
                 code="PAYMENT_WITHOUT_AMOUNT",
                 message=(
-                    "Le paiement sélectionné "
-                    "ne contient aucun montant valide."
+                    "Le dernier paiement ne contient "
+                    "aucun montant valide."
                 ),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 7. GÉNÉRATION ESC/POS
+        # 7. RESTE À PAYER ACTUEL
         # =====================================================
 
         try:
-            escpos_bytes = (
-                build_escpos_recu_paiement_80mm(
-                    shop_name=shop_name,
-                    shop_phone=shop_phone,
-                    numero_facture=(
-                        facture.numero_facture
-                    ),
-                    date_paiement=(
-                        paiement.date_paiement
-                    ),
-                    montant_paye=montant_paye,
-
-                    # La facture est totalement payée.
-                    reste_a_payer=None,
+            reste_a_payer = Decimal(
+                str(
+                    facture.reste_a_payer
+                    if facture.reste_a_payer is not None
+                    else "0.00"
                 )
             )
 
-        except Exception as exc:
+        except (ValueError, TypeError, ArithmeticError):
+            return error_response(
+                code="INVALID_INVOICE_BALANCE",
+                message=(
+                    "Le solde de la facture est invalide."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if (
+            not reste_a_payer.is_finite()
+            or reste_a_payer < Decimal("0.00")
+        ):
+            return error_response(
+                code="INVALID_INVOICE_BALANCE",
+                message=(
+                    "Le solde de la facture est invalide."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================================
+        # 8. MODE DEBUG
+        # =====================================================
+
+        if request.query_params.get("debug") == "1":
+
+            date_paiement = paiement.date_paiement
+
+            if (
+                date_paiement
+                and timezone.is_aware(date_paiement)
+            ):
+                date_paiement = timezone.localtime(
+                    date_paiement
+                )
+
+            date_txt = (
+                date_paiement.strftime("%d/%m/%Y %H:%M")
+                if date_paiement
+                else ""
+            )
+
+            separator = "-" * 42
+
+            debug_text = (
+                f"{shop_name}\n"
+                f"Tel : {shop_phone}\n"
+                f"{separator}\n"
+                f"RECU DE PAIEMENT\n"
+                f"Facture : {facture.numero_facture}\n"
+                f"Paiement ID : {paiement.pk}\n"
+                f"Date : {date_txt}\n"
+                f"{separator}\n"
+                f"Montant recu : {montant_paye:.2f} FCFA\n"
+                f"Reste a payer : {reste_a_payer:.2f} FCFA\n"
+                f"{separator}\n"
+                f"Merci pour votre confiance !\n"
+            )
+
+            response = HttpResponse(
+                debug_text,
+                content_type="text/plain; charset=utf-8",
+            )
+
+            response["Cache-Control"] = "no-store"
+            response["X-Content-Type-Options"] = "nosniff"
+
+            return response
+
+        # =====================================================
+        # 9. GÉNÉRATION ESC/POS 80 MM
+        # =====================================================
+
+        try:
+            escpos_bytes = build_escpos_recu_paiement_80mm(
+                shop_name=shop_name,
+                shop_phone=shop_phone,
+                numero_facture=facture.numero_facture,
+                date_paiement=paiement.date_paiement,
+                montant_paye=montant_paye,
+                reste_a_payer=reste_a_payer,
+            )
+
+        except Exception:
+            logger.exception(
+                "Erreur génération reçu ESC/POS 80 mm. "
+                "Facture=%s Paiement=%s",
+                facture.numero_facture,
+                paiement.pk,
+            )
+
             return error_response(
                 code="PAYMENT_TICKET_GENERATION_FAILED",
                 message=(
                     "Erreur lors de la génération "
                     "du ticket de paiement."
                 ),
-                status_code=(
-                    status.HTTP_500_INTERNAL_SERVER_ERROR
-                ),
-                details=str(exc),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
         # =====================================================
-        # 8. VALIDATION DU TICKET
+        # 10. VALIDATION DU FICHIER ESC/POS
         # =====================================================
+
+        if not isinstance(
+            escpos_bytes,
+            (bytes, bytearray),
+        ):
+            logger.error(
+                "Reçu ESC/POS non binaire. Paiement=%s",
+                paiement.pk,
+            )
+
+            return error_response(
+                code="INVALID_PAYMENT_TICKET",
+                message=(
+                    "Le ticket généré n'est pas "
+                    "au format binaire."
+                ),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         if not escpos_bytes:
             return error_response(
                 code="EMPTY_PAYMENT_TICKET",
-                message=(
-                    "Le ticket de paiement généré "
-                    "est vide."
-                ),
-                status_code=(
-                    status.HTTP_500_INTERNAL_SERVER_ERROR
-                ),
+                message="Le ticket de paiement généré est vide.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
         # =====================================================
-        # 9. MODE DEBUG
+        # 11. NOM DU FICHIER
         # =====================================================
 
-        if (
-            request.query_params.get("debug")
-            == "1"
-        ):
-            try:
-                debug_text = escpos_bytes.decode(
-                    "cp1252",
-                    errors="ignore",
-                )
+        safe_numero = get_valid_filename(
+            str(facture.numero_facture)
+        )
 
-            except Exception as exc:
-                return error_response(
-                    code="PAYMENT_TICKET_DECODE_FAILED",
-                    message=(
-                        "Impossible de convertir "
-                        "le ticket en texte."
-                    ),
-                    status_code=(
-                        status.HTTP_500_INTERNAL_SERVER_ERROR
-                    ),
-                    details=str(exc),
-                )
-
-            return HttpResponse(
-                debug_text,
-                content_type=(
-                    "text/plain; charset=utf-8"
-                ),
-            )
+        filename = (
+            f"ticket_paiement_{safe_numero}_"
+            f"{paiement.pk}.bin"
+        )
 
         # =====================================================
-        # 10. RÉPONSE ESC/POS
+        # 12. RÉPONSE ESC/POS
         # =====================================================
 
         response = HttpResponse(
-            escpos_bytes,
+            bytes(escpos_bytes),
             content_type="application/octet-stream",
         )
 
-        response[
-            "Content-Disposition"
-        ] = (
-            'inline; filename="'
-            'ticket_paiement_'
-            f'{facture.numero_facture}.bin"'
+        response["Content-Disposition"] = (
+            f'inline; filename="{filename}"'
         )
 
-        response[
-            "Content-Length"
-        ] = str(
+        response["Content-Length"] = str(
             len(escpos_bytes)
         )
 
-        response[
-            "Cache-Control"
-        ] = "no-store"
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
 
         return response
     
 
-# class FactureA5PortraitView(APIView):
-class FactureA5paysageView(APIView):
+class FactureA5PortraitView(APIView):
+    """
+    Téléchargement d'une facture PDF A5 portrait.
+
+    Format :
+    - A5 portrait : 148 x 210 mm.
+
+    Règles métier Rio-Gold :
+    - Bijoux uniquement : autorisé.
+    - Bijoux + prestations : autorisé.
+    - Prestations uniquement : interdit.
+    - Facture proforma : autorisée.
+    - Facture définitive : autorisée.
+
+    Les montants sont fournis par :
+    build_facture_pdf_data(facture).
+
+    Cette vue ne modifie aucune donnée métier :
+    - Aucun paiement.
+    - Aucun mouvement de stock.
+    - Aucune modification de facture.
+    """
+
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary=(
+            "Télécharger une facture PDF A5 portrait"
+        ),
+        operation_description="""
+Télécharge une facture au format PDF A5 portrait.
+
+Règles métier :
+
+- Bijoux uniquement : autorisé.
+- Bijoux + prestations : autorisé.
+- Prestations uniquement : interdit.
+- Facture proforma : autorisée.
+- Facture définitive : autorisée.
+- L'utilisateur doit avoir accès à la facture.
+
+Les montants sont calculés par build_facture_pdf_data.
+
+Aucune modification financière ou de stock.
+        """,
+        responses={
+            200: openapi.Response(
+                description=(
+                    "Facture PDF A5 portrait générée avec succès."
+                )
+            ),
+            400: "Facture ou vente non éligible.",
+            403: "Accès refusé.",
+            404: "Facture introuvable.",
+            500: "Erreur lors de la génération PDF.",
+        },
+        tags=["Factures"],
+    )
     def get(
         self,
         request,
@@ -5277,7 +4050,7 @@ class FactureA5paysageView(APIView):
     ):
 
         # =====================================================
-        # 1. FACTURE
+        # 1. RECHERCHE DE LA FACTURE
         # =====================================================
 
         facture = (
@@ -5291,24 +4064,25 @@ class FactureA5paysageView(APIView):
             )
             .prefetch_related(
                 # ---------------------------------------------
-                # Lignes de vente
+                # Bijoux
                 # ---------------------------------------------
                 "vente__lignes",
 
-                # ---------------------------------------------
-                # ProduitLine = source de vérité
-                # ---------------------------------------------
+                # ProduitLine : source de vérité
                 "vente__lignes__produit_line",
                 "vente__lignes__produit_line__lot",
 
-                # ---------------------------------------------
-                # Produit dérivé de ProduitLine
-                # ---------------------------------------------
+                # Produit associé à ProduitLine
                 "vente__lignes__produit_line__produit",
                 "vente__lignes__produit_line__produit__purete",
                 "vente__lignes__produit_line__produit__marque",
                 "vente__lignes__produit_line__produit__categorie",
                 "vente__lignes__produit_line__produit__modele",
+
+                # ---------------------------------------------
+                # Prestations
+                # ---------------------------------------------
+                "vente__autres",
 
                 # ---------------------------------------------
                 # Paiements
@@ -5327,7 +4101,7 @@ class FactureA5paysageView(APIView):
         # 2. FACTURE INTROUVABLE
         # =====================================================
 
-        if not facture:
+        if facture is None:
             return error_response(
                 code="FACTURE_NOT_FOUND",
                 message=(
@@ -5347,14 +4121,12 @@ class FactureA5paysageView(APIView):
         ):
             return error_response(
                 code="FACTURE_ACCESS_DENIED",
-                message=(
-                    "Accès refusé à cette facture."
-                ),
+                message="Accès refusé à cette facture.",
                 status_code=status.HTTP_403_FORBIDDEN,
             )
 
         # =====================================================
-        # 4. VENTE
+        # 4. VENTE ASSOCIÉE
         # =====================================================
 
         if not facture.vente_id:
@@ -5364,10 +4136,80 @@ class FactureA5paysageView(APIView):
                     "Aucune vente n'est associée "
                     "à cette facture."
                 ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        vente = facture.vente
+
+        # =====================================================
+        # 5. VÉRIFICATION DES BIJOUX
+        # =====================================================
+
+        # Les factures sont réservées aux ventes
+        # contenant au moins un bijou.
+        #
+        # Les ventes uniquement composées de prestations
+        # doivent produire un reçu de paiement.
+
+        if not vente.lignes.exists():
+            return error_response(
+                code="SALE_WITHOUT_JEWELRY",
+                message=(
+                    "Impossible de générer une facture PDF : "
+                    "cette vente ne contient aucun bijou. "
+                    "Les ventes composées uniquement de "
+                    "prestations doivent utiliser un reçu "
+                    "de paiement."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 5. DONNÉES PDF
+        # 6. COHÉRENCE BIJOUTERIE
+        # =====================================================
+
+        if not facture.bijouterie_id:
+            return error_response(
+                code="FACTURE_WITHOUT_STORE",
+                message=(
+                    "Aucune bijouterie n'est associée "
+                    "à cette facture."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if (
+            vente.bijouterie_id
+            != facture.bijouterie_id
+        ):
+            return error_response(
+                code="INVOICE_STORE_MISMATCH",
+                message=(
+                    "La bijouterie de la vente ne correspond "
+                    "pas à celle de la facture."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================================
+        # 7. TYPE DE FACTURE
+        # =====================================================
+
+        if facture.type_facture not in (
+            Facture.TYPE_PROFORMA,
+            Facture.TYPE_FACTURE,
+        ):
+            return error_response(
+                code="INVALID_INVOICE_TYPE",
+                message=(
+                    "Seules les factures proforma "
+                    "et définitives sont autorisées."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================================
+        # 8. PRÉPARATION DES DONNÉES PDF
         # =====================================================
 
         try:
@@ -5375,7 +4217,26 @@ class FactureA5paysageView(APIView):
                 facture
             )
 
-        except Exception as exc:
+        except ValueError as exc:
+            logger.warning(
+                "Données PDF invalides. Facture=%s : %s",
+                facture.numero_facture,
+                exc,
+            )
+
+            return error_response(
+                code="FACTURE_PDF_DATA_INVALID",
+                message=str(exc),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        except Exception:
+            logger.exception(
+                "Erreur de préparation des données PDF. "
+                "Facture=%s",
+                facture.numero_facture,
+            )
+
             return error_response(
                 code="FACTURE_PDF_DATA_FAILED",
                 message=(
@@ -5385,11 +4246,10 @@ class FactureA5paysageView(APIView):
                 status_code=(
                     status.HTTP_500_INTERNAL_SERVER_ERROR
                 ),
-                details=str(exc),
             )
 
         # =====================================================
-        # 6. GÉNÉRATION PDF
+        # 9. GÉNÉRATION PDF A5 PORTRAIT
         # =====================================================
 
         buffer = BytesIO()
@@ -5400,8 +4260,30 @@ class FactureA5paysageView(APIView):
                 data,
             )
 
-        except Exception as exc:
+            # Vérifier qu'un PDF a été généré.
+            if buffer.tell() == 0:
+                raise ValueError(
+                    "Le générateur a retourné un PDF vide."
+                )
+
+            buffer.seek(0)
+
+            # Vérifier la signature PDF.
+            if buffer.read(5) != b"%PDF-":
+                raise ValueError(
+                    "Le fichier généré n'est pas un PDF valide."
+                )
+
+            buffer.seek(0)
+
+        except Exception:
             buffer.close()
+
+            logger.exception(
+                "Erreur de génération du PDF A5 portrait. "
+                "Facture=%s",
+                facture.numero_facture,
+            )
 
             return error_response(
                 code="FACTURE_PDF_GENERATION_FAILED",
@@ -5412,50 +4294,103 @@ class FactureA5paysageView(APIView):
                 status_code=(
                     status.HTTP_500_INTERNAL_SERVER_ERROR
                 ),
-                details=str(exc),
             )
 
         # =====================================================
-        # 7. POSITIONNEMENT DU BUFFER
+        # 10. NOM DU FICHIER
         # =====================================================
 
-        buffer.seek(0)
-
-        # =====================================================
-        # 8. NOM DU FICHIER
-        # =====================================================
-
-        filename = (
-            f"facture_"
-            f"{facture.numero_facture}"
-            f".pdf"
+        safe_numero = get_valid_filename(
+            str(facture.numero_facture)
         )
 
+        if facture.type_facture == Facture.TYPE_PROFORMA:
+            filename = (
+                f"proforma_{safe_numero}.pdf"
+            )
+        else:
+            filename = (
+                f"facture_{safe_numero}.pdf"
+            )
+
         # =====================================================
-        # 9. RÉPONSE PDF
+        # 11. RÉPONSE PDF
         # =====================================================
 
-        return FileResponse(
+        response = FileResponse(
             buffer,
             as_attachment=True,
             filename=filename,
             content_type="application/pdf",
         )
-        
+
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+
+        return response
 
 class ExportFacturesExcelView(APIView):
+    """
+    Export Excel des factures.
+
+    Règles :
+    - Admin : factures de son scope.
+    - Manager : factures de ses bijouteries.
+    - Vendor : factures de ses propres ventes.
+    - Cashier : factures de sa bijouterie.
+
+    Factures éligibles :
+    - Bijoux uniquement.
+    - Bijoux + prestations.
+
+    Les ventes avec prestations uniquement
+    sont exclues de l'export des factures.
+
+    Aucun changement de stock, de paiement
+    ou de données financières.
+    """
+
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary="Exporter les factures en Excel",
+        operation_description="""
+Exporte les factures accessibles à l'utilisateur connecté.
+
+Rôles autorisés :
+- admin
+- manager
+- vendor
+- cashier
+
+Règles :
+- Le scope bijouterie est appliqué.
+- Le vendeur ne peut exporter que ses propres factures.
+- Les factures de ventes contenant des bijoux sont incluses.
+- Les ventes mixtes (bijoux + prestations) sont incluses.
+- Les ventes avec prestations uniquement sont exclues.
+
+L'export ne modifie aucune donnée métier.
+        """,
+        responses={
+            200: openapi.Response(
+                description="Fichier Excel généré avec succès."
+            ),
+            403: "Accès refusé.",
+            500: "Erreur de génération Excel.",
+        },
+        tags=["Factures"],
+    )
     def get(self, request):
+
+        # =====================================================
+        # 1. UTILISATEUR ET RÔLE
+        # =====================================================
+
         user = request.user
 
-        # =====================================================
-        # 1. RÔLE
-        # =====================================================
-
         role = (
-            get_role_name(user)
-            or ""
+            get_role_name(user) or ""
         ).lower().strip()
 
         allowed_roles = {
@@ -5476,13 +4411,15 @@ class ExportFacturesExcelView(APIView):
             )
 
         # =====================================================
-        # 2. QUERYSET
+        # 2. QUERYSET DE BASE
         # =====================================================
+
+        # Le générateur Excel existant travaille
+        # sur les informations de facture et de vente.
         #
-        # Aucun prefetch ProduitLine n'est nécessaire ici :
-        # export_factures_excel() n'utilise pas les lignes
-        # de vente ni les produits.
-        # =====================================================
+        # Aucun prefetch ProduitLine n'est nécessaire
+        # si export_factures_excel() ne parcourt pas
+        # les détails des produits.
 
         factures = (
             Facture.objects
@@ -5493,6 +4430,14 @@ class ExportFacturesExcelView(APIView):
                 "vente__vendor__user",
                 "bijouterie",
             )
+            .filter(
+                # Exclure les factures sans vente.
+                vente__isnull=False,
+
+                # La vente doit contenir au moins un bijou.
+                vente__lignes__isnull=False,
+            )
+            .distinct()
         )
 
         # =====================================================
@@ -5509,13 +4454,9 @@ class ExportFacturesExcelView(APIView):
         # =====================================================
         # 4. SCOPE VENDEUR
         # =====================================================
-        #
-        # Un vendeur ne peut exporter que les factures
-        # correspondant à ses propres ventes.
-        # Le contrôle se fait sur Vente.vendor.
-        # =====================================================
 
         if role == ROLE_VENDOR:
+
             vendor = getattr(
                 user,
                 "staff_vendor_profile",
@@ -5525,9 +4466,7 @@ class ExportFacturesExcelView(APIView):
             if not vendor:
                 return error_response(
                     code="VENDOR_PROFILE_NOT_FOUND",
-                    message=(
-                        "Profil vendeur introuvable."
-                    ),
+                    message="Profil vendeur introuvable.",
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
@@ -5555,6 +4494,8 @@ class ExportFacturesExcelView(APIView):
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
+            # Le vendeur ne peut exporter que les
+            # factures de ses propres ventes.
             factures = factures.filter(
                 vente__vendor_id=vendor.id,
             )
@@ -5572,24 +4513,84 @@ class ExportFacturesExcelView(APIView):
         # 6. EXPORT EXCEL
         # =====================================================
 
-        return export_factures_excel(
-            factures
-        )
+        try:
+            return export_factures_excel(
+                factures
+            )
 
+        except Exception:
+            return error_response(
+                code="FACTURE_EXCEL_EXPORT_FAILED",
+                message=(
+                    "Une erreur est survenue lors "
+                    "de la génération du fichier Excel."
+                ),
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+            )
 
 class ExportComptableView(APIView):
+    """
+    Export comptable Excel des factures entièrement payées.
+
+    Règles :
+    - Admin : factures accessibles selon son scope.
+    - Manager : factures de ses bijouteries.
+    - Cashier : factures de sa bijouterie.
+    - Vendor : factures de ses propres ventes.
+
+    Factures éligibles :
+    - Ventes de bijoux.
+    - Ventes mixtes : bijoux + prestations.
+
+    Les ventes composées uniquement de prestations
+    ne sont pas incluses dans cet export de factures.
+
+    Aucun impact sur :
+    - Stock
+    - InventoryMovement
+    - Paiement
+    - Facture
+    """
+
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_summary="Exporter les données comptables en Excel",
+        operation_description="""
+Exporte les données comptables des factures entièrement payées.
+
+Règles :
+- Seules les factures avec status=PAYE sont incluses.
+- Les ventes contenant au moins un bijou sont éligibles.
+- Les ventes mixtes (bijoux + prestations) sont autorisées.
+- Les ventes avec prestations uniquement sont exclues.
+- Le scope bijouterie est appliqué.
+- Le vendeur ne peut exporter que ses propres factures.
+
+L'export utilise le service export_comptable_factures().
+Aucune donnée métier n'est modifiée.
+        """,
+        responses={
+            200: openapi.Response(
+                description="Fichier Excel comptable généré."
+            ),
+            403: "Accès refusé.",
+            500: "Erreur de génération de l'export.",
+        },
+        tags=["Comptabilité"],
+    )
     def get(self, request):
+
+        # =====================================================
+        # 1. UTILISATEUR ET RÔLE
+        # =====================================================
+
         user = request.user
 
-        # =====================================================
-        # 1. RÔLE
-        # =====================================================
-
         role = (
-            get_role_name(user)
-            or ""
+            get_role_name(user) or ""
         ).lower().strip()
 
         allowed_roles = {
@@ -5610,13 +4611,19 @@ class ExportComptableView(APIView):
             )
 
         # =====================================================
-        # 2. FACTURES PAYÉES
+        # 2. QUERYSET DES FACTURES PAYÉES
         # =====================================================
 
         factures = (
             Facture.objects
             .filter(
                 status=Facture.STAT_PAYE,
+
+                # La facture doit avoir une vente.
+                vente__isnull=False,
+
+                # Au moins une ligne de bijou.
+                vente__lignes__isnull=False,
             )
             .select_related(
                 "bijouterie",
@@ -5626,10 +4633,12 @@ class ExportComptableView(APIView):
                 "vente__vendor__user",
             )
             .prefetch_related(
+                # Paiements
                 "paiements",
                 "paiements__lignes",
                 "paiements__lignes__mode_paiement",
             )
+            .distinct()
         )
 
         # =====================================================
@@ -5646,12 +4655,9 @@ class ExportComptableView(APIView):
         # =====================================================
         # 4. SCOPE VENDEUR
         # =====================================================
-        #
-        # Un vendeur ne peut exporter que les factures
-        # provenant de ses propres ventes.
-        # =====================================================
 
         if role == ROLE_VENDOR:
+
             vendor = getattr(
                 user,
                 "staff_vendor_profile",
@@ -5661,9 +4667,7 @@ class ExportComptableView(APIView):
             if not vendor:
                 return error_response(
                     code="VENDOR_PROFILE_NOT_FOUND",
-                    message=(
-                        "Profil vendeur introuvable."
-                    ),
+                    message="Profil vendeur introuvable.",
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
@@ -5713,7 +4717,7 @@ class ExportComptableView(APIView):
                 factures
             )
 
-        except Exception as exc:
+        except Exception:
             return error_response(
                 code="ACCOUNTING_EXPORT_FAILED",
                 message=(
@@ -5723,31 +4727,43 @@ class ExportComptableView(APIView):
                 status_code=(
                     status.HTTP_500_INTERNAL_SERVER_ERROR
                 ),
-                details=str(exc),
             )
 
         # =====================================================
-        # 7. RÉPONSE EXCEL
+        # 7. VALIDATION DU WORKBOOK
         # =====================================================
 
-        response = HttpResponse(
-            content_type=(
-                "application/vnd.openxmlformats-"
-                "officedocument.spreadsheetml.sheet"
+        if wb is None or not hasattr(wb, "save"):
+            return error_response(
+                code="INVALID_ACCOUNTING_WORKBOOK",
+                message=(
+                    "Le service d'export comptable "
+                    "n'a pas retourné un classeur valide."
+                ),
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
             )
-        )
 
-        response[
-            "Content-Disposition"
-        ] = (
-            'attachment; '
-            'filename="comptabilite.xlsx"'
-        )
+        # =====================================================
+        # 8. CRÉATION DU FICHIER EXCEL
+        # =====================================================
+
+        buffer = BytesIO()
 
         try:
-            wb.save(response)
+            wb.save(buffer)
 
-        except Exception as exc:
+            if buffer.tell() == 0:
+                raise ValueError(
+                    "Le fichier Excel généré est vide."
+                )
+
+            buffer.seek(0)
+
+        except Exception:
+            buffer.close()
+
             return error_response(
                 code="ACCOUNTING_EXPORT_SAVE_FAILED",
                 message=(
@@ -5757,44 +4773,58 @@ class ExportComptableView(APIView):
                 status_code=(
                     status.HTTP_500_INTERNAL_SERVER_ERROR
                 ),
-                details=str(exc),
             )
+
+        # =====================================================
+        # 9. NOM DU FICHIER
+        # =====================================================
+
+        date_export = timezone.localdate().strftime(
+            "%Y%m%d"
+        )
+
+        filename = (
+            f"comptabilite_{date_export}.xlsx"
+        )
+
+        # =====================================================
+        # 10. RÉPONSE EXCEL
+        # =====================================================
+
+        response = FileResponse(
+            buffer,
+            as_attachment=True,
+            filename=filename,
+            content_type=(
+                "application/vnd.openxmlformats-"
+                "officedocument.spreadsheetml.sheet"
+            ),
+        )
+
+        response["Cache-Control"] = "no-store"
 
         return response
 
 
-# ==========================================================
-# HELPERS corrigés pour serializers
-# ==========================================================
+# ============================================================
+# 1. RÉCUPÉRER ET VERROUILLER LA FACTURE
+# ============================================================
+
 def _get_facture_locked(vente):
     """
-    Récupère et verrouille la facture associée à la vente.
+    Récupère la facture de la vente avec verrouillage SQL.
 
-    Cette fonction doit être appelée à l'intérieur
-    d'une transaction.atomic().
+    À appeler exclusivement dans transaction.atomic().
+
+    Une vente de prestations uniquement peut ne pas
+    posséder de facture.
     """
 
-    facture_id = getattr(
-        vente,
-        "facture_vente_id",
-        None,
-    )
-
-    if not facture_id:
-        facture = getattr(
-            vente,
-            "facture_vente",
-            None,
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError(
+            "_get_facture_locked doit être appelé "
+            "dans transaction.atomic()."
         )
-
-        facture_id = getattr(
-            facture,
-            "id",
-            None,
-        )
-
-    if not facture_id:
-        return None
 
     return (
         Facture.objects
@@ -5803,70 +4833,93 @@ def _get_facture_locked(vente):
             "vente",
             "bijouterie",
         )
-        .get(
-            id=facture_id,
-        )
+        .filter(vente_id=vente.pk)
+        .first()
     )
 
 
+# ============================================================
+# 2. VALIDATION AVANT MODIFICATION
+# ============================================================
+
 def _validate_before_payment(facture):
     """
-    Autorise la modification uniquement avant tout paiement,
-    avant consommation du stock et avant verrouillage.
+    Une facture existante n'est modifiable que si :
+    - elle est non payée ;
+    - aucun montant n'a été payé ;
+    - le stock n'est pas consommé ;
+    - elle n'est pas verrouillée.
+
+    Pour une vente sans facture, retourne None.
+
+    Attention : le contrôle des paiements d'une vente
+    sans facture doit être effectué séparément.
     """
 
-    if not facture:
+    if facture is None:
         return None
 
     if facture.status != Facture.STAT_NON_PAYE:
         return error_response(
-            "FACTURE_NOT_EDITABLE",
-            (
+            code="FACTURE_NOT_EDITABLE",
+            message=(
                 "Action impossible : "
                 "la facture n'est plus non payée."
             ),
-            status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
 
     total_paye = Decimal(
-        str(
-            facture.total_paye
-            or "0.00"
-        )
+        str(facture.total_paye or "0.00")
     )
 
     if total_paye > Decimal("0.00"):
         return error_response(
-            "FACTURE_HAS_PAYMENT",
-            (
+            code="FACTURE_HAS_PAYMENT",
+            message=(
                 "Action impossible : "
                 "un paiement existe déjà."
             ),
-            status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
 
     if facture.stock_consumed:
         return error_response(
-            "STOCK_ALREADY_CONSUMED",
-            (
+            code="STOCK_ALREADY_CONSUMED",
+            message=(
                 "Action impossible : "
                 "le stock est déjà consommé."
             ),
-            status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
 
     if facture.is_locked:
         return error_response(
-            "FACTURE_LOCKED",
-            (
+            code="FACTURE_LOCKED",
+            message=(
                 "Action impossible : "
                 "la facture est verrouillée."
             ),
-            status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if facture.paiements.exists():
+        return error_response(
+            code="FACTURE_HAS_PAYMENT",
+            message=(
+                "Action impossible : "
+                "des paiements sont déjà enregistrés "
+                "pour cette facture."
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
 
     return None
 
+
+# ============================================================
+# 3. RÉSOUDRE LE VENDEUR POUR MODIFICATION
+# ============================================================
 
 def _resolve_vendor_for_update(
     data,
@@ -5874,13 +4927,43 @@ def _resolve_vendor_for_update(
     vente,
     role,
 ):
-    user = request.user
+    """
+    Résout le vendeur autorisé à intervenir sur la vente.
 
-    # =====================================================
+    Le vendeur connecté ne peut modifier que ses ventes.
+
+    Admin et manager peuvent utiliser vendor_email,
+    dans le respect des règles de périmètre.
+
+    Le vendeur retenu doit appartenir à la même
+    bijouterie que la vente.
+    """
+
+    user = request.user
+    role = (role or "").lower().strip()
+
+    allowed_roles = {
+        ROLE_ADMIN,
+        ROLE_MANAGER,
+        ROLE_VENDOR,
+    }
+
+    if role not in allowed_roles:
+        return None, error_response(
+            code="SALE_UPDATE_ACCESS_DENIED",
+            message=(
+                "Vous n'êtes pas autorisé "
+                "à modifier cette vente."
+            ),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ========================================================
     # VENDOR
-    # =====================================================
+    # ========================================================
 
     if role == ROLE_VENDOR:
+
         vendor = (
             Vendor.objects
             .select_related(
@@ -5896,89 +4979,53 @@ def _resolve_vendor_for_update(
 
         if not vendor:
             return None, error_response(
-                "VENDOR_PROFILE_NOT_FOUND",
-                (
-                    "Vous n'êtes pas associé à "
-                    "un compte vendeur actif."
+                code="VENDOR_PROFILE_NOT_FOUND",
+                message=(
+                    "Vous n'êtes pas associé "
+                    "à un compte vendeur actif."
                 ),
-                status.HTTP_404_NOT_FOUND,
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not vendor.bijouterie_id:
+            return None, error_response(
+                code="VENDOR_WITHOUT_STORE",
+                message=(
+                    "Le vendeur n'est rattaché "
+                    "à aucune bijouterie."
+                ),
+                status_code=status.HTTP_403_FORBIDDEN,
             )
 
         if vente.vendor_id != vendor.id:
             return None, error_response(
-                "NOT_YOUR_SALE",
-                (
-                    "Vous ne pouvez modifier que "
-                    "vos propres ventes."
+                code="NOT_YOUR_SALE",
+                message=(
+                    "Vous ne pouvez modifier "
+                    "que vos propres ventes."
                 ),
-                status.HTTP_403_FORBIDDEN,
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        if vente.bijouterie_id != vendor.bijouterie_id:
+            return None, error_response(
+                code="VENDOR_STORE_MISMATCH",
+                message=(
+                    "La vente et le vendeur "
+                    "n'appartiennent pas "
+                    "à la même bijouterie."
+                ),
+                status_code=status.HTTP_403_FORBIDDEN,
             )
 
         return vendor, None
 
-    # =====================================================
-    # ADMIN / MANAGER / AUTRE RÔLE AUTORISÉ
-    # =====================================================
-
-    vendor_email = (
-        data.get("vendor_email")
-        or request.query_params.get(
-            "vendor_email"
-        )
-    )
-
-    if vendor_email:
-        vendor = (
-            Vendor.objects
-            .select_related(
-                "user",
-                "bijouterie",
-            )
-            .filter(
-                user__email__iexact=(
-                    str(vendor_email).strip()
-                ),
-                verifie=True,
-            )
-            .first()
-        )
-
-        if not vendor:
-            return None, error_response(
-                "VENDOR_NOT_FOUND",
-                (
-                    "Vendeur introuvable "
-                    "ou désactivé."
-                ),
-                status.HTTP_404_NOT_FOUND,
-            )
-
-    else:
-        vendor = vente.vendor
-
-        if not vendor:
-            return None, error_response(
-                "VENDOR_NOT_FOUND",
-                "Aucun vendeur associé à la vente.",
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-        if not getattr(
-            vendor,
-            "verifie",
-            False,
-        ):
-            return None, error_response(
-                "VENDOR_NOT_VERIFIED",
-                "Le vendeur est désactivé.",
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-    # =====================================================
-    # MANAGER SCOPE
-    # =====================================================
+    # ========================================================
+    # ADMIN / MANAGER
+    # ========================================================
 
     if role == ROLE_MANAGER:
+
         manager_profile = getattr(
             user,
             "staff_manager_profile",
@@ -5994,74 +5041,152 @@ def _resolve_vendor_for_update(
             )
         ):
             return None, error_response(
-                "MANAGER_PROFILE_INVALID",
-                (
+                code="MANAGER_PROFILE_INVALID",
+                message=(
                     "Profil manager introuvable "
                     "ou désactivé."
                 ),
-                status.HTTP_403_FORBIDDEN,
+                status_code=status.HTTP_403_FORBIDDEN,
             )
 
-        allowed = (
-            manager_profile
-            .bijouteries
-            .filter(
-                id=vendor.bijouterie_id,
-            )
-            .exists()
-        )
-
-        if not allowed:
+        if not manager_profile.bijouteries.filter(
+            id=vente.bijouterie_id
+        ).exists():
             return None, error_response(
-                "VENDOR_OUT_OF_SCOPE",
-                (
-                    "Ce vendeur n'appartient pas "
+                code="SALE_OUT_OF_SCOPE",
+                message=(
+                    "Cette vente n'appartient pas "
                     "à vos bijouteries."
                 ),
-                status.HTTP_403_FORBIDDEN,
+                status_code=status.HTTP_403_FORBIDDEN,
             )
+
+    vendor_email = (
+        data.get("vendor_email")
+        or request.query_params.get("vendor_email")
+    )
+
+    if vendor_email:
+
+        vendor = (
+            Vendor.objects
+            .select_related(
+                "user",
+                "bijouterie",
+            )
+            .filter(
+                user__email__iexact=str(
+                    vendor_email
+                ).strip(),
+                verifie=True,
+            )
+            .first()
+        )
+
+        if not vendor:
+            return None, error_response(
+                code="VENDOR_NOT_FOUND",
+                message=(
+                    "Vendeur introuvable "
+                    "ou désactivé."
+                ),
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+    else:
+        vendor = vente.vendor
+
+        if not vendor:
+            return None, error_response(
+                code="VENDOR_NOT_FOUND",
+                message=(
+                    "Aucun vendeur associé à la vente."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not getattr(vendor, "verifie", False):
+            return None, error_response(
+                code="VENDOR_NOT_VERIFIED",
+                message="Le vendeur est désactivé.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+    if not vendor.bijouterie_id:
+        return None, error_response(
+            code="VENDOR_WITHOUT_STORE",
+            message=(
+                "Le vendeur n'est rattaché "
+                "à aucune bijouterie."
+            ),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    # Empêche le transfert implicite d'une vente
+    # vers une autre bijouterie.
+    if vendor.bijouterie_id != vente.bijouterie_id:
+        return None, error_response(
+            code="VENDOR_STORE_MISMATCH",
+            message=(
+                "Le vendeur sélectionné "
+                "n'appartient pas à la bijouterie "
+                "de cette vente."
+            ),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
 
     return vendor, None
 
+
+# ============================================================
+# 4. METTRE À JOUR LE CLIENT
+# ============================================================
 
 def _update_client_if_provided(
     data,
     vente,
 ):
+    """
+    Associe un client à la vente.
+
+    Si un téléphone est fourni :
+    - réutilise le client existant ;
+    - ou crée un nouveau client.
+
+    Sans téléphone :
+    - crée un client distinct.
+
+    Retourne None pour conserver le contrat existant.
+    """
+
+    if "client" not in data:
+        return None
+
     client_data = data.get("client")
 
     if not client_data:
         return None
 
-    nom = (
-        client_data.get("nom")
-        or ""
+    nom = str(
+        client_data.get("nom") or ""
     ).strip()
 
-    prenom = (
-        client_data.get("prenom")
-        or ""
+    prenom = str(
+        client_data.get("prenom") or ""
     ).strip()
 
-    telephone = (
-        client_data.get("telephone")
-        or None
-    )
+    telephone = str(
+        client_data.get("telephone") or ""
+    ).strip() or None
 
     if telephone:
-        telephone = str(
-            telephone
-        ).strip()
 
-        client, _ = (
-            Client.objects
-            .get_or_create(
-                telephone=telephone,
-                defaults={
-                    "nom": nom,
-                    "prenom": prenom,
-                },
-            )
+        client, _ = Client.objects.get_or_create(
+            telephone=telephone,
+            defaults={
+                "nom": nom,
+                "prenom": prenom,
+            },
         )
 
         update_fields = []
@@ -6076,10 +5201,11 @@ def _update_client_if_provided(
 
         if update_fields:
             client.save(
-                update_fields=update_fields,
+                update_fields=update_fields
             )
 
     else:
+
         client = Client.objects.create(
             nom=nom,
             prenom=prenom,
@@ -6087,33 +5213,34 @@ def _update_client_if_provided(
         )
 
     if vente.client_id != client.id:
+
         vente.client = client
 
         vente.save(
-            update_fields=["client"],
+            update_fields=["client"]
         )
 
     return None
 
 
+# ============================================================
+# 5. RÉSOUDRE LA PRODUITLINE EXACTE
+# ============================================================
+
 def _resolve_produit_line_for_sale_item(item):
     """
-    Résout la ProduitLine exacte d'une ligne de vente.
+    Identifie la ProduitLine exacte.
 
-    La ProduitLine est désormais la source de vérité.
-
-    Formats acceptés :
+    Formats autorisés :
     - produit_line_id
-    - qr / qr_code si le QR contient l'identifiant
-      exact de la ProduitLine.
+    - qr / qr_code au format PL:123
 
-    On ne résout plus une vente par :
+    Formats refusés :
     - produit_id
-    - SKU produit
+    - SKU générique
     - slug produit
 
-    car ces valeurs identifient un Produit générique,
-    pas la ProduitLine exacte.
+    La résolution ne modifie pas le stock.
     """
 
     produit_line_id = item.get(
@@ -6135,22 +5262,18 @@ def _resolve_produit_line_for_sale_item(item):
         )
     )
 
-    # =====================================================
-    # PRODUIT LINE ID
-    # =====================================================
+    # ========================================================
+    # PRODUITLINE ID
+    # ========================================================
 
-    if produit_line_id not in (
-        None,
-        "",
-    ):
+    if produit_line_id not in (None, ""):
+
         try:
             produit_line_id = int(
                 produit_line_id
             )
-        except (
-            TypeError,
-            ValueError,
-        ):
+
+        except (TypeError, ValueError):
             return None
 
         if produit_line_id <= 0:
@@ -6158,48 +5281,43 @@ def _resolve_produit_line_for_sale_item(item):
 
         return (
             produit_line_qs
-            .filter(
-                id=produit_line_id,
-            )
+            .filter(id=produit_line_id)
             .first()
         )
 
-    # =====================================================
-    # QR
-    # =====================================================
+    # ========================================================
+    # QR PRODUITLINE
+    # ========================================================
 
     if qr:
+
         qr = str(qr).strip()
 
-        # Format :
-        #
-        # PL:123
-        #
-        # Le QR représente directement la ProduitLine.
-
-        if not qr.upper().startswith(
-            "PL:"
-        ):
+        if not qr.upper().startswith("PL:"):
             return None
 
-        raw_id = qr.split(
-            ":",
-            1,
-        )[1].strip()
+        raw_id = qr.split(":", 1)[1].strip()
 
         if not raw_id.isdigit():
             return None
 
+        produit_line_id = int(raw_id)
+
+        if produit_line_id <= 0:
+            return None
+
         return (
             produit_line_qs
-            .filter(
-                id=int(raw_id),
-            )
+            .filter(id=produit_line_id)
             .first()
         )
 
     return None
 
+
+# ============================================================
+# 6. RECALCULER OU CRÉER LA FACTURE
+# ============================================================
 
 def _recalculate_facture_from_vente(
     facture,
@@ -6207,27 +5325,88 @@ def _recalculate_facture_from_vente(
     vendor,
 ):
     """
-    Recalcule la facture à partir du nouveau total
-    de la vente.
+    Synchronise la facture avec le total de la vente.
+
+    Bijoux uniquement :
+        facture créée ou mise à jour.
+
+    Bijoux + prestations :
+        facture créée ou mise à jour.
+
+    Prestations uniquement :
+        aucune facture créée.
+
+    Important :
+    - vente.montant_total doit déjà être recalculé ;
+    - ce montant doit inclure les bijoux et prestations ;
+    - la fonction ne consomme aucun stock ;
+    - la fonction doit être appelée dans transaction.atomic().
     """
 
-    if facture:
-        facture.montant_ht = (
-            vente.montant_total
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError(
+            "_recalculate_facture_from_vente "
+            "doit être appelé dans transaction.atomic()."
         )
 
-        facture.bijouterie = (
-            vendor.bijouterie
+    if vendor.bijouterie_id != vente.bijouterie_id:
+        raise ValueError(
+            "Le vendeur et la vente doivent "
+            "appartenir à la même bijouterie."
         )
+
+    # ========================================================
+    # CONTRÔLE DES LIGNES BIJOUX
+    # ========================================================
+
+    has_jewelry = vente.lignes.exists()
+
+    # ========================================================
+    # PRESTATIONS UNIQUEMENT
+    # ========================================================
+
+    if not has_jewelry:
+
+        if facture is not None:
+            raise ValueError(
+                "Une facture existe déjà pour cette vente, "
+                "mais elle ne contient plus de bijoux. "
+                "La suppression ou l'annulation de cette "
+                "facture doit être traitée explicitement."
+            )
+
+        return None
+
+    # ========================================================
+    # FACTURE EXISTANTE
+    # ========================================================
+
+    if facture is not None:
+
+        validation_error = _validate_before_payment(
+            facture
+        )
+
+        if validation_error is not None:
+            raise ValueError(
+                "Impossible de recalculer une facture "
+                "déjà payée, verrouillée ou dont "
+                "le stock est consommé."
+            )
+
+        facture.montant_ht = vente.montant_total
+        facture.bijouterie = vendor.bijouterie
+
+        # On conserve les champs calculés utilisés
+        # dans le modèle Facture existant.
+        #
+        # Cela suppose que Facture.save() actualise
+        # les montants TVA et TTC.
 
         facture.save(
             update_fields=[
                 "montant_ht",
                 "bijouterie",
-
-                # Ces champs sont conservés ici si
-                # Facture.save() recalcule effectivement
-                # TVA et total.
                 "taux_tva",
                 "montant_tva",
                 "montant_total",
@@ -6236,51 +5415,75 @@ def _recalculate_facture_from_vente(
 
         return facture
 
-    return Facture.objects.create(
+    # ========================================================
+    # CRÉATION D'UNE FACTURE
+    # ========================================================
+
+    facture = Facture.objects.create(
         vente=vente,
         bijouterie=vendor.bijouterie,
         montant_ht=vente.montant_total,
     )
 
-# ==========================================================
-# 1. UPDATE VENTE AVANT PAIEMENT
-# ==========================================================
+    return facture
+
+
+
 class UpdateVenteProduitView(APIView):
+    """
+    Modification des bijoux d'une vente avant paiement.
+
+    Règles :
+    - Admin, manager et vendeur autorisés.
+    - Le vendeur ne modifie que ses ventes.
+    - La vente ne doit pas être annulée.
+    - La facture ne doit pas être payée ou verrouillée.
+    - Aucun paiement ne doit exister.
+    - Aucun stock ne doit être consommé.
+    - Chaque bijou référence une ProduitLine exacte.
+    - Le stock vendeur est vérifié mais jamais modifié.
+    - Les prestations existantes sont conservées.
+    """
+
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Modifier une vente avant paiement",
         operation_description="""
-Modifie une vente avant paiement.
+Modifie les bijoux d'une vente avant tout paiement.
 
-Important :
-- Ne modifie pas le VendorStock.
-- Ne crée pas de InventoryMovement.
-- Le stock est consommé uniquement après paiement complet.
-- Chaque article doit identifier une ProduitLine exacte.
-- La modification est autorisée uniquement si la facture :
-  - est NON PAYÉE ;
-  - ne possède aucun paiement ;
-  - n'est pas verrouillée ;
-  - n'a pas encore consommé le stock.
+Les produits envoyés remplacent les anciennes lignes
+de bijoux de la vente.
+
+Règles :
+- Chaque produit doit identifier une ProduitLine exacte.
+- La quantité cumulée est vérifiée par ProduitLine.
+- Le stock vendeur doit être suffisant.
+- Aucun VendorStock n'est modifié.
+- Aucun InventoryMovement n'est créé.
+- Le stock n'est consommé qu'après paiement complet.
+- Les prestations existantes sont conservées.
+- La facture est recalculée à partir du total de la vente.
+
+PUT et PATCH ont ici le même comportement :
+remplacement complet de la liste des bijoux.
         """,
         request_body=UpdateVenteProduitSerializer,
         responses={
             200: VenteDetailSerializer,
+            400: "Données invalides ou vente non modifiable.",
+            403: "Accès refusé.",
+            404: "Vente ou produit introuvable.",
         },
         tags=["Ventes"],
     )
     @transaction.atomic
-    def put(
-        self,
-        request,
-        vente_id,
-    ):
+    def put(self, request, vente_id):
+
         user = request.user
 
         role = (
-            get_role_name(user)
-            or ""
+            get_role_name(user) or ""
         ).lower().strip()
 
         # =====================================================
@@ -6293,9 +5496,9 @@ Important :
             ROLE_VENDOR,
         }:
             return error_response(
-                "ACCESS_DENIED",
-                "Accès refusé.",
-                status.HTTP_403_FORBIDDEN,
+                code="ACCESS_DENIED",
+                message="Accès refusé.",
+                status_code=status.HTTP_403_FORBIDDEN,
             )
 
         # =====================================================
@@ -6313,7 +5516,7 @@ Important :
         data = input_serializer.validated_data
 
         # =====================================================
-        # 3. VENTE + LOCK
+        # 3. VENTE + VERROUILLAGE
         # =====================================================
 
         vente = (
@@ -6332,11 +5535,11 @@ Important :
             .first()
         )
 
-        if not vente:
+        if vente is None:
             return error_response(
-                "VENTE_NOT_FOUND",
-                "Vente introuvable.",
-                status.HTTP_404_NOT_FOUND,
+                code="VENTE_NOT_FOUND",
+                message="Vente introuvable.",
+                status_code=status.HTTP_404_NOT_FOUND,
             )
 
         # =====================================================
@@ -6345,16 +5548,16 @@ Important :
 
         if vente.is_cancelled:
             return error_response(
-                "VENTE_CANCELLED",
-                (
+                code="VENTE_CANCELLED",
+                message=(
                     "Modification impossible : "
                     "cette vente est annulée."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 5. FACTURE + LOCK
+        # 5. FACTURE + VERROUILLAGE
         # =====================================================
 
         facture = _get_facture_locked(
@@ -6365,11 +5568,11 @@ Important :
             facture
         )
 
-        if facture_error:
+        if facture_error is not None:
             return facture_error
 
         # =====================================================
-        # 6. VENDEUR
+        # 6. VENDEUR AUTORISÉ
         # =====================================================
 
         vendor, vendor_error = (
@@ -6381,14 +5584,14 @@ Important :
             )
         )
 
-        if vendor_error:
+        if vendor_error is not None:
             return vendor_error
 
-        if not vendor:
+        if vendor is None:
             return error_response(
-                "VENDOR_NOT_FOUND",
-                "Vendeur introuvable.",
-                status.HTTP_400_BAD_REQUEST,
+                code="VENDOR_NOT_FOUND",
+                message="Vendeur introuvable.",
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         if not getattr(
@@ -6397,22 +5600,32 @@ Important :
             False,
         ):
             return error_response(
-                "VENDOR_NOT_VERIFIED",
-                (
+                code="VENDOR_NOT_VERIFIED",
+                message=(
                     "Le vendeur est désactivé "
                     "ou non vérifié."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
             )
 
         if not vendor.bijouterie_id:
             return error_response(
-                "VENDOR_WITHOUT_STORE",
-                (
+                code="VENDOR_WITHOUT_STORE",
+                message=(
                     "Le vendeur n'est rattaché "
                     "à aucune bijouterie."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        if vendor.bijouterie_id != vente.bijouterie_id:
+            return error_response(
+                code="VENDOR_STORE_MISMATCH",
+                message=(
+                    "Le vendeur sélectionné n'appartient "
+                    "pas à la bijouterie de la vente."
+                ),
+                status_code=status.HTTP_403_FORBIDDEN,
             )
 
         # =====================================================
@@ -6425,40 +5638,27 @@ Important :
 
         if not produits_data:
             return error_response(
-                "EMPTY_SALE_LINES",
-                (
+                code="EMPTY_SALE_LINES",
+                message=(
                     "La vente doit contenir "
-                    "au moins un produit."
+                    "au moins un bijou."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 8. PRÉPARATION DES LIGNES
-        # =====================================================
-        #
-        # On valide toutes les nouvelles lignes AVANT
-        # de supprimer les anciennes.
-        #
-        # Aucun VendorStock n'est modifié ici.
+        # 8. PRÉPARATION DES NOUVELLES LIGNES
         # =====================================================
 
         prepared_lines = []
 
-        # Quantité totale demandée par ProduitLine.
-        #
-        # Cela évite :
-        #
-        # PL 47 -> quantité 1
-        # PL 47 -> quantité 1
-        #
-        # alors que disponible = 1.
         requested_by_produit_line = {}
 
         for index, item in enumerate(
             produits_data,
             start=1,
         ):
+
             # -------------------------------------------------
             # QUANTITÉ
             # -------------------------------------------------
@@ -6471,32 +5671,28 @@ Important :
                     )
                 )
 
-            except (
-                TypeError,
-                ValueError,
-            ):
+            except (TypeError, ValueError):
                 return error_response(
-                    "INVALID_QUANTITY",
-                    (
+                    code="INVALID_QUANTITY",
+                    message=(
                         f"Quantité invalide "
                         f"à la ligne {index}."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             if quantite <= 0:
                 return error_response(
-                    "INVALID_QUANTITY",
-                    (
-                        f"La quantité doit être "
-                        f"supérieure ou égale à 1 "
-                        f"à la ligne {index}."
+                    code="INVALID_QUANTITY",
+                    message=(
+                        f"La quantité doit être supérieure "
+                        f"ou égale à 1 à la ligne {index}."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             # -------------------------------------------------
-            # PRODUIT LINE
+            # PRODUITLINE EXACTE
             # -------------------------------------------------
 
             produit_line = (
@@ -6505,16 +5701,15 @@ Important :
                 )
             )
 
-            if not produit_line:
+            if produit_line is None:
                 return error_response(
-                    "PRODUIT_LINE_NOT_FOUND",
-                    (
+                    code="PRODUIT_LINE_NOT_FOUND",
+                    message=(
                         f"ProduitLine introuvable "
                         f"à la ligne {index}. "
-                        f"Vérifiez produit_line_id "
-                        f"ou le QR."
+                        f"Vérifiez produit_line_id ou le QR."
                     ),
-                    status.HTTP_404_NOT_FOUND,
+                    status_code=status.HTTP_404_NOT_FOUND,
                 )
 
             # -------------------------------------------------
@@ -6527,15 +5722,15 @@ Important :
                 None,
             )
 
-            if not produit:
+            if produit is None:
                 return error_response(
-                    "PRODUCT_NOT_FOUND",
-                    (
+                    code="PRODUCT_NOT_FOUND",
+                    message=(
                         f"Aucun produit n'est associé "
                         f"à la ProduitLine "
                         f"#{produit_line.id}."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             # -------------------------------------------------
@@ -6544,22 +5739,20 @@ Important :
 
             if not produit_line.lot_id:
                 return error_response(
-                    "PRODUIT_LINE_WITHOUT_LOT",
-                    (
+                    code="PRODUIT_LINE_WITHOUT_LOT",
+                    message=(
                         f"La ProduitLine "
                         f"#{produit_line.id} "
                         f"n'est associée à aucun lot."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             # -------------------------------------------------
-            # QUANTITÉ CUMULÉE PAR PRODUIT LINE
+            # QUANTITÉ CUMULÉE
             # -------------------------------------------------
 
-            produit_line_id = (
-                produit_line.id
-            )
+            produit_line_id = produit_line.id
 
             requested_by_produit_line[
                 produit_line_id
@@ -6572,20 +5765,21 @@ Important :
             )
 
             # -------------------------------------------------
-            # PRIX
+            # PRIX DE VENTE PAR GRAMME
             # -------------------------------------------------
 
             prix_vente_grammes = item.get(
                 "prix_vente_grammes"
             )
 
-            if prix_vente_grammes in {
+            if prix_vente_grammes in (
                 None,
                 "",
                 0,
                 "0",
                 "0.00",
-            }:
+            ):
+
                 marque = getattr(
                     produit,
                     "marque",
@@ -6598,70 +5792,49 @@ Important :
                     None,
                 )
 
-                if prix_marque in {
-                    None,
-                    "",
-                }:
+                if prix_marque in (None, ""):
                     return error_response(
-                        "PRICE_NOT_FOUND",
-                        (
+                        code="PRICE_NOT_FOUND",
+                        message=(
                             f"Aucun prix disponible "
                             f"pour {produit.nom}."
                         ),
-                        status.HTTP_400_BAD_REQUEST,
+                        status_code=status.HTTP_400_BAD_REQUEST,
                     )
 
-                try:
-                    prix_vente_grammes = Decimal(
-                        str(prix_marque)
-                    )
+                prix_vente_grammes = prix_marque
 
-                except (
-                    InvalidOperation,
-                    TypeError,
-                    ValueError,
-                ):
-                    return error_response(
-                        "INVALID_PRICE",
-                        (
-                            f"Prix invalide pour "
-                            f"{produit.nom}."
-                        ),
-                        status.HTTP_400_BAD_REQUEST,
-                    )
+            try:
+                prix_vente_grammes = Decimal(
+                    str(prix_vente_grammes)
+                )
 
-            else:
-                try:
-                    prix_vente_grammes = Decimal(
-                        str(prix_vente_grammes)
-                    )
-
-                except (
-                    InvalidOperation,
-                    TypeError,
-                    ValueError,
-                ):
-                    return error_response(
-                        "INVALID_PRICE",
-                        (
-                            f"Prix invalide pour "
-                            f"{produit.nom}."
-                        ),
-                        status.HTTP_400_BAD_REQUEST,
-                    )
-
-            if (
-                prix_vente_grammes
-                <= Decimal("0.00")
+            except (
+                InvalidOperation,
+                TypeError,
+                ValueError,
             ):
                 return error_response(
-                    "INVALID_PRICE",
-                    (
+                    code="INVALID_PRICE",
+                    message=(
+                        f"Prix invalide pour "
+                        f"{produit.nom}."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if (
+                not prix_vente_grammes.is_finite()
+                or prix_vente_grammes <= Decimal("0.00")
+            ):
+                return error_response(
+                    code="INVALID_PRICE",
+                    message=(
                         f"Le prix de vente de "
                         f"{produit.nom} doit être "
                         f"supérieur à zéro."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             # -------------------------------------------------
@@ -6671,10 +5844,7 @@ Important :
             try:
                 remise = Decimal(
                     str(
-                        item.get(
-                            "remise",
-                            "0.00",
-                        )
+                        item.get("remise")
                         or "0.00"
                     )
                 )
@@ -6685,36 +5855,35 @@ Important :
                 ValueError,
             ):
                 return error_response(
-                    "INVALID_DISCOUNT",
-                    (
+                    code="INVALID_DISCOUNT",
+                    message=(
                         f"Remise invalide "
                         f"à la ligne {index}."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if remise < Decimal("0.00"):
+            if (
+                not remise.is_finite()
+                or remise < Decimal("0.00")
+            ):
                 return error_response(
-                    "INVALID_DISCOUNT",
-                    (
-                        f"La remise ne peut pas "
-                        f"être négative "
-                        f"à la ligne {index}."
+                    code="INVALID_DISCOUNT",
+                    message=(
+                        f"La remise doit être positive "
+                        f"ou nulle à la ligne {index}."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             # -------------------------------------------------
-            # AUTRES
+            # AUTRES FRAIS SUR LA LIGNE BIJOU
             # -------------------------------------------------
 
             try:
                 autres = Decimal(
                     str(
-                        item.get(
-                            "autres",
-                            "0.00",
-                        )
+                        item.get("autres")
                         or "0.00"
                     )
                 )
@@ -6725,36 +5894,36 @@ Important :
                 ValueError,
             ):
                 return error_response(
-                    "INVALID_OTHER_AMOUNT",
-                    (
+                    code="INVALID_OTHER_AMOUNT",
+                    message=(
                         f"Montant 'autres' invalide "
                         f"à la ligne {index}."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if autres < Decimal("0.00"):
+            if (
+                not autres.is_finite()
+                or autres < Decimal("0.00")
+            ):
                 return error_response(
-                    "INVALID_OTHER_AMOUNT",
-                    (
+                    code="INVALID_OTHER_AMOUNT",
+                    message=(
                         f"Le montant 'autres' ne peut "
                         f"pas être négatif "
                         f"à la ligne {index}."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             # -------------------------------------------------
-            # POURCENTAGE OCCASION
+            # REMISE OCCASION
             # -------------------------------------------------
 
             try:
                 pourcentage_occasion = Decimal(
                     str(
-                        item.get(
-                            "pourcentage_occasion",
-                            "0.00",
-                        )
+                        item.get("pourcentage_occasion")
                         or "0.00"
                     )
                 )
@@ -6765,12 +5934,27 @@ Important :
                 ValueError,
             ):
                 return error_response(
-                    "INVALID_USED_PERCENTAGE",
-                    (
+                    code="INVALID_USED_PERCENTAGE",
+                    message=(
                         f"Pourcentage occasion invalide "
                         f"à la ligne {index}."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if (
+                not pourcentage_occasion.is_finite()
+                or pourcentage_occasion < Decimal("0.00")
+                or pourcentage_occasion > Decimal("100.00")
+            ):
+                return error_response(
+                    code="INVALID_USED_PERCENTAGE",
+                    message=(
+                        f"Le pourcentage occasion doit "
+                        f"être compris entre 0 et 100 "
+                        f"à la ligne {index}."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             # -------------------------------------------------
@@ -6779,37 +5963,25 @@ Important :
 
             prepared_lines.append(
                 {
-                    "produit_line": (
-                        produit_line
-                    ),
+                    "produit_line": produit_line,
                     "quantite": quantite,
                     "prix_vente_grammes": (
                         prix_vente_grammes
                     ),
                     "remise": remise,
                     "autres": autres,
-                    "pourcentage_occasion": (
-                        pourcentage_occasion
-                    ),
+                    "pourcentage_occasion": pourcentage_occasion,
                 }
             )
 
         # =====================================================
-        # 9. DISPONIBILITÉ STOCK VENDEUR
-        # =====================================================
-        #
-        # On vérifie maintenant la quantité CUMULÉE
-        # demandée pour chaque ProduitLine.
-        #
-        # Cette étape ne consomme aucun stock.
+        # 9. VÉRIFICATION DU STOCK VENDEUR
         # =====================================================
 
         produit_lines_by_id = {
-            prepared[
-                "produit_line"
-            ].id: prepared[
-                "produit_line"
-            ]
+            prepared["produit_line"].id: (
+                prepared["produit_line"]
+            )
             for prepared in prepared_lines
         }
 
@@ -6818,36 +5990,27 @@ Important :
             quantite_demandee,
         ) in requested_by_produit_line.items():
 
-            produit_line = (
-                produit_lines_by_id[
-                    produit_line_id
-                ]
-            )
+            produit_line = produit_lines_by_id[
+                produit_line_id
+            ]
 
             try:
                 ensure_vendor_stock_available(
                     vendor=vendor,
-                    bijouterie=(
-                        vendor.bijouterie
-                    ),
-                    produit_line=(
-                        produit_line
-                    ),
-                    quantite=(
-                        quantite_demandee
-                    ),
+                    bijouterie=vendor.bijouterie,
+                    produit_line=produit_line,
+                    quantite=quantite_demandee,
                 )
 
             except DjangoValidationError as exc:
                 return error_response(
-                    "VENDOR_STOCK_NOT_AVAILABLE",
-                    (
+                    code="VENDOR_STOCK_NOT_AVAILABLE",
+                    message=(
                         f"Stock vendeur insuffisant "
                         f"ou indisponible pour la "
-                        f"ProduitLine "
-                        f"#{produit_line_id}."
+                        f"ProduitLine #{produit_line_id}."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                     details=(
                         getattr(
                             exc,
@@ -6864,11 +6027,7 @@ Important :
                 )
 
         # =====================================================
-        # 10. CLIENT
-        # =====================================================
-        #
-        # À partir d'ici toutes les nouvelles lignes
-        # ont été validées.
+        # 10. MISE À JOUR DU CLIENT
         # =====================================================
 
         client_error = (
@@ -6878,27 +6037,26 @@ Important :
             )
         )
 
-        if client_error:
+        if client_error is not None:
+            transaction.set_rollback(True)
             return client_error
 
         # =====================================================
-        # 11. VENDEUR / BIJOUTERIE
+        # 11. VENDEUR ET BIJOUTERIE
         # =====================================================
+
+        # La bijouterie de la vente est conservée.
+        # Le changement de vendeur est limité
+        # aux vendeurs de cette même bijouterie.
 
         vente.vendor = vendor
-        vente.bijouterie = (
-            vendor.bijouterie
-        )
 
         vente.save(
-            update_fields=[
-                "vendor",
-                "bijouterie",
-            ]
+            update_fields=["vendor"]
         )
 
         # =====================================================
-        # 12. LOCK ANCIENNES LIGNES
+        # 12. VERROUILLAGE DES ANCIENNES LIGNES
         # =====================================================
 
         old_lines = (
@@ -6909,8 +6067,7 @@ Important :
             )
         )
 
-        # Force réellement l'acquisition des locks
-        # avant suppression.
+        # Force l'acquisition des verrous.
         list(
             old_lines.values_list(
                 "id",
@@ -6919,76 +6076,51 @@ Important :
         )
 
         # =====================================================
-        # 13. SUPPRESSION ANCIENNES LIGNES
+        # 13. SUPPRESSION DES ANCIENNES LIGNES
         # =====================================================
-        #
-        # La vente n'est pas encore payée.
-        # Aucun stock n'avait été consommé.
-        # =====================================================
+
+        # Aucun stock n'a encore été consommé,
+        # car la vente n'est pas payée.
 
         old_lines.delete()
 
         # =====================================================
-        # 14. CRÉATION NOUVELLES LIGNES
+        # 14. CRÉATION DES NOUVELLES LIGNES
         # =====================================================
 
         try:
             for prepared in prepared_lines:
+
                 VenteProduit.objects.create(
                     vente=vente,
-
-                    # ProduitLine = source de vérité
                     produit_line=(
-                        prepared[
-                            "produit_line"
-                        ]
+                        prepared["produit_line"]
                     ),
-
                     vendor=vendor,
-
                     quantite=(
-                        prepared[
-                            "quantite"
-                        ]
+                        prepared["quantite"]
                     ),
-
                     prix_vente_grammes=(
-                        prepared[
-                            "prix_vente_grammes"
-                        ]
+                        prepared["prix_vente_grammes"]
                     ),
-
-                    remise=(
-                        prepared[
-                            "remise"
-                        ]
-                    ),
-
-                    autres=(
-                        prepared[
-                            "autres"
-                        ]
-                    ),
-
+                    remise=prepared["remise"],
+                    autres=prepared["autres"],
                     pourcentage_occasion=(
-                        prepared[
-                            "pourcentage_occasion"
-                        ]
+                        prepared["pourcentage_occasion"]
                     ),
                 )
 
         except DjangoValidationError as exc:
-            transaction.set_rollback(
-                True
-            )
+
+            transaction.set_rollback(True)
 
             return error_response(
-                "SALE_LINE_INVALID",
-                (
+                code="SALE_LINE_INVALID",
+                message=(
                     "Impossible de créer "
                     "une ligne de vente."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 details=(
                     getattr(
                         exc,
@@ -7005,7 +6137,7 @@ Important :
             )
 
         # =====================================================
-        # 15. RECALCUL TOTAL VENTE
+        # 15. RECALCUL DU TOTAL DE LA VENTE
         # =====================================================
 
         vente.mettre_a_jour_montant_total()
@@ -7013,7 +6145,7 @@ Important :
         vente.refresh_from_db()
 
         # =====================================================
-        # 16. RECALCUL FACTURE
+        # 16. RECALCUL DE LA FACTURE
         # =====================================================
 
         facture = (
@@ -7025,7 +6157,7 @@ Important :
         )
 
         # =====================================================
-        # 17. REFRESH FINAL
+        # 17. RAFRAÎCHISSEMENT FINAL
         # =====================================================
 
         vente.refresh_from_db()
@@ -7041,7 +6173,20 @@ Important :
             status=status.HTTP_200_OK,
         )
 
-    @transaction.atomic
+    @swagger_auto_schema(
+        operation_summary=(
+            "Modifier partiellement une vente avant paiement"
+        ),
+        operation_description=(
+            "Même comportement que PUT : "
+            "les lignes de bijoux sont entièrement remplacées."
+        ),
+        request_body=UpdateVenteProduitSerializer,
+        responses={
+            200: VenteDetailSerializer,
+        },
+        tags=["Ventes"],
+    )
     def patch(
         self,
         request,
@@ -7051,35 +6196,71 @@ Important :
             request,
             vente_id,
         )
-        
 
-
-# ==========================================================
-# 2. CANCEL PROFORMA
-# ==========================================================
 class CancelProformaVenteView(APIView):
+    """
+    Annulation d'une vente non payée ou proforma.
+
+    Ventes prises en charge :
+    - Bijoux uniquement.
+    - Bijoux + prestations.
+    - Prestations uniquement.
+
+    Conditions :
+    - Vente non annulée.
+    - Aucun paiement enregistré.
+    - Facture non payée, si elle existe.
+    - Stock non consommé.
+    - Facture non verrouillée.
+
+    Effets :
+    - Marque la vente comme annulée.
+    - Verrouille la facture existante.
+    - Ne modifie pas VendorStock.
+    - Ne crée aucun InventoryMovement.
+    - Ne restaure aucun stock.
+    """
+
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_summary="Annuler une vente non payée / proforma",
+        operation_summary=(
+            "Annuler une vente non payée / proforma"
+        ),
         operation_description="""
-Annule une vente non payée ou proforma.
+Annule une vente avant tout paiement.
 
-Important :
-- Ne modifie pas le VendorStock.
+Types de ventes :
+- Bijoux uniquement.
+- Bijoux et prestations.
+- Prestations uniquement.
+
+Conditions :
+- La vente ne doit pas déjà être annulée.
+- Aucun paiement ne doit exister.
+- La facture éventuelle doit être NON_PAYÉE.
+- Le stock ne doit pas être consommé.
+- La facture ne doit pas être verrouillée.
+
+Opérations :
+- Marque la vente comme annulée.
+- Enregistre la date et l'utilisateur.
+- Verrouille la facture si elle existe.
+- Ne modifie pas VendorStock.
 - Ne crée aucun InventoryMovement.
-- Ne restaure aucun stock, car le stock n'a pas encore été consommé.
-- Marque uniquement la vente comme annulée.
-- Verrouille la facture liée si elle existe.
-- Refuse l'annulation si un paiement existe déjà.
-- Refuse l'annulation si le stock a déjà été consommé.
+- Ne restaure aucun stock.
+
+Rôles autorisés :
+- Admin.
+- Manager dans son périmètre.
+- Vendeur propriétaire de la vente.
         """,
         request_body=CancelProformaVenteSerializer,
         responses={
-            200: "Vente annulée avec succès",
-            400: "Vente déjà annulée ou facture non annulable",
-            403: "Accès refusé",
-            404: "Vente introuvable",
+            200: "Vente annulée avec succès.",
+            400: "Vente non annulable.",
+            403: "Accès refusé.",
+            404: "Vente introuvable.",
         },
         tags=["Ventes"],
     )
@@ -7089,11 +6270,11 @@ Important :
         request,
         vente_id,
     ):
+
         user = request.user
 
         role = (
-            get_role_name(user)
-            or ""
+            get_role_name(user) or ""
         ).lower().strip()
 
         # =====================================================
@@ -7106,13 +6287,13 @@ Important :
             ROLE_VENDOR,
         }:
             return error_response(
-                "ACCESS_DENIED",
-                "Accès refusé.",
-                status.HTTP_403_FORBIDDEN,
+                code="ACCESS_DENIED",
+                message="Accès refusé.",
+                status_code=status.HTTP_403_FORBIDDEN,
             )
 
         # =====================================================
-        # 2. VALIDATION PAYLOAD
+        # 2. VALIDATION DU PAYLOAD
         # =====================================================
 
         input_serializer = CancelProformaVenteSerializer(
@@ -7126,7 +6307,7 @@ Important :
         data = input_serializer.validated_data
 
         # =====================================================
-        # 3. VENTE + LOCK
+        # 3. VENTE + VERROUILLAGE SQL
         # =====================================================
 
         vente = (
@@ -7145,11 +6326,11 @@ Important :
             .first()
         )
 
-        if not vente:
+        if vente is None:
             return error_response(
-                "VENTE_NOT_FOUND",
-                "Vente introuvable.",
-                status.HTTP_404_NOT_FOUND,
+                code="VENTE_NOT_FOUND",
+                message="Vente introuvable.",
+                status_code=status.HTTP_404_NOT_FOUND,
             )
 
         # =====================================================
@@ -7158,13 +6339,151 @@ Important :
 
         if vente.is_cancelled:
             return error_response(
-                "VENTE_ALREADY_CANCELLED",
-                "Cette vente est déjà annulée.",
-                status.HTTP_400_BAD_REQUEST,
+                code="VENTE_ALREADY_CANCELLED",
+                message="Cette vente est déjà annulée.",
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 5. FACTURE + LOCK
+        # 5. CONTRÔLE DU PÉRIMÈTRE
+        # =====================================================
+
+        # Pour une annulation, le vendeur de la vente
+        # ne doit jamais être remplacé par vendor_email.
+        #
+        # On utilise donc uniquement le vendeur existant.
+
+        vendor = vente.vendor
+
+        if vendor is None:
+            return error_response(
+                code="VENDOR_NOT_FOUND",
+                message=(
+                    "Aucun vendeur n'est associé "
+                    "à cette vente."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not getattr(
+            vendor,
+            "verifie",
+            False,
+        ):
+            return error_response(
+                code="VENDOR_NOT_VERIFIED",
+                message=(
+                    "Le vendeur associé à la vente "
+                    "est désactivé ou non vérifié."
+                ),
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        if (
+            not vendor.bijouterie_id
+            or vendor.bijouterie_id != vente.bijouterie_id
+        ):
+            return error_response(
+                code="VENDOR_STORE_MISMATCH",
+                message=(
+                    "Le vendeur n'appartient pas "
+                    "à la bijouterie de cette vente."
+                ),
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        # -----------------------------------------------------
+        # VENDEUR : UNIQUEMENT SES PROPRES VENTES
+        # -----------------------------------------------------
+
+        if role == ROLE_VENDOR:
+
+            vendor_profile = getattr(
+                user,
+                "staff_vendor_profile",
+                None,
+            )
+
+            if not (
+                vendor_profile
+                and getattr(
+                    vendor_profile,
+                    "verifie",
+                    False,
+                )
+            ):
+                return error_response(
+                    code="VENDOR_PROFILE_INVALID",
+                    message=(
+                        "Profil vendeur introuvable "
+                        "ou désactivé."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+            if (
+                vendor_profile.id != vente.vendor_id
+                or vendor_profile.bijouterie_id
+                != vente.bijouterie_id
+            ):
+                return error_response(
+                    code="NOT_YOUR_SALE",
+                    message=(
+                        "Vous ne pouvez annuler "
+                        "que vos propres ventes."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        # -----------------------------------------------------
+        # MANAGER : BIJOUTERIES AUTORISÉES
+        # -----------------------------------------------------
+
+        elif role == ROLE_MANAGER:
+
+            manager_profile = getattr(
+                user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if not (
+                manager_profile
+                and getattr(
+                    manager_profile,
+                    "verifie",
+                    False,
+                )
+            ):
+                return error_response(
+                    code="MANAGER_PROFILE_INVALID",
+                    message=(
+                        "Profil manager introuvable "
+                        "ou désactivé."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+            allowed = (
+                manager_profile.bijouteries
+                .filter(
+                    id=vente.bijouterie_id,
+                )
+                .exists()
+            )
+
+            if not allowed:
+                return error_response(
+                    code="SALE_OUT_OF_SCOPE",
+                    message=(
+                        "Cette vente n'appartient pas "
+                        "à vos bijouteries."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        # =====================================================
+        # 6. FACTURE + VERROUILLAGE SQL
         # =====================================================
 
         facture = _get_facture_locked(
@@ -7172,63 +6491,22 @@ Important :
         )
 
         # =====================================================
-        # 6. VALIDATION AVANT ANNULATION
+        # 7. VALIDATION DE LA FACTURE
         # =====================================================
-        #
-        # Vérifie notamment :
-        #
-        # - facture NON_PAYE
+
+        # Si la facture existe :
+        # - statut NON_PAYE
+        # - total payé = 0
         # - aucun paiement
         # - stock non consommé
         # - facture non verrouillée
-        #
-        # Aucun contrôle supplémentaire sur status/total_paye
-        # n'est donc nécessaire ici.
-        # =====================================================
 
         facture_error = _validate_before_payment(
             facture
         )
 
-        if facture_error:
+        if facture_error is not None:
             return facture_error
-
-        # =====================================================
-        # 7. CONTRÔLE VENDEUR / PÉRIMÈTRE
-        # =====================================================
-        #
-        # Vendor :
-        #     uniquement ses propres ventes.
-        #
-        # Manager :
-        #     uniquement vendeur appartenant
-        #     à ses bijouteries.
-        #
-        # Admin :
-        #     autorisé.
-        # =====================================================
-
-        vendor, vendor_error = (
-            _resolve_vendor_for_update(
-                data,
-                request,
-                vente,
-                role,
-            )
-        )
-
-        if vendor_error:
-            return vendor_error
-
-        if not vendor:
-            return error_response(
-                "VENDOR_NOT_FOUND",
-                (
-                    "Aucun vendeur n'est associé "
-                    "à cette vente."
-                ),
-                status.HTTP_400_BAD_REQUEST,
-            )
 
         # =====================================================
         # 8. ANNULATION DE LA VENTE
@@ -7249,16 +6527,11 @@ Important :
         )
 
         # =====================================================
-        # 9. VERROUILLAGE DE LA FACTURE
-        # =====================================================
-        #
-        # La facture est déjà verrouillée SQL grâce à
-        # _get_facture_locked().
-        #
-        # Ici is_locked correspond au verrouillage métier.
+        # 9. VERROUILLAGE MÉTIER DE LA FACTURE
         # =====================================================
 
-        if facture:
+        if facture is not None:
+
             facture.is_locked = True
             facture.locked_at = now
 
@@ -7272,22 +6545,20 @@ Important :
         # =====================================================
         # 10. AUCUNE OPÉRATION DE STOCK
         # =====================================================
-        #
-        # NE PAS appeler :
+
+        # Ne pas appeler :
         #
         # ensure_vendor_stock_available()
         # consume_vendor_stock()
         # create_sale_out_consumption()
         #
-        # NE PAS créer :
+        # Ne pas créer InventoryMovement.
         #
-        # InventoryMovement
-        #
-        # Une proforma n'a encore consommé aucun stock.
-        # =====================================================
+        # Le stock n'ayant pas été consommé,
+        # aucune restauration n'est nécessaire.
 
         # =====================================================
-        # 11. REFRESH
+        # 11. RAFRAÎCHISSEMENT FINAL
         # =====================================================
 
         vente.refresh_from_db()
@@ -7311,42 +6582,71 @@ Important :
             },
             status=status.HTTP_200_OK,
         )
-# ==========================================================
-# 3. RETOUR CLIENT SOUS 72H APRÈS PAIEMENT
-# ==========================================================
+
 class RetourVenteProduitView(APIView):
+    """
+    Retour client de bijoux sous 72 heures.
+
+    Conditions :
+    - Vente non annulée.
+    - Facture entièrement payée.
+    - Stock de la facture déjà consommé.
+    - Délai de 72 heures respecté.
+    - Retour basé sur VenteProduit et ProduitLine.
+    - Quantité retournée <= quantité vendue
+      moins les retours déjà enregistrés.
+
+    Effets :
+    - Augmente Stock.en_stock.
+    - Augmente Stock.quantite_totale.
+    - Ne modifie jamais VendorStock.
+    - Crée InventoryMovement RETURN_IN.
+    - Ne modifie pas les paiements ni la facture.
+
+    Les prestations ne sont pas concernées.
+    """
+
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Retour client sous 72h après paiement",
         operation_description="""
-Retour client après paiement.
+Enregistre le retour de bijoux après paiement complet.
 
 Conditions :
-- facture payée ;
-- stock déjà consommé ;
-- délai maximum de 72h ;
-- retour basé sur la VenteProduit et sa ProduitLine exacte ;
-- remet le produit dans le stock bijouterie ;
-- augmente Stock.en_stock ;
-- augmente Stock.quantite_totale ;
-- ne modifie pas VendorStock ;
-- crée InventoryMovement RETURN_IN.
+- La facture doit être payée.
+- Le stock doit déjà avoir été consommé.
+- Le délai de 72 heures doit être respecté.
+- Chaque retour est lié à la VenteProduit et à sa ProduitLine.
+- Les quantités déjà retournées sont déduites.
+
+Si produits est omis ou vide :
+- Retourne toutes les quantités encore retournables.
+
+Si produits est renseigné :
+- Effectue un retour partiel par vente_ligne_id.
+
+Le retour :
+- Réintègre les bijoux dans le stock de la bijouterie.
+- Ne modifie pas VendorStock.
+- Crée un mouvement RETURN_IN.
+- Ne modifie pas les prestations.
         """,
         request_body=RetourVenteProduitSerializer,
+        responses={
+            200: "Retour enregistré avec succès.",
+            400: "Retour impossible ou quantité invalide.",
+            403: "Accès refusé.",
+            404: "Vente ou facture introuvable.",
+        },
         tags=["Ventes"],
     )
     @transaction.atomic
-    def post(
-        self,
-        request,
-        vente_id,
-    ):
-        user = request.user
+    def post(self, request, vente_id):
 
+        user = request.user
         role = (
-            get_role_name(user)
-            or ""
+            get_role_name(user) or ""
         ).lower().strip()
 
         # =====================================================
@@ -7359,9 +6659,9 @@ Conditions :
             ROLE_VENDOR,
         }:
             return error_response(
-                "ACCESS_DENIED",
-                "Accès refusé.",
-                status.HTTP_403_FORBIDDEN,
+                code="ACCESS_DENIED",
+                message="Accès refusé.",
+                status_code=status.HTTP_403_FORBIDDEN,
             )
 
         # =====================================================
@@ -7371,15 +6671,11 @@ Conditions :
         input_serializer = RetourVenteProduitSerializer(
             data=request.data,
         )
-
-        input_serializer.is_valid(
-            raise_exception=True,
-        )
-
+        input_serializer.is_valid(raise_exception=True)
         data = input_serializer.validated_data
 
         # =====================================================
-        # 3. VENTE + LOCK
+        # 3. VENTE + VERROUILLAGE
         # =====================================================
 
         vente = (
@@ -7392,78 +6688,160 @@ Conditions :
                 "bijouterie",
                 "client",
             )
-            .filter(
-                id=vente_id,
-            )
+            .filter(id=vente_id)
             .first()
         )
 
-        if not vente:
+        if vente is None:
             return error_response(
-                "VENTE_NOT_FOUND",
-                "Vente introuvable.",
-                status.HTTP_404_NOT_FOUND,
+                code="VENTE_NOT_FOUND",
+                message="Vente introuvable.",
+                status_code=status.HTTP_404_NOT_FOUND,
             )
 
         if vente.is_cancelled:
             return error_response(
-                "VENTE_CANCELLED",
-                (
+                code="VENTE_CANCELLED",
+                message=(
                     "Retour impossible : "
                     "cette vente est annulée."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 4. FACTURE + LOCK
+        # 4. CONTRÔLE DU PÉRIMÈTRE
         # =====================================================
 
-        facture = _get_facture_locked(
-            vente
-        )
+        vendor = vente.vendor
 
-        if not facture:
+        if vendor is None:
             return error_response(
-                "FACTURE_NOT_FOUND",
-                (
+                code="VENDOR_NOT_FOUND",
+                message=(
+                    "Aucun vendeur n'est associé "
+                    "à cette vente."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if (
+            not vendor.bijouterie_id
+            or vendor.bijouterie_id != vente.bijouterie_id
+        ):
+            return error_response(
+                code="VENDOR_STORE_MISMATCH",
+                message=(
+                    "Le vendeur et la vente "
+                    "n'appartiennent pas "
+                    "à la même bijouterie."
+                ),
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        if role == ROLE_VENDOR:
+            profile = getattr(
+                user,
+                "staff_vendor_profile",
+                None,
+            )
+
+            if not (
+                profile
+                and getattr(profile, "verifie", False)
+                and profile.id == vente.vendor_id
+                and profile.bijouterie_id == vente.bijouterie_id
+            ):
+                return error_response(
+                    code="NOT_YOUR_SALE",
+                    message=(
+                        "Vous ne pouvez retourner "
+                        "que les produits de vos ventes."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        elif role == ROLE_MANAGER:
+            profile = getattr(
+                user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if not (
+                profile
+                and getattr(profile, "verifie", False)
+                and profile.bijouteries.filter(
+                    id=vente.bijouterie_id
+                ).exists()
+            ):
+                return error_response(
+                    code="SALE_OUT_OF_SCOPE",
+                    message=(
+                        "Cette vente n'appartient pas "
+                        "à vos bijouteries."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        # =====================================================
+        # 5. FACTURE + VERROUILLAGE
+        # =====================================================
+
+        facture = _get_facture_locked(vente)
+
+        if facture is None:
+            return error_response(
+                code="FACTURE_NOT_FOUND",
+                message=(
                     "Retour impossible : "
                     "aucune facture liée."
                 ),
-                status.HTTP_404_NOT_FOUND,
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        if facture.bijouterie_id != vente.bijouterie_id:
+            return error_response(
+                code="INVOICE_STORE_MISMATCH",
+                message=(
+                    "La facture et la vente "
+                    "n'appartiennent pas "
+                    "à la même bijouterie."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 5. FACTURE PAYÉE
+        # 6. FACTURE PAYÉE
         # =====================================================
 
         if facture.status != Facture.STAT_PAYE:
             return error_response(
-                "FACTURE_NOT_PAID",
-                (
+                code="FACTURE_NOT_PAID",
+                message=(
                     "Retour impossible : "
                     "la facture n'est pas payée."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 6. STOCK DÉJÀ CONSOMMÉ
+        # 7. STOCK CONSOMMÉ
         # =====================================================
 
         if not facture.stock_consumed:
             return error_response(
-                "STOCK_NOT_CONSUMED",
-                (
+                code="STOCK_NOT_CONSUMED",
+                message=(
                     "Retour impossible : "
                     "le stock de la vente "
                     "n'a pas encore été consommé."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
-        # 7. DÉLAI 72H
+        # 8. DÉLAI DE 72 HEURES
         # =====================================================
 
         reference_date = (
@@ -7471,145 +6849,88 @@ Conditions :
             or facture.date_creation
         )
 
-        if not reference_date:
+        if reference_date is None:
             return error_response(
-                "RETURN_REFERENCE_DATE_NOT_FOUND",
-                (
+                code="RETURN_REFERENCE_DATE_NOT_FOUND",
+                message=(
                     "Impossible de déterminer "
                     "la date de référence du retour."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
-        if (
-            timezone.now()
-            > reference_date + timedelta(hours=72)
-        ):
+        now = timezone.now()
+
+        if now < reference_date:
             return error_response(
-                "RETURN_DELAY_EXPIRED",
-                (
+                code="INVALID_RETURN_REFERENCE_DATE",
+                message=(
+                    "La date de référence du retour "
+                    "est dans le futur."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if now > reference_date + timedelta(hours=72):
+            return error_response(
+                code="RETURN_DELAY_EXPIRED",
+                message=(
                     "Retour impossible : "
-                    "délai de 72h dépassé."
+                    "délai de 72 heures dépassé."
                 ),
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-        # =====================================================
-        # 8. VENDEUR / PÉRIMÈTRE
-        # =====================================================
-
-        vendor, vendor_error = (
-            _resolve_vendor_for_update(
-                data,
-                request,
-                vente,
-                role,
-            )
-        )
-
-        if vendor_error:
-            return vendor_error
-
-        if not vendor:
-            return error_response(
-                "VENDOR_NOT_FOUND",
-                (
-                    "Aucun vendeur n'est associé "
-                    "à cette vente."
-                ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
         # 9. RAISON
         # =====================================================
 
-        reason = (
+        reason = str(
             data.get("reason")
             or "Retour client sous 72h"
-        )
-
-        reason = str(reason).strip()
+        ).strip()
 
         if not reason:
-            reason = (
-                "Retour client dans le délai "
-                "de 72 heures."
-            )
+            reason = "Retour client sous 72h"
 
         # =====================================================
         # 10. PRODUITS À RETOURNER
         # =====================================================
 
-        produits_retour = (
-            data.get("produits")
-            or []
-        )
-
-        # Si produits est vide :
-        # retour de toutes les quantités encore retournables.
-        #
-        # Sinon :
-        # retour partiel par vente_ligne_id.
-
+        produits_retour = data.get("produits") or []
         requested_by_line = {}
 
         for item in produits_retour:
             try:
-                ligne_id = int(
-                    item["vente_ligne_id"]
-                )
-
-                qty = int(
-                    item["quantite"]
-                )
-
-            except (
-                KeyError,
-                TypeError,
-                ValueError,
-            ):
+                ligne_id = int(item["vente_ligne_id"])
+                qty = int(item["quantite"])
+            except (KeyError, TypeError, ValueError):
                 return error_response(
-                    "INVALID_RETURN_LINE",
-                    (
+                    code="INVALID_RETURN_LINE",
+                    message=(
                         "vente_ligne_id et quantite "
                         "doivent être valides."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if ligne_id <= 0:
+            if ligne_id <= 0 or qty <= 0:
                 return error_response(
-                    "INVALID_SALE_LINE",
-                    (
-                        "vente_ligne_id "
-                        "doit être valide."
+                    code="INVALID_RETURN_QUANTITY",
+                    message=(
+                        "La ligne et la quantité "
+                        "doivent être supérieures à zéro."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if qty <= 0:
-                return error_response(
-                    "INVALID_QTY",
-                    (
-                        "La quantité doit être "
-                        "supérieure à zéro."
-                    ),
-                    status.HTTP_400_BAD_REQUEST,
-                )
-
-            requested_by_line[
-                ligne_id
-            ] = (
-                requested_by_line.get(
-                    ligne_id,
-                    0,
-                )
+            requested_by_line[ligne_id] = (
+                requested_by_line.get(ligne_id, 0)
                 + qty
             )
 
         # =====================================================
-        # 11. VÉRIFIER QUE LES LIGNES APPARTIENNENT À LA VENTE
+        # 11. LIGNES DE VENTE
         # =====================================================
 
         if requested_by_line:
@@ -7619,37 +6940,32 @@ Conditions :
                     vente=vente,
                     id__in=requested_by_line.keys(),
                 )
-                .values_list(
-                    "id",
-                    flat=True,
-                )
+                .values_list("id", flat=True)
             )
 
             unknown_line_ids = (
-                set(requested_by_line.keys())
+                set(requested_by_line)
                 - existing_line_ids
             )
 
             if unknown_line_ids:
                 return error_response(
-                    "SALE_LINE_NOT_FOUND",
-                    (
+                    code="SALE_LINE_NOT_FOUND",
+                    message=(
                         "Certaines lignes ne font pas "
-                        "partie de cette vente : "
-                        f"{sorted(unknown_line_ids)}."
+                        "partie de cette vente."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    details={
+                        "ligne_ids": sorted(unknown_line_ids)
+                    },
                 )
 
         # =====================================================
-        # 12. SALE_OUT DE LA VENTE
-        # =====================================================
-        #
-        # Chaque SALE_OUT contient désormais la ProduitLine
-        # exacte consommée au paiement.
+        # 12. MOUVEMENTS SALE_OUT
         # =====================================================
 
-        sale_outs = (
+        sale_outs_qs = (
             InventoryMovement.objects
             .select_for_update()
             .filter(
@@ -7676,34 +6992,24 @@ Conditions :
         )
 
         if requested_by_line:
-            sale_outs = sale_outs.filter(
-                vente_ligne_id__in=(
-                    requested_by_line.keys()
-                )
+            sale_outs_qs = sale_outs_qs.filter(
+                vente_ligne_id__in=requested_by_line
             )
 
-        sale_outs = list(sale_outs)
+        sale_outs = list(sale_outs_qs)
 
         if not sale_outs:
             return error_response(
-                "SALE_OUT_NOT_FOUND",
-                (
+                code="SALE_OUT_NOT_FOUND",
+                message=(
                     "Aucun mouvement SALE_OUT "
                     "n'a été trouvé pour cette vente."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
         # 13. QUANTITÉS DÉJÀ RETOURNÉES
-        # =====================================================
-        #
-        # Agrégation par :
-        #
-        # vente_ligne + ProduitLine
-        #
-        # puisque ProduitLine est maintenant la source
-        # de vérité.
         # =====================================================
 
         returned_rows = (
@@ -7726,31 +7032,38 @@ Conditions :
             (
                 row["vente_ligne_id"],
                 row["produit_line_id"],
-            ): int(
-                row["total"]
-                or 0
-            )
+            ): int(row["total"] or 0)
             for row in returned_rows
         }
 
         # =====================================================
-        # 14. QUANTITÉS SALE_OUT PAR LIGNE + PRODUITLINE
+        # 14. QUANTITÉS VENDUES
         # =====================================================
 
         sale_out_total = {}
+        moves_by_key = {}
 
         for move in sale_outs:
+
             if not move.vente_ligne_id:
-                continue
+                return error_response(
+                    code="SALE_LINE_MISSING",
+                    message=(
+                        "Un mouvement SALE_OUT "
+                        "n'est associé à aucune ligne "
+                        "de vente."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
 
             if not move.produit_line_id:
                 return error_response(
-                    "PRODUIT_LINE_NOT_FOUND",
-                    (
+                    code="PRODUIT_LINE_NOT_FOUND",
+                    message=(
                         "Un mouvement SALE_OUT "
                         "ne contient pas de ProduitLine."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             key = (
@@ -7759,80 +7072,45 @@ Conditions :
             )
 
             sale_out_total[key] = (
-                sale_out_total.get(
-                    key,
-                    0,
-                )
+                sale_out_total.get(key, 0)
                 + int(move.qty or 0)
             )
 
+            moves_by_key.setdefault(key, []).append(move)
+
         # =====================================================
-        # 15. CONSTRUIRE LES RETOURS À EFFECTUER
+        # 15. PRÉPARATION DES RETOURS
         # =====================================================
 
         returns_to_create = []
+        remaining_requested = dict(requested_by_line)
 
-        remaining_requested = dict(
-            requested_by_line
-        )
+        for key, moves in moves_by_key.items():
 
-        processed_keys = set()
+            ligne_id, produit_line_id = key
 
-        for move in sale_outs:
-            if not move.vente_ligne_id:
-                continue
+            sold_qty = sale_out_total[key]
+            returned_qty = already_returned.get(key, 0)
 
-            if not move.produit_line_id:
-                continue
-
-            key = (
-                move.vente_ligne_id,
-                move.produit_line_id,
-            )
-
-            # Plusieurs SALE_OUT peuvent théoriquement exister
-            # pour la même combinaison.
-            #
-            # On traite la combinaison une seule fois.
-            if key in processed_keys:
-                continue
-
-            processed_keys.add(key)
-
-            ligne = move.vente_ligne
-
-            sold_qty = int(
-                sale_out_total.get(
-                    key,
-                    0,
+            if returned_qty < 0 or returned_qty > sold_qty:
+                return error_response(
+                    code="INVALID_RETURN_HISTORY",
+                    message=(
+                        "Les quantités déjà retournées "
+                        "sont incohérentes."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
-            )
 
-            returned_qty = int(
-                already_returned.get(
-                    key,
-                    0,
-                )
-            )
-
-            returnable_qty = max(
-                sold_qty - returned_qty,
-                0,
-            )
+            returnable_qty = sold_qty - returned_qty
 
             if returnable_qty <= 0:
                 continue
 
-            # -------------------------------------------------
-            # RETOUR PARTIEL DEMANDÉ
-            # -------------------------------------------------
-
             if requested_by_line:
-                wanted = int(
-                    remaining_requested.get(
-                        ligne.id,
-                        0,
-                    )
+                wanted = remaining_requested.get(
+                    ligne_id,
+                    0,
                 )
 
                 if wanted <= 0:
@@ -7843,74 +7121,113 @@ Conditions :
                     wanted,
                 )
 
-                remaining_requested[
-                    ligne.id
-                ] = (
-                    wanted
-                    - qty_to_return
+                remaining_requested[ligne_id] = (
+                    wanted - qty_to_return
                 )
-
-            # -------------------------------------------------
-            # RETOUR COMPLET
-            # -------------------------------------------------
 
             else:
-                qty_to_return = (
-                    returnable_qty
-                )
+                qty_to_return = returnable_qty
 
             if qty_to_return <= 0:
                 continue
 
-            returns_to_create.append(
-                {
-                    "move": move,
-                    "ligne": ligne,
-                    "produit_line": (
-                        move.produit_line
+            # Répartit le retour entre les SALE_OUT
+            # sans attribuer à un mouvement plus
+            # que sa quantité encore retournable.
+            #
+            # L'historique disponible est agrégé par
+            # (vente_ligne, produit_line). La répartition
+            # entre plusieurs SALE_OUT identiques est
+            # donc déterministe, selon leur ID.
+
+            remaining_qty = qty_to_return
+            already_allocated = returned_qty
+
+            for move in moves:
+
+                move_qty = int(move.qty or 0)
+
+                if move_qty <= 0:
+                    continue
+
+                consumed_by_previous_returns = min(
+                    already_allocated,
+                    move_qty,
+                )
+
+                already_allocated -= (
+                    consumed_by_previous_returns
+                )
+
+                available_on_move = (
+                    move_qty - consumed_by_previous_returns
+                )
+
+                if available_on_move <= 0:
+                    continue
+
+                allocated_qty = min(
+                    available_on_move,
+                    remaining_qty,
+                )
+
+                if allocated_qty > 0:
+                    returns_to_create.append(
+                        {
+                            "move": move,
+                            "ligne": move.vente_ligne,
+                            "produit_line": move.produit_line,
+                            "qty": allocated_qty,
+                        }
+                    )
+
+                    remaining_qty -= allocated_qty
+
+                if remaining_qty == 0:
+                    break
+
+            if remaining_qty != 0:
+                return error_response(
+                    code="RETURN_ALLOCATION_FAILED",
+                    message=(
+                        "Impossible de répartir "
+                        "les quantités du retour."
                     ),
-                    "qty": qty_to_return,
-                }
-            )
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
 
         # =====================================================
-        # 16. QUANTITÉ DEMANDÉE TROP ÉLEVÉE
-        # =====================================================
-        #
-        # IMPORTANT :
-        # on vérifie ceci AVANT de modifier Stock.
+        # 16. CONTRÔLE DES QUANTITÉS DEMANDÉES
         # =====================================================
 
         if requested_by_line:
+
             not_returnable = {
                 ligne_id: qty
-                for (
-                    ligne_id,
-                    qty,
-                ) in remaining_requested.items()
+                for ligne_id, qty
+                in remaining_requested.items()
                 if qty > 0
             }
 
             if not_returnable:
                 return error_response(
-                    "RETURN_QTY_TOO_HIGH",
-                    (
-                        "Quantité demandée supérieure "
-                        "à la quantité encore "
-                        "retournable : "
-                        f"{not_returnable}"
+                    code="RETURN_QTY_TOO_HIGH",
+                    message=(
+                        "La quantité demandée dépasse "
+                        "la quantité encore retournable."
                     ),
-                    status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    details=not_returnable,
                 )
 
         if not returns_to_create:
             return error_response(
-                "NOTHING_TO_RETURN",
-                (
+                code="NOTHING_TO_RETURN",
+                message=(
                     "Aucune quantité retournable "
-                    "trouvée."
+                    "n'a été trouvée."
                 ),
-                status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # =====================================================
@@ -7921,62 +7238,39 @@ Conditions :
         details = []
 
         for return_data in returns_to_create:
+
             move = return_data["move"]
             ligne = return_data["ligne"]
-            produit_line = (
-                return_data[
-                    "produit_line"
-                ]
-            )
-
-            qty_to_return = int(
-                return_data["qty"]
-            )
+            produit_line = return_data["produit_line"]
+            qty_to_return = return_data["qty"]
 
             # -------------------------------------------------
             # BIJOUTERIE
             # -------------------------------------------------
 
-            bijouterie_id = (
-                vente.bijouterie_id
-                or getattr(
-                    move.vendor,
-                    "bijouterie_id",
-                    None,
-                )
-            )
+            bijouterie_id = vente.bijouterie_id
 
             if not bijouterie_id:
-                raise ValidationError(
-                    {
-                        "bijouterie": (
-                            "Impossible de déterminer "
-                            "la bijouterie du retour."
-                        )
-                    }
-                )
+                raise ValidationError({
+                    "bijouterie": (
+                        "Impossible de déterminer "
+                        "la bijouterie du retour."
+                    )
+                })
 
             # -------------------------------------------------
             # LOT
             # -------------------------------------------------
 
-            lot = getattr(
-                produit_line,
-                "lot",
-                None,
-            )
+            lot = produit_line.lot
 
-            if not lot:
-                raise ValidationError(
-                    {
-                        "produit_line": (
-                            f"La ProduitLine "
-                            f"#{produit_line.id} "
-                            f"n'est associée "
-                            f"à aucun lot."
-                        )
-                    }
-                )
+            if lot is None:
+                raise ValidationError({
+                    "produit_line": (
+                        f"La ProduitLine #{produit_line.id} "
+                        f"n'est associée à aucun lot."
+                    )
+                })
 
             # -------------------------------------------------
             # STOCK BIJOUTERIE + LOCK
@@ -7984,14 +7278,9 @@ Conditions :
 
             stock_magasin, _ = (
                 Stock.objects
-                .select_for_update()
                 .get_or_create(
-                    produit_line=(
-                        produit_line
-                    ),
-                    bijouterie_id=(
-                        bijouterie_id
-                    ),
+                    produit_line=produit_line,
+                    bijouterie_id=bijouterie_id,
                     defaults={
                         "en_stock": 0,
                         "quantite_totale": 0,
@@ -7999,112 +7288,83 @@ Conditions :
                 )
             )
 
+            stock_magasin = (
+                Stock.objects
+                .select_for_update()
+                .get(pk=stock_magasin.pk)
+            )
+
             # -------------------------------------------------
             # REMISE EN STOCK
             # -------------------------------------------------
 
-            stock_updated = (
+            updated = (
                 Stock.objects
-                .filter(
-                    pk=stock_magasin.pk,
-                )
+                .filter(pk=stock_magasin.pk)
                 .update(
                     en_stock=(
-                        F("en_stock")
-                        + qty_to_return
+                        F("en_stock") + qty_to_return
                     ),
                     quantite_totale=(
-                        F("quantite_totale")
-                        + qty_to_return
+                        F("quantite_totale") + qty_to_return
                     ),
                     updated_at=timezone.now(),
                 )
             )
 
-            if stock_updated != 1:
-                raise ValidationError(
-                    {
-                        "stock": (
-                            "Impossible de remettre "
-                            "le produit dans le stock "
-                            "de la bijouterie."
-                        )
-                    }
-                )
+            if updated != 1:
+                raise ValidationError({
+                    "stock": (
+                        "Impossible de remettre "
+                        "le produit dans le stock "
+                        "de la bijouterie."
+                    )
+                })
 
             # -------------------------------------------------
-            # RETURN_IN
+            # MOUVEMENT RETURN_IN
             # -------------------------------------------------
 
             log_move(
                 produit=produit_line.produit,
                 produit_line=produit_line,
-
                 achat=lot.achat,
                 lot=lot,
-
-                movement_type=(
-                    MovementType.RETURN_IN
-                ),
-
+                movement_type=MovementType.RETURN_IN,
                 qty=qty_to_return,
-
                 src_bucket=Bucket.EXTERNAL,
                 dst_bucket=Bucket.BIJOUTERIE,
-
-                dst_bijouterie_id=(
-                    bijouterie_id
-                ),
-
+                dst_bijouterie_id=bijouterie_id,
                 vendor=(
                     move.vendor
                     or vente.vendor
                 ),
-
                 vente=vente,
                 vente_ligne=ligne,
                 facture=facture,
-
                 reason=reason,
-
                 user=user,
             )
 
             # -------------------------------------------------
-            # RÉSULTAT
+            # DÉTAIL
             # -------------------------------------------------
 
-            total_returned_now += (
-                qty_to_return
-            )
+            total_returned_now += qty_to_return
 
-            details.append(
-                {
-                    "vente_ligne_id": (
-                        ligne.id
-                    ),
-                    "produit_line_id": (
-                        produit_line.id
-                    ),
-                    "produit_id": (
-                        produit_line.produit_id
-                    ),
-                    "produit": getattr(
-                        produit_line.produit,
-                        "nom",
-                        None,
-                    ),
-                    "lot_id": (
-                        produit_line.lot_id
-                    ),
-                    "bijouterie_id": (
-                        bijouterie_id
-                    ),
-                    "quantite_retournee": (
-                        qty_to_return
-                    ),
-                }
-            )
+            details.append({
+                "vente_ligne_id": ligne.id,
+                "produit_line_id": produit_line.id,
+                "produit_id": produit_line.produit_id,
+                "produit": getattr(
+                    produit_line.produit,
+                    "nom",
+                    None,
+                ),
+                "lot_id": produit_line.lot_id,
+                "bijouterie_id": bijouterie_id,
+                "quantite_retournee": qty_to_return,
+            })
 
         # =====================================================
         # 18. RÉPONSE
@@ -8119,12 +7379,8 @@ Conditions :
                     "avec succès."
                 ),
                 "vente_id": vente.id,
-                "numero_vente": (
-                    vente.numero_vente
-                ),
-                "facture": (
-                    facture.numero_facture
-                ),
+                "numero_vente": vente.numero_vente,
+                "facture": facture.numero_facture,
                 "quantite_totale_retournee": (
                     total_returned_now
                 ),
@@ -8132,3 +7388,4 @@ Conditions :
             },
             status=status.HTTP_200_OK,
         )
+

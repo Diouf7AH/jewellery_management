@@ -58,30 +58,28 @@ class FournisseurOutSerializer(serializers.ModelSerializer):
 # Produit ------------------------------------------------------------
 
 class ProduitMiniSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = Produit
         fields = [
             "id",
+            "sku",
             "nom",
             "poids",
         ]
         read_only_fields = fields
 
-
-DECIMAL_2_PLACES = Decimal("0.01")
 class ProduitLineOutSerializer(serializers.ModelSerializer):
     """
-    Ligne d'un lot.
+    Représentation d'une ligne d'achat.
 
-    Les données financières utilisent le snapshot
-    enregistré au moment de l'achat :
-
-        poids_unitaire_achat
-
-    et non Produit.poids.
+    Source de vérité :
+    - etat : ProduitLine.etat
+    - pourcentage_occasion : ProduitLine.pourcentage_occasion
+    - poids_unitaire_achat : snapshot historique
 
     L'UUID identifie de manière stable la ProduitLine
-    et peut être utilisé par les étiquettes / QR codes.
+    pour les étiquettes et QR codes.
     """
 
     produit = ProduitMiniSerializer(
@@ -108,6 +106,7 @@ class ProduitLineOutSerializer(serializers.ModelSerializer):
         max_digits=18,
         decimal_places=2,
         read_only=True,
+        allow_null=True,
     )
 
     class Meta:
@@ -116,6 +115,9 @@ class ProduitLineOutSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "uuid",
+            "numero_ligne_lot",
+            "etat",
+            "pourcentage_occasion",
             "produit",
             "quantite",
             "poids_unitaire_achat",
@@ -126,33 +128,25 @@ class ProduitLineOutSerializer(serializers.ModelSerializer):
 
         read_only_fields = fields
         
+
+
 class ProduitLineMiniSerializer(serializers.ModelSerializer):
     """
-    Représentation d'une ligne d'achat avec :
+    Représentation détaillée d'une ligne d'achat.
 
+    Contient :
     - achat ;
     - lot ;
     - bijouterie ;
     - fournisseur ;
     - produit ;
+    - état neuf / occasion ;
+    - pourcentage occasion ;
     - données historiques d'achat ;
     - stock actuel.
 
-    Règles :
-
-    - quantite_recue :
-        quantité historique enregistrée sur ProduitLine.quantite.
-
-    - poids_unitaire_achat :
-        snapshot historique du poids au moment de l'achat.
-
-    - en_stock :
-        stock actuel de cette ProduitLine dans la bijouterie.
-        Cette valeur provient de l'annotation de InventoryPhotoView.
-
-    - produit_line_uuid :
-        identifiant stable de la ProduitLine utilisé notamment
-        par les QR codes / étiquettes.
+    Le stock actuel provient de l'annotation
+    en_stock_total de InventoryPhotoView.
     """
 
     # ========================================================
@@ -265,9 +259,6 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
         default=None,
     )
 
-    # Poids actuel du produit.
-    # Informatif uniquement.
-    # Ne pas utiliser pour recalculer l'historique d'achat.
     poids_produit_actuel = serializers.DecimalField(
         source="produit.poids",
         max_digits=12,
@@ -285,7 +276,6 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
-    # Snapshot historique du poids.
     poids_unitaire_achat = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -312,6 +302,7 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
         max_digits=18,
         decimal_places=2,
         read_only=True,
+        allow_null=True,
     )
 
     # ========================================================
@@ -321,6 +312,7 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
     en_stock = serializers.IntegerField(
         source="en_stock_total",
         read_only=True,
+        default=0,
     )
 
     # ========================================================
@@ -333,6 +325,7 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "produit_line_uuid",
+            "numero_ligne_lot",
 
             # Achat
             "achat_id",
@@ -360,6 +353,10 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
             "purete",
             "poids_produit_actuel",
 
+            # État et occasion
+            "etat",
+            "pourcentage_occasion",
+
             # Ligne d'achat
             "quantite_recue",
             "poids_unitaire_achat",
@@ -367,11 +364,13 @@ class ProduitLineMiniSerializer(serializers.ModelSerializer):
             "prix_achat_gramme",
             "montant_achat",
 
-            # Stock actuel
+            # Stock
             "en_stock",
         ]
 
         read_only_fields = fields
+        
+
 
 class AchatBaseOutSerializer(serializers.ModelSerializer):
     """
@@ -795,50 +794,54 @@ class FournisseurInlineSerializer(serializers.Serializer):
     def validate_address(self, value):
         return (value or "").strip()
 
+# ============================================================
+# 1. LIGNE D'UN LOT
+# ============================================================
 
 class LotLineInSerializer(serializers.Serializer):
     """
     Ligne produit reçue dans un lot.
 
-    Le client fournit uniquement :
-    - le produit ;
-    - la quantité reçue ;
-    - le prix d'achat au gramme.
-
-    poids_unitaire_achat n'est volontairement
-    pas accepté depuis le client.
-
-    Il est automatiquement copié depuis Produit.poids
-    lors de la création de ProduitLine afin de conserver
-    le poids historique au moment de l'achat.
+    Un même produit peut exister en état neuf
+    et occasion dans un même lot.
     """
 
     produit_id = serializers.IntegerField(
         min_value=1,
+        required=True,
+    )
+
+    etat = serializers.ChoiceField(
+        choices=[
+            ("N", "Neuf"),
+            ("O", "Occasion"),
+        ],
+        default="N",
     )
 
     quantite = serializers.IntegerField(
         min_value=1,
+        required=True,
     )
 
     prix_achat_gramme = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
-        required=True,
         min_value=Decimal("0.00"),
+        required=True,
     )
-    
 
 class LotInSerializer(serializers.Serializer):
     """
-    Lot fournisseur contenant une ou plusieurs lignes produit.
+    Lot fournisseur contenant une ou plusieurs lignes.
 
-    Chaque produit ne peut apparaître qu'une seule fois
-    dans un même lot.
+    Le couple (produit_id, etat) doit être unique
+    dans chaque lot.
     """
 
     received_at = serializers.DateTimeField(
         required=False,
+        allow_null=True,
     )
 
     description = serializers.CharField(
@@ -852,60 +855,51 @@ class LotInSerializer(serializers.Serializer):
     lignes = LotLineInSerializer(
         many=True,
         allow_empty=False,
+        required=True,
     )
 
     def validate_description(self, value):
-        return (
-            value.strip()
-            if value
-            else ""
-        )
+        return value.strip() if value else ""
 
     def validate_lignes(self, lignes):
-        produit_ids = [
-            ligne["produit_id"]
-            for ligne in lignes
-        ]
+        identifiants = set()
 
-        if len(produit_ids) != len(set(produit_ids)):
-            raise serializers.ValidationError(
-                "Un produit ne peut apparaître qu'une seule fois "
-                "dans un même lot."
+        for index, ligne in enumerate(lignes):
+
+            identifiant = (
+                ligne["produit_id"],
+                ligne["etat"],
             )
+
+            if identifiant in identifiants:
+                raise serializers.ValidationError(
+                    f"Ligne {index + 1} : ce produit existe "
+                    "déjà avec le même état dans ce lot."
+                )
+
+            identifiants.add(identifiant)
 
         return lignes
 
+
+
+ # ============================================================
+# 3. CRÉATION D'ARRIVAGE
+# ============================================================
+
 class ArrivageCreateInSerializer(serializers.Serializer):
     """
-    Payload complet pour :
+    Création d'un arrivage fournisseur.
 
-        POST /api/achat/arrivage/
-
-    Structure :
-
-        1 Achat
-            ↓
-        N Lots
-            ↓
-        N ProduitLine
-            ↓
-        Stock en bijouterie
-
-    Pour chaque ProduitLine créée :
-
-        - quantite :
-            quantité historique reçue ;
-
-        - poids_unitaire_achat :
-            copié automatiquement depuis Produit.poids ;
-
-        - Stock.en_stock :
-            initialisé avec la quantité reçue.
-
-    Mouvement généré :
-
-        PURCHASE_IN
-        EXTERNAL → BIJOUTERIE
+    Achat
+      ↓
+    Lots
+      ↓
+    ProduitLine
+      ↓
+    Stock magasin
+      ↓
+    PURCHASE_IN
     """
 
     bijouterie_id = serializers.IntegerField(
@@ -913,7 +907,9 @@ class ArrivageCreateInSerializer(serializers.Serializer):
         required=True,
     )
 
-    fournisseur = FournisseurInlineSerializer()
+    fournisseur = FournisseurInlineSerializer(
+        required=True,
+    )
 
     reference_commande = serializers.CharField(
         required=False,
@@ -950,6 +946,7 @@ class ArrivageCreateInSerializer(serializers.Serializer):
     lots = LotInSerializer(
         many=True,
         allow_empty=False,
+        required=True,
     )
 
     def validate_reference_commande(self, value):
@@ -957,7 +954,7 @@ class ArrivageCreateInSerializer(serializers.Serializer):
 
     def validate_description(self, value):
         return value.strip() if value else ""
-    
+
 # ============================================================
 # PATCH Arrivage (métadonnées uniquement)
 # ============================================================

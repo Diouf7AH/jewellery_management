@@ -1,5 +1,6 @@
 # from knox.auth import TokenAuthentication
 #Export to excel
+import uuid
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -8,6 +9,7 @@ import qrcode
 from django.db import transaction
 from django.db.models import F, Q
 from django.http import Http404, HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_datetime
 from django_filters.rest_framework import DjangoFilterBackend
 from drf_yasg import openapi
@@ -15,15 +17,18 @@ from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.generics import ListAPIView
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import (FileUploadParser, FormParser, JSONParser,
                                     MultiPartParser)
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.permissions import IsAdminOrManager, IsAdminOrManagerOrVendor
+from backend.permissions import (IsAdmin, IsAdminOrManager,
+                                 IsAdminOrManagerOrVendor)
 from backend.renderers import UserRenderer
 from backend.roles import ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, get_role_name
+from purchase.models import ProduitLine
 from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
                           MarquePuretePrixHistory, Modele, Produit, Purete)
 from store.serializers import (BijouterieSerializer, CategorieSerializer,
@@ -33,7 +38,8 @@ from store.serializers import (BijouterieSerializer, CategorieSerializer,
                                MarquePureteSerializer, ModeleSerializer,
                                ProduitSerializer, PureteSerializer)
 
-from .serializers import MarquePuretePrixHistorySerializer
+from .serializers import (MarquePuretePrixHistorySerializer,
+                          ProduitRechercheSerializer)
 
 allowed_roles_admin_manager_vendeur = ['admin', 'manager', 'vendeur']
 allowed_roles_admin_manager = ['admin', 'manager']
@@ -66,31 +72,57 @@ class BijouterieListAPIView(APIView):
 
 
 class BijouterieCreateAPIView(APIView):
+    """
+    Création d'une nouvelle bijouterie.
+
+    Accès :
+        - Administrateur uniquement.
+    """
+
     renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdmin]
     parser_classes = [MultiPartParser, FormParser]
 
     @swagger_auto_schema(
         operation_summary="Créer une bijouterie",
-        operation_description="Permet à un administrateur ou manager d’enregistrer une nouvelle bijouterie, y compris les logos et les contacts.",
+        operation_description=(
+            "Permet uniquement à un administrateur "
+            "de créer une bijouterie avec ses coordonnées, "
+            "logos et paramètres de TVA."
+        ),
         request_body=BijouterieSerializer,
         responses={
-            201: openapi.Response("Bijouterie créée avec succès", BijouterieSerializer),
-            400: openapi.Response("Requête invalide")
-        }
+            201: openapi.Response(
+                description="Bijouterie créée avec succès",
+                schema=BijouterieSerializer,
+            ),
+            400: "Données invalides",
+            401: "Authentification requise",
+            403: "Accès réservé aux administrateurs",
+        },
     )
     def post(self, request):
-        user_role = getattr(request.user.user_role, 'role', None)
+        serializer = BijouterieSerializer(
+            data=request.data,
+            context={"request": request},
+        )
 
-        if user_role not in allowed_roles_admin_manager:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        serializer.is_valid(raise_exception=True)
 
-        serializer = BijouterieSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            bijouterie = serializer.save()
+
+        output_serializer = BijouterieSerializer(
+            bijouterie,
+            context={"request": request},
+        )
+
+        return Response(
+            output_serializer.data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
 
 class BijouterieUpdateAPIView(APIView):
     renderer_classes = [UserRenderer]
@@ -520,7 +552,7 @@ class ListMarquePureteView(APIView):
         ]
         """,
         responses={200: openapi.Response(description="Liste des marques")},
-        tags=["Marques"],
+        tags=["Marque"],
     )
     def get(self, request):
         queryset = MarquePurete.objects.select_related(
@@ -555,7 +587,8 @@ class CreateMarquePureteView(APIView):
     @swagger_auto_schema(
         operation_summary="Créer/mettre à jour Marque–Pureté (et journaliser l'ancien prix)",
         request_body=MarquePureteSerializer,
-        responses={201: "Créé/Mis à jour"}
+        responses={201: "Créé/Mis à jour"},
+        tags=["Marque"],   
     )
     @transaction.atomic
     def post(self, request):
@@ -696,7 +729,7 @@ class MarqueUpdateAPIView(APIView):
             403: "Accès refusé",
             404: "Marque non trouvée / Pureté introuvable",
         },
-        tags=["Marques"],
+        tags=["Marque"],
     )
     @transaction.atomic
     def put(self, request, pk):
@@ -824,7 +857,8 @@ class MarqueUpdateAPIView(APIView):
                 "unchanged": unchanged,
                 "history_records": history,
             },
-            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            
         )
 
     @swagger_auto_schema(
@@ -837,7 +871,7 @@ class MarqueUpdateAPIView(APIView):
             403: "Accès refusé",
             404: "Marque non trouvée / Pureté introuvable",
         },
-        tags=["Marques"],
+        tags=["Marque"],
     )
     @transaction.atomic
     def patch(self, request, pk):
@@ -877,7 +911,8 @@ class MarquePureteHistoryListView(APIView):
                     )
                 )
             )
-        }
+        },
+        tags=["Marque"],
     )
     def get(self, request):
         # Evite le crash pendant la génération du schéma YASG
@@ -1024,7 +1059,8 @@ class MarqueDeleteAPIView(APIView):
             204: "Marque supprimée avec succès",
             403: "⛔ Accès refusé",
             404: "❌ Marque non trouvée"
-        }
+        },
+        tags=["Marque"],
     )
     def delete(self, request, pk):
         user = request.user
@@ -1063,7 +1099,8 @@ class ModeleListAPIView(APIView):
         responses={
             200: openapi.Response("Liste des modèles", ModeleSerializer(many=True)),
             403: "⛔ Accès refusé"
-        }
+        },
+        tags=["Modèle"]
     )
     def get(self, request):
         user = request.user
@@ -1109,7 +1146,8 @@ class ModeleCreateAPIView(APIView):
             201: openapi.Response("Modèle créé avec succès", ModeleSerializer),
             400: "Erreur de validation",
             403: "⛔ Accès refusé"
-        }
+        },
+        tags=["Modèle"]
     )
     def post(self, request):
         user = request.user
@@ -1144,7 +1182,8 @@ class ModeleUpdateAPIView(APIView):
             400: "Requête invalide",
             403: "Accès refusé",
             404: "Modèle introuvable"
-        }
+        },
+        tags=["Modèle"]
     )
     def put(self, request, pk):
         user = request.user
@@ -1169,7 +1208,8 @@ class ModeleUpdateAPIView(APIView):
             400: "Requête invalide",
             403: "Accès refusé",
             404: "Modèle introuvable"
-        }
+        },
+        tags=["Modèle"]
     )
     def patch(self, request, pk):
         user = request.user
@@ -1195,6 +1235,15 @@ class ModeleDeleteAPIView(APIView):
         except Modele.DoesNotExist:
             return None
 
+    @swagger_auto_schema(
+        operation_description="🗑️ Supprimer un modèle",
+        responses={
+            204: "Modèle supprimé",
+            403: "Accès refusé",
+            404: "Modèle introuvable"
+        },
+        tags=["Modèle"]
+    )
     def delete(self, request, pk):
         user = request.user
         if not user.user_role or user.user_role.role not in ['admin', 'manager']:
@@ -1207,146 +1256,309 @@ class ModeleDeleteAPIView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# class ProduitListAPIView(ListAPIView):
-#     serializer_class = ProduitSerializer
-#     permission_classes = [IsAuthenticated]
 
-#     def get_queryset(self):
-#         user = self.request.user
-#         role = get_role_name(user)
+class ProduitRecherchePagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
-#         queryset = (
-#             Produit.objects
-#             .select_related(
-#                 "categorie",
-#                 "marque",
-#                 "modele",
-#                 "purete",
-#             )
-#             .prefetch_related(
-#                 "produit_gallery",
-#             )
-#         )
 
-#         # ====================================================
-#         # ADMIN
-#         # ====================================================
+class ProduitRechercheQRView(APIView):
 
-#         if role == ROLE_ADMIN:
-#             """
-#             Admin :
-#             - peut voir les produits ayant du stock
-#                 dans les bijouteries.
-#             - possibilité de filtrer par bijouterie_id.
-#             """
+    permission_classes = [IsAuthenticated]
 
-#             bijouterie_id = self.request.query_params.get(
-#                 "bijouterie_id"
-#             )
+    @swagger_auto_schema(
+        operation_id="rechercherProduitParQR",
+        operation_summary="Rechercher un produit par QR code",
+        operation_description=(
+            "Recherche automatiquement une ProduitLine "
+            "à partir du QR code scanné.\n\n"
+            "Format attendu : PL:<UUID>\n\n"
+            "Retourne les informations du produit "
+            "et de sa ligne d'achat."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                name="qr_code",
+                in_=openapi.IN_QUERY,
+                description=(
+                    "Contenu du QR code de la ProduitLine. "
+                    "Exemple : PL:550e8400-e29b-41d4-a716-446655440000"
+                ),
+                type=openapi.TYPE_STRING,
+                required=True,
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Produit retrouvé avec succès.",
+            ),
+            400: openapi.Response(
+                description="Format ou UUID du QR code invalide.",
+            ),
+            401: openapi.Response(
+                description="Authentification requise.",
+            ),
+            404: openapi.Response(
+                description="ProduitLine introuvable.",
+            ),
+        },
+        tags=["Achats / Recherche produits"],
+    )
+    def get(self, request):
 
-#             if bijouterie_id:
-#                 queryset = queryset.filter(
-#                     produit_lines__stocks__bijouterie_id=bijouterie_id,
-#                     produit_lines__stocks__en_stock__gt=0,
-#                 ).distinct()
-#             else:
-#                 queryset = queryset.filter(
-#                     produit_lines__stocks__en_stock__gt=0,
-#                 ).distinct()
+        qr_code = request.query_params.get(
+            "qr_code", ""
+        ).strip()
 
-#         # ====================================================
-#         # MANAGER
-#         # ====================================================
+        if not qr_code.startswith("PL:"):
+            return Response(
+                {
+                    "message": "Format de QR code invalide."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-#         elif role == ROLE_MANAGER:
-#             """
-#             Manager :
-#             voit uniquement les produits disponibles
-#             dans ses bijouteries.
-#             """
+        try:
+            ligne_uuid = uuid.UUID(qr_code[3:])
+        except (ValueError, AttributeError):
+            return Response(
+                {
+                    "message": "UUID du QR code invalide."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-#             manager = getattr(
-#                 user,
-#                 "staff_manager_profile",
-#                 None,
-#             )
+        ligne = get_object_or_404(
+            ProduitLine.objects.select_related(
+                "produit",
+                "lot",
+                "lot__achat",
+            ),
+            uuid=ligne_uuid,
+        )
 
-#             if not manager or not manager.verifie:
-#                 return Produit.objects.none()
+        produit = ligne.produit
 
-#             bijouterie_ids = manager.bijouteries.values_list(
-#                 "id",
-#                 flat=True,
-#             )
+        return Response(
+            {
+                "message": "Produit retrouvé avec succès.",
+                "produit": {
+                    "id": produit.id,
+                    "uuid": str(produit.uuid),
+                    "sku": produit.sku,
+                    "nom": produit.nom,
+                    "poids": str(produit.poids),
+                    "taille": (
+                        str(produit.taille)
+                        if produit.taille is not None
+                        else None
+                    ),
+                },
+                "ligne_achat": {
+                    "id": ligne.id,
+                    "uuid": str(ligne.uuid),
+                    "etat": ligne.etat,
+                    "quantite_achetee": ligne.quantite,
+                    "poids_unitaire_achat": str(
+                        ligne.poids_unitaire_achat
+                    ),
+                    "lot_id": ligne.lot_id,
+                    "achat_id": ligne.lot.achat_id,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
-#             queryset = queryset.filter(
-#                 produit_lines__stocks__bijouterie_id__in=bijouterie_ids,
-#                 produit_lines__stocks__en_stock__gt=0,
-#             ).distinct()
 
-#             # Filtre facultatif sur une de ses bijouteries
-#             bijouterie_id = self.request.query_params.get(
-#                 "bijouterie_id"
-#             )
+class ProduitRechercheView(APIView):
+    """
+    Recherche de produits du catalogue.
 
-#             if bijouterie_id:
-#                 if not manager.bijouteries.filter(
-#                     id=bijouterie_id
-#                 ).exists():
-#                     return Produit.objects.none()
+    Utilisée notamment lors de la création d'un arrivage.
 
-#                 queryset = queryset.filter(
-#                     produit_lines__stocks__bijouterie_id=bijouterie_id
-#                 )
+    Recherche :
+    - SKU
+    - nom
+    - catégorie
+    - modèle
+    - marque
+    - pureté
 
-#         # ====================================================
-#         # VENDOR
-#         # ====================================================
+    Filtres :
+    - categorie_id
+    - modele_id
+    - marque_id
+    - purete_id
+    - poids
+    - taille
 
-#         elif role == ROLE_VENDOR:
-#             """
-#             Vendor :
-#             uniquement les produits qui lui sont réellement
-#             affectés et dont il reste du stock vendeur.
-#             """
+    Recherche insensible à la casse.
+    """
 
-#             vendor = getattr(
-#                 user,
-#                 "staff_vendor_profile",
-#                 None,
-#             )
+    permission_classes = [IsAuthenticated]
 
-#             if not vendor or not vendor.verifie:
-#                 return Produit.objects.none()
+    @swagger_auto_schema(
+        operation_summary="Rechercher un produit du catalogue",
+        operation_description=(
+            "Recherche paginée des produits existants. "
+            "Permet de sélectionner un produit lors d'un arrivage. "
+            "Aucune création ni modification de stock."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                "q",
+                openapi.IN_QUERY,
+                description="SKU, nom, catégorie, modèle, marque ou pureté",
+                type=openapi.TYPE_STRING,
+                required=False,
+            ),
+            *[
+                openapi.Parameter(
+                    champ,
+                    openapi.IN_QUERY,
+                    description=f"Filtrer par {champ}",
+                    type=openapi.TYPE_INTEGER,
+                    required=False,
+                )
+                for champ in [
+                    "categorie_id",
+                    "modele_id",
+                    "marque_id",
+                    "purete_id",
+                ]
+            ],
+            openapi.Parameter(
+                "poids",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_NUMBER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "taille",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_NUMBER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "page",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "page_size",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+        ],
+        responses={
+            200: "Produits trouvés",
+            400: "Paramètres invalides",
+            401: "Authentification requise",
+        },
+        tags=["Produit"],
+    )
+    def get(self, request):
+        queryset = (
+            Produit.objects
+            .select_related(
+                "categorie",
+                "modele",
+                "marque",
+                "purete",
+            )
+            .order_by("id")
+        )
 
-#             queryset = queryset.filter(
-#                 produit_lines__vendor_stocks__vendor=vendor,
-#                 produit_lines__vendor_stocks__quantite_allouee__gt=(
-#                     F("produit_lines__vendor_stocks__quantite_vendue")
-#                 ),
-#             )
+        q = request.query_params.get("q", "").strip()
 
-#         # ====================================================
-#         # AUTRES ROLES
-#         # ====================================================
+        if q:
+            queryset = queryset.filter(
+                Q(sku__icontains=q)
+                | Q(nom__icontains=q)
+                | Q(categorie__nom__icontains=q)
+                | Q(modele__modele__icontains=q)
+                | Q(marque__marque__icontains=q)
+                | Q(purete__purete__icontains=q)
+            )
 
-#         else:
-#             return Produit.objects.none()
+        for champ in [
+            "categorie_id",
+            "modele_id",
+            "marque_id",
+            "purete_id",
+        ]:
+            valeur = request.query_params.get(champ)
 
-#         # ====================================================
-#         # RECHERCHE
-#         # ====================================================
+            if valeur is not None:
+                try:
+                    valeur = int(valeur)
+                    if valeur < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    return Response(
+                        {
+                            champ: [
+                                "Un identifiant entier positif est requis."
+                            ]
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
-#         search = self.request.query_params.get("search")
+                queryset = queryset.filter(
+                    **{champ: valeur}
+                )
 
-#         if search:
-#             queryset = queryset.filter(
-#                 sku__icontains=search
-#             )
+        for champ in ["poids", "taille"]:
+            valeur = request.query_params.get(champ)
 
-#         return queryset.distinct().order_by("-id")
-    
-    
+            if valeur is not None:
+                try:
+                    decimal = Decimal(valeur)
+
+                    if (
+                        not decimal.is_finite()
+                        or decimal < 0
+                        or decimal.as_tuple().exponent < -2
+                    ):
+                        raise InvalidOperation
+
+                except (InvalidOperation, ValueError, TypeError):
+                    return Response(
+                        {
+                            champ: [
+                                "Valeur décimale positive valide "
+                                "avec deux décimales maximum requise."
+                            ]
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                queryset = queryset.filter(
+                    **{champ: decimal}
+                )
+
+        paginator = ProduitRecherchePagination()
+
+        page = paginator.paginate_queryset(
+            queryset,
+            request,
+            view=self,
+        )
+
+        serializer = ProduitRechercheSerializer(
+            page,
+            many=True,
+            context={"request": request},
+        )
+
+        return paginator.get_paginated_response(
+            serializer.data
+        )
+
+
     
 class ProduitListAPIView(APIView):
     """
@@ -1380,6 +1592,7 @@ class ProduitListAPIView(APIView):
                 required=False,
             ),
         ],
+        tags=["Produit"],
     )
     def get(self, request):
         search = request.query_params.get(
@@ -1418,176 +1631,187 @@ class ProduitListAPIView(APIView):
 
 
 class ProduitCreateAPIView(APIView):
+    """
+    Création d'un produit dans le catalogue Rio-Gold.
+
+    - Nouveau produit : HTTP 201
+    - Produit existant : HTTP 200
+    - Données invalides : HTTP 400
+
+    Aucun doublon n'est créé lorsque les six
+    caractéristiques correspondent.
+    """
+
+    permission_classes = [IsAdminOrManager]
     parser_classes = [MultiPartParser, FormParser]
-    permission_classes = [IsAuthenticated]
-    renderer_classes = [UserRenderer]
 
     @swagger_auto_schema(
-        operation_summary="Créer un produit avec image principale et galerie",
+        operation_summary="Créer ou retrouver un produit",
+        operation_description=(
+            "Enregistre un produit dans le catalogue Rio-Gold. "
+            "Si un produit possède déjà les mêmes six "
+            "caractéristiques, il est automatiquement réutilisé. "
+            "Un message d'information indique le résultat."
+        ),
+        tags=["Produit"],
         manual_parameters=[
             openapi.Parameter(
-                "image",
+                "categorie_id",
                 openapi.IN_FORM,
-                type=openapi.TYPE_FILE,
+                type=openapi.TYPE_INTEGER,
+                required=True,
+                description="Identifiant de la catégorie",
+            ),
+            openapi.Parameter(
+                "modele_id",
+                openapi.IN_FORM,
+                type=openapi.TYPE_INTEGER,
                 required=False,
-                description="Image principale du produit",
+                description="Identifiant du modèle",
             ),
             openapi.Parameter(
-                "nom",
+                "marque_id",
                 openapi.IN_FORM,
-                type=openapi.TYPE_STRING,
-                required=False,
-            ),
-            openapi.Parameter(
-                "description",
-                openapi.IN_FORM,
-                type=openapi.TYPE_STRING,
-                required=False,
-            ),
-            openapi.Parameter(
-                "genre",
-                openapi.IN_FORM,
-                type=openapi.TYPE_STRING,
-                enum=["F", "H", "E", "U"],
-                default="F",
-            ),
-            openapi.Parameter(
-                "categorie",
-                openapi.IN_FORM,
-                type=openapi.TYPE_STRING,
-                description="Nom de la catégorie",
+                type=openapi.TYPE_INTEGER,
                 required=True,
+                description="Identifiant de la marque",
             ),
             openapi.Parameter(
-                "marque",
+                "purete_id",
                 openapi.IN_FORM,
-                type=openapi.TYPE_STRING,
-                description="Nom de la marque",
+                type=openapi.TYPE_INTEGER,
                 required=True,
-            ),
-            openapi.Parameter(
-                "modele",
-                openapi.IN_FORM,
-                type=openapi.TYPE_STRING,
-                description="Nom du modèle",
-                required=True,
-            ),
-            openapi.Parameter(
-                "purete",
-                openapi.IN_FORM,
-                type=openapi.TYPE_STRING,
-                description="Valeur de la pureté, ex: 18",
-                required=True,
-            ),
-            openapi.Parameter(
-                "matiere",
-                openapi.IN_FORM,
-                type=openapi.TYPE_STRING,
-                enum=["or", "argent", "mixte"],
-                default="or",
+                description="Identifiant de la pureté",
             ),
             openapi.Parameter(
                 "poids",
                 openapi.IN_FORM,
                 type=openapi.TYPE_NUMBER,
                 required=True,
+                description="Poids du bijou en grammes",
             ),
             openapi.Parameter(
                 "taille",
                 openapi.IN_FORM,
                 type=openapi.TYPE_NUMBER,
                 required=False,
+                description="Taille du bijou",
             ),
             openapi.Parameter(
-                "etat",
+                "nom",
                 openapi.IN_FORM,
                 type=openapi.TYPE_STRING,
-                enum=["N", "O"],
-                default="N",
+                required=False,
+                description="Nom du produit",
             ),
             openapi.Parameter(
-                "gallery",
+                "description",
+                openapi.IN_FORM,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="Description du produit",
+            ),
+            openapi.Parameter(
+                "matiere",
+                openapi.IN_FORM,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="Matière du bijou",
+            ),
+            openapi.Parameter(
+                "genre",
+                openapi.IN_FORM,
+                type=openapi.TYPE_STRING,
+                required=False,
+                description="Genre du bijou",
+            ),
+            openapi.Parameter(
+                "image",
                 openapi.IN_FORM,
                 type=openapi.TYPE_FILE,
-                description="Images secondaires du produit",
                 required=False,
-                multiple=True,
+                description="Image principale",
             ),
         ],
         responses={
-            201: openapi.Response(
-                "Produit créé",
-                ProduitSerializer,
+            200: openapi.Response(
+                description="Produit existant réutilisé",
             ),
-            400: "Erreur de validation",
-            403: "Accès refusé",
+            201: openapi.Response(
+                description="Nouveau produit enregistré",
+            ),
+            400: openapi.Response(
+                description="Informations invalides",
+            ),
+            401: "Authentification requise",
         },
-        tags=["Produits"],
     )
-    @transaction.atomic
     def post(self, request):
-        role = get_role_name(request.user)
 
-        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
-            return Response(
-                {"detail": "Accès refusé."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        # 1. Récupérer les fichiers galerie séparément
-        gallery_files = request.FILES.getlist("gallery")
-
-        # 2. Copier les données produit
-        data = request.data.copy()
-
-        # 3. Ne pas envoyer gallery au ProduitSerializer
-        if "gallery" in data:
-            data.pop("gallery")
-
-        # 4. Valider le produit
         serializer = ProduitSerializer(
-            data=data,
+            data=request.data,
             context={"request": request},
         )
 
-        serializer.is_valid(raise_exception=True)
+        # Validation des informations.
+        if not serializer.is_valid():
+            return Response(
+                {
+                    "success": False,
+                    "created": False,
+                    "type": "error",
+                    "message": (
+                        "Impossible d'enregistrer le produit. "
+                        "Veuillez vérifier les informations saisies."
+                    ),
+                    "errors": serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # 5. Créer le produit
+        # Création ou récupération.
         produit = serializer.save()
 
-        # 6. Créer les images secondaires
-        for image in gallery_files:
-            Gallery.objects.create(
-                produit=produit,
-                image=image,
-                active=True,
-            )
+        created = serializer.produit_created
 
-        # 7. Recharger avec relations
-        produit = (
-            Produit.objects
-            .select_related(
-                "categorie",
-                "marque",
-                "modele",
-                "purete",
-            )
-            .prefetch_related(
-                "produit_gallery",
-            )
-            .get(pk=produit.pk)
-        )
-
-        # 8. Réponse finale
-        response_serializer = ProduitSerializer(
+        produit_data = ProduitSerializer(
             produit,
             context={"request": request},
+        ).data
+
+        # Nouveau produit.
+        if created:
+            return Response(
+                {
+                    "success": True,
+                    "created": True,
+                    "type": "success",
+                    "message": (
+                        "Produit enregistré avec succès "
+                        "dans le catalogue."
+                    ),
+                    "produit": produit_data,
+                },
+                status=status.HTTP_201_CREATED,
+            )
+
+        # Produit déjà existant.
+        return Response(
+            {
+                "success": True,
+                "created": False,
+                "type": "info",
+                "message": (
+                    "Ce produit existe déjà dans le catalogue. "
+                    "Aucun doublon n'a été créé. "
+                    "Le produit existant a été réutilisé."
+                ),
+                "produit": produit_data,
+            },
+            status=status.HTTP_200_OK,
         )
 
-        return Response(
-            response_serializer.data,
-            status=status.HTTP_201_CREATED,
-        )
+
 
 class ProduitDetailSlugView(APIView):
     permission_classes = [IsAuthenticated]
@@ -1617,7 +1841,7 @@ class ProduitDetailSlugView(APIView):
                 required=True,
             )
         ],
-        tags=["Produits"],
+        tags=["Produit"],
     )
     def get(self, request, slug):
         role = get_role_name(request.user)
@@ -1702,7 +1926,7 @@ class ProduitGetOneAPIView(APIView):
             403: "Accès refusé",
             404: "Produit non trouvé",
         },
-        tags=["Produits"],
+        tags=["Produit"],
     )
     def get(self, request, pk):
         role = get_role_name(request.user)
@@ -1791,7 +2015,7 @@ class ProduitUpdateAPIView(APIView):
             403: "Accès refusé",
             404: "Produit non trouvé",
         },
-        tags=["Produits"],
+        tags=["Produit"],
     )
     def put(self, request, pk):
         self.check_role(request.user)
@@ -1841,7 +2065,7 @@ class ProduitUpdateAPIView(APIView):
             403: "Accès refusé",
             404: "Produit non trouvé",
         },
-        tags=["Produits"],
+        tags=["Produit"],
     )
     def patch(self, request, pk):
         self.check_role(request.user)
@@ -1894,7 +2118,7 @@ class ProduitDeleteAPIView(APIView):
             403: "Accès refusé",
             404: "Produit non trouvé",
         },
-        tags=["Produits"],
+        tags=["Produit"],
     )
     def delete(self, request, pk):
         role = get_role_name(request.user)
@@ -1925,64 +2149,64 @@ class ProduitDeleteAPIView(APIView):
             status=status.HTTP_204_NO_CONTENT,
         )
 
-class QRCodeView(APIView):
-    renderer_classes = [UserRenderer]
-    permission_classes = [IsAuthenticated]
+# class QRCodeView(APIView):
+#     renderer_classes = [UserRenderer]
+#     permission_classes = [IsAuthenticated, IsAdminOrManager]
 
-    @swagger_auto_schema(
-        operation_summary="Générer le QR code d'un produit",
-        operation_description=(
-            "Génère un QR code PNG pour un produit.\n\n"
-            "Accès : admin et manager uniquement."
-        ),
-        responses={
-            200: openapi.Response(
-                description="QR code PNG du produit"
-            ),
-            403: "Accès refusé",
-            404: "Produit non trouvé",
-        },
-        tags=["Produits"],
-    )
-    def get(self, request, pk, format=None):
-        role = get_role_name(request.user)
+#     @swagger_auto_schema(
+#         operation_summary="Générer le QR code d'un produit",
+#         operation_description=(
+#             "Génère un QR code PNG pour un produit.\n\n"
+#             "Accès : admin et manager uniquement."
+#         ),
+#         responses={
+#             200: openapi.Response(
+#                 description="QR code PNG du produit"
+#             ),
+#             403: "Accès refusé",
+#             404: "Produit non trouvé",
+#         },
+#         tags=["Produit"],
+#     )
+#     def get(self, request, pk, format=None):
+#         role = get_role_name(request.user)
 
-        if role not in {ROLE_ADMIN, ROLE_MANAGER}:
-            return Response(
-                {
-                    "detail": (
-                        "Accès refusé. "
-                        "Réservé aux administrateurs et managers."
-                    )
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+#         if role not in {ROLE_ADMIN, ROLE_MANAGER}:
+#             return Response(
+#                 {
+#                     "detail": (
+#                         "Accès refusé. "
+#                         "Réservé aux administrateurs et managers."
+#                     )
+#                 },
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
 
-        try:
-            produit = Produit.objects.get(pk=pk)
+#         try:
+#             produit = Produit.objects.get(pk=pk)
 
-        except Produit.DoesNotExist:
-            return Response(
-                {"detail": "Produit non trouvé."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+#         except Produit.DoesNotExist:
+#             return Response(
+#                 {"detail": "Produit non trouvé."},
+#                 status=status.HTTP_404_NOT_FOUND,
+#             )
 
-        # Contenu du QR code
-        qr_data = f"P:{produit.uuid}"
+#         # Contenu du QR code
+#         qr_data = f"P:{produit.uuid}"
 
-        qr = qrcode.make(qr_data)
+#         qr = qrcode.make(qr_data)
 
-        img_io = BytesIO()
-        qr.save(
-            img_io,
-            format="PNG",
-        )
-        img_io.seek(0)
+#         img_io = BytesIO()
+#         qr.save(
+#             img_io,
+#             format="PNG",
+#         )
+#         img_io.seek(0)
 
-        return HttpResponse(
-            img_io.getvalue(),
-            content_type="image/png",
-        )
+#         return HttpResponse(
+#             img_io.getvalue(),
+#             content_type="image/png",
+#         )
 
 
 class MarquePuretePriceEvolutionView(APIView):
@@ -2707,4 +2931,3 @@ Principe :
         )
         
                                         
-    

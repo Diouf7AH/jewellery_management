@@ -374,74 +374,56 @@ class RoleSerializer(serializers.ModelSerializer):
         return value
 
 # Profile
-class UserProfileMiniSerializer(serializers.ModelSerializer):
-    role = serializers.SerializerMethodField()
-    full_name = serializers.SerializerMethodField()
-    display_name = serializers.SerializerMethodField()
-
-    class Meta:
-        model = User
-        fields = [
-            "id",
-            "email",
-            "username",
-            "telephone",
-            "first_name",
-            "last_name",
-            "full_name",
-            "display_name",
-            "role",
-            "is_email_verified",
-            "slug",
-            "date_joined",
-        ]
-        read_only_fields = fields
-
-    def get_role(self, obj):
-        return getattr(obj, "role_name", None)
-
-    def get_full_name(self, obj):
-        return getattr(obj, "full_name", "") or ""
-
-    def get_display_name(self, obj):
-        return getattr(obj, "display_name", "") or ""
-    
-
 class ProfileSerializer(serializers.ModelSerializer):
-    user = UserProfileMiniSerializer(read_only=True)
+    """
+    Serializer de consultation du profil personnel.
+
+    Regroupe :
+    - Les informations User
+    - Les informations Profile
+
+    Les informations commerciales de la bijouterie
+    ne sont pas incluses.
+    """
+
+    user = serializers.SerializerMethodField()
+
     image_url = serializers.SerializerMethodField()
-    full_name = serializers.SerializerMethodField()
-    role = serializers.SerializerMethodField()
 
     class Meta:
         model = Profile
+
         fields = [
             "id",
             "user",
-            "image",
             "image_url",
             "bio",
             "country",
             "state",
             "city",
             "address",
-            "full_name",
-            "role",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = [
-            "id",
-            "user",
-            "image_url",
-            "full_name",
-            "role",
-            "created_at",
-            "updated_at",
         ]
 
+        read_only_fields = fields
+
+    def get_user(self, obj):
+        user = obj.user
+
+        return {
+            "id": user.pk,
+            "email": user.email,
+            "username": user.username,
+            "telephone": user.telephone,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "full_name": user.full_name,
+            "display_name": user.display_name,
+            "role": get_role_name(user),
+            "is_email_verified": user.is_email_verified,
+        }
+
     def get_image_url(self, obj):
-        image = getattr(obj, "image", None)
+        image = obj.image
 
         if not image:
             return None
@@ -457,23 +439,6 @@ class ProfileSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(image_url)
 
         return image_url
-
-    def get_full_name(self, obj):
-        user = getattr(obj, "user", None)
-
-        if not user:
-            return ""
-
-        return getattr(user, "full_name", "") or ""
-
-    def get_role(self, obj):
-        user = getattr(obj, "user", None)
-
-        if not user:
-            return None
-
-        return getattr(user, "role_name", None)
-    
 
 class ProfileUpdateSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(

@@ -1,742 +1,1204 @@
+"""Services de création des ventes Rio-Gold."""
 # sale/services/sale_service.py
-
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Dict
+from uuid import UUID
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from purchase.models import ProduitLine
-from sale.models import Client, Facture, Vente, VenteProduit
+from sale.models import Client, Facture, Vente, VenteAutre, VenteProduit
 from sale.services.sale_context_service import \
     resolve_vendor_and_bijouterie_for_sale
-from sale.services.vendor_stock_service import ensure_vendor_stock_available
-from sale.utils import ZERO
+from stock.models import VendorStock
 from store.models import MarquePurete
 
-# =============================================================
+ZERO = Decimal("0.00")
+
+TWOPLACES = Decimal("0.01")
+
+POURCENTAGES_OCCASION = {
+
+    Decimal("5.00"),
+
+    Decimal("10.00"),
+
+    Decimal("15.00"),
+
+    Decimal("20.00"),
+
+    Decimal("25.00"),
+
+    Decimal("30.00"),
+
+}
+
+# ============================================================
+
 # HELPERS
-# =============================================================
 
+# ============================================================
 
-def dec(v):
+def sale_decimal(value, *, field="montant", default=ZERO):
+
+    if value is None or value == "":
+
+        return default
+
     try:
-        if v in [None, "", "null"]:
-            return ZERO
 
-        return Decimal(str(v))
+        result = Decimal(str(value))
 
-    except (TypeError, ValueError, ArithmeticError):
-        return ZERO
+    except (InvalidOperation, TypeError, ValueError):
 
+        raise ValidationError({
 
-# =============================================================
+            field: "Valeur décimale invalide."
+
+        })
+
+    if not result.is_finite():
+
+        raise ValidationError({
+
+            field: "La valeur doit être un nombre fini."
+
+        })
+
+    return result
+
+def sale_positive_int(value, *, field="quantite"):
+
+    if isinstance(value, bool):
+
+        raise ValidationError({
+
+            field: "Un entier positif est attendu."
+
+        })
+
+    try:
+
+        result = int(str(value))
+
+    except (TypeError, ValueError, OverflowError):
+
+        raise ValidationError({
+
+            field: "Un entier positif est attendu."
+
+        })
+
+    if result <= 0 or str(value).strip() != str(result):
+
+        raise ValidationError({
+
+            field: "Un entier positif est attendu."
+
+        })
+
+    return result
+
+# Alias de compatibilité pour les imports existants.
+
+def dec(value, *, field="montant"):
+
+    return sale_decimal(value, field=field)
+
+def positive_int(value, *, field="quantite"):
+
+    return sale_positive_int(value, field=field)
+
+def money(value):
+
+    result = sale_decimal(value, field="montant")
+
+    try:
+
+        return result.quantize(
+
+            TWOPLACES,
+
+            rounding=ROUND_HALF_UP,
+
+        )
+
+    except InvalidOperation:
+
+        raise ValidationError({
+
+            "montant": "Montant hors limites."
+
+        })
+
+def calculer_montants(
+
+    *,
+
+    montant_brut_ht,
+
+    montant_reduction=ZERO,
+
+    taux_tva=ZERO,
+
+):
+
+    brut = money(montant_brut_ht)
+
+    reduction = money(montant_reduction)
+
+    taux = sale_decimal(taux_tva, field="taux_tva")
+
+    if brut < ZERO:
+
+        raise ValidationError({
+
+            "montant_brut_ht": "Montant brut négatif."
+
+        })
+
+    if reduction < ZERO or reduction > brut:
+
+        raise ValidationError({
+
+            "montant_reduction": "Réduction invalide."
+
+        })
+
+    if taux < ZERO:
+
+        raise ValidationError({
+
+            "taux_tva": "Taux TVA invalide."
+
+        })
+
+    montant_ht = money(brut - reduction)
+
+    montant_tva = money(
+
+        montant_ht * taux / Decimal("100")
+
+    )
+
+    return {
+
+        "montant_brut_ht": brut,
+
+        "montant_reduction": reduction,
+
+        "montant_ht": montant_ht,
+
+        "montant_tva": montant_tva,
+
+        "montant_total": money(montant_ht + montant_tva),
+
+    }
+
+# ============================================================
+
 # CLIENT AU PAIEMENT
-# =============================================================
 
+# ============================================================
 
 def upsert_client_for_payment(
+
     *,
-    facture,
+
     client_data: dict,
+
+    facture=None,
+
+    vente=None,
+
 ):
-    if not facture.vente:
+
+    if facture is not None:
+
+        if vente is not None and facture.vente_id != vente.pk:
+
+            raise ValidationError({
+
+                "vente": "La vente ne correspond pas à la facture."
+
+            })
+
+        vente = facture.vente
+
+    if vente is None:
+
         raise ValidationError({
-            "facture": (
-                "Aucune vente associée à cette facture."
-            )
+
+            "vente": "Une vente ou une facture est obligatoire."
+
         })
 
-    nom = (
-        client_data.get("nom")
-        or ""
-    ).strip()
+    if not isinstance(client_data, dict):
 
-    prenom = (
-        client_data.get("prenom")
-        or ""
-    ).strip()
+        raise ValidationError({
 
-    telephone = (
-        client_data.get("telephone")
-        or ""
-    ).strip()
+            "client": "Un objet est attendu."
+
+        })
+
+    nom = str(client_data.get("nom") or "").strip()
+
+    prenom = str(client_data.get("prenom") or "").strip()
+
+    telephone = str(client_data.get("telephone") or "").strip()
 
     if not nom or not prenom:
+
         raise ValidationError({
-            "client": (
-                "nom et prenom sont obligatoires "
-                "au paiement."
-            )
+
+            "client": "nom et prenom sont obligatoires au paiement."
+
         })
 
-    vente = facture.vente
-    client = getattr(
-        vente,
-        "client",
-        None,
-    )
+    client = vente.client
 
     existing_by_phone = None
 
     if telephone:
+
         existing_by_phone = (
+
             Client.objects
-            .filter(
-                telephone=telephone,
-            )
+
+            .filter(telephone=telephone)
+
             .first()
+
         )
 
-    # ---------------------------------------------------------
-    # Vente ayant déjà un client
-    # ---------------------------------------------------------
-
-    if client:
+    if client is not None:
 
         if (
-            existing_by_phone
-            and existing_by_phone.id != client.id
+
+            existing_by_phone is not None
+
+            and existing_by_phone.pk != client.pk
+
         ):
+
             raise ValidationError({
-                "telephone": (
-                    "Ce téléphone est déjà utilisé "
-                    "par un autre client : "
-                    f"{existing_by_phone.full_name}"
-                )
+
+                "telephone": "Ce téléphone appartient à un autre client."
+
             })
 
         changed_fields = []
 
         if client.nom != nom:
+
             client.nom = nom
+
             changed_fields.append("nom")
 
         if client.prenom != prenom:
+
             client.prenom = prenom
+
             changed_fields.append("prenom")
 
-        if (
-            telephone
-            and client.telephone != telephone
-        ):
+        if telephone and client.telephone != telephone:
+
             client.telephone = telephone
+
             changed_fields.append("telephone")
 
         if changed_fields:
-            client.save(
-                update_fields=changed_fields,
-            )
+
+            client.save(update_fields=changed_fields)
 
         return client
 
-    # ---------------------------------------------------------
-    # Client existant retrouvé par téléphone
-    # ---------------------------------------------------------
-
-    if existing_by_phone:
+    if existing_by_phone is not None:
 
         vente.client = existing_by_phone
 
-        vente.save(
-            update_fields=["client"],
-        )
+        vente.save(update_fields=["client"])
 
         return existing_by_phone
 
-    # ---------------------------------------------------------
-    # Nouveau client
-    # ---------------------------------------------------------
-
     client = Client.objects.create(
+
         nom=nom,
+
         prenom=prenom,
+
         telephone=telephone or None,
+
     )
 
     vente.client = client
 
-    vente.save(
-        update_fields=["client"],
-    )
+    vente.save(update_fields=["client"])
 
     return client
 
+# ============================================================
 
-# =============================================================
-# CRÉATION VENTE
-# =============================================================
+# RECHERCHE MANUELLE OU QR CODE
 
+# ============================================================
 
-@transaction.atomic
-def create_sale_one_vendor(
-    *,
-    user,
-    role: str,
-    payload: Dict,
-) -> tuple[Vente, Facture, int]:
-    """
-    Création d'une vente PROFORMA pour un seul vendeur.
+def resolve_produit_line_for_sale(item, *, index):
 
-    IMPORTANT :
+    produit_line_id = item.get("produit_line_id")
 
-    - chaque ligne identifie une ProduitLine précise ;
-    - ProduitLine est la source de vérité ;
-    - le Produit est obtenu via produit_line.produit ;
-    - aucune sélection FIFO ;
-    - aucune consommation du stock ici ;
-    - seule la disponibilité VendorStock est vérifiée ;
-    - la consommation réelle intervient après paiement ;
-    - le prix/gramme est figé dans VenteProduit ;
-    - le pourcentage occasion est figé dans VenteProduit ;
-    - la TVA est figée dans Facture.
-    """
+    qr = item.get("qr")
 
-    client_in = payload.get("client") or {}
-    items = payload.get("produits") or []
+    if produit_line_id is not None and qr:
 
-    if not items:
         raise ValidationError({
-            "produits": (
-                "Au moins une ProduitLine est requise."
+
+            f"produits[{index}]": (
+
+                "Fournissez produit_line_id ou qr, pas les deux."
+
             )
+
         })
 
-    # =========================================================
-    # 1. AGRÉGATION PAR PRODUIT_LINE
-    # =========================================================
+    if produit_line_id is None and not qr:
+
+        raise ValidationError({
+
+            f"produits[{index}]": (
+
+                "produit_line_id ou qr est obligatoire."
+
+            )
+
+        })
+
+    if produit_line_id is not None:
+
+        line_id = sale_positive_int(
+
+            produit_line_id,
+
+            field=f"produits[{index}].produit_line_id",
+
+        )
+
+        produit_line = (
+
+            ProduitLine.objects
+
+            .filter(pk=line_id)
+
+            .first()
+
+        )
+
+    else:
+
+        try:
+
+            scan_value = str(qr).strip()
+
+            if scan_value.upper().startswith("PL:"):
+                scan_value = scan_value[3:].strip()
+
+            line_uuid = UUID(scan_value)
+
+        except (ValueError, TypeError, AttributeError):
+
+            raise ValidationError({
+
+                f"produits[{index}].qr": "UUID invalide."
+
+            })
+
+        produit_line = (
+
+            ProduitLine.objects
+
+            .filter(uuid=line_uuid)
+
+            .first()
+
+        )
+
+    if produit_line is None:
+
+        raise ValidationError({
+
+            f"produits[{index}]": "ProduitLine introuvable."
+
+        })
+
+    return produit_line
+
+# ============================================================
+
+# CRÉATION DE VENTE
+
+# ============================================================
+
+@transaction.atomic
+
+def create_sale_one_vendor(
+
+    *,
+
+    user,
+
+    role: str,
+
+    payload: Dict,
+
+) -> tuple[Vente, Facture | None, int]:
+
+    if not isinstance(payload, dict):
+
+        raise ValidationError({
+
+            "payload": "Un objet JSON est attendu."
+
+        })
+
+    produits_in = payload.get("produits") or []
+
+    autres_in = payload.get("autres") or []
+
+    client_in = payload.get("client") or {}
+
+    if not isinstance(produits_in, list):
+
+        raise ValidationError({
+
+            "produits": "Une liste est attendue."
+
+        })
+
+    if not isinstance(autres_in, list):
+
+        raise ValidationError({
+
+            "autres": "Une liste est attendue."
+
+        })
+
+    if not isinstance(client_in, dict):
+
+        raise ValidationError({
+
+            "client": "Un objet est attendu."
+
+        })
+
+    if not produits_in and not autres_in:
+
+        raise ValidationError({
+
+            "vente": "Au moins un bijou ou une prestation est obligatoire."
+
+        })
+
+    # 1. Vendeur et bijouterie
+
+    vendor, bijouterie = resolve_vendor_and_bijouterie_for_sale(
+
+        role=role,
+
+        user=user,
+
+        vendor_email=payload.get("vendor_email"),
+
+    )
+
+    if vendor is None or bijouterie is None:
+
+        raise ValidationError({
+
+            "vendor": "Vendeur ou bijouterie introuvable."
+
+        })
+
+    if not getattr(vendor, "verifie", False):
+
+        raise ValidationError({
+
+            "vendor": "Le vendeur est désactivé."
+
+        })
+
+    if vendor.bijouterie_id != bijouterie.pk:
+
+        raise ValidationError({
+
+            "bijouterie": "Le vendeur appartient à une autre bijouterie."
+
+        })
+
+    # 2. Regroupement des bijoux
 
     grouped = {}
 
-    for item in items:
+    for index, item in enumerate(produits_in):
 
-        produit_line_id = item.get(
-            "produit_line_id"
+        if not isinstance(item, dict):
+
+            raise ValidationError({
+
+                f"produits[{index}]": "Un objet JSON est attendu."
+
+            })
+
+        produit_line = resolve_produit_line_for_sale(
+
+            item,
+
+            index=index,
+
         )
 
-        if not produit_line_id:
-            raise ValidationError({
-                "produit_line_id": (
-                    "Champ requis."
-                )
-            })
+        line_id = produit_line.pk
 
-        try:
-            plid = int(produit_line_id)
+        quantite = sale_positive_int(
 
-        except (TypeError, ValueError):
-            raise ValidationError({
-                "produit_line_id": (
-                    "Doit être un entier."
-                )
-            })
+            item.get("quantite", 1),
 
-        try:
-            qty = int(
-                item.get("quantite") or 0
-            )
+            field=f"produits[{index}].quantite",
 
-        except (TypeError, ValueError):
-            raise ValidationError({
-                f"produit_line_{plid}": (
-                    "Quantité invalide."
-                )
-            })
-
-        if qty <= 0:
-            raise ValidationError({
-                f"produit_line_{plid}": (
-                    "La quantité doit être "
-                    "supérieure ou égale à 1."
-                )
-            })
-
-        prix_vente = dec(
-            item.get("prix_vente_grammes")
         )
 
-        remise = dec(
-            item.get("remise")
+        prix_vente = sale_decimal(
+
+            item.get("prix_vente_grammes"),
+
+            field=f"produits[{index}].prix_vente_grammes",
+
         )
 
-        autres = dec(
-            item.get("autres")
+        remise = sale_decimal(
+
+            item.get("remise"),
+
+            field=f"produits[{index}].remise",
+
         )
 
-        if remise < ZERO:
+        if prix_vente < ZERO or remise < ZERO:
+
             raise ValidationError({
-                f"produit_line_{plid}": (
-                    "La remise ne peut pas "
-                    "être négative."
+
+                f"produits[{index}]": (
+
+                    "Le prix et la remise ne peuvent pas être négatifs."
+
                 )
+
             })
 
-        if autres < ZERO:
-            raise ValidationError({
-                f"produit_line_{plid}": (
-                    "Le montant 'autres' ne peut "
-                    "pas être négatif."
-                )
-            })
+        if line_id in grouped:
 
-        if plid not in grouped:
-            grouped[plid] = {
-                "quantite": 0,
-                "prix_vente_grammes": prix_vente,
-                "remise": remise,
-                "autres": autres,
-            }
-
-        else:
-            # Une même ProduitLine ne doit pas avoir
-            # plusieurs prix différents.
-            prix_existant = grouped[
-                plid
-            ]["prix_vente_grammes"]
+            previous = grouped[line_id]
 
             if (
-                prix_vente > ZERO
-                and prix_existant > ZERO
-                and prix_vente != prix_existant
+
+                previous["prix_vente_grammes"] != prix_vente
+
+                or previous["remise"] != remise
+
             ):
+
                 raise ValidationError({
-                    f"produit_line_{plid}": (
-                        "Une même ProduitLine ne peut pas "
-                        "avoir plusieurs prix de vente "
-                        "dans la même vente."
+
+                    "produits": (
+
+                        f"ProduitLine {line_id} apparaît "
+
+                        "avec des prix ou remises différents."
+
                     )
+
                 })
 
-            if (
-                prix_existant <= ZERO
-                and prix_vente > ZERO
-            ):
-                grouped[
-                    plid
-                ]["prix_vente_grammes"] = prix_vente
+            previous["quantite"] += quantite
 
-            # Remise/autres sont des montants de ligne.
-            # Si la même PL apparaît plusieurs fois,
-            # on les cumule.
-            grouped[plid]["remise"] += remise
-            grouped[plid]["autres"] += autres
+        else:
 
-        grouped[plid]["quantite"] += qty
+            grouped[line_id] = {
 
-    # =========================================================
-    # 2. RÉSOLUTION VENDEUR + BIJOUTERIE
-    # =========================================================
+                "quantite": quantite,
 
-    vendor, bijouterie = (
-        resolve_vendor_and_bijouterie_for_sale(
-            role=role,
-            user=user,
-            vendor_email=payload.get(
-                "vendor_email"
-            ),
-        )
-    )
+                "prix_vente_grammes": prix_vente,
 
-    if not vendor:
-        raise ValidationError({
-            "vendor": (
-                "Le vendeur est obligatoire."
-            )
-        })
+                "remise": remise,
 
-    if not bijouterie:
-        raise ValidationError({
-            "bijouterie": (
-                "La bijouterie est obligatoire."
-            )
-        })
-
-    if vendor.bijouterie_id != bijouterie.id:
-        raise ValidationError({
-            "vendor": (
-                "Le vendeur n'appartient pas "
-                "à la bijouterie sélectionnée."
-            )
-        })
-
-    if not vendor.is_active_staff:
-        raise ValidationError({
-            "vendor": (
-                "Ce vendeur est désactivé."
-            )
-        })
-
-    # =========================================================
-    # 3. CLIENT OPTIONNEL
-    # =========================================================
-
-    nom = (
-        client_in.get("nom")
-        or ""
-    ).strip()
-
-    prenom = (
-        client_in.get("prenom")
-        or ""
-    ).strip()
-
-    tel = (
-        client_in.get("telephone")
-        or ""
-    ).strip()
-
-    client = None
-
-    if nom and prenom:
-
-        lookup = (
-            {
-                "telephone": tel,
             }
-            if tel
-            else {
-                "nom": nom,
-                "prenom": prenom,
-            }
-        )
 
-        client, _ = Client.objects.get_or_create(
-            defaults={
-                "nom": nom,
-                "prenom": prenom,
-                "telephone": tel or None,
-            },
-            **lookup,
-        )
+    # 3. Chargement des lignes d'achat
 
-    elif any([
-        nom,
-        prenom,
-        tel,
-    ]):
-        raise ValidationError({
-            "client": (
-                "nom et prenom sont obligatoires."
-            )
-        })
-
-    # =========================================================
-    # 4. PRÉCHARGEMENT PRODUIT_LINES
-    # =========================================================
-
-    produit_line_ids = list(
-        grouped.keys()
-    )
-
-    produit_lines_qs = (
-        ProduitLine.objects
-        .select_related(
-            "produit",
-            "produit__marque",
-            "produit__purete",
-            "produit__categorie",
-            "produit__modele",
-            "lot",
-        )
-        .filter(
-            id__in=produit_line_ids,
-        )
-    )
+    line_ids = list(grouped.keys())
 
     produit_lines = {
-        produit_line.id: produit_line
-        for produit_line
-        in produit_lines_qs
+
+        ligne.pk: ligne
+
+        for ligne in (
+
+            ProduitLine.objects
+
+            .select_related(
+
+                "produit",
+
+                "produit__marque",
+
+                "produit__purete",
+
+                "lot",
+
+            )
+
+            .filter(pk__in=line_ids)
+
+        )
+
     }
 
-    missing = [
-        plid
-        for plid in produit_line_ids
-        if plid not in produit_lines
-    ]
+    if len(produit_lines) != len(line_ids):
 
-    if missing:
         raise ValidationError({
-            "produits": (
-                "ProduitLine introuvable(s) : "
-                f"{missing}"
-            )
+
+            "produits": "Certaines lignes d'achat sont introuvables."
+
         })
 
-    # =========================================================
-    # 5. VALIDATION PRODUIT_LINES
-    # =========================================================
-
-    for plid, produit_line in produit_lines.items():
-
-        if not produit_line.produit_id:
-            raise ValidationError({
-                f"produit_line_{plid}": (
-                    "Cette ProduitLine n'est associée "
-                    "à aucun produit."
-                )
-            })
-
-        if not produit_line.lot_id:
-            raise ValidationError({
-                f"produit_line_{plid}": (
-                    "Cette ProduitLine n'est associée "
-                    "à aucun lot."
-                )
-            })
-
-    # =========================================================
-    # 6. TARIFS MARQUE / PURETÉ
-    # =========================================================
+    # 4. Tarifs de vente
 
     pairs = {
-        (
-            produit_line.produit.marque_id,
-            produit_line.produit.purete_id,
-        )
-        for produit_line
-        in produit_lines.values()
-        if (
-            produit_line.produit.marque_id
-            and produit_line.produit.purete_id
-        )
+
+        (ligne.produit.marque_id, ligne.produit.purete_id)
+
+        for ligne in produit_lines.values()
+
+        if ligne.produit.marque_id and ligne.produit.purete_id
+
     }
 
     tarifs = {}
 
     if pairs:
 
-        marques = {
-            marque_id
-            for marque_id, _ in pairs
-        }
+        marque_ids = {marque for marque, _ in pairs}
 
-        puretes = {
-            purete_id
-            for _, purete_id in pairs
-        }
+        purete_ids = {purete for _, purete in pairs}
 
-        mp_qs = MarquePurete.objects.filter(
-            marque_id__in=marques,
-            purete_id__in=puretes,
-        )
+        for tarif in MarquePurete.objects.filter(
 
-        for mp in mp_qs:
-            tarifs[
-                (
-                    mp.marque_id,
-                    mp.purete_id,
+            marque_id__in=marque_ids,
+
+            purete_id__in=purete_ids,
+
+        ):
+
+            key = (tarif.marque_id, tarif.purete_id)
+
+            if key in pairs:
+
+                tarifs[key] = sale_decimal(
+
+                    tarif.prix,
+
+                    field="tarif",
+
                 )
-            ] = Decimal(
-                str(mp.prix)
-            )
 
-    # =========================================================
-    # 7. VÉRIFICATION STOCK VENDEUR EXACT
-    #
-    # IMPORTANT :
-    # - ProduitLine exacte
-    # - pas de FIFO
-    # - aucune consommation ici
-    # =========================================================
+    # 5. Validation des bijoux
 
-    for plid, data_item in grouped.items():
+    lignes_preparees = []
 
-        produit_line = produit_lines[
-            plid
-        ]
+    for line_id, data in grouped.items():
 
-        qte = data_item["quantite"]
-
-        ensure_vendor_stock_available(
-            vendor=vendor,
-            bijouterie=bijouterie,
-            produit_line=produit_line,
-            quantite=qte,
-        )
-
-    # =========================================================
-    # 8. CRÉATION VENTE
-    # =========================================================
-
-    vente = Vente.objects.create(
-        client=client,
-        created_by=user,
-        bijouterie=bijouterie,
-        vendor=vendor,
-    )
-
-    # =========================================================
-    # 9. CRÉATION VENTE_PRODUIT
-    # =========================================================
-
-    for plid, data_item in grouped.items():
-
-        produit_line = produit_lines[
-            plid
-        ]
+        produit_line = produit_lines[line_id]
 
         produit = produit_line.produit
 
-        qte = data_item[
-            "quantite"
-        ]
+        if not produit_line.lot_id:
 
-        prix_vente = data_item[
-            "prix_vente_grammes"
-        ]
+            raise ValidationError({
 
-        # -----------------------------------------------------
-        # Prix gramme
-        # -----------------------------------------------------
+                f"produit_line_{line_id}": "Lot manquant."
 
-        if (
-            prix_vente is None
-            or prix_vente <= ZERO
-        ):
+            })
+
+        if produit_line.lot.achat.bijouterie_id != bijouterie.pk:
+
+            raise ValidationError({
+
+                f"produit_line_{line_id}": (
+
+                    "Ce bijou appartient à une autre bijouterie."
+
+                )
+
+            })
+
+        quantite = data["quantite"]
+
+        prix_vente = data["prix_vente_grammes"]
+
+        remise = data["remise"]
+
+        if prix_vente <= ZERO:
+
             prix_vente = tarifs.get(
-                (
-                    produit.marque_id,
-                    produit.purete_id,
-                )
+
+                (produit.marque_id, produit.purete_id),
+
+                ZERO,
+
             )
 
-            if (
-                prix_vente is None
-                or prix_vente <= ZERO
-            ):
-                raise ValidationError({
-                    f"produit_line_{plid}": (
-                        "Tarif manquant pour "
-                        f"{produit.nom}."
-                    )
-                })
+        if prix_vente <= ZERO:
 
-        # -----------------------------------------------------
-        # Snapshot réduction occasion
-        # -----------------------------------------------------
+            raise ValidationError({
 
-        if getattr(
-            produit,
-            "etat",
-            None,
-        ) == "O":
+                f"produit_line_{line_id}": (
 
-            pourcentage_occasion = Decimal(
-                str(
-                    produit.pourcentage_occasion
-                    or ZERO
+                    "Prix de vente au gramme manquant."
+
                 )
-            )
 
-        else:
-            pourcentage_occasion = ZERO
+            })
 
-        # -----------------------------------------------------
-        # Création ligne
-        #
-        # IMPORTANT :
-        # aucun champ produit=...
-        # ProduitLine est la source de vérité.
-        # -----------------------------------------------------
+        poids = sale_decimal(
 
-        VenteProduit.objects.create(
-            vente=vente,
-            produit_line=produit_line,
-            vendor=vendor,
-            quantite=qte,
-            prix_vente_grammes=prix_vente,
-            remise=data_item["remise"],
-            autres=data_item["autres"],
-            pourcentage_occasion=(
-                pourcentage_occasion
-            ),
+            produit_line.poids_unitaire_achat,
+
+            field=f"produit_line_{line_id}.poids_unitaire_achat",
+
         )
 
-    # =========================================================
-    # 10. RECALCUL MONTANT VENTE
-    # =========================================================
+        if poids <= ZERO:
+
+            raise ValidationError({
+
+                f"produit_line_{line_id}": (
+
+                    "Le poids doit être supérieur à zéro."
+
+                )
+
+            })
+
+        pourcentage = sale_decimal(
+
+            produit_line.pourcentage_occasion,
+
+            field=f"produit_line_{line_id}.pourcentage_occasion",
+
+        )
+
+        if produit_line.etat == "O":
+
+            if pourcentage not in POURCENTAGES_OCCASION:
+
+                raise ValidationError({
+
+                    f"produit_line_{line_id}": (
+
+                        "Pourcentage occasion invalide : "
+
+                        "5, 10, 15, 20, 25 ou 30 %."
+
+                    )
+
+                })
+
+            if remise != ZERO:
+
+                raise ValidationError({
+
+                    f"produit_line_{line_id}": (
+
+                        "Remise fixe interdite pour un bijou d'occasion."
+
+                    )
+
+                })
+
+            remise = ZERO
+
+        elif produit_line.etat == "N":
+
+            if pourcentage != ZERO:
+
+                raise ValidationError({
+
+                    f"produit_line_{line_id}": (
+
+                        "Un bijou neuf doit avoir 0 % d'occasion."
+
+                    )
+
+                })
+
+        else:
+
+            raise ValidationError({
+
+                f"produit_line_{line_id}": "État du bijou invalide."
+
+            })
+
+        montant_brut = (
+
+            prix_vente * poids * quantite
+
+        ).quantize(
+
+            TWOPLACES,
+
+            rounding=ROUND_HALF_UP,
+
+        )
+
+        if remise > montant_brut:
+
+            raise ValidationError({
+
+                f"produit_line_{line_id}": (
+
+                    "La remise dépasse le montant brut."
+
+                )
+
+            })
+
+        lignes_preparees.append({
+
+            "produit_line": produit_line,
+
+            "quantite": quantite,
+
+            "prix_vente_grammes": prix_vente,
+
+            "remise": remise,
+
+        })
+
+    # 6. Validation des prestations
+
+    prestations_preparees = []
+
+    types_autorises = {
+
+        choice[0] for choice in VenteAutre.TYPE_CHOICES
+
+    }
+
+    for index, item in enumerate(autres_in):
+
+        if not isinstance(item, dict):
+
+            raise ValidationError({
+
+                f"autres[{index}]": "Un objet JSON est attendu."
+
+            })
+
+        type_autre = item.get("type_autre")
+
+        if type_autre not in types_autorises:
+
+            raise ValidationError({
+
+                f"autres[{index}].type_autre": (
+
+                    "Type de prestation invalide."
+
+                )
+
+            })
+
+        quantite = sale_positive_int(
+
+            item.get("quantite", 1),
+
+            field=f"autres[{index}].quantite",
+
+        )
+
+        prix_unitaire = sale_decimal(
+
+            item.get("prix_unitaire"),
+
+            field=f"autres[{index}].prix_unitaire",
+
+        )
+
+        if prix_unitaire < ZERO:
+
+            raise ValidationError({
+
+                f"autres[{index}].prix_unitaire": (
+
+                    "Le prix ne peut pas être négatif."
+
+                )
+
+            })
+
+        prestations_preparees.append({
+
+            "type_autre": type_autre,
+
+            "quantite": quantite,
+
+            "prix_unitaire": prix_unitaire,
+
+        })
+
+    # 7. Stock vendeur : contrôle uniquement
+
+    for data in sorted(
+
+        lignes_preparees,
+
+        key=lambda x: x["produit_line"].pk,
+
+    ):
+
+        produit_line = data["produit_line"]
+
+        quantite = data["quantite"]
+
+        stocks = list(
+
+            VendorStock.objects
+
+            .select_for_update()
+
+            .filter(
+
+                vendor=vendor,
+
+                bijouterie=bijouterie,
+
+                produit_line=produit_line,
+
+            )
+
+            .order_by("pk")
+
+        )
+
+        disponible = sum(
+
+            (
+
+                stock.quantite_allouee - stock.quantite_vendue
+
+                for stock in stocks
+
+            ),
+
+            0,
+
+        )
+
+        if disponible < quantite:
+
+            raise ValidationError({
+
+                f"produit_line_{produit_line.pk}": (
+
+                    f"Stock insuffisant. Demandé : {quantite}. "
+
+                    f"Disponible : {disponible}."
+
+                )
+
+            })
+
+    # 8. Client facultatif
+
+    client = None
+
+    client_id = client_in.get("id")
+
+    if client_id not in (None, ""):
+
+        client_id = sale_positive_int(
+
+            client_id,
+
+            field="client.id",
+
+        )
+
+        client = Client.objects.filter(pk=client_id).first()
+
+        if client is None:
+
+            raise ValidationError({
+
+                "client": "Client introuvable."
+
+            })
+
+    # 9. Création de la vente
+
+    vente = Vente.objects.create(
+
+        client=client,
+
+        created_by=user,
+
+        bijouterie=bijouterie,
+
+        vendor=vendor,
+
+    )
+
+    # 10. Création des bijoux
+
+    # Les snapshots et montants sont calculés par VenteProduit.save().
+
+    for data in lignes_preparees:
+
+        VenteProduit.objects.create(
+
+            vente=vente,
+
+            produit_line=data["produit_line"],
+
+            vendor=vendor,
+
+            quantite=data["quantite"],
+
+            prix_vente_grammes=data["prix_vente_grammes"],
+
+            remise=data["remise"],
+
+        )
+
+    # 11. Création des prestations
+
+    for data in prestations_preparees:
+
+        VenteAutre.objects.create(
+
+            vente=vente,
+
+            type_autre=data["type_autre"],
+
+            quantite=data["quantite"],
+
+            prix_unitaire=data["prix_unitaire"],
+
+        )
+
+    # 12. Total de la vente
 
     vente.mettre_a_jour_montant_total()
 
-    # =========================================================
-    # 11. SNAPSHOT TVA
-    # =========================================================
+    vente.refresh_from_db()
 
-    apply_tva = bool(
-        getattr(
-            bijouterie,
-            "appliquer_tva",
-            False,
-        )
+    # 13. Prestations seules : aucune facture
+
+    if not lignes_preparees:
+
+        return vente, None, 0
+
+    # 14. TVA de la bijouterie
+
+    appliquer_tva = bool(
+
+        getattr(bijouterie, "appliquer_tva", False)
+
     )
 
-    if apply_tva:
+    taux_tva = (
 
-        taux_tva = Decimal(
-            str(
-                getattr(
-                    bijouterie,
-                    "taux_tva",
-                    ZERO,
-                )
-                or ZERO
-            )
+        sale_decimal(
+
+            getattr(bijouterie, "taux_tva", ZERO),
+
+            field="taux_tva",
+
         )
 
-    else:
-        taux_tva = ZERO
+        if appliquer_tva
 
-    # =========================================================
-    # 12. CRÉATION FACTURE PROFORMA
-    # =========================================================
+        else ZERO
+
+    )
+
+    if taux_tva < ZERO:
+
+        raise ValidationError({
+
+            "taux_tva": "Le taux TVA ne peut pas être négatif."
+
+        })
+
+    # 15. Facture proforma
 
     facture = Facture.objects.create(
+
         vente=vente,
+
         bijouterie=bijouterie,
-        montant_ht=(
-            vente.montant_total
-            or ZERO
-        ),
-        appliquer_tva=apply_tva,
+
+        montant_ht=vente.montant_total or ZERO,
+
+        appliquer_tva=appliquer_tva,
+
         taux_tva=taux_tva,
+
         status=Facture.STAT_NON_PAYE,
+
         type_facture=Facture.TYPE_PROFORMA,
+
     )
 
     return vente, facture, 0
 
+# ============================================================
 
-# =============================================================
 # VALIDATION FACTURE PAYABLE
-# =============================================================
 
+# ============================================================
 
 def validate_facture_payable(facture):
-    """
-    Vérifie que la facture peut encore être payée.
-    """
 
     if facture.status == facture.STAT_PAYE:
+
         raise ValidationError(
+
             "Cette facture est déjà totalement payée."
+
         )
 
     if facture.type_facture == facture.TYPE_PROFORMA:
+
         return
 
     if facture.type_facture in {
+
         facture.TYPE_FACTURE,
+
         facture.TYPE_ACOMPTE,
+
         facture.TYPE_FINALE,
+
     }:
+
         return
 
     raise ValidationError(
-        "Type de facture non pris en charge "
-        "pour le paiement."
-    )
-    
 
+        "Type de facture non pris en charge pour le paiement."
+
+    )

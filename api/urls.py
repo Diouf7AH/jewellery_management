@@ -48,7 +48,7 @@ urlpatterns = [
     
     # path('user/profile/<user_id>', userauths_views.ProfileView.as_view(), name='profile'),
     
-    path("me/profile", userauths_views.MyProfileView.as_view(), name="my-profile"),
+    path("me/profile", userauths_views.ProfileView.as_view(), name="my-profile"),
     path("profiles/<int:user_id>", userauths_views.ProfileDetailAdminView.as_view(), name="profile-detail-admin"),
     
     path('password_reset/', include('django_rest_passwordreset.urls')),
@@ -101,13 +101,15 @@ urlpatterns = [
     
     # Produit
     path('produit/list', store_views.ProduitListAPIView.as_view(), name='produit_list'),
+    # path("produits/recherche-sku/",store_views.ProduitRechercheSKUAPIView.as_view(),name="produit-recherche-sku",),
+    path("produits/recherche/",store_views.ProduitRechercheView.as_view(),name="produit-recherche",),
+    path("produits/recherche-qr/", store_views.ProduitRechercheQRView.as_view(),name="produit-recherche-qr",),
     path('produit/create', store_views.ProduitCreateAPIView.as_view(), name='produit_create'),
     path('produit/update/<int:pk>', store_views.ProduitUpdateAPIView.as_view(), name='produit_update'),
     path('produit/delete/<int:pk>', store_views.ProduitDeleteAPIView.as_view(), name='produit_delete'),
     # path('gallery/by-produit/', store_views.GetGalleryByProduitAPIView.as_view(), name='get-gallery-by-produit'),
     # path('produit/recent-list', store_views.ProduitRecentListAPIView.as_view(), name='produit-recent-list'),
     
-    path('produit/<int:pk>/qr', store_views.QRCodeView.as_view(), name='produit-qr-code'),
     # path('produit/export/qr-codes/', store_views.ExportQRCodeExcelAPIView.as_view(), name='export-qr-codes'),
     # path('produit/export/qr-code/<slug:slug>', store_views.ExportOneQRCodeExcelAPIView.as_view(), name='export-one-qr-code'),
     # path('api/produits/<int:pk>/qrcode/', ProduitQRCodeView.as_view(), name='produit-qrcode'),
@@ -170,6 +172,8 @@ urlpatterns = [
     path("cashier/dashboard/", staff_views.CashierDashboardView.as_view(),name="cashier-dashboard",),
     #VENDOR
     # path('vendor/list', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
+    # path("scan-qr/",vendor_views.VendorScanQRCodeAPIView.as_view(),name="vendor-scan-qr",),
+     path("scan-qr/",vendor_views.VendorScanQRCodeAPIView.as_view(),name="vendor-scan-qr",),
     path('vendor/stock-vendor', vendor_views.VendorStockView.as_view(), name='Vendor-stock'),
     # path("staff/vendor/create", vendor_views.CreateVendorView.as_view(), name="create-vendor"),
     # path("vendor/<int:id>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail"),
@@ -199,7 +203,7 @@ urlpatterns = [
     # PDF
     path("factures/<str:numero_facture>/ticket-58mm/",sale_views.TicketProforma58mmView.as_view(),name="ticket-proforma-58mm",),
     path("factures/<str:numero_facture>/ticket-paiement-80mm/",sale_views.TicketPaiement80mmESCPosView.as_view(),name="ticket-paiement-80mm",),
-    path("factures/<str:numero_facture>/facture-a5/",sale_views.FactureA5paysageView.as_view(),name="facture-a5-paysage",),
+    path("factures/<str:numero_facture>/pdf-a5-portrait/", sale_views.FactureA5PortraitView.as_view(),name="facture-a5-portrait",),
     # path("factures/<str:numero_facture>/facture-a5/",sale_views.FactureA5PortraitView.as_view(),name="facture-a5-portrait",),
     path('vente/list-produit', sale_views.VenteListAPIView.as_view(), name='vente-produit-list'),
     # path('vente/rapport-mensuel/', sale_views.RapportVentesMensuelAPIView.as_view(), name='rapport-ventes-mensuel'),

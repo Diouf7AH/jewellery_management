@@ -1,5 +1,5 @@
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.db import IntegrityError, transaction
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum
@@ -10,25 +10,21 @@ from django.urls import reverse
 from django.utils import timezone
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.permissions import ROLE_ADMIN, ROLE_MANAGER, IsAdminOrManager
+from backend.bijouteries import get_accessible_bijouterie
+from backend.permissions import IsAdminOrManager
 from backend.query_scopes import scope_queryset_by_bijouterie
 from backend.renderers import UserRenderer
-from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
 from inventory.models import Bucket, MovementType
 from inventory.services import log_move
-from purchase.models import Achat, Fournisseur, Lot, ProduitLine
-from purchase.services.etiquettes import (build_code_etiquette,
-                                          build_etiquette_produit_png)
-from purchase.utils import generate_numero_lot
 from stock.models import Stock
-from store.models import Bijouterie, Produit
+from store.models import Produit
 
 from .models import Achat, Fournisseur, Lot, ProduitLine
 from .serializers import (AchatDetailSerializer, AchatOutSerializer,
@@ -36,24 +32,67 @@ from .serializers import (AchatDetailSerializer, AchatOutSerializer,
                           ArrivageCreateResponseSerializer,
                           ArrivageMetaUpdateInSerializer,
                           FournisseurSerializer, LotListSerializer)
+from .services.etiquettes import (build_code_etiquette,
+                                  build_etiquette_produit_png)
+from .utils import generate_numero_lot
+
+# ============================================================
+# BACKEND
+# ============================================================
+
+
+# ============================================================
+# INVENTORY
+# ============================================================
+
+
+# ============================================================
+# STOCK
+# ============================================================
+
+
+# ============================================================
+# STORE
+# ============================================================
+
+
+# ============================================================
+# PURCHASE - MODELS
+# ============================================================
+
+
+# ============================================================
+# PURCHASE - SERIALIZERS
+# ============================================================
+
+
+# ============================================================
+# PURCHASE - SERVICES
+# ============================================================
+
+
+# ============================================================
+# PURCHASE - UTILS
+# ============================================================
+
 
 
 class AchatDashboardView(APIView):
     """
     Dashboard des achats et arrivages.
 
-    Périodes disponibles :
-    - current_year : année en cours uniquement ;
-    - 3_years      : trois dernières années,
-                     année en cours incluse.
+    Périodes :
+    - current_year : année en cours ;
+    - 3_years : trois dernières années,
+      année en cours incluse.
 
-    Règles temporelles :
-    - Achat.created_at pour les statistiques d'achats ;
-    - Lot.received_at pour les statistiques d'arrivages.
+    Dates utilisées :
+    - Achat.created_at pour les achats ;
+    - Lot.received_at pour les arrivages.
 
-    Périmètre :
-    - admin : toutes les bijouteries ;
-    - manager : uniquement ses bijouteries affectées.
+    Accès :
+    - Admin : toutes les bijouteries ;
+    - Manager : ses bijouteries affectées uniquement.
     """
 
     permission_classes = [
@@ -62,9 +101,7 @@ class AchatDashboardView(APIView):
     ]
 
     @swagger_auto_schema(
-        operation_summary=(
-            "Dashboard des achats et arrivages"
-        ),
+        operation_summary="Dashboard des achats et arrivages",
         operation_description=(
             "Retourne les statistiques des achats et arrivages.\n\n"
             "Périodes disponibles :\n"
@@ -73,25 +110,20 @@ class AchatDashboardView(APIView):
             "année en cours incluse.\n\n"
             "Par défaut : `current_year`.\n\n"
             "Périmètre :\n"
-            "- admin : toutes les bijouteries ;\n"
-            "- manager : uniquement ses bijouteries affectées.\n\n"
+            "- Admin : toutes les bijouteries ;\n"
+            "- Manager : uniquement ses bijouteries affectées.\n\n"
             "Règles temporelles :\n"
-            "- achats : `Achat.created_at` ;\n"
-            "- lots et produits reçus : `Lot.received_at`."
+            "- Achats : `Achat.created_at` ;\n"
+            "- Lots et produits reçus : `Lot.received_at`."
         ),
         manual_parameters=[
             openapi.Parameter(
                 "periode",
                 openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
-                enum=[
-                    "current_year",
-                    "3_years",
-                ],
+                enum=["current_year", "3_years"],
                 description=(
                     "Période du dashboard. "
-                    "`current_year` = année en cours ; "
-                    "`3_years` = trois dernières années. "
                     "Défaut : current_year."
                 ),
             ),
@@ -165,10 +197,9 @@ class AchatDashboardView(APIView):
         },
     )
     def get(self, request):
-        role = get_role_name(request.user)
 
         # =====================================================
-        # 1. Période
+        # 1. PÉRIODE
         # =====================================================
 
         current_year = timezone.localdate().year
@@ -178,99 +209,50 @@ class AchatDashboardView(APIView):
             or "current_year"
         ).strip().lower()
 
-        allowed_periodes = {
-            "current_year",
-            "3_years",
-        }
-
-        if periode not in allowed_periodes:
+        if periode not in {"current_year", "3_years"}:
             raise ValidationError({
                 "periode": (
-                    "Valeur invalide. "
-                    "Utiliser 'current_year' ou '3_years'."
+                    "Valeur invalide. Utiliser "
+                    "'current_year' ou '3_years'."
                 )
             })
 
-        if periode == "current_year":
-            start_year = current_year
-        else:
-            start_year = current_year - 2
+        start_year = (
+            current_year
+            if periode == "current_year"
+            else current_year - 2
+        )
+
+        current_timezone = timezone.get_current_timezone()
 
         start_date = timezone.make_aware(
-            datetime(
-                start_year,
-                1,
-                1,
-            ),
-            timezone.get_current_timezone(),
+            datetime(start_year, 1, 1),
+            current_timezone,
+        )
+
+        # Borne supérieure exclusive :
+        # évite d'inclure les données d'années futures.
+        end_date = timezone.make_aware(
+            datetime(current_year + 1, 1, 1),
+            current_timezone,
         )
 
         # =====================================================
-        # 2. Périmètre des bijouteries
+        # 2. VALIDATION DE BIJOUTERIE_ID
         # =====================================================
 
-        accessible_bijouterie_ids = None
-
-        if role == ROLE_MANAGER:
-            manager = getattr(
-                request.user,
-                "staff_manager_profile",
-                None,
-            )
-
-            if (
-                not manager
-                or not getattr(
-                    manager,
-                    "verifie",
-                    False,
-                )
-            ):
-                accessible_bijouterie_ids = []
-
-            else:
-                bijouteries = getattr(
-                    manager,
-                    "bijouteries",
-                    None,
-                )
-
-                accessible_bijouterie_ids = (
-                    list(
-                        bijouteries.values_list(
-                            "id",
-                            flat=True,
-                        )
-                    )
-                    if bijouteries is not None
-                    else []
-                )
-
-        # =====================================================
-        # 3. Validation bijouterie_id
-        # =====================================================
-
-        raw_bijouterie_id = (
-            request.query_params.get(
-                "bijouterie_id"
-            )
+        raw_bijouterie_id = request.query_params.get(
+            "bijouterie_id"
         )
 
         bijouterie_id = None
 
-        if raw_bijouterie_id not in (
-            None,
-            "",
-        ):
-            try:
-                bijouterie_id = int(
-                    raw_bijouterie_id
-                )
+        if raw_bijouterie_id not in (None, ""):
 
-            except (
-                TypeError,
-                ValueError,
-            ):
+            try:
+                bijouterie_id = int(raw_bijouterie_id)
+
+            except (TypeError, ValueError):
                 raise ValidationError({
                     "bijouterie_id": (
                         "Ce paramètre doit être un entier."
@@ -280,118 +262,114 @@ class AchatDashboardView(APIView):
             if bijouterie_id <= 0:
                 raise ValidationError({
                     "bijouterie_id": (
-                        "Ce paramètre doit être "
-                        "supérieur à zéro."
+                        "Ce paramètre doit être supérieur à zéro."
                     )
                 })
 
-            if not Bijouterie.objects.filter(
-                pk=bijouterie_id
-            ).exists():
-                raise ValidationError({
-                    "bijouterie_id": (
-                        "Bijouterie introuvable."
-                    )
-                })
+            bijouterie = get_accessible_bijouterie(
+                request.user,
+                bijouterie_id,
+            )
 
-            if (
-                accessible_bijouterie_ids
-                is not None
-                and bijouterie_id
-                not in accessible_bijouterie_ids
-            ):
+            if bijouterie is None:
                 raise ValidationError({
                     "bijouterie_id": (
-                        "Vous n'avez pas accès "
-                        "à cette bijouterie."
+                        "Bijouterie introuvable ou inaccessible."
                     )
                 })
 
         # =====================================================
-        # 4. Querysets de base
+        # 3. QUERYSETS DE BASE
         # =====================================================
 
-        # Achats :
-        # période basée sur Achat.created_at.
+        # Achats : date de création de l'achat.
         achats = Achat.objects.filter(
             created_at__gte=start_date,
+            created_at__lt=end_date,
             status=Achat.STATUS_CONFIRMED,
         )
 
-        # Lots :
-        # période basée sur Lot.received_at.
+        # Lots : date de réception du lot.
         lots = Lot.objects.filter(
             received_at__gte=start_date,
+            received_at__lt=end_date,
             achat__status=Achat.STATUS_CONFIRMED,
         )
 
-        # ProduitLine :
-        # période basée sur Lot.received_at.
+        # Lignes : date de réception du lot.
         lignes = (
             ProduitLine.objects
             .filter(
                 lot__received_at__gte=start_date,
+                lot__received_at__lt=end_date,
                 lot__achat__status=Achat.STATUS_CONFIRMED,
-            )
-            .annotate(
-                poids_ligne=ExpressionWrapper(
-                    F("quantite")
-                    * Coalesce(
-                        F("poids_unitaire_achat"),
-                        Decimal("0.00"),
-                    ),
-                    output_field=DecimalField(
-                        max_digits=18,
-                        decimal_places=2,
-                    ),
-                )
             )
         )
 
         # =====================================================
-        # 5. Périmètre manager
+        # 4. PÉRIMÈTRE DES BIJOUTERIES AUTORISÉES
         # =====================================================
 
-        if accessible_bijouterie_ids is not None:
-            achats = achats.filter(
-                bijouterie_id__in=(
-                    accessible_bijouterie_ids
-                )
-            )
+        achats = scope_queryset_by_bijouterie(
+            achats,
+            user=request.user,
+            field="bijouterie_id",
+        )
 
-            lots = lots.filter(
-                achat__bijouterie_id__in=(
-                    accessible_bijouterie_ids
-                )
-            )
+        lots = scope_queryset_by_bijouterie(
+            lots,
+            user=request.user,
+            field="achat__bijouterie_id",
+        )
 
-            lignes = lignes.filter(
-                lot__achat__bijouterie_id__in=(
-                    accessible_bijouterie_ids
-                )
-            )
+        lignes = scope_queryset_by_bijouterie(
+            lignes,
+            user=request.user,
+            field="lot__achat__bijouterie_id",
+        )
 
         # =====================================================
-        # 6. Filtre bijouterie
+        # 5. FILTRE OPTIONNEL PAR BIJOUTERIE
         # =====================================================
 
         if bijouterie_id is not None:
+
             achats = achats.filter(
-                bijouterie_id=bijouterie_id
+                bijouterie_id=bijouterie_id,
             )
 
             lots = lots.filter(
-                achat__bijouterie_id=bijouterie_id
+                achat__bijouterie_id=bijouterie_id,
             )
 
             lignes = lignes.filter(
-                lot__achat__bijouterie_id=(
-                    bijouterie_id
-                )
+                lot__achat__bijouterie_id=bijouterie_id,
             )
 
         # =====================================================
-        # 7. Statistiques globales
+        # 6. ANNOTATION DU POIDS HISTORIQUE
+        # =====================================================
+
+        lignes = lignes.annotate(
+            poids_ligne=ExpressionWrapper(
+                F("quantite")
+                * Coalesce(
+                    F("poids_unitaire_achat"),
+                    Decimal("0.00"),
+                    output_field=DecimalField(
+                        max_digits=12,
+                        decimal_places=2,
+                    ),
+                ),
+                output_field=DecimalField(
+                    max_digits=18,
+                    decimal_places=2,
+                ),
+            )
+        )
+
+        # =====================================================
+        # 7. STATISTIQUES GLOBALES
         # =====================================================
 
         total_achats = achats.count()
@@ -419,7 +397,7 @@ class AchatDashboardView(APIView):
         total_poids = lignes.aggregate(
             total=Coalesce(
                 Sum("poids_ligne"),
-                Decimal("0.000"),
+                Decimal("0.00"),
                 output_field=DecimalField(
                     max_digits=18,
                     decimal_places=2,
@@ -428,27 +406,19 @@ class AchatDashboardView(APIView):
         )["total"]
 
         # =====================================================
-        # 8. Achats par année
+        # 8. ACHATS PAR ANNÉE
         # =====================================================
 
         achats_par_annee_qs = (
             achats
             .annotate(
-                annee=ExtractYear(
-                    "created_at"
-                )
+                annee=ExtractYear("created_at"),
             )
-            .values(
-                "annee"
-            )
+            .values("annee")
             .annotate(
-                total_achats=Count(
-                    "id"
-                ),
+                total_achats=Count("id"),
                 montant_total=Coalesce(
-                    Sum(
-                        "montant_total_ht"
-                    ),
+                    Sum("montant_total_ht"),
                     Decimal("0.00"),
                     output_field=DecimalField(
                         max_digits=18,
@@ -456,25 +426,24 @@ class AchatDashboardView(APIView):
                     ),
                 ),
             )
-            .order_by(
-                "annee"
-            )
+            .order_by("annee")
         )
 
+        achats_by_year = {
+            row["annee"]: row
+            for row in achats_par_annee_qs
+        }
+
         # =====================================================
-        # 9. Quantités reçues par année
+        # 9. QUANTITÉS REÇUES PAR ANNÉE
         # =====================================================
 
         quantites_par_annee_qs = (
             lignes
             .annotate(
-                annee=ExtractYear(
-                    "lot__received_at"
-                )
+                annee=ExtractYear("lot__received_at"),
             )
-            .values(
-                "annee"
-            )
+            .values("annee")
             .annotate(
                 total_quantite=Coalesce(
                     Sum("quantite"),
@@ -489,9 +458,7 @@ class AchatDashboardView(APIView):
                     ),
                 ),
             )
-            .order_by(
-                "annee"
-            )
+            .order_by("annee")
         )
 
         quantites_by_year = {
@@ -499,42 +466,43 @@ class AchatDashboardView(APIView):
             for row in quantites_par_annee_qs
         }
 
+        # =====================================================
+        # 10. FUSION DES STATISTIQUES ANNUELLES
+        # =====================================================
+
         achats_par_annee = []
 
-        for row in achats_par_annee_qs:
-            annee = row["annee"]
+        # Inclut chaque année de la période, même sans achat.
+        for annee in range(start_year, current_year + 1):
 
-            quantite_row = (
-                quantites_by_year.get(
-                    annee,
-                    {},
-                )
+            achat_row = achats_by_year.get(annee, {})
+            quantite_row = quantites_by_year.get(
+                annee,
+                {},
             )
 
             achats_par_annee.append({
                 "annee": annee,
-                "total_achats": (
-                    row["total_achats"]
+                "total_achats": achat_row.get(
+                    "total_achats",
+                    0,
                 ),
-                "montant_total": (
-                    row["montant_total"]
+                "montant_total": achat_row.get(
+                    "montant_total",
+                    Decimal("0.00"),
                 ),
-                "total_quantite": (
-                    quantite_row.get(
-                        "total_quantite",
-                        0,
-                    )
+                "total_quantite": quantite_row.get(
+                    "total_quantite",
+                    0,
                 ),
-                "total_poids": (
-                    quantite_row.get(
-                        "total_poids",
-                        Decimal("0.00"),
-                    )
+                "total_poids": quantite_row.get(
+                    "total_poids",
+                    Decimal("0.00"),
                 ),
             })
 
         # =====================================================
-        # 10. Top fournisseurs
+        # 11. TOP 5 FOURNISSEURS
         # =====================================================
 
         top_fournisseurs_qs = (
@@ -546,13 +514,9 @@ class AchatDashboardView(APIView):
                 "fournisseur__telephone",
             )
             .annotate(
-                total_achats=Count(
-                    "id"
-                ),
+                total_achats=Count("id"),
                 montant_total=Coalesce(
-                    Sum(
-                        "montant_total_ht"
-                    ),
+                    Sum("montant_total_ht"),
                     Decimal("0.00"),
                     output_field=DecimalField(
                         max_digits=18,
@@ -569,49 +533,34 @@ class AchatDashboardView(APIView):
         top_fournisseurs = []
 
         for row in top_fournisseurs_qs:
+
             fournisseur_nom = " ".join(
                 part
                 for part in [
-                    row[
-                        "fournisseur__prenom"
-                    ],
-                    row[
-                        "fournisseur__nom"
-                    ],
+                    row["fournisseur__prenom"],
+                    row["fournisseur__nom"],
                 ]
                 if part
             )
 
             if not fournisseur_nom:
                 fournisseur_nom = (
-                    row[
-                        "fournisseur__telephone"
-                    ]
+                    row["fournisseur__telephone"]
                     or "N/A"
                 )
 
             top_fournisseurs.append({
-                "fournisseur_id": (
-                    row["fournisseur_id"]
-                ),
-                "fournisseur": (
-                    fournisseur_nom
-                ),
-                "telephone": (
-                    row[
-                        "fournisseur__telephone"
-                    ]
-                ),
-                "total_achats": (
-                    row["total_achats"]
-                ),
-                "montant_total": (
-                    row["montant_total"]
-                ),
+                "fournisseur_id": row["fournisseur_id"],
+                "fournisseur": fournisseur_nom,
+                "telephone": row[
+                    "fournisseur__telephone"
+                ],
+                "total_achats": row["total_achats"],
+                "montant_total": row["montant_total"],
             })
 
         # =====================================================
-        # 11. Produits reçus
+        # 12. TOP 5 PRODUITS REÇUS
         # =====================================================
 
         produits_qs = (
@@ -643,28 +592,19 @@ class AchatDashboardView(APIView):
 
         repartition_produits = [
             {
-                "produit_id": (
-                    row["produit_id"]
-                ),
+                "produit_id": row["produit_id"],
                 "produit": (
-                    row["produit__nom"]
-                    or "N/A"
+                    row["produit__nom"] or "N/A"
                 ),
-                "sku": (
-                    row["produit__sku"]
-                ),
-                "quantite": (
-                    row["quantite"]
-                ),
-                "poids_total": (
-                    row["poids_total"]
-                ),
+                "sku": row["produit__sku"],
+                "quantite": row["quantite"],
+                "poids_total": row["poids_total"],
             }
             for row in produits_qs
         ]
 
         # =====================================================
-        # 12. Réponse
+        # 13. RÉPONSE JSON
         # =====================================================
 
         return Response(
@@ -676,52 +616,23 @@ class AchatDashboardView(APIView):
                     "label": (
                         str(current_year)
                         if periode == "current_year"
-                        else (
-                            f"{start_year}-"
-                            f"{current_year}"
-                        )
+                        else f"{start_year}-{current_year}"
                     ),
                 },
-
-                "bijouterie_id": (
-                    bijouterie_id
-                ),
-
-                "total_achats": (
-                    total_achats
-                ),
-
-                "montant_total": (
-                    montant_total
-                ),
-
-                "total_lots": (
-                    total_lots
-                ),
-
-                "total_quantite": (
-                    total_quantite
-                ),
-
-                "total_poids": (
-                    total_poids
-                ),
-
-                "achats_par_annee": (
-                    achats_par_annee
-                ),
-
-                "top_fournisseurs": (
-                    top_fournisseurs
-                ),
-
-                "repartition_produits": (
-                    repartition_produits
-                ),
+                "bijouterie_id": bijouterie_id,
+                "total_achats": total_achats,
+                "montant_total": montant_total,
+                "total_lots": total_lots,
+                "total_quantite": total_quantite,
+                "total_poids": total_poids,
+                "achats_par_annee": achats_par_annee,
+                "top_fournisseurs": top_fournisseurs,
+                "repartition_produits": repartition_produits,
             },
             status=status.HTTP_200_OK,
         )
-        
+
+
 
 class FournisseurGetView(APIView):
     renderer_classes = [UserRenderer]
@@ -912,105 +823,9 @@ class FournisseurListView(APIView):
             serializer.data,
             status=status.HTTP_200_OK,
         )
-        
-
-# class AchatProduitGetOneView(APIView):
-#     renderer_classes = [UserRenderer]
-#     permission_classes = [
-#         IsAuthenticated,
-#         IsAdminOrManager,
-#     ]
-
-#     @swagger_auto_schema(
-#         operation_summary="Récupérer un achat",
-#         operation_description=(
-#             "Récupère un achat spécifique avec son fournisseur, "
-#             "sa bijouterie, ses lots et ses lignes produits.\n\n"
-#             "Périmètre :\n"
-#             "- admin : tous les achats ;\n"
-#             "- manager : uniquement les achats de ses bijouteries."
-#         ),
-#         responses={
-#             200: openapi.Response(
-#                 description="Achat trouvé.",
-#                 schema=AchatDetailSerializer,
-#             ),
-#             403: openapi.Response(
-#                 description="Accès refusé."
-#             ),
-#             404: openapi.Response(
-#                 description="Achat introuvable."
-#             ),
-#         },
-#         tags=["Achats / Arrivages"],
-#     )
-#     def get(self, request, pk):
-#         role = get_role_name(request.user)
-
-#         queryset = (
-#             Achat.objects
-#             .select_related(
-#                 "fournisseur",
-#                 "bijouterie",
-#             )
-#             .prefetch_related(
-#                 "lots",
-#                 "lots__lignes",
-#                 "lots__lignes__produit",
-#                 "lots__lignes__produit__categorie",
-#                 "lots__lignes__produit__marque",
-#                 "lots__lignes__produit__purete",
-#             )
-#         )
-
-#         # =====================================================
-#         # Périmètre manager
-#         # =====================================================
-
-#         if role == ROLE_MANAGER:
-#             manager = getattr(
-#                 request.user,
-#                 "staff_manager_profile",
-#                 None,
-#             )
-
-#             if (
-#                 not manager
-#                 or not getattr(manager, "verifie", True)
-#             ):
-#                 queryset = queryset.none()
-#             else:
-#                 bijouteries = getattr(
-#                     manager,
-#                     "bijouteries",
-#                     None,
-#                 )
-
-#                 if bijouteries is None:
-#                     queryset = queryset.none()
-#                 else:
-#                     queryset = queryset.filter(
-#                         bijouterie_id__in=bijouteries.values(
-#                             "id"
-#                         )
-#                     )
-
-#         achat = get_object_or_404(
-#             queryset,
-#             pk=pk,
-#         )
-
-#         serializer = AchatDetailSerializer(
-#             achat
-#         )
-
-#         return Response(
-#             serializer.data,
-#             status=status.HTTP_200_OK,
-#         )
-
 
 class AchatProduitGetOneView(APIView):
+
     renderer_classes = [UserRenderer]
 
     permission_classes = [
@@ -1033,16 +848,19 @@ class AchatProduitGetOneView(APIView):
                 schema=AchatDetailSerializer,
             ),
             403: openapi.Response(
-                description="Accès refusé."
+                description="Accès refusé.",
             ),
             404: openapi.Response(
-                description="Achat introuvable."
+                description="Achat introuvable.",
             ),
         },
         tags=["Achats / Arrivages"],
     )
     def get(self, request, pk):
-        role = get_role_name(request.user)
+
+        # =====================================================
+        # 1. QUERYSET DE BASE
+        # =====================================================
 
         queryset = (
             Achat.objects
@@ -1061,45 +879,17 @@ class AchatProduitGetOneView(APIView):
         )
 
         # =====================================================
-        # Périmètre manager
+        # 2. PÉRIMÈTRE DES BIJOUTERIES AUTORISÉES
         # =====================================================
 
-        if role == ROLE_MANAGER:
-            manager = getattr(
-                request.user,
-                "staff_manager_profile",
-                None,
-            )
-
-            if (
-                not manager
-                or not getattr(
-                    manager,
-                    "verifie",
-                    False,
-                )
-            ):
-                queryset = queryset.none()
-
-            else:
-                bijouteries = getattr(
-                    manager,
-                    "bijouteries",
-                    None,
-                )
-
-                if bijouteries is None:
-                    queryset = queryset.none()
-
-                else:
-                    queryset = queryset.filter(
-                        bijouterie_id__in=(
-                            bijouteries.values("id")
-                        )
-                    )
+        queryset = scope_queryset_by_bijouterie(
+            queryset,
+            user=request.user,
+            field="bijouterie_id",
+        )
 
         # =====================================================
-        # Achat
+        # 3. RÉCUPÉRER L'ACHAT AUTORISÉ
         # =====================================================
 
         achat = get_object_or_404(
@@ -1107,15 +897,26 @@ class AchatProduitGetOneView(APIView):
             pk=pk,
         )
 
+        # =====================================================
+        # 4. SÉRIALISATION
+        # =====================================================
+
         serializer = AchatDetailSerializer(
-            achat
+            achat,
+            context={
+                "request": request,
+            },
         )
+
+        # =====================================================
+        # 5. RÉPONSE
+        # =====================================================
 
         return Response(
             serializer.data,
             status=status.HTTP_200_OK,
         )
-        
+
 
 # class LotDetailView(RetrieveAPIView):
 #     """
@@ -1227,10 +1028,9 @@ class AchatProduitGetOneView(APIView):
 #         return queryset.none()
 
 
-
 class LotDetailView(RetrieveAPIView):
     """
-    Détail d’un lot :
+    Détail d'un lot :
 
     - achat ;
     - fournisseur ;
@@ -1259,23 +1059,23 @@ class LotDetailView(RetrieveAPIView):
 
     @swagger_auto_schema(
         operation_id="detailLot",
-        operation_summary="Afficher le détail d’un lot",
+        operation_summary="Afficher le détail d'un lot",
         operation_description=(
-            "Retourne le détail d’un lot avec son achat, "
+            "Retourne le détail d'un lot avec son achat, "
             "son fournisseur, sa bijouterie et ses lignes produits.\n\n"
             "Les quantités et poids retournés pour les lignes "
             "correspondent aux données historiques de l'achat.\n\n"
-            "L’administrateur peut consulter tous les lots. "
+            "L'administrateur peut consulter tous les lots. "
             "Le manager peut uniquement consulter les lots "
             "de ses bijouteries affectées."
         ),
         responses={
             200: LotListSerializer(),
             403: openapi.Response(
-                description="Accès refusé."
+                description="Accès refusé.",
             ),
             404: openapi.Response(
-                description="Lot introuvable."
+                description="Lot introuvable.",
             ),
         },
         tags=["Achats / Arrivages"],
@@ -1288,9 +1088,10 @@ class LotDetailView(RetrieveAPIView):
         )
 
     def get_queryset(self):
-        role = get_role_name(
-            self.request.user
-        )
+
+        # =====================================================
+        # 1. QUERYSET DE BASE
+        # =====================================================
 
         queryset = (
             Lot.objects
@@ -1310,599 +1111,43 @@ class LotDetailView(RetrieveAPIView):
         )
 
         # =====================================================
-        # Admin
+        # 2. PÉRIMÈTRE DES BIJOUTERIES AUTORISÉES
         # =====================================================
 
-        if role == ROLE_ADMIN:
-            return queryset
+        queryset = scope_queryset_by_bijouterie(
+            queryset,
+            user=self.request.user,
+            field="achat__bijouterie_id",
+        )
 
-        # =====================================================
-        # Manager
-        # =====================================================
-
-        if role == ROLE_MANAGER:
-            manager = getattr(
-                self.request.user,
-                "staff_manager_profile",
-                None,
-            )
-
-            if (
-                not manager
-                or not getattr(
-                    manager,
-                    "verifie",
-                    False,
-                )
-            ):
-                return queryset.none()
-
-            bijouteries = getattr(
-                manager,
-                "bijouteries",
-                None,
-            )
-
-            if bijouteries is None:
-                return queryset.none()
-
-            return queryset.filter(
-                achat__bijouterie_id__in=(
-                    bijouteries.values_list(
-                        "id",
-                        flat=True,
-                    )
-                )
-            )
-
-        # =====================================================
-        # Autres rôles
-        # =====================================================
-
-        return queryset.none()
+        return queryset
     
-    
-
-# class ArrivageCreateView(APIView):
-#     """
-#     Crée un arrivage fournisseur.
-
-#     Cycle :
-
-#         Fournisseur
-#             ↓
-#         Achat
-#             ↓
-#         Lot
-#             ↓
-#         ProduitLine
-#             ↓
-#         Stock magasin
-#             ↓
-#         PURCHASE_IN : EXTERNAL → BIJOUTERIE
-
-#     Cette vue ne crée jamais :
-#     - de stock réserve ;
-#     - de VendorStock ;
-#     - de VENDOR_ASSIGN ;
-#     - de SALE_OUT.
-
-#     Périmètre :
-#     - admin : toutes les bijouteries ;
-#     - manager : uniquement ses bijouteries affectées.
-#     """
-
-#     permission_classes = [
-#         IsAuthenticated,
-#         IsAdminOrManager,
-#     ]
-
-#     http_method_names = [
-#         "post",
-#         "options",
-#     ]
-
-#     @swagger_auto_schema(
-#         operation_id="createArrivage",
-#         operation_summary=(
-#             "Créer un arrivage fournisseur et initialiser "
-#             "le stock de la bijouterie"
-#         ),
-#         operation_description=(
-#             "Crée un achat fournisseur avec un ou plusieurs lots.\n\n"
-#             "Pour chaque ProduitLine créée :\n"
-#             "- un Stock magasin est initialisé ;\n"
-#             "- un mouvement PURCHASE_IN est enregistré ;\n"
-#             "- le mouvement va de EXTERNAL vers BIJOUTERIE.\n\n"
-#             "Aucun VendorStock ni stock réserve n'est créé."
-#         ),
-#         request_body=ArrivageCreateInSerializer,
-#         responses={
-#             201: openapi.Response(
-#                 description="Arrivage créé avec succès.",
-#                 schema=ArrivageCreateResponseSerializer,
-#             ),
-#             400: openapi.Response(
-#                 description="Données invalides.",
-#             ),
-#             401: openapi.Response(
-#                 description="Authentification requise.",
-#             ),
-#             403: openapi.Response(
-#                 description=(
-#                     "Accès refusé ou bijouterie non autorisée."
-#                 ),
-#             ),
-#         },
-#         tags=["Achats / Arrivages"],
-#     )
-#     @transaction.atomic
-#     def post(self, request):
-#         serializer = ArrivageCreateInSerializer(
-#             data=request.data
-#         )
-#         serializer.is_valid(raise_exception=True)
-
-#         data = serializer.validated_data
-#         lots_in = data.get("lots") or []
-
-#         # =====================================================
-#         # 1. Bijouterie
-#         # =====================================================
-
-#         bijouterie_id = data["bijouterie_id"]
-
-#         try:
-#             bijouterie = Bijouterie.objects.get(
-#                 pk=bijouterie_id
-#             )
-#         except Bijouterie.DoesNotExist:
-#             raise ValidationError({
-#                 "bijouterie_id": "Bijouterie introuvable."
-#             })
-
-#         # =====================================================
-#         # 2. Périmètre utilisateur
-#         # =====================================================
-
-#         role = get_role_name(request.user)
-
-#         if role == ROLE_MANAGER:
-#             manager = getattr(
-#                 request.user,
-#                 "staff_manager_profile",
-#                 None,
-#             )
-
-#             if (
-#                 not manager
-#                 or not getattr(manager, "verifie", False)
-#             ):
-#                 raise PermissionDenied(
-#                     "Profil manager introuvable ou désactivé."
-#                 )
-
-#             bijouteries_manager = getattr(
-#                 manager,
-#                 "bijouteries",
-#                 None,
-#             )
-
-#             if (
-#                 bijouteries_manager is None
-#                 or not bijouteries_manager.filter(
-#                     pk=bijouterie.pk
-#                 ).exists()
-#             ):
-#                 raise PermissionDenied(
-#                     "Vous ne pouvez pas créer un arrivage "
-#                     "dans cette bijouterie."
-#                 )
-
-#         elif role != ROLE_ADMIN:
-#             raise PermissionDenied(
-#                 "Seuls les administrateurs et les managers "
-#                 "peuvent créer un arrivage."
-#             )
-
-#         # =====================================================
-#         # 3. Validation des lots
-#         # =====================================================
-
-#         if not lots_in:
-#             raise ValidationError({
-#                 "lots": "Au moins un lot est requis."
-#             })
-
-#         produit_ids = set()
-#         lots_normalises = []
-
-#         for lot_index, lot_in in enumerate(lots_in):
-#             lignes_in = lot_in.get("lignes") or []
-
-#             if not lignes_in:
-#                 raise ValidationError({
-#                     f"lots[{lot_index}].lignes": (
-#                         "Chaque lot doit contenir "
-#                         "au moins une ligne."
-#                     )
-#                 })
-
-#             produits_du_lot = set()
-#             lignes_normalisees = []
-
-#             for ligne_index, ligne_in in enumerate(
-#                 lignes_in
-#             ):
-#                 prefixe = (
-#                     f"lots[{lot_index}]."
-#                     f"lignes[{ligne_index}]"
-#                 )
-
-#                 produit_id = ligne_in.get("produit_id")
-
-#                 if not produit_id:
-#                     raise ValidationError({
-#                         f"{prefixe}.produit_id": (
-#                             "produit_id est obligatoire."
-#                         )
-#                     })
-
-#                 if produit_id in produits_du_lot:
-#                     raise ValidationError({
-#                         f"{prefixe}.produit_id": (
-#                             "Un produit ne peut apparaître "
-#                             "qu'une seule fois dans un même lot."
-#                         )
-#                     })
-
-#                 produits_du_lot.add(produit_id)
-#                 produit_ids.add(produit_id)
-
-#                 try:
-#                     quantite = int(
-#                         ligne_in.get("quantite")
-#                     )
-#                 except (TypeError, ValueError):
-#                     raise ValidationError({
-#                         f"{prefixe}.quantite": (
-#                             "Quantité invalide."
-#                         )
-#                     })
-
-#                 if quantite < 1:
-#                     raise ValidationError({
-#                         f"{prefixe}.quantite": (
-#                             "La quantité doit être supérieure "
-#                             "ou égale à 1."
-#                         )
-#                     })
-
-#                 prix_brut = ligne_in.get(
-#                     "prix_achat_gramme"
-#                 )
-
-#                 if prix_brut is None:
-#                     raise ValidationError({
-#                         f"{prefixe}.prix_achat_gramme": (
-#                             "Le prix d'achat par gramme "
-#                             "est obligatoire."
-#                         )
-#                     })
-
-#                 try:
-#                     prix_achat_gramme = Decimal(
-#                         str(prix_brut)
-#                     ).quantize(
-#                         Decimal("0.01"),
-#                         rounding=ROUND_HALF_UP,
-#                     )
-#                 except (
-#                     InvalidOperation,
-#                     TypeError,
-#                     ValueError,
-#                 ):
-#                     raise ValidationError({
-#                         f"{prefixe}.prix_achat_gramme": (
-#                             "Prix d'achat par gramme invalide."
-#                         )
-#                     })
-
-#                 if prix_achat_gramme < Decimal("0.00"):
-#                     raise ValidationError({
-#                         f"{prefixe}.prix_achat_gramme": (
-#                             "Le prix d'achat par gramme "
-#                             "ne peut pas être négatif."
-#                         )
-#                     })
-
-#                 lignes_normalisees.append({
-#                     "produit_id": produit_id,
-#                     "quantite": quantite,
-#                     "prix_achat_gramme": (
-#                         prix_achat_gramme
-#                     ),
-#                 })
-
-#             lots_normalises.append({
-#                 "description": (
-#                     lot_in.get("description")
-#                     or data.get("description")
-#                     or ""
-#                 ),
-#                 "received_at": lot_in.get(
-#                     "received_at"
-#                 ),
-#                 "lignes": lignes_normalisees,
-#             })
-
-#         # =====================================================
-#         # 4. Validation des produits
-#         # =====================================================
-
-#         produits = (
-#             Produit.objects
-#             .filter(pk__in=produit_ids)
-#             .only(
-#                 "id",
-#                 "poids",
-#             )
-#         )
-
-#         produits_by_id = {
-#             produit.id: produit
-#             for produit in produits
-#         }
-
-#         produits_manquants = (
-#             produit_ids - set(produits_by_id)
-#         )
-
-#         if produits_manquants:
-#             raise ValidationError({
-#                 "lots": (
-#                     "Produit(s) introuvable(s) : "
-#                     f"{sorted(produits_manquants)}."
-#                 )
-#             })
-
-#         produits_sans_poids = [
-#             produit.id
-#             for produit in produits_by_id.values()
-#             if produit.poids is None
-#         ]
-
-#         if produits_sans_poids:
-#             raise ValidationError({
-#                 "lots": (
-#                     "Produit(s) sans poids renseigné : "
-#                     f"{sorted(produits_sans_poids)}."
-#                 )
-#             })
-
-#         # =====================================================
-#         # 5. Fournisseur
-#         # =====================================================
-
-#         fournisseur_data = data["fournisseur"]
-
-#         telephone = (
-#             fournisseur_data["telephone"]
-#             or ""
-#         ).strip()
-
-#         if not telephone:
-#             raise ValidationError({
-#                 "fournisseur": {
-#                     "telephone": (
-#                         "Le téléphone du fournisseur "
-#                         "est obligatoire."
-#                     )
-#                 }
-#             })
-
-#         fournisseur, _ = (
-#             Fournisseur.objects.update_or_create(
-#                 telephone=telephone,
-#                 defaults={
-#                     "nom": (
-#                         fournisseur_data.get("nom")
-#                         or ""
-#                     ),
-#                     "prenom": (
-#                         fournisseur_data.get("prenom")
-#                         or ""
-#                     ),
-#                     "address": (
-#                         fournisseur_data.get("address")
-#                         or ""
-#                     ),
-#                 },
-#             )
-#         )
-
-#         # =====================================================
-#         # 6. Création de l'achat
-#         # =====================================================
-
-#         achat = Achat.objects.create(
-#             fournisseur=fournisseur,
-#             bijouterie=bijouterie,
-#             reference_commande=(
-#                 data.get("reference_commande")
-#                 or ""
-#             ),
-#             description=(
-#                 data.get("description")
-#                 or ""
-#             ),
-#             frais_transport=(
-#                 data.get("frais_transport")
-#                 or Decimal("0.00")
-#             ),
-#             frais_douane=(
-#                 data.get("frais_douane")
-#                 or Decimal("0.00")
-#             ),
-#             status=Achat.STATUS_CONFIRMED,
-#         )
-
-#         lots_created = []
-
-#         # =====================================================
-#         # 7. Lots, ProduitLine, Stock et PURCHASE_IN
-#         # =====================================================
-
-#         for lot_data in lots_normalises:
-#             lot = None
-
-#             for _ in range(5):
-#                 try:
-#                     lot = Lot.objects.create(
-#                         achat=achat,
-#                         numero_lot=(
-#                             generate_numero_lot()
-#                         ),
-#                         description=(
-#                             lot_data["description"]
-#                         ),
-#                         received_at=(
-#                             lot_data["received_at"]
-#                             or timezone.now()
-#                         ),
-#                     )
-#                     break
-
-#                 except IntegrityError:
-#                     lot = None
-
-#             if lot is None:
-#                 raise ValidationError({
-#                     "numero_lot": (
-#                         "Impossible de générer un "
-#                         "numéro de lot unique."
-#                     )
-#                 })
-
-#             lots_created.append(lot)
-
-#             for ligne in lot_data["lignes"]:
-#                 produit = produits_by_id[
-#                     ligne["produit_id"]
-#                 ]
-
-#                 quantite = ligne["quantite"]
-#                 prix_achat_gramme = ligne[
-#                     "prix_achat_gramme"
-#                 ]
-
-#                 produit_line = (
-#                     ProduitLine.objects.create(
-#                         lot=lot,
-#                         produit=produit,
-#                         quantite=quantite,
-#                         prix_achat_gramme=(
-#                             prix_achat_gramme
-#                         ),
-#                     )
-#                 )
-
-#                 Stock.objects.create(
-#                     produit_line=produit_line,
-#                     bijouterie=bijouterie,
-#                     quantite_totale=quantite,
-#                     en_stock=quantite,
-#                 )
-
-#                 log_move(
-#                     produit=produit,
-#                     qty=quantite,
-#                     movement_type=(
-#                         MovementType.PURCHASE_IN
-#                     ),
-#                     src_bucket=Bucket.EXTERNAL,
-#                     dst_bucket=Bucket.BIJOUTERIE,
-#                     dst_bijouterie_id=bijouterie.id,
-#                     unit_cost=prix_achat_gramme,
-#                     achat=achat,
-#                     produit_line=produit_line,
-#                     lot=lot,
-#                     user=request.user,
-#                     reason=(
-#                         "Entrée fournisseur vers bijouterie"
-#                     ),
-#                 )
-
-#         # =====================================================
-#         # 8. Totaux définitifs
-#         # =====================================================
-
-#         achat.update_total(save=True)
-
-#         achat.refresh_from_db(
-#             fields=[
-#                 "montant_total_ht",
-#                 "montant_total_ttc",
-#             ]
-#         )
-
-#         # =====================================================
-#         # 9. Réponse
-#         # =====================================================
-
-#         payload = {
-#             "achat": achat,
-#             "lots": lots_created,
-#         }
-
-#         output = ArrivageCreateResponseSerializer(
-#             payload
-#         ).data
-
-#         return Response(
-#             output,
-#             status=status.HTTP_201_CREATED,
-#         )
 
 
 class ArrivageCreateView(APIView):
     """
     Crée un arrivage fournisseur.
 
-    Cycle :
-
-        Fournisseur
-            ↓
-        Achat
-            ↓
-        Lot
-            ↓
-        ProduitLine
-            ↓
-        Stock magasin
-            ↓
-        PURCHASE_IN : EXTERNAL → BIJOUTERIE
+    Fournisseur
+        ↓
+    Achat
+        ↓
+    Lot
+        ↓
+    ProduitLine
+        ↓
+    Stock magasin
+        ↓
+    PURCHASE_IN
 
     Règles :
-
-    - ProduitLine.quantite conserve la quantité historique achetée ;
-    - ProduitLine.poids_unitaire_achat conserve le poids au moment
-      de l'achat ;
-    - Stock.en_stock représente uniquement la quantité actuellement
-      disponible dans la bijouterie ;
-    - InventoryMovement conserve l'historique du mouvement.
-
-    Cette vue ne crée jamais :
-
-    - de stock réserve ;
-    - de VendorStock ;
-    - de VENDOR_ASSIGN ;
-    - de SALE_OUT.
-
-    Périmètre :
-
-    - admin : toutes les bijouteries ;
-    - manager : uniquement ses bijouteries affectées.
+    - Admin : accès à toutes les bijouteries autorisées.
+    - Manager : accès uniquement à ses bijouteries.
+    - ProduitLine.quantite conserve la quantité historique.
+    - ProduitLine.poids_unitaire_achat fige le poids.
+    - Stock.en_stock initialise la quantité disponible.
+    - InventoryMovement enregistre PURCHASE_IN.
+    - Aucun VendorStock n'est créé.
     """
 
     permission_classes = [
@@ -1918,18 +1163,16 @@ class ArrivageCreateView(APIView):
     @swagger_auto_schema(
         operation_id="createArrivage",
         operation_summary=(
-            "Créer un arrivage fournisseur et initialiser "
-            "le stock de la bijouterie"
+            "Créer un arrivage fournisseur "
+            "et initialiser le stock magasin"
         ),
         operation_description=(
             "Crée un achat fournisseur avec un ou plusieurs lots.\n\n"
-            "Pour chaque ProduitLine créée :\n"
-            "- la quantité achetée est conservée historiquement ;\n"
-            "- le poids unitaire d'achat est figé ;\n"
-            "- un Stock magasin est initialisé ;\n"
-            "- un mouvement PURCHASE_IN est enregistré ;\n"
-            "- le mouvement va de EXTERNAL vers BIJOUTERIE.\n\n"
-            "Aucun VendorStock ni stock réserve n'est créé."
+            "Chaque ligne reçue génère :\n"
+            "- une ProduitLine ;\n"
+            "- un Stock magasin ;\n"
+            "- un mouvement PURCHASE_IN verrouillé.\n\n"
+            "Aucun VendorStock n'est créé."
         ),
         request_body=ArrivageCreateInSerializer,
         responses={
@@ -1937,258 +1180,53 @@ class ArrivageCreateView(APIView):
                 description="Arrivage créé avec succès.",
                 schema=ArrivageCreateResponseSerializer,
             ),
-            400: openapi.Response(
-                description="Données invalides.",
-            ),
-            401: openapi.Response(
-                description="Authentification requise.",
-            ),
-            403: openapi.Response(
-                description=(
-                    "Accès refusé ou bijouterie non autorisée."
-                ),
-            ),
+            400: "Données invalides.",
+            401: "Authentification requise.",
+            403: "Accès refusé.",
         },
         tags=["Achats / Arrivages"],
     )
     @transaction.atomic
     def post(self, request):
+
+        # ====================================================
+        # 1. VALIDATION DU PAYLOAD
+        # ====================================================
+
         serializer = ArrivageCreateInSerializer(
-            data=request.data
+            data=request.data,
         )
-        serializer.is_valid(
-            raise_exception=True
-        )
+        serializer.is_valid(raise_exception=True)
 
         data = serializer.validated_data
-        lots_in = data.get("lots") or []
+        lots_in = data["lots"]
 
-        # =====================================================
-        # 1. Bijouterie
-        # =====================================================
+        # ====================================================
+        # 2. BIJOUTERIE ET AUTORISATIONS
+        # ====================================================
 
-        bijouterie_id = data["bijouterie_id"]
+        bijouterie = get_accessible_bijouterie(
+            request.user,
+            data["bijouterie_id"],
+        )
 
-        try:
-            bijouterie = Bijouterie.objects.get(
-                pk=bijouterie_id
-            )
-        except Bijouterie.DoesNotExist:
-            raise ValidationError({
-                "bijouterie_id": "Bijouterie introuvable."
-            })
+        # ====================================================
+        # 3. COLLECTE DES PRODUITS
+        # ====================================================
 
-        # =====================================================
-        # 2. Périmètre utilisateur
-        # =====================================================
+        produit_ids = {
+            ligne["produit_id"]
+            for lot_data in lots_in
+            for ligne in lot_data["lignes"]
+        }
 
-        role = get_role_name(request.user)
-
-        if role == ROLE_MANAGER:
-            manager = getattr(
-                request.user,
-                "staff_manager_profile",
-                None,
-            )
-
-            if (
-                not manager
-                or not getattr(
-                    manager,
-                    "verifie",
-                    False,
-                )
-            ):
-                raise PermissionDenied(
-                    "Profil manager introuvable ou désactivé."
-                )
-
-            bijouteries_manager = getattr(
-                manager,
-                "bijouteries",
-                None,
-            )
-
-            if (
-                bijouteries_manager is None
-                or not bijouteries_manager.filter(
-                    pk=bijouterie.pk
-                ).exists()
-            ):
-                raise PermissionDenied(
-                    "Vous ne pouvez pas créer un arrivage "
-                    "dans cette bijouterie."
-                )
-
-        elif role != ROLE_ADMIN:
-            raise PermissionDenied(
-                "Seuls les administrateurs et les managers "
-                "peuvent créer un arrivage."
-            )
-
-        # =====================================================
-        # 3. Validation et normalisation des lots
-        # =====================================================
-
-        if not lots_in:
-            raise ValidationError({
-                "lots": "Au moins un lot est requis."
-            })
-
-        produit_ids = set()
-        lots_normalises = []
-
-        for lot_index, lot_in in enumerate(lots_in):
-            lignes_in = lot_in.get("lignes") or []
-
-            if not lignes_in:
-                raise ValidationError({
-                    f"lots[{lot_index}].lignes": (
-                        "Chaque lot doit contenir "
-                        "au moins une ligne."
-                    )
-                })
-
-            produits_du_lot = set()
-            lignes_normalisees = []
-
-            for ligne_index, ligne_in in enumerate(
-                lignes_in
-            ):
-                prefixe = (
-                    f"lots[{lot_index}]."
-                    f"lignes[{ligne_index}]"
-                )
-
-                # -------------------------------------------------
-                # Produit
-                # -------------------------------------------------
-
-                produit_id = ligne_in.get(
-                    "produit_id"
-                )
-
-                if not produit_id:
-                    raise ValidationError({
-                        f"{prefixe}.produit_id": (
-                            "produit_id est obligatoire."
-                        )
-                    })
-
-                if produit_id in produits_du_lot:
-                    raise ValidationError({
-                        f"{prefixe}.produit_id": (
-                            "Un produit ne peut apparaître "
-                            "qu'une seule fois dans un même lot."
-                        )
-                    })
-
-                produits_du_lot.add(
-                    produit_id
-                )
-                produit_ids.add(
-                    produit_id
-                )
-
-                # -------------------------------------------------
-                # Quantité
-                # -------------------------------------------------
-
-                try:
-                    quantite = int(
-                        ligne_in.get("quantite")
-                    )
-                except (TypeError, ValueError):
-                    raise ValidationError({
-                        f"{prefixe}.quantite": (
-                            "Quantité invalide."
-                        )
-                    })
-
-                if quantite < 1:
-                    raise ValidationError({
-                        f"{prefixe}.quantite": (
-                            "La quantité doit être supérieure "
-                            "ou égale à 1."
-                        )
-                    })
-
-                # -------------------------------------------------
-                # Prix d'achat par gramme
-                # -------------------------------------------------
-
-                prix_brut = ligne_in.get(
-                    "prix_achat_gramme"
-                )
-
-                if prix_brut is None:
-                    raise ValidationError({
-                        f"{prefixe}.prix_achat_gramme": (
-                            "Le prix d'achat par gramme "
-                            "est obligatoire."
-                        )
-                    })
-
-                try:
-                    prix_achat_gramme = Decimal(
-                        str(prix_brut)
-                    ).quantize(
-                        Decimal("0.01"),
-                        rounding=ROUND_HALF_UP,
-                    )
-
-                except (
-                    InvalidOperation,
-                    TypeError,
-                    ValueError,
-                ):
-                    raise ValidationError({
-                        f"{prefixe}.prix_achat_gramme": (
-                            "Prix d'achat par gramme invalide."
-                        )
-                    })
-
-                if prix_achat_gramme < Decimal("0.00"):
-                    raise ValidationError({
-                        f"{prefixe}.prix_achat_gramme": (
-                            "Le prix d'achat par gramme "
-                            "ne peut pas être négatif."
-                        )
-                    })
-
-                lignes_normalisees.append({
-                    "produit_id": produit_id,
-                    "quantite": quantite,
-                    "prix_achat_gramme": (
-                        prix_achat_gramme
-                    ),
-                })
-
-            lots_normalises.append({
-                "description": (
-                    lot_in.get("description")
-                    or data.get("description")
-                    or ""
-                ),
-                "received_at": lot_in.get(
-                    "received_at"
-                ),
-                "lignes": lignes_normalisees,
-            })
-
-        # =====================================================
-        # 4. Validation des produits
-        # =====================================================
-
-        produits = (
-            Produit.objects
-            .filter(
-                pk__in=produit_ids
-            )
-            .only(
-                "id",
-                "poids",
-            )
+        produits = Produit.objects.filter(
+            id__in=produit_ids,
+        ).only(
+            "id",
+            "sku",
+            "nom",
+            "poids",
         )
 
         produits_by_id = {
@@ -2196,208 +1234,186 @@ class ArrivageCreateView(APIView):
             for produit in produits
         }
 
+        # ====================================================
+        # 4. VÉRIFICATION DE L'EXISTENCE DES PRODUITS
+        # ====================================================
+
         produits_manquants = (
-            produit_ids
-            - set(produits_by_id)
+            produit_ids - set(produits_by_id)
         )
 
         if produits_manquants:
-            raise ValidationError({
+            raise serializers.ValidationError({
                 "lots": (
                     "Produit(s) introuvable(s) : "
                     f"{sorted(produits_manquants)}."
                 )
             })
 
-        # -----------------------------------------------------
-        # Le poids doit exister et être > 0.
-        #
-        # Ce poids sera figé dans
-        # ProduitLine.poids_unitaire_achat.
-        # -----------------------------------------------------
+        # ====================================================
+        # 5. VALIDATION DES POIDS
+        # ====================================================
 
         produits_poids_invalides = [
             produit.id
             for produit in produits_by_id.values()
             if (
                 produit.poids is None
-                or produit.poids <= Decimal("0.00")
+                or produit.poids <= Decimal("0")
             )
         ]
 
         if produits_poids_invalides:
-            raise ValidationError({
+            raise serializers.ValidationError({
                 "lots": (
-                    "Produit(s) avec poids invalide : "
+                    "Poids invalide pour les produits : "
                     f"{sorted(produits_poids_invalides)}. "
-                    "Le poids doit être strictement "
-                    "supérieur à zéro."
+                    "Le poids doit être supérieur à zéro."
                 )
             })
 
-        # =====================================================
-        # 5. Fournisseur
-        # =====================================================
+        # ====================================================
+        # 6. FOURNISSEUR
+        # ====================================================
 
         fournisseur_data = data["fournisseur"]
 
         telephone = (
-            fournisseur_data["telephone"]
-            or ""
+            fournisseur_data["telephone"] or ""
         ).strip()
 
         if not telephone:
-            raise ValidationError({
+            raise serializers.ValidationError({
                 "fournisseur": {
                     "telephone": (
-                        "Le téléphone du fournisseur "
-                        "est obligatoire."
+                        "Le téléphone est obligatoire."
                     )
                 }
             })
 
-        fournisseur, _ = (
-            Fournisseur.objects.update_or_create(
-                telephone=telephone,
-                defaults={
-                    "nom": (
-                        fournisseur_data.get("nom")
-                        or ""
-                    ),
-                    "prenom": (
-                        fournisseur_data.get("prenom")
-                        or ""
-                    ),
-                    "address": (
-                        fournisseur_data.get("address")
-                        or ""
-                    ),
-                },
-            )
+        fournisseur, _ = Fournisseur.objects.update_or_create(
+            telephone=telephone,
+            defaults={
+                "nom": (
+                    fournisseur_data.get("nom") or ""
+                ),
+                "prenom": (
+                    fournisseur_data.get("prenom") or ""
+                ),
+                "address": (
+                    fournisseur_data.get("address") or ""
+                ),
+            },
         )
 
-        # =====================================================
-        # 6. Création de l'achat
-        # =====================================================
+        # ====================================================
+        # 7. CRÉATION DE L'ACHAT
+        # ====================================================
 
         achat = Achat.objects.create(
             fournisseur=fournisseur,
             bijouterie=bijouterie,
             reference_commande=(
-                data.get("reference_commande")
-                or ""
+                data.get("reference_commande") or ""
             ),
             description=(
-                data.get("description")
-                or ""
+                data.get("description") or ""
             ),
-            frais_transport=(
-                data.get("frais_transport")
-                or Decimal("0.00")
+            frais_transport=data.get(
+                "frais_transport",
+                Decimal("0.00"),
             ),
-            frais_douane=(
-                data.get("frais_douane")
-                or Decimal("0.00")
+            frais_douane=data.get(
+                "frais_douane",
+                Decimal("0.00"),
             ),
             status=Achat.STATUS_CONFIRMED,
         )
 
         lots_created = []
 
-        # =====================================================
-        # 7. Lots, ProduitLine, Stock et PURCHASE_IN
-        # =====================================================
+        # ====================================================
+        # 8. CRÉATION DES LOTS
+        # ====================================================
 
-        for lot_data in lots_normalises:
+        for lot_data in lots_in:
+
             lot = None
 
-            # -------------------------------------------------
-            # Création du lot
-            # -------------------------------------------------
-
-            for _ in range(5):
+            for tentative in range(5):
                 try:
-                    lot = Lot.objects.create(
-                        achat=achat,
-                        numero_lot=(
-                            generate_numero_lot()
-                        ),
-                        description=(
-                            lot_data["description"]
-                        ),
-                        received_at=(
-                            lot_data["received_at"]
-                            or timezone.now()
-                        ),
-                    )
-
+                    # Savepoint : une collision sur numero_lot
+                    # ne casse pas la transaction principale.
+                    with transaction.atomic():
+                        lot = Lot.objects.create(
+                            achat=achat,
+                            numero_lot=generate_numero_lot(),
+                            description=(
+                                lot_data.get("description")
+                                or data.get("description")
+                                or ""
+                            ),
+                            received_at=(
+                                lot_data.get("received_at")
+                                or timezone.now()
+                            ),
+                        )
                     break
 
                 except IntegrityError:
-                    lot = None
+                    # Ne réessayer que si le numéro
+                    # généré est déjà utilisé.
+                    # Toute autre erreur SQL est propagée.
+                    if lot is None:
+                        pass
 
-            if lot is None:
-                raise ValidationError({
-                    "numero_lot": (
-                        "Impossible de générer un "
-                        "numéro de lot unique."
-                    )
-                })
+                    # La fonction actuelle génère le numéro
+                    # à partir du dernier numéro existant.
+                    # Une collision concurrente peut donc
+                    # se reproduire ; les tentatives sont bornées.
+                    if tentative == 4:
+                        raise
 
-            lots_created.append(
-                lot
-            )
+            lots_created.append(lot)
 
-            # -------------------------------------------------
-            # Lignes produits
-            # -------------------------------------------------
+            # ================================================
+            # 9. LIGNES PRODUIT DU LOT
+            # ================================================
 
-            for ligne in lot_data["lignes"]:
+            for ligne_data in lot_data["lignes"]:
+
                 produit = produits_by_id[
-                    ligne["produit_id"]
+                    ligne_data["produit_id"]
                 ]
 
-                quantite = ligne[
-                    "quantite"
-                ]
-
-                prix_achat_gramme = ligne[
+                etat = ligne_data["etat"]
+                quantite = ligne_data["quantite"]
+                prix_achat_gramme = ligne_data[
                     "prix_achat_gramme"
                 ]
 
-                # =============================================
-                # ProduitLine
-                #
-                # quantite :
-                # quantité historique achetée.
-                #
-                # poids_unitaire_achat :
-                # snapshot du poids au moment de l'achat.
-                # =============================================
+                # ============================================
+                # 9.1. SNAPSHOT DU POIDS
+                # ============================================
 
-                produit_line = (
-                    ProduitLine.objects.create(
-                        lot=lot,
-                        produit=produit,
-                        quantite=quantite,
-                        poids_unitaire_achat=(
-                            produit.poids
-                        ),
-                        prix_achat_gramme=(
-                            prix_achat_gramme
-                        ),
-                    )
+                poids_unitaire_achat = produit.poids
+
+                # ============================================
+                # 9.2. PRODUITLINE
+                # ============================================
+
+                produit_line = ProduitLine.objects.create(
+                    lot=lot,
+                    produit=produit,
+                    etat=etat,
+                    quantite=quantite,
+                    poids_unitaire_achat=poids_unitaire_achat,
+                    prix_achat_gramme=prix_achat_gramme,
                 )
 
-                # =============================================
-                # Stock magasin
-                #
-                # en_stock :
-                # quantité actuellement disponible.
-                #
-                # ProduitLine.quantite reste la quantité
-                # historique et ne sera pas modifiée ici.
-                # =============================================
+                # ============================================
+                # 9.3. INITIALISATION DU STOCK MAGASIN
+                # ============================================
 
                 Stock.objects.create(
                     produit_line=produit_line,
@@ -2405,39 +1421,57 @@ class ArrivageCreateView(APIView):
                     en_stock=quantite,
                 )
 
-                # =============================================
-                # Historique
-                # EXTERNAL → BIJOUTERIE
-                # =============================================
+                # ============================================
+                # 9.4. COÛT UNITAIRE PAR BIJOU
+                # ============================================
+
+                cout_unitaire = (
+                    prix_achat_gramme
+                    * poids_unitaire_achat
+                ).quantize(
+                    Decimal("0.01"),
+                    rounding=ROUND_HALF_UP,
+                )
+
+                # Le champ InventoryMovement.unit_cost
+                # est limité à max_digits=12,
+                # decimal_places=2.
+                if cout_unitaire >= Decimal("10000000000"):
+                    raise serializers.ValidationError({
+                        "prix_achat_gramme": (
+                            "Le coût unitaire calculé "
+                            "dépasse la capacité du journal "
+                            "d'inventaire."
+                        )
+                    })
+
+                # ============================================
+                # 9.5. MOUVEMENT PURCHASE_IN
+                # ============================================
 
                 log_move(
                     produit=produit,
                     qty=quantite,
-                    movement_type=(
-                        MovementType.PURCHASE_IN
-                    ),
+                    movement_type=MovementType.PURCHASE_IN,
                     src_bucket=Bucket.EXTERNAL,
                     dst_bucket=Bucket.BIJOUTERIE,
-                    dst_bijouterie_id=(
-                        bijouterie.id
-                    ),
-                    unit_cost=prix_achat_gramme,
+                    dst_bijouterie_id=bijouterie.id,
+                    unit_cost=cout_unitaire,
                     achat=achat,
-                    produit_line=produit_line,
                     lot=lot,
+                    produit_line=produit_line,
                     user=request.user,
                     reason=(
                         "Entrée fournisseur vers bijouterie"
                     ),
+                    lock=True,
                 )
 
-        # =====================================================
-        # 8. Totaux définitifs
-        # =====================================================
+        # ====================================================
+        # 10. CALCUL DES TOTAUX DE L'ACHAT
+        # ====================================================
 
-        achat.update_total(
-            save=True
-        )
+        achat.update_total(save=True)
 
         achat.refresh_from_db(
             fields=[
@@ -2446,24 +1480,26 @@ class ArrivageCreateView(APIView):
             ]
         )
 
-        # =====================================================
-        # 9. Réponse
-        # =====================================================
+        # ====================================================
+        # 11. RÉPONSE
+        # ====================================================
 
-        payload = {
-            "achat": achat,
-            "lots": lots_created,
-        }
-
-        output = ArrivageCreateResponseSerializer(
-            payload
-        ).data
+        response_serializer = (
+            ArrivageCreateResponseSerializer(
+                {
+                    "achat": achat,
+                    "lots": lots_created,
+                },
+                context={
+                    "request": request,
+                },
+            )
+        )
 
         return Response(
-            output,
+            response_serializer.data,
             status=status.HTTP_201_CREATED,
         )
-        
 
 
 
@@ -5282,10 +4318,12 @@ class ArrivageMetaUpdateView(APIView):
 #         return response
     
     
-
 class LotEtiquettesListAPIView(APIView):
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
 
     @swagger_auto_schema(
         operation_summary="Lister les étiquettes d'un lot",
@@ -5305,39 +4343,29 @@ class LotEtiquettesListAPIView(APIView):
     def get(self, request, numero_lot):
 
         # -----------------------------------------------------
-        # Vérification du rôle
+        # 1. QuerySet des lots accessibles
         # -----------------------------------------------------
 
-        role = get_role_name(request.user)
-
-        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-            return Response(
-                {"detail": "Accès refusé."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        # -----------------------------------------------------
-        # Vérifier le lot
-        # -----------------------------------------------------
-
-        try:
-            lot = Lot.objects.get(
-                numero_lot=numero_lot
-            )
-
-        except Lot.DoesNotExist:
-            return Response(
-                {
-                    "detail": (
-                        f"Le lot '{numero_lot}' "
-                        "est introuvable."
-                    )
-                },
-                status=status.HTTP_404_NOT_FOUND,
-            )
+        lots_queryset = scope_queryset_by_bijouterie(
+            Lot.objects.select_related(
+                "achat",
+                "achat__bijouterie",
+            ),
+            user=request.user,
+            field="achat__bijouterie_id",
+        )
 
         # -----------------------------------------------------
-        # Récupérer les lignes
+        # 2. Récupérer uniquement un lot autorisé
+        # -----------------------------------------------------
+
+        lot = get_object_or_404(
+            lots_queryset,
+            numero_lot=numero_lot,
+        )
+
+        # -----------------------------------------------------
+        # 3. Récupérer les lignes du lot
         # -----------------------------------------------------
 
         produit_lines = (
@@ -5350,7 +4378,10 @@ class LotEtiquettesListAPIView(APIView):
                 "produit__categorie",
                 "produit__modele",
             )
-            .filter(lot=lot)
+            .filter(
+                lot=lot,
+                numero_ligne_lot__isnull=False,
+            )
             .order_by(
                 "numero_ligne_lot",
                 "id",
@@ -5358,51 +4389,51 @@ class LotEtiquettesListAPIView(APIView):
         )
 
         # -----------------------------------------------------
-        # Construire le JSON
+        # 4. Construire la liste des étiquettes
         # -----------------------------------------------------
 
         etiquettes = []
 
         for line in produit_lines:
 
-            if line.numero_ligne_lot is None:
-                continue
+            code_etiquette = build_code_etiquette(
+                line
+            )
 
-            try:
-                quantite = int(line.quantite)
-            except (TypeError, ValueError):
-                quantite = 0
-
-            code_etiquette = build_code_etiquette(line)
+            download_url = request.build_absolute_uri(
+                reverse(
+                    "lot-etiquette-download",
+                    kwargs={
+                        "numero_lot": lot.numero_lot,
+                        "numero_ligne": line.numero_ligne_lot,
+                    },
+                )
+            )
 
             etiquettes.append({
                 "numero_ligne": line.numero_ligne_lot,
                 "code": code_etiquette,
-                "quantite": quantite,
-                "download_url": request.build_absolute_uri(
-                    reverse(
-                        "lot-etiquette-download",
-                        kwargs={
-                            "numero_lot": numero_lot,
-                            "numero_ligne": (
-                                line.numero_ligne_lot
-                            ),
-                        },
-                    )
-                ),
+                "quantite": int(line.quantite),
+                "download_url": download_url,
             })
 
+        # -----------------------------------------------------
+        # 5. Réponse JSON
+        # -----------------------------------------------------
+
         return Response({
-            "lot": numero_lot,
+            "lot": lot.numero_lot,
             "etiquettes": etiquettes,
         })
         
-
-
+        
 class LotEtiquetteDownloadAPIView(APIView):
-    
-    permission_classes = [IsAuthenticated]
-    
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+
     @swagger_auto_schema(
         operation_summary="Télécharger une étiquette",
         tags=["Étiquettes"],
@@ -5410,11 +4441,11 @@ class LotEtiquetteDownloadAPIView(APIView):
             200: openapi.Response(
                 description="Fichier PNG de l'étiquette."
             ),
+            400: "Étiquette invalide.",
             403: "Accès refusé.",
             404: "Étiquette introuvable.",
         },
     )
-
     def get(
         self,
         request,
@@ -5423,79 +4454,66 @@ class LotEtiquetteDownloadAPIView(APIView):
     ):
 
         # -----------------------------------------------------
-        # Vérification du rôle
+        # 1. QuerySet sécurisé par bijouterie
         # -----------------------------------------------------
 
-        role = get_role_name(request.user)
-
-        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-            return Response(
-                {"detail": "Accès refusé."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        queryset = scope_queryset_by_bijouterie(
+            ProduitLine.objects.select_related(
+                "lot",
+                "lot__achat",
+                "produit",
+                "produit__purete",
+                "produit__marque",
+                "produit__categorie",
+                "produit__modele",
+            ),
+            user=request.user,
+            field="lot__achat__bijouterie_id",
+        )
 
         # -----------------------------------------------------
-        # Récupérer la ligne
+        # 2. Récupérer la ligne autorisée
+        # -----------------------------------------------------
+
+        line = get_object_or_404(
+            queryset,
+            lot__numero_lot=numero_lot,
+            numero_ligne_lot=numero_ligne,
+        )
+
+        # -----------------------------------------------------
+        # 3. Générer UNE étiquette
         # -----------------------------------------------------
 
         try:
-            line = (
-                ProduitLine.objects
-                .select_related(
-                    "lot",
-                    "produit",
-                    "produit__purete",
-                    "produit__marque",
-                    "produit__categorie",
-                    "produit__modele",
-                )
-                .get(
-                    lot__numero_lot=numero_lot,
-                    numero_ligne_lot=numero_ligne,
-                )
+            image_buffer = build_etiquette_produit_png(
+                line
             )
 
-        except ProduitLine.DoesNotExist:
+            code_etiquette = build_code_etiquette(
+                line
+            )
+
+        except ValueError as exc:
             return Response(
                 {
-                    "detail": (
-                        "Ligne produit introuvable."
-                    )
+                    "detail": str(exc),
                 },
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        # -----------------------------------------------------
-        # Générer UNE étiquette
-        # -----------------------------------------------------
-
-        try:
-            image_buffer = (
-                build_etiquette_produit_png(line)
-            )
-
-            code_etiquette = (
-                build_code_etiquette(line)
-            )
-
-        except ValueError as e:
-            return Response(
-                {"detail": str(e)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         # -----------------------------------------------------
-        # Nom du fichier
+        # 4. Nom du fichier
         # -----------------------------------------------------
 
         filename = (
             f"{numero_lot}_"
-            f"{numero_ligne:02d}_"
+            f"{line.numero_ligne_lot:02d}_"
             f"{code_etiquette}.png"
         )
 
         # -----------------------------------------------------
-        # Réponse
+        # 5. Réponse PNG
         # -----------------------------------------------------
 
         response = HttpResponse(
@@ -5510,10 +4528,15 @@ class LotEtiquetteDownloadAPIView(APIView):
         return response
     
 
+
+
 class EtiquetteDetailAPIView(APIView):
 
-    permission_classes = [IsAuthenticated]
-    
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManager,
+    ]
+
     @swagger_auto_schema(
         operation_summary="Rechercher une étiquette par UUID",
         tags=["Étiquettes"],
@@ -5525,65 +4548,77 @@ class EtiquetteDetailAPIView(APIView):
             404: "Étiquette introuvable.",
         },
     )
-
     def get(self, request, uuid):
 
-        role = get_role_name(request.user)
+        # -----------------------------------------------------
+        # 1. QuerySet sécurisé par bijouterie
+        # -----------------------------------------------------
 
-        if role not in [ROLE_ADMIN, ROLE_MANAGER]:
-            return Response(
-                {"detail": "Accès refusé."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        queryset = scope_queryset_by_bijouterie(
+            ProduitLine.objects.select_related(
+                "lot",
+                "lot__achat",
+                "produit",
+                "produit__purete",
+                "produit__marque",
+                "produit__categorie",
+                "produit__modele",
+            ),
+            user=request.user,
+            field="lot__achat__bijouterie_id",
+        )
 
-        try:
-            produit_line = (
-                ProduitLine.objects
-                .select_related(
-                    "lot",
-                    "produit",
-                    "produit__purete",
-                    "produit__marque",
-                    "produit__categorie",
-                    "produit__modele",
-                )
-                .get(uuid=uuid)
-            )
+        # -----------------------------------------------------
+        # 2. Récupérer uniquement une étiquette autorisée
+        # -----------------------------------------------------
 
-        except ProduitLine.DoesNotExist:
+        produit_line = get_object_or_404(
+            queryset,
+            uuid=uuid,
+        )
+
+        # -----------------------------------------------------
+        # 3. Vérifier le numéro de ligne
+        # -----------------------------------------------------
+
+        numero_ligne = produit_line.numero_ligne_lot
+
+        if numero_ligne is None:
             return Response(
                 {
                     "detail": (
-                        "Étiquette introuvable."
+                        "Cette étiquette ne possède pas "
+                        "de numéro de ligne."
                     )
                 },
-                status=status.HTTP_404_NOT_FOUND,
+                status=400,
             )
+
+        # -----------------------------------------------------
+        # 4. Construire l'URL de téléchargement
+        # -----------------------------------------------------
+
+        download_url = request.build_absolute_uri(
+            reverse(
+                "lot-etiquette-download",
+                kwargs={
+                    "numero_lot": produit_line.lot.numero_lot,
+                    "numero_ligne": numero_ligne,
+                },
+            )
+        )
+
+        # -----------------------------------------------------
+        # 5. Réponse JSON
+        # -----------------------------------------------------
 
         return Response({
             "uuid": str(produit_line.uuid),
             "lot": produit_line.lot.numero_lot,
-            "numero_ligne": (
-                produit_line.numero_ligne_lot
-            ),
-            "code": build_code_etiquette(
-                produit_line
-            ),
+            "numero_ligne": numero_ligne,
+            "code": build_code_etiquette(produit_line),
             "quantite": produit_line.quantite,
-            "download_url": request.build_absolute_uri(
-                reverse(
-                    "lot-etiquette-download",
-                    kwargs={
-                        "numero_lot": (
-                            produit_line.lot.numero_lot
-                        ),
-                        "numero_ligne": (
-                            produit_line.numero_ligne_lot
-                        ),
-                    },
-                )
-            ),
+            "download_url": download_url,
         })
-        
         
 

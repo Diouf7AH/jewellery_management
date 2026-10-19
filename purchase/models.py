@@ -1112,20 +1112,44 @@ class Lot(models.Model):
 # ============================================================
 # PRODUIT LINE
 # ============================================================
+ZERO = Decimal("0.00")
+TWOPLACES = Decimal("0.01")
+
+ETAT = (
+    ("N", "Neuf"),
+    ("O", "Occasion"),
+)
+
+POURCENTAGES_OCCASION = {
+    Decimal("5.00"),
+    Decimal("10.00"),
+    Decimal("15.00"),
+    Decimal("20.00"),
+    Decimal("25.00"),
+    Decimal("30.00"),
+}
+
 
 class ProduitLine(models.Model):
     """
-    Une ligne produit dans un lot.
+    Ligne d'achat d'un produit dans un lot.
 
-    poids_unitaire_achat est le snapshot du poids
-    au moment de l'achat.
+    Un même produit du catalogue peut être acheté :
+        - neuf (N)
+        - occasion (O)
 
-    Cela permet de conserver l'historique même si
-    Produit.poids est modifié ultérieurement.
+    L'état, le poids et le pourcentage d'occasion
+    sont définis à l'achat.
+
+    Les données historiques ne peuvent pas être
+    modifiées après création.
+
+    Identité :
+        lot + produit + etat
     """
 
     # ========================================================
-    # IDENTIFIANT UNIQUE
+    # 1. IDENTIFIANT
     # ========================================================
 
     uuid = models.UUIDField(
@@ -1136,7 +1160,7 @@ class ProduitLine(models.Model):
     )
 
     # ========================================================
-    # RELATIONS
+    # 2. RELATIONS
     # ========================================================
 
     lot = models.ForeignKey(
@@ -1152,7 +1176,18 @@ class ProduitLine(models.Model):
     )
 
     # ========================================================
-    # DONNÉES D'ACHAT
+    # 3. ÉTAT DU BIJOU
+    # ========================================================
+
+    etat = models.CharField(
+        max_length=1,
+        choices=ETAT,
+        default="N",
+        db_index=True,
+    )
+
+    # ========================================================
+    # 4. DONNÉES D'ACHAT
     # ========================================================
 
     poids_unitaire_achat = models.DecimalField(
@@ -1161,7 +1196,8 @@ class ProduitLine(models.Model):
         null=True,
         blank=True,
         help_text=(
-            "Poids unitaire constaté au moment de l'achat."
+            "Poids unitaire historique constaté "
+            "au moment de l'achat."
         ),
     )
 
@@ -1172,6 +1208,25 @@ class ProduitLine(models.Model):
 
     quantite = models.PositiveIntegerField()
 
+    # ========================================================
+    # 5. POURCENTAGE D'OCCASION
+    # ========================================================
+
+    pourcentage_occasion = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=ZERO,
+        help_text=(
+            "0 % pour un bijou neuf. "
+            "5, 10, 15, 20, 25 ou 30 % "
+            "pour un bijou d'occasion."
+        ),
+    )
+
+    # ========================================================
+    # 6. NUMÉRO DE LIGNE
+    # ========================================================
+
     numero_ligne_lot = models.PositiveIntegerField(
         null=True,
         blank=True,
@@ -1179,7 +1234,7 @@ class ProduitLine(models.Model):
     )
 
     # ========================================================
-    # META
+    # 7. META
     # ========================================================
 
     class Meta:
@@ -1194,75 +1249,69 @@ class ProduitLine(models.Model):
                 fields=["lot"],
                 name="idx_pl_lot",
             ),
-
             models.Index(
                 fields=["produit"],
                 name="idx_pl_produit",
             ),
-
             models.Index(
-                fields=[
-                    "lot",
-                    "numero_ligne_lot",
-                ],
+                fields=["lot", "numero_ligne_lot"],
                 name="idx_pl_lot_numero",
             ),
         ]
 
         constraints = [
             models.CheckConstraint(
-                condition=Q(
-                    quantite__gte=1
-                ),
+                condition=Q(quantite__gte=1),
                 name="ck_pl_qty_gte1",
             ),
-
             models.CheckConstraint(
-                condition=Q(
-                    prix_achat_gramme__gte=0
-                ),
+                condition=Q(prix_achat_gramme__gte=0),
                 name="produit_line_prix_achat_gte_0",
             ),
-
-            # null est temporairement autorisé
-            # pour permettre la migration
-            # des anciennes données.
             models.CheckConstraint(
                 condition=(
-                    Q(
-                        poids_unitaire_achat__isnull=True
-                    )
-                    |
-                    Q(
-                        poids_unitaire_achat__gt=0
-                    )
+                    Q(poids_unitaire_achat__isnull=True)
+                    | Q(poids_unitaire_achat__gt=0)
                 ),
                 name="ck_pl_poids_achat_gt_0",
             ),
-
-            models.UniqueConstraint(
-                fields=[
-                    "lot",
-                    "produit",
-                ],
-                name="uniq_produit_per_lot",
+            models.CheckConstraint(
+                condition=Q(etat__in=["N", "O"]),
+                name="ck_pl_etat_valide",
             ),
-
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        etat="N",
+                        pourcentage_occasion=ZERO,
+                    )
+                    |
+                    (
+                        Q(etat="O")
+                        & Q(
+                            pourcentage_occasion__in=sorted(
+                                POURCENTAGES_OCCASION
+                            )
+                        )
+                    )
+                ),
+                name="ck_pl_pourcentage_selon_etat",
+            ),
             models.UniqueConstraint(
-                fields=[
-                    "lot",
-                    "numero_ligne_lot",
-                ],
+                fields=["lot", "produit", "etat"],
+                name="uniq_produit_etat_per_lot",
+            ),
+            models.UniqueConstraint(
+                fields=["lot", "numero_ligne_lot"],
                 name="unique_numero_ligne_par_lot",
             ),
         ]
 
     # ========================================================
-    # STRING
+    # 8. REPRÉSENTATION
     # ========================================================
 
     def __str__(self):
-
         numero = (
             f"{self.numero_ligne_lot:02d}"
             if self.numero_ligne_lot is not None
@@ -1273,88 +1322,216 @@ class ProduitLine(models.Model):
             f"{self.lot.numero_lot}"
             f" · ligne={numero}"
             f" · produit={self.produit_id}"
+            f" · etat={self.etat}"
+            f" · occasion={self.pourcentage_occasion}%"
         )
 
     # ========================================================
-    # VALIDATION
+    # 9. VALIDATION MÉTIER
     # ========================================================
 
     def clean(self):
         super().clean()
 
+        errors = {}
+
+        # ----------------------------------------------------
+        # QUANTITÉ
+        # ----------------------------------------------------
+
         if (
-            self.quantite is not None
-            and self.quantite < 1
+            self.quantite is None
+            or self.quantite < 1
         ):
-            raise ValidationError({
-                "quantite": (
-                    "La quantité doit être supérieure "
-                    "ou égale à 1."
-                )
-            })
+            errors["quantite"] = (
+                "La quantité doit être supérieure "
+                "ou égale à 1."
+            )
+
+        # ----------------------------------------------------
+        # PRIX D'ACHAT
+        # ----------------------------------------------------
 
         if (
             self.prix_achat_gramme is not None
             and self.prix_achat_gramme < 0
         ):
-            raise ValidationError({
-                "prix_achat_gramme": (
-                    "Le prix d'achat par gramme "
-                    "ne peut pas être négatif."
-                )
-            })
+            errors["prix_achat_gramme"] = (
+                "Le prix d'achat par gramme "
+                "ne peut pas être négatif."
+            )
+
+        # ----------------------------------------------------
+        # POIDS HISTORIQUE
+        # ----------------------------------------------------
 
         if (
             self.poids_unitaire_achat is not None
             and self.poids_unitaire_achat <= 0
         ):
-            raise ValidationError({
-                "poids_unitaire_achat": (
-                    "Le poids unitaire d'achat doit "
-                    "être supérieur à zéro."
+            errors["poids_unitaire_achat"] = (
+                "Le poids unitaire d'achat doit "
+                "être supérieur à zéro."
+            )
+
+        # ----------------------------------------------------
+        # ÉTAT
+        # ----------------------------------------------------
+
+        if self.etat not in {"N", "O"}:
+            errors["etat"] = (
+                "L'état doit être N (Neuf) "
+                "ou O (Occasion)."
+            )
+
+        # ----------------------------------------------------
+        # POURCENTAGE D'OCCASION
+        # ----------------------------------------------------
+
+        try:
+            pourcentage = Decimal(
+                str(self.pourcentage_occasion)
+            )
+
+            if not pourcentage.is_finite():
+                raise InvalidOperation
+
+        except (InvalidOperation, ValueError, TypeError):
+            pourcentage = None
+
+        if pourcentage is None:
+            errors["pourcentage_occasion"] = (
+                "Le pourcentage d'occasion est invalide."
+            )
+
+        elif self.etat == "N":
+            if pourcentage != ZERO:
+                errors["pourcentage_occasion"] = (
+                    "Un bijou neuf doit avoir "
+                    "un pourcentage de 0 %."
                 )
-            })
+
+        elif self.etat == "O":
+            if pourcentage not in POURCENTAGES_OCCASION:
+                errors["pourcentage_occasion"] = (
+                    "Pour un bijou d'occasion, "
+                    "les valeurs autorisées sont : "
+                    "5, 10, 15, 20, 25 ou 30 %."
+                )
+
+        # ----------------------------------------------------
+        # NUMÉRO DE LIGNE
+        # ----------------------------------------------------
 
         if (
             self.numero_ligne_lot is not None
             and self.numero_ligne_lot < 1
         ):
-            raise ValidationError({
-                "numero_ligne_lot": (
-                    "Le numéro de ligne doit être "
-                    "supérieur ou égal à 1."
+            errors["numero_ligne_lot"] = (
+                "Le numéro de ligne doit être "
+                "supérieur ou égal à 1."
+            )
+
+        # ----------------------------------------------------
+        # PROTECTION DES DONNÉES HISTORIQUES
+        # ----------------------------------------------------
+
+        if self.pk is not None:
+            ancienne = (
+                type(self).objects
+                .filter(pk=self.pk)
+                .values(
+                    "lot_id",
+                    "produit_id",
+                    "etat",
+                    "numero_ligne_lot",
+                    "poids_unitaire_achat",
+                    "pourcentage_occasion",
                 )
-            })
+                .first()
+            )
+
+            if ancienne is not None:
+
+                if self.lot_id != ancienne["lot_id"]:
+                    errors["lot"] = (
+                        "Impossible de modifier le lot "
+                        "après création."
+                    )
+
+                if self.produit_id != ancienne["produit_id"]:
+                    errors["produit"] = (
+                        "Impossible de modifier le produit "
+                        "après création."
+                    )
+
+                if self.etat != ancienne["etat"]:
+                    errors["etat"] = (
+                        "Impossible de modifier l'état "
+                        "après création."
+                    )
+
+                if (
+                    self.numero_ligne_lot
+                    != ancienne["numero_ligne_lot"]
+                ):
+                    errors["numero_ligne_lot"] = (
+                        "Impossible de modifier le numéro "
+                        "de ligne après création."
+                    )
+
+                if (
+                    ancienne["poids_unitaire_achat"] is not None
+                    and self.poids_unitaire_achat
+                    != ancienne["poids_unitaire_achat"]
+                ):
+                    errors["poids_unitaire_achat"] = (
+                        "Le poids historique d'achat "
+                        "ne peut pas être modifié."
+                    )
+
+                if (
+                    self.pourcentage_occasion
+                    != ancienne["pourcentage_occasion"]
+                ):
+                    errors["pourcentage_occasion"] = (
+                        "Le pourcentage défini à l'achat "
+                        "ne peut pas être modifié."
+                    )
+
+        if errors:
+            raise ValidationError(errors)
 
     # ========================================================
-    # SAVE
+    # 10. SAUVEGARDE
     # ========================================================
 
     def save(self, *args, **kwargs):
         """
-        Lors de la création :
+        À la création :
+        - récupère le poids du Produit si absent ;
+        - attribue un numéro unique dans le lot ;
+        - valide les données ;
+        - sauvegarde.
 
-        1. copie Produit.poids vers poids_unitaire_achat ;
-        2. génère numero_ligne_lot.
-
-        Le poids est donc figé au moment de l'achat.
+        À la mise à jour :
+        - protège les données historiques ;
+        - valide avant sauvegarde.
         """
 
         is_new = self._state.adding
 
-        # ====================================================
+        # ----------------------------------------------------
         # SNAPSHOT DU POIDS
-        # ====================================================
+        # ----------------------------------------------------
 
         if (
             is_new
             and self.poids_unitaire_achat is None
         ):
-
             if not self.produit_id:
                 raise ValidationError({
-                    "produit":
-                        "Le produit est obligatoire."
+                    "produit": "Le produit est obligatoire."
                 })
 
             poids_produit = self.produit.poids
@@ -1370,86 +1547,71 @@ class ProduitLine(models.Model):
                     )
                 })
 
-            self.poids_unitaire_achat = (
-                poids_produit
-            )
+            self.poids_unitaire_achat = poids_produit
 
-        # ====================================================
-        # NUMÉROTATION
-        # ====================================================
+        # ----------------------------------------------------
+        # NUMÉROTATION À LA CRÉATION
+        # ----------------------------------------------------
 
-        if (
-            is_new
-            and self.numero_ligne_lot is None
-        ):
-
-            if not self.lot_id:
-                raise ValidationError({
-                    "lot":
-                        "Le lot est obligatoire."
-                })
-
+        if is_new:
             with transaction.atomic():
 
-                # Verrouille le lot pendant
-                # l'attribution du numéro.
-                Lot.objects.select_for_update().get(
+                if not self.lot_id:
+                    raise ValidationError({
+                        "lot": "Le lot est obligatoire."
+                    })
+
+                LotModel = self._meta.get_field(
+                    "lot"
+                ).remote_field.model
+
+                # Verrouillage du lot pour la numérotation
+                LotModel.objects.select_for_update().get(
                     pk=self.lot_id
                 )
 
-                dernier_numero = (
-                    ProduitLine.objects
-                    .filter(
-                        lot_id=self.lot_id
+                if self.numero_ligne_lot is None:
+                    dernier_numero = (
+                        type(self).objects
+                        .filter(lot_id=self.lot_id)
+                        .aggregate(
+                            maximum=Max("numero_ligne_lot")
+                        )["maximum"]
                     )
-                    .aggregate(
-                        maximum=Max(
-                            "numero_ligne_lot"
-                        )
-                    )
-                    ["maximum"]
-                )
 
-                self.numero_ligne_lot = (
-                    (dernier_numero or 0)
-                    + 1
-                )
+                    self.numero_ligne_lot = (
+                        (dernier_numero or 0) + 1
+                    )
 
                 self.full_clean()
 
-                return super().save(
-                    *args,
-                    **kwargs,
-                )
+                return super().save(*args, **kwargs)
+
+        # ----------------------------------------------------
+        # MISE À JOUR
+        # ----------------------------------------------------
 
         self.full_clean()
 
-        return super().save(
-            *args,
-            **kwargs,
-        )
+        return super().save(*args, **kwargs)
 
     # ========================================================
-    # POIDS TOTAL
+    # 11. POIDS TOTAL
     # ========================================================
 
     @property
     def poids_total_calc(self):
         """
-        quantité × poids historique unitaire.
+        Quantité × poids historique unitaire.
         """
 
         if self.poids_unitaire_achat is None:
             return None
 
-        quantite = Decimal(
-            self.quantite or 0
-        )
+        quantite = Decimal(self.quantite or 0)
 
         poids = Decimal(
-            str(
-                self.poids_unitaire_achat
-            )
+            str(self.poids_unitaire_achat)
         )
 
         return (
@@ -1460,37 +1622,25 @@ class ProduitLine(models.Model):
         )
 
     # ========================================================
-    # MONTANT ACHAT
+    # 12. MONTANT D'ACHAT
     # ========================================================
 
     @property
     def montant_achat_calc(self):
         """
-        quantité
-        × poids_unitaire_achat
-        × prix_achat_gramme
+        Quantité × poids historique × prix/gramme.
         """
 
         if (
             self.poids_unitaire_achat is None
             or self.prix_achat_gramme is None
         ):
-            return Decimal("0.00")
+            return ZERO
 
         montant = (
-            Decimal(
-                self.quantite or 0
-            )
-            * Decimal(
-                str(
-                    self.poids_unitaire_achat
-                )
-            )
-            * Decimal(
-                str(
-                    self.prix_achat_gramme
-                )
-            )
+            Decimal(self.quantite or 0)
+            * Decimal(str(self.poids_unitaire_achat))
+            * Decimal(str(self.prix_achat_gramme))
         )
 
         return montant.quantize(
@@ -1499,7 +1649,7 @@ class ProduitLine(models.Model):
         )
 
     # ========================================================
-    # NUMÉRO LIGNE FORMATÉ
+    # 13. NUMÉRO FORMATÉ
     # ========================================================
 
     @property

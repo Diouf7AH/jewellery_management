@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import datetime
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 from datetime import date as ddate
-from datetime import datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from textwrap import dedent
@@ -38,6 +36,7 @@ from backend.renderers import UserRenderer
 from backend.roles import ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, get_role_name
 from inventory.models import Bucket, InventoryMovement, MovementType
 from purchase.models import Lot, ProduitLine
+from purchase.services.etiquettes import build_code_etiquette
 from sale.models import Facture, VenteProduit
 from staff.models import Manager
 from stock.models import Stock, VendorStock
@@ -45,6 +44,9 @@ from stock.serializers import VendorStockSerializer
 from store.models import Bijouterie, Marque, Produit
 from store.serializers import ProduitSerializer
 from userauths.models import Role
+from vendor.services.qr_scan_service import (decode_etiquette_qr,
+                                             resolve_scan_vendor)
+from vendor.services.vendor_service import get_connected_vendor
 
 from .models import Vendor
 from .serializer import (VendorStockResponseSerializer,
@@ -167,609 +169,6 @@ allowed_roles_admin_manager = [
     "admin",
     "manager",
 ]
-
-
-class VendorStockView(APIView):
-    """
-    Stock disponible du vendeur.
-
-    Formule :
-        quantite_disponible =
-            quantite_allouee - quantite_vendue
-
-    Filtres :
-        - annee
-        - page
-        - page_size
-
-    Par défaut :
-        - annee = année courante
-        - page = 1
-        - page_size = 50
-
-    Accès :
-        - vendor : son propre stock
-        - admin : vendor_email obligatoire
-        - manager : vendor_email obligatoire,
-          limité à ses bijouteries
-    """
-
-    permission_classes = [
-        IsAuthenticated,
-    ]
-
-    http_method_names = [
-        "get",
-        "options",
-    ]
-
-    DEFAULT_PAGE_SIZE = 50
-    MAX_PAGE_SIZE = 100
-
-    @swagger_auto_schema(
-        operation_summary="Stock disponible du vendeur",
-        operation_description=(
-            "Retourne le stock disponible du vendeur.\n\n"
-            "Vendor connecté : aucun vendor_email requis.\n"
-            "Admin/Manager : vendor_email obligatoire.\n\n"
-            "Par défaut, le stock de l'année courante "
-            "est retourné."
-        ),
-        manual_parameters=[
-            openapi.Parameter(
-                "vendor_email",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-                description=(
-                    "Email du vendeur. "
-                    "Obligatoire pour admin/manager."
-                ),
-            ),
-            openapi.Parameter(
-                "annee",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                required=False,
-                description=(
-                    "Année du stock. "
-                    "Par défaut : année courante."
-                ),
-            ),
-            openapi.Parameter(
-                "page",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                required=False,
-                description="Page. Par défaut : 1.",
-            ),
-            openapi.Parameter(
-                "page_size",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                required=False,
-                description=(
-                    "Nombre de résultats par page. "
-                    "Par défaut : 50. Maximum : 100."
-                ),
-            ),
-        ],
-        responses={
-            200: VendorStockResponseSerializer(),
-            400: openapi.Response(
-                "Paramètres invalides"
-            ),
-            403: openapi.Response(
-                "Accès refusé"
-            ),
-            404: openapi.Response(
-                "Vendeur introuvable"
-            ),
-        },
-        tags=["vendor"],
-    )
-    def get(self, request):
-
-        # ============================================================
-        # 1. RÔLE
-        # ============================================================
-
-        role = (
-            get_role_name(request.user)
-            or ""
-        ).lower()
-
-        vendor_email = (
-            request.query_params.get(
-                "vendor_email"
-            )
-            or ""
-        ).strip().lower()
-
-        # ============================================================
-        # 2. ANNÉE
-        # ============================================================
-
-        current_year = timezone.localdate().year
-
-        annee_param = request.query_params.get(
-            "annee"
-        )
-
-        if annee_param in (None, ""):
-            annee = current_year
-
-        else:
-            try:
-                annee = int(annee_param)
-            except (TypeError, ValueError):
-                return Response(
-                    {
-                        "detail": (
-                            "annee doit être "
-                            "un entier valide."
-                        ),
-                        "code": "INVALID_YEAR",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            if (
-                annee < 2000
-                or annee > current_year
-            ):
-                return Response(
-                    {
-                        "detail": (
-                            f"annee doit être comprise "
-                            f"entre 2000 et "
-                            f"{current_year}."
-                        ),
-                        "code": "INVALID_YEAR",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        # ============================================================
-        # 3. PAGINATION
-        # ============================================================
-
-        try:
-            page_number = int(
-                request.query_params.get(
-                    "page",
-                    1,
-                )
-            )
-        except (TypeError, ValueError):
-            return Response(
-                {
-                    "detail":
-                        "page doit être un entier valide.",
-                    "code": "INVALID_PAGE",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if page_number <= 0:
-            return Response(
-                {
-                    "detail":
-                        "page doit être supérieur à zéro.",
-                    "code": "INVALID_PAGE",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            page_size = int(
-                request.query_params.get(
-                    "page_size",
-                    self.DEFAULT_PAGE_SIZE,
-                )
-            )
-        except (TypeError, ValueError):
-            return Response(
-                {
-                    "detail": (
-                        "page_size doit être "
-                        "un entier valide."
-                    ),
-                    "code": "INVALID_PAGE_SIZE",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if page_size <= 0:
-            return Response(
-                {
-                    "detail": (
-                        "page_size doit être "
-                        "supérieur à zéro."
-                    ),
-                    "code": "INVALID_PAGE_SIZE",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        page_size = min(
-            page_size,
-            self.MAX_PAGE_SIZE,
-        )
-
-        # ============================================================
-        # 4. RÉSOUDRE LE VENDEUR
-        # ============================================================
-
-        if role == ROLE_VENDOR:
-
-            vendor = getattr(
-                request.user,
-                "staff_vendor_profile",
-                None,
-            )
-
-            if not vendor:
-                return Response(
-                    {
-                        "detail":
-                            "Profil vendeur introuvable.",
-                        "code":
-                            "VENDOR_PROFILE_NOT_FOUND",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            if not getattr(
-                vendor,
-                "verifie",
-                False,
-            ):
-                return Response(
-                    {
-                        "detail":
-                            "Profil vendeur désactivé.",
-                        "code":
-                            "VENDOR_PROFILE_DISABLED",
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-        elif role in {
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-        }:
-
-            if not vendor_email:
-                return Response(
-                    {
-                        "detail": (
-                            "vendor_email est obligatoire "
-                            "pour admin/manager."
-                        ),
-                        "code":
-                            "VENDOR_EMAIL_REQUIRED",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            vendor = get_object_or_404(
-                Vendor.objects.select_related(
-                    "user",
-                    "bijouterie",
-                ),
-                user__email__iexact=vendor_email,
-            )
-
-            # ========================================================
-            # MANAGER
-            # ========================================================
-
-            if role == ROLE_MANAGER:
-
-                manager = getattr(
-                    request.user,
-                    "staff_manager_profile",
-                    None,
-                )
-
-                if not manager:
-                    return Response(
-                        {
-                            "detail":
-                                "Profil manager introuvable.",
-                            "code":
-                                "MANAGER_PROFILE_NOT_FOUND",
-                        },
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                has_access = (
-                    manager
-                    .bijouteries
-                    .filter(
-                        id=vendor.bijouterie_id
-                    )
-                    .exists()
-                )
-
-                if not has_access:
-                    return Response(
-                        {
-                            "detail": (
-                                "Ce vendeur n'appartient "
-                                "pas à votre périmètre."
-                            ),
-                            "code":
-                                "VENDOR_OUT_OF_SCOPE",
-                        },
-                        status=status.HTTP_403_FORBIDDEN,
-                    )
-
-        else:
-            return Response(
-                {
-                    "detail": "Accès refusé.",
-                    "code": "ACCESS_DENIED",
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        # ============================================================
-        # 5. BIJOUTERIE
-        # ============================================================
-
-        if not vendor.bijouterie_id:
-            return Response(
-                {
-                    "detail": (
-                        "Le vendeur n'est rattaché "
-                        "à aucune bijouterie."
-                    ),
-                    "code":
-                        "VENDOR_WITHOUT_BIJOUTERIE",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # ============================================================
-        # 6. QUERYSET
-        # ============================================================
-
-        queryset = (
-            VendorStock.objects
-            .select_related(
-                "vendor",
-                "vendor__user",
-                "bijouterie",
-
-                "produit_line",
-                "produit_line__lot",
-
-                "produit_line__produit",
-                "produit_line__produit__categorie",
-                "produit_line__produit__marque",
-                "produit_line__produit__purete",
-                "produit_line__produit__modele",
-            )
-            .filter(
-                vendor=vendor,
-                bijouterie_id=vendor.bijouterie_id,
-
-                # Filtre principal
-                created_at__year=annee,
-            )
-            .order_by(
-                "-created_at",
-                "-id",
-            )
-        )
-
-        # ============================================================
-        # 7. CALCUL DES TOTAUX
-        #
-        # Les totaux sont calculés sur TOUTE l'année,
-        # pas uniquement sur la page courante.
-        # ============================================================
-
-        total_allouee = 0
-        total_vendue = 0
-        total_disponible = 0
-
-        total_poids_disponible = Decimal(
-            "0.000"
-        )
-
-        stock_ids_disponibles = []
-
-        for stock in queryset:
-
-            quantite_allouee = int(
-                stock.quantite_allouee
-                or 0
-            )
-
-            quantite_vendue = int(
-                stock.quantite_vendue
-                or 0
-            )
-
-            quantite_disponible = int(
-                stock.quantite_disponible
-            )
-
-            total_allouee += (
-                quantite_allouee
-            )
-
-            total_vendue += (
-                quantite_vendue
-            )
-
-            total_disponible += (
-                quantite_disponible
-            )
-
-            # Ne pas afficher les lignes épuisées
-            if quantite_disponible <= 0:
-                continue
-
-            stock_ids_disponibles.append(
-                stock.id
-            )
-
-            produit = getattr(
-                stock.produit_line,
-                "produit",
-                None,
-            )
-
-            if (
-                produit
-                and produit.poids is not None
-            ):
-                poids = Decimal(
-                    str(produit.poids)
-                )
-
-                total_poids_disponible += (
-                    poids
-                    * Decimal(
-                        str(
-                            quantite_disponible
-                        )
-                    )
-                )
-
-        # ============================================================
-        # 8. QUERYSET DISPONIBLE
-        # ============================================================
-
-        stock_disponible_queryset = (
-            queryset
-            .filter(
-                id__in=stock_ids_disponibles
-            )
-        )
-
-        # ============================================================
-        # 9. PAGINATION
-        # ============================================================
-
-        paginator = Paginator(
-            stock_disponible_queryset,
-            page_size,
-        )
-
-        try:
-            page_obj = paginator.page(
-                page_number
-            )
-
-        except EmptyPage:
-            return Response(
-                {
-                    "detail":
-                        "Cette page n'existe pas.",
-                    "code":
-                        "PAGE_NOT_FOUND",
-                },
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        # ============================================================
-        # 10. SERIALIZER VENDEUR
-        # ============================================================
-
-        vendor_data = (
-            VendorStockVendorSerializer(
-                vendor
-            ).data
-        )
-
-        # ============================================================
-        # 11. SERIALIZER STOCK
-        # ============================================================
-
-        stock_data = (
-            VendorStockSerializer(
-                page_obj.object_list,
-                many=True,
-            ).data
-        )
-
-        # ============================================================
-        # 12. RESPONSE
-        # ============================================================
-
-        response_data = {
-            "vendor":
-                vendor_data,
-
-            "filtre": {
-                "annee":
-                    annee,
-            },
-
-            "totaux": {
-                "quantite_allouee":
-                    total_allouee,
-
-                "quantite_vendue":
-                    total_vendue,
-
-                "quantite_disponible":
-                    total_disponible,
-
-                "poids_disponible":
-                    total_poids_disponible,
-            },
-
-            "pagination": {
-                "page":
-                    page_obj.number,
-
-                "page_size":
-                    page_size,
-
-                "total_pages":
-                    paginator.num_pages,
-
-                "total_results":
-                    paginator.count,
-
-                "has_next":
-                    page_obj.has_next(),
-
-                "has_previous":
-                    page_obj.has_previous(),
-            },
-
-            "count":
-                len(stock_data),
-
-            "results":
-                stock_data,
-        }
-
-        # ============================================================
-        # 13. VALIDATION RESPONSE
-        # ============================================================
-
-        response_serializer = (
-            VendorStockResponseSerializer(
-                data=response_data
-            )
-        )
-
-        response_serializer.is_valid(
-            raise_exception=True
-        )
-
-        return Response(
-            response_serializer.data,
-            status=status.HTTP_200_OK,
-        )
 
 
 class VendorStockView(APIView):
@@ -1011,34 +410,18 @@ class VendorStockView(APIView):
 
         if role == ROLE_VENDOR:
 
-            vendor = getattr(
-                request.user,
-                "staff_vendor_profile",
-                None,
-            )
+            vendor = get_connected_vendor(request.user)
 
-            if not vendor:
+            if vendor is None:
                 return Response(
                     {
-                        "detail": "Profil vendeur introuvable.",
-                        "code": "VENDOR_PROFILE_NOT_FOUND",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            if not getattr(
-                vendor,
-                "verifie",
-                False,
-            ):
-                return Response(
-                    {
-                        "detail": "Profil vendeur désactivé.",
-                        "code": "VENDOR_PROFILE_DISABLED",
+                        "detail": (
+                            "Profil vendeur introuvable ou désactivé."
+                        ),
+                        "code": "VENDOR_PROFILE_UNAVAILABLE",
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
-
         elif role in {
             ROLE_ADMIN,
             ROLE_MANAGER,
@@ -1450,3 +833,488 @@ class VendorStockView(APIView):
             response_serializer.validated_data,
             status=status.HTTP_200_OK,
         )
+
+
+class VendorScanQRCodeAPIView(APIView):
+    """
+    Scan QR Code des bijoux Rio-Gold.
+
+    Rôles :
+        VENDOR  : son propre stock.
+        MANAGER : stock d'un vendeur de ses bijouteries.
+        ADMIN   : stock d'un vendeur de toute bijouterie.
+
+    Format QR :
+        PL:<uuid ProduitLine>
+
+    Fonctionnement :
+        - Maximum 100 QR Codes.
+        - Regroupement des QR identiques.
+        - Calcul de quantite_demandee.
+        - Vérification de VendorStock.
+        - Aucun mouvement de stock.
+    """
+
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["post", "options"]
+
+    MAX_QR_CODES = 100
+
+    # ============================================================
+    # SWAGGER
+    # ============================================================
+
+    @swagger_auto_schema(
+        operation_summary="Scanner les QR Codes des bijoux",
+        operation_description=(
+            "Scanne un ou plusieurs QR Codes des étiquettes Rio-Gold.\n\n"
+            "**Accès :**\n"
+            "- Vendeur : son propre stock.\n"
+            "- Manager : vendeur de l'une de ses bijouteries.\n"
+            "- Admin : vendeur de n'importe quelle bijouterie.\n\n"
+            "**Paramètres :**\n"
+            "- `qr_codes` : liste obligatoire des QR Codes.\n"
+            "- `vendor_email` : obligatoire pour manager et admin.\n\n"
+            "**Règles :**\n"
+            "- Format QR : `PL:<uuid>`.\n"
+            "- Maximum 100 scans par requête.\n"
+            "- Les QR identiques sont regroupés.\n"
+            "- Chaque répétition augmente `quantite_demandee`.\n"
+            "- La disponibilité est vérifiée dans `VendorStock`.\n"
+            "- Aucun stock n'est réservé ou déduit.\n"
+            "- Une réponse HTTP 200 peut contenir `success=false`."
+        ),
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["qr_codes"],
+            properties={
+                "vendor_email": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    format=openapi.FORMAT_EMAIL,
+                    description=(
+                        "Email du vendeur dont le stock est consulté. "
+                        "Obligatoire pour manager et admin. "
+                        "Facultatif pour le vendeur connecté."
+                    ),
+                    example="vendeur@riogold.com",
+                ),
+                "qr_codes": openapi.Schema(
+                    type=openapi.TYPE_ARRAY,
+                    minItems=1,
+                    maxItems=100,
+                    description=(
+                        "Liste des QR Codes. "
+                        "Les doublons sont autorisés."
+                    ),
+                    items=openapi.Items(
+                        type=openapi.TYPE_STRING,
+                    ),
+                    example=[
+                        "PL:550e8400-e29b-41d4-a716-446655440000",
+                        "PL:550e8400-e29b-41d4-a716-446655440000",
+                        "PL:660e8400-e29b-41d4-a716-446655440001",
+                    ],
+                ),
+            },
+        ),
+        responses={
+            200: openapi.Response(
+                description="Résultat des scans QR Codes.",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "success": openapi.Schema(
+                            type=openapi.TYPE_BOOLEAN,
+                        ),
+                        "vendor": openapi.Schema(
+                            type=openapi.TYPE_OBJECT,
+                            properties={
+                                "id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                ),
+                                "email": openapi.Schema(
+                                    type=openapi.TYPE_STRING,
+                                ),
+                                "bijouterie_id": openapi.Schema(
+                                    type=openapi.TYPE_INTEGER,
+                                ),
+                            },
+                        ),
+                        "nombre_scans": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                        ),
+                        "nombre_produits": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                        ),
+                        "nombre_erreurs": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                        ),
+                        "nombre_produits_indisponibles": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                        ),
+                        "produits": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Items(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "qr_code": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                    "code_etiquette": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                    "produit_line_id": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                    ),
+                                    "produit_line_uuid": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                    "produit_id": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                    ),
+                                    "sku": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        x_nullable=True,
+                                    ),
+                                    "nom": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                    "lot_id": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                    ),
+                                    "vendor_stock_id": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                    ),
+                                    "poids_unitaire_achat": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                        x_nullable=True,
+                                    ),
+                                    "quantite_demandee": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                    ),
+                                    "quantite_allouee": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                    ),
+                                    "quantite_vendue": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                    ),
+                                    "quantite_disponible": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                    ),
+                                    "peut_vendre": openapi.Schema(
+                                        type=openapi.TYPE_BOOLEAN,
+                                    ),
+                                },
+                            ),
+                        ),
+                        "erreurs": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Items(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "qr_code": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                    "code": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                    "detail": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                },
+                            ),
+                        ),
+                    },
+                ),
+            ),
+            400: openapi.Response(
+                description="Données ou QR Codes invalides.",
+            ),
+            401: openapi.Response(
+                description="Authentification requise.",
+            ),
+            403: openapi.Response(
+                description="Accès refusé.",
+            ),
+        },
+        tags=["vendor"],
+    )
+    def post(self, request):
+
+        # ========================================================
+        # 1. RÉCUPÉRER LE VENDEUR AUTORISÉ
+        # ========================================================
+
+        vendor = resolve_scan_vendor(
+            user=request.user,
+            vendor_email=request.data.get("vendor_email"),
+        )
+
+        # La fonction vérifie :
+        # - le rôle du compte connecté ;
+        # - l'activation du vendeur ;
+        # - les bijouteries du manager ;
+        # - l'accès global de l'admin.
+
+        # ========================================================
+        # 2. VALIDATION DES QR CODES
+        # ========================================================
+
+        qr_codes = request.data.get("qr_codes")
+
+        if not isinstance(qr_codes, list) or not qr_codes:
+            return Response(
+                {
+                    "detail": "qr_codes doit être une liste non vide.",
+                    "code": "INVALID_QR_CODES",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(qr_codes) > self.MAX_QR_CODES:
+            return Response(
+                {
+                    "detail": (
+                        f"Maximum {self.MAX_QR_CODES} "
+                        "QR Codes par requête."
+                    ),
+                    "code": "QR_CODES_LIMIT_EXCEEDED",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ========================================================
+        # 3. DÉCODAGE ET VALIDATION
+        # ========================================================
+
+        uuids = []
+        erreurs_validation = []
+
+        for index, qr_code in enumerate(qr_codes):
+
+            if (
+                not isinstance(qr_code, str)
+                or not qr_code.strip()
+            ):
+                erreurs_validation.append(
+                    {
+                        "index": index,
+                        "qr_code": qr_code,
+                        "code": "INVALID_QR_CODE",
+                        "detail": (
+                            "Le QR Code doit être "
+                            "une chaîne non vide."
+                        ),
+                    }
+                )
+                continue
+
+            try:
+                qr_uuid = decode_etiquette_qr(qr_code)
+                uuids.append(str(qr_uuid))
+
+            except ValueError as exc:
+                erreurs_validation.append(
+                    {
+                        "index": index,
+                        "qr_code": qr_code,
+                        "code": "INVALID_QR_CODE",
+                        "detail": str(exc),
+                    }
+                )
+
+        if erreurs_validation:
+            return Response(
+                {
+                    "detail": "Un ou plusieurs QR Codes sont invalides.",
+                    "code": "QR_VALIDATION_FAILED",
+                    "erreurs": erreurs_validation,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ========================================================
+        # 4. REGROUPER LES QR IDENTIQUES
+        # ========================================================
+
+        compteurs = Counter(uuids)
+        uuids_uniques = list(compteurs.keys())
+
+        # ========================================================
+        # 5. RECHERCHER LES PRODUITLINE
+        # ========================================================
+
+        produit_lines = (
+            ProduitLine.objects
+            .select_related(
+                "lot",
+                "produit",
+                "produit__categorie",
+                "produit__marque",
+                "produit__purete",
+                "produit__modele",
+            )
+            .filter(uuid__in=uuids_uniques)
+        )
+
+        produit_lines_map = {
+            str(pl.uuid): pl
+            for pl in produit_lines
+        }
+
+        # ========================================================
+        # 6. RECHERCHER LE STOCK DU VENDEUR
+        # ========================================================
+
+        vendor_stocks = (
+            VendorStock.objects
+            .filter(
+                vendor=vendor,
+                bijouterie_id=vendor.bijouterie_id,
+                produit_line__uuid__in=uuids_uniques,
+            )
+        )
+
+        vendor_stocks_map = {
+            stock.produit_line_id: stock
+            for stock in vendor_stocks
+        }
+
+        # ========================================================
+        # 7. PRÉPARER LES RÉSULTATS
+        # ========================================================
+
+        produits = []
+        erreurs = []
+
+        # ========================================================
+        # 8. TRAITER CHAQUE PRODUITLINE
+        # ========================================================
+
+        for qr_uuid, quantite_demandee in compteurs.items():
+
+            qr_code = f"PL:{qr_uuid}"
+
+            produit_line = produit_lines_map.get(qr_uuid)
+
+            if produit_line is None:
+                erreurs.append(
+                    {
+                        "qr_code": qr_code,
+                        "code": "PRODUIT_LINE_NOT_FOUND",
+                        "detail": "Étiquette introuvable.",
+                    }
+                )
+                continue
+
+            vendor_stock = vendor_stocks_map.get(
+                produit_line.id
+            )
+
+            if vendor_stock is None:
+                erreurs.append(
+                    {
+                        "qr_code": qr_code,
+                        "code": "STOCK_NOT_ASSIGNED",
+                        "detail": (
+                            "Produit non affecté au stock "
+                            "du vendeur sélectionné."
+                        ),
+                    }
+                )
+                continue
+
+            # ----------------------------------------------------
+            # QUANTITÉS
+            # ----------------------------------------------------
+
+            quantite_allouee = int(
+                vendor_stock.quantite_allouee
+            )
+
+            quantite_vendue = int(
+                vendor_stock.quantite_vendue
+            )
+
+            quantite_disponible = max(
+                0,
+                quantite_allouee - quantite_vendue,
+            )
+
+            peut_vendre = (
+                quantite_demandee <= quantite_disponible
+            )
+
+            # ----------------------------------------------------
+            # INFORMATIONS PRODUIT
+            # ----------------------------------------------------
+
+            produit = produit_line.produit
+
+            produits.append(
+                {
+                    "qr_code": qr_code,
+                    "code_etiquette": build_code_etiquette(
+                        produit_line
+                    ),
+                    "produit_line_id": produit_line.id,
+                    "produit_line_uuid": str(produit_line.uuid),
+                    "produit_id": produit.id,
+                    "sku": produit.sku,
+                    "nom": produit.nom,
+                    "lot_id": produit_line.lot_id,
+                    "vendor_stock_id": vendor_stock.id,
+                    "poids_unitaire_achat": (
+                        str(produit_line.poids_unitaire_achat)
+                        if produit_line.poids_unitaire_achat is not None
+                        else None
+                    ),
+                    "quantite_demandee": quantite_demandee,
+                    "quantite_allouee": quantite_allouee,
+                    "quantite_vendue": quantite_vendue,
+                    "quantite_disponible": quantite_disponible,
+                    "peut_vendre": peut_vendre,
+                }
+            )
+
+        # ========================================================
+        # 9. CALCULER LES TOTAUX
+        # ========================================================
+
+        nombre_erreurs = len(erreurs)
+
+        nombre_indisponibles = sum(
+            1
+            for produit in produits
+            if not produit["peut_vendre"]
+        )
+
+        success = (
+            nombre_erreurs == 0
+            and nombre_indisponibles == 0
+        )
+
+        # ========================================================
+        # 10. RÉPONSE FINALE
+        # ========================================================
+
+        return Response(
+            {
+                "success": success,
+                "vendor": {
+                    "id": vendor.id,
+                    "email": vendor.user.email,
+                    "bijouterie_id": vendor.bijouterie_id,
+                },
+                "nombre_scans": len(qr_codes),
+                "nombre_produits": len(produits),
+                "nombre_erreurs": nombre_erreurs,
+                "nombre_produits_indisponibles": nombre_indisponibles,
+                "produits": produits,
+                "erreurs": erreurs,
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+        
+

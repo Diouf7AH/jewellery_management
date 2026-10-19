@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
-from ..theme_riogold import safe
+from .theme import safe
 
 
 def dec(value, default=Decimal("0")):

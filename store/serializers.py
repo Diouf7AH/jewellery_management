@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError
 from rest_framework import serializers
 
 from backend import settings
@@ -216,42 +218,106 @@ class GallerySerializer(serializers.ModelSerializer):
         return obj.image.url
     
 
+# Conserver les imports existants de :
+# Produit, Categorie, Marque, Modele, Purete,
+# GallerySerializer et MarquePurete.
 
+
+# ============================================================
+# POURCENTAGES OCCASION AUTORISÉS
+# ============================================================
 class ProduitSerializer(serializers.ModelSerializer):
+    """
+    Serializer du catalogue Rio-Gold.
 
-    categorie = serializers.SlugRelatedField(
+    Identité du produit :
+        categorie + modele + marque
+        + purete + poids + taille
+
+    Fonctionnement :
+        - Création : recherche ou création sans doublon.
+        - Produit existant : retourne sa référence.
+        - Modification : identité non modifiable.
+        - Lecture : relations détaillées, prix et galerie.
+
+    L'état neuf/occasion est géré dans ProduitLine.
+    """
+
+    # ========================================================
+    # 1. IDENTIFIANTS DES RELATIONS
+    # ========================================================
+
+    categorie_id = serializers.PrimaryKeyRelatedField(
         queryset=Categorie.objects.all(),
-        slug_field="nom",
-        write_only=True,
+        source="categorie",
+        required=True,
     )
-    categorie_detail = serializers.SerializerMethodField(read_only=True)
 
-    marque = serializers.SlugRelatedField(
-        queryset=Marque.objects.all(),
-        slug_field="marque",
-        write_only=True,
-    )
-    prix_vente_gramme = serializers.SerializerMethodField()
-    marque_detail = serializers.SerializerMethodField(read_only=True)
-
-    modele = serializers.SlugRelatedField(
+    modele_id = serializers.PrimaryKeyRelatedField(
         queryset=Modele.objects.all(),
-        slug_field="modele",
-        write_only=True,
+        source="modele",
+        required=False,
+        allow_null=True,
     )
-    modele_detail = serializers.SerializerMethodField(read_only=True)
 
-    purete = serializers.SlugRelatedField(
-        queryset=Purete.objects.all(),
-        slug_field="purete",
-        write_only=True,
+    marque_id = serializers.PrimaryKeyRelatedField(
+        queryset=Marque.objects.all(),
+        source="marque",
+        required=True,
     )
-    purete_detail = serializers.SerializerMethodField(read_only=True)
+
+    purete_id = serializers.PrimaryKeyRelatedField(
+        queryset=Purete.objects.all(),
+        source="purete",
+        required=True,
+    )
+
+    # ========================================================
+    # 2. IDENTIFIANTS EN LECTURE
+    # ========================================================
+
+    id = serializers.IntegerField(
+        read_only=True,
+    )
+
+    uuid = serializers.UUIDField(
+        read_only=True,
+    )
+
+    sku = serializers.CharField(
+        read_only=True,
+    )
+
+    slug = serializers.SlugField(
+        read_only=True,
+    )
+
+    # ========================================================
+    # 3. DÉTAILS DES RELATIONS
+    # ========================================================
+
+    categorie_detail = serializers.SerializerMethodField()
+
+    modele_detail = serializers.SerializerMethodField()
+
+    marque_detail = serializers.SerializerMethodField()
+
+    purete_detail = serializers.SerializerMethodField()
+
+    # ========================================================
+    # 4. PRIX DE VENTE AU GRAMME
+    # ========================================================
+
+    prix_vente_gramme = serializers.SerializerMethodField()
+
+    # ========================================================
+    # 5. URL DU PRODUIT
+    # ========================================================
 
     produit_url = serializers.SerializerMethodField()
 
     # ========================================================
-    # Galerie
+    # 6. GALERIE
     # ========================================================
 
     gallery = GallerySerializer(
@@ -260,89 +326,342 @@ class ProduitSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
+    # ========================================================
+    # 7. META
+    # ========================================================
+
     class Meta:
         model = Produit
 
         fields = (
+            # Identifiants
             "id",
             "uuid",
+            "sku",
             "slug",
 
-            "categorie",
-            "categorie_detail",
+            # Relations
+            "categorie_id",
+            "modele_id",
+            "marque_id",
+            "purete_id",
 
-            "nom",
-            "produit_url",
-            "sku",
-            "prix_vente_gramme",
-            # Image principale
-            "image",
-
-            # Images secondaires
-            "gallery",
-
-            "description",
-            "genre",
-
-            "marque",
-            "marque_detail",
-
-            "modele",
-            "modele_detail",
-
-            "purete",
-            "purete_detail",
-
-            "matiere",
+            # Caractéristiques
             "poids",
             "taille",
-            "etat",
-            "reduction_occasion",
+            "matiere",
+            "genre",
+
+            # Informations
+            "nom",
+            "description",
+            "image",
+
+            # Informations calculées
+            "prix_vente_gramme",
+            "produit_url",
+
+            # Galerie
+            "gallery",
+
+            # Détails des relations
+            "categorie_detail",
+            "modele_detail",
+            "marque_detail",
+            "purete_detail",
         )
 
-    def get_prix_vente_gramme(self, obj):
-        if not obj.marque or not obj.purete:
-            return None
+        read_only_fields = (
+            "id",
+            "uuid",
+            "sku",
+            "slug",
+        )
 
-        marque_purete = (
-            MarquePurete.objects
-            .filter(
-                marque=obj.marque,
-                purete=obj.purete,
-                prix__gt=0,
+        extra_kwargs = {
+            "nom": {
+                "required": False,
+                "allow_blank": True,
+            },
+            "description": {
+                "required": False,
+                "allow_null": True,
+                "allow_blank": True,
+            },
+            "image": {
+                "required": False,
+                "allow_null": True,
+            },
+            "taille": {
+                "required": False,
+                "allow_null": True,
+            },
+            "matiere": {
+                "required": False,
+            },
+            "genre": {
+                "required": False,
+            },
+        }
+
+    # ========================================================
+    # 8. VALIDATION GLOBALE
+    # ========================================================
+
+    def validate(self, attrs):
+        """
+        Vérifie :
+        - le poids ;
+        - la taille ;
+        - la cohérence catégorie / modèle ;
+        - l'immuabilité des six caractéristiques.
+
+        La recherche du produit existant est effectuée
+        dans create(), et non ici.
+        """
+
+        attrs = super().validate(attrs)
+
+        errors = {}
+
+        instance = self.instance
+
+        # ----------------------------------------------------
+        # VALEURS EFFECTIVES
+        # ----------------------------------------------------
+
+        categorie = attrs.get(
+            "categorie",
+            getattr(instance, "categorie", None),
+        )
+
+        modele = attrs.get(
+            "modele",
+            getattr(instance, "modele", None),
+        )
+
+        marque = attrs.get(
+            "marque",
+            getattr(instance, "marque", None),
+        )
+
+        purete = attrs.get(
+            "purete",
+            getattr(instance, "purete", None),
+        )
+
+        poids = attrs.get(
+            "poids",
+            getattr(instance, "poids", None),
+        )
+
+        taille = attrs.get(
+            "taille",
+            getattr(instance, "taille", None),
+        )
+
+        # ----------------------------------------------------
+        # POIDS
+        # ----------------------------------------------------
+
+        if poids is not None and poids <= Decimal("0.00"):
+            errors["poids"] = (
+                "Le poids doit être strictement "
+                "supérieur à zéro."
             )
-            .only("prix")
-            .first()
-        )
 
-        if not marque_purete:
-            return None
+        # ----------------------------------------------------
+        # TAILLE
+        # ----------------------------------------------------
 
-        return str(marque_purete.prix)
+        if taille is not None and taille < Decimal("0.00"):
+            errors["taille"] = (
+                "La taille ne peut pas être négative."
+            )
 
+        # ----------------------------------------------------
+        # COHÉRENCE CATÉGORIE / MODÈLE
+        # ----------------------------------------------------
+
+        if categorie is not None and modele is not None:
+
+            if modele.categorie_id != categorie.pk:
+                errors["modele_id"] = (
+                    "Le modèle sélectionné n'appartient "
+                    "pas à la catégorie du produit."
+                )
+
+        # ----------------------------------------------------
+        # PROTECTION DE L'IDENTITÉ EN MODIFICATION
+        # ----------------------------------------------------
+
+        if instance is not None:
+
+            valeurs_actuelles = (
+                instance.categorie_id,
+                instance.modele_id,
+                instance.marque_id,
+                instance.purete_id,
+                instance.poids,
+                instance.taille,
+            )
+
+            valeurs_nouvelles = (
+                categorie.pk if categorie else None,
+                modele.pk if modele else None,
+                marque.pk if marque else None,
+                purete.pk if purete else None,
+                poids,
+                taille,
+            )
+
+            if valeurs_actuelles != valeurs_nouvelles:
+                errors["produit"] = (
+                    "Impossible de modifier les six "
+                    "caractéristiques d'identification "
+                    "d'un produit existant. "
+                    "Veuillez créer une nouvelle "
+                    "référence catalogue."
+                )
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        return attrs
+
+    # ========================================================
+    # 9. CRÉATION OU RÉCUPÉRATION
+    # ========================================================
+
+    def create(self, validated_data):
+        """
+        Retourne :
+            - un nouveau produit si inexistant ;
+            - le produit existant sinon.
+
+        self.produit_created :
+            True  = nouveau produit
+            False = produit déjà existant
+
+        Le message d'information est construit
+        par ProduitCreateAPIView.
+        """
+
+        data = validated_data.copy()
+
+        categorie = data.pop("categorie")
+        modele = data.pop("modele", None)
+        marque = data.pop("marque")
+        purete = data.pop("purete")
+
+        poids = data.pop("poids")
+        taille = data.pop("taille", None)
+
+        try:
+            produit, created = Produit.get_or_create_catalogue(
+                categorie_id=categorie.pk,
+                modele_id=(
+                    modele.pk if modele else None
+                ),
+                marque_id=marque.pk,
+                purete_id=purete.pk,
+                poids=poids,
+                taille=taille,
+                **data,
+            )
+
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                exc.message_dict
+                if hasattr(exc, "message_dict")
+                else exc.messages
+            )
+
+        except IntegrityError:
+            raise serializers.ValidationError({
+                "produit": (
+                    "Impossible d'enregistrer le produit "
+                    "en raison d'un conflit d'unicité. "
+                    "Veuillez réessayer ou vérifier "
+                    "les références existantes."
+                )
+            })
+
+        self.produit_created = created
+
+        return produit
+
+    # ========================================================
+    # 10. MISE À JOUR
+    # ========================================================
+
+    def update(self, instance, validated_data):
+        """
+        Autorise les modifications documentaires :
+            - nom
+            - description
+            - image
+            - matiere
+            - genre
+
+        Les six caractéristiques d'identification
+        restent inchangées.
+        """
+
+        try:
+            return super().update(
+                instance,
+                validated_data,
+            )
+
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                exc.message_dict
+                if hasattr(exc, "message_dict")
+                else exc.messages
+            )
+
+        except IntegrityError:
+            raise serializers.ValidationError({
+                "produit": (
+                    "Impossible de mettre à jour "
+                    "le produit en raison d'un "
+                    "conflit d'unicité."
+                )
+            })
+
+    # ========================================================
+    # 11. DÉTAIL CATÉGORIE
+    # ========================================================
 
     def get_categorie_detail(self, obj):
-        if not obj.categorie:
+        if not obj.categorie_id:
             return None
-
-        request = self.context.get("request")
-
-        image_url = None
-
-        if obj.categorie.image:
-            image_url = obj.categorie.image.url
-
-            if request:
-                image_url = request.build_absolute_uri(image_url)
 
         return {
             "id": obj.categorie.id,
             "nom": obj.categorie.nom,
-            "image": image_url,
         }
 
+    # ========================================================
+    # 12. DÉTAIL MODÈLE
+    # ========================================================
+
+    def get_modele_detail(self, obj):
+        if not obj.modele_id:
+            return None
+
+        return {
+            "id": obj.modele.id,
+            "modele": obj.modele.modele,
+        }
+
+    # ========================================================
+    # 13. DÉTAIL MARQUE
+    # ========================================================
+
     def get_marque_detail(self, obj):
-        if not obj.marque:
+        if not obj.marque_id:
             return None
 
         return {
@@ -350,37 +669,12 @@ class ProduitSerializer(serializers.ModelSerializer):
             "marque": obj.marque.marque,
         }
 
-    def get_modele_detail(self, obj):
-        if not obj.modele:
-            return None
-
-        categorie = None
-
-        if obj.modele.categorie:
-            request = self.context.get("request")
-
-            image_url = None
-
-            if obj.modele.categorie.image:
-                image_url = obj.modele.categorie.image.url
-
-                if request:
-                    image_url = request.build_absolute_uri(image_url)
-
-            categorie = {
-                "id": obj.modele.categorie.id,
-                "nom": obj.modele.categorie.nom,
-                "image": image_url,
-            }
-
-        return {
-            "id": obj.modele.id,
-            "modele": obj.modele.modele,
-            "categorie": categorie,
-        }
+    # ========================================================
+    # 14. DÉTAIL PURETÉ
+    # ========================================================
 
     def get_purete_detail(self, obj):
-        if not obj.purete:
+        if not obj.purete_id:
             return None
 
         return {
@@ -388,103 +682,101 @@ class ProduitSerializer(serializers.ModelSerializer):
             "purete": obj.purete.purete,
         }
 
+    # ========================================================
+    # 15. URL DU PRODUIT
+    # ========================================================
+
     def get_produit_url(self, obj):
-        if not obj.slug:
+        return obj.produit_url
+
+    # ========================================================
+    # 16. PRIX DE VENTE AU GRAMME
+    # ========================================================
+
+    def get_prix_vente_gramme(self, obj):
+        """
+        Récupère le prix de vente au gramme
+        depuis MarquePurete.
+        """
+
+        if not obj.marque_id or not obj.purete_id:
             return None
 
-        base_url = getattr(
-            settings,
-            "SITE_URL",
-            "https://www.rio-gold.com",
-        ).rstrip("/")
-
-        return f"{base_url}/produit/{obj.slug}"
-
-    def validate(self, attrs):
-        marque = (
-            attrs.get("marque")
-            or getattr(self.instance, "marque", None)
-        )
-
-        purete = (
-            attrs.get("purete")
-            or getattr(self.instance, "purete", None)
-        )
-
-        etat = (
-            attrs.get("etat")
-            or getattr(self.instance, "etat", None)
-        )
-
-        reduction_occasion = attrs.get(
-            "reduction_occasion",
-            getattr(
-                self.instance,
-                "reduction_occasion",
-                Decimal("0.00"),
+        tarif = (
+            MarquePurete.objects
+            .filter(
+                marque_id=obj.marque_id,
+                purete_id=obj.purete_id,
             )
+            .first()
         )
 
-        if marque and purete:
-            exists = MarquePurete.objects.filter(
-                marque=marque,
-                purete=purete,
-                prix__gt=0,
-            ).exists()
+        if tarif is None:
+            return None
 
-            if not exists:
-                raise serializers.ValidationError({
-                    "tarif": {
-                        "marque_id": marque.id,
-                        "marque": marque.marque,
-                        "purete_id": purete.id,
-                        "purete": purete.purete,
-                        "message": (
-                            "Aucun tarif Marque–Pureté trouvé "
-                            "pour cette combinaison."
-                        ),
-                    }
-                })
-
-        allowed = {
-            Decimal("0.00"),
-            Decimal("5.00"),
-            Decimal("10.00"),
-            Decimal("15.00"),
-            Decimal("20.00"),
-        }
-
-        reduction = Decimal(
-            str(reduction_occasion or "0.00")
+        prix = getattr(
+            tarif,
+            "prix",
+            None,
         )
 
-        if reduction not in allowed:
-            raise serializers.ValidationError({
-                "reduction_occasion": (
-                    "Valeur autorisée : 0%, 5%, 10%, 15% ou 20%."
-                )
-            })
+        if prix is None:
+            return None
 
-        if etat == "O":
-            if reduction == Decimal("0.00"):
-                raise serializers.ValidationError({
-                    "reduction_occasion": (
-                        "Un produit d'occasion doit avoir "
-                        "une réduction de 5%, 10%, 15% ou 20%."
-                    )
-                })
-        else:
-            if reduction != Decimal("0.00"):
-                raise serializers.ValidationError({
-                    "reduction_occasion": (
-                        "La réduction occasion est réservée "
-                        "aux produits d'occasion."
-                    )
-                })
+        return str(prix)
 
-        return attrs
-    
 
+class ProduitRechercheSerializer(serializers.ModelSerializer):
+    categorie_id = serializers.IntegerField(read_only=True)
+    categorie_nom = serializers.CharField(
+        source="categorie.nom",
+        read_only=True,
+    )
+
+    modele_id = serializers.IntegerField(read_only=True)
+    modele_nom = serializers.CharField(
+        source="modele.modele",
+        read_only=True,
+        allow_null=True,
+    )
+
+    marque_id = serializers.IntegerField(read_only=True)
+    marque_nom = serializers.CharField(
+        source="marque.marque",
+        read_only=True,
+    )
+
+    purete_id = serializers.IntegerField(read_only=True)
+    purete_nom = serializers.CharField(
+        source="purete.purete",
+        read_only=True,
+    )
+
+    class Meta:
+        model = Produit
+
+        fields = [
+            "id",
+            "uuid",
+            "sku",
+            "nom",
+            "categorie_id",
+            "categorie_nom",
+            "modele_id",
+            "modele_nom",
+            "marque_id",
+            "marque_nom",
+            "purete_id",
+            "purete_nom",
+            "poids",
+            "taille",
+            "matiere",
+            "genre",
+            "image",
+        ]
+
+        read_only_fields = fields
+        
 
 # class HistoriquePrixSerializer(serializers.ModelSerializer):
 #     marque = MarqueSerializer()

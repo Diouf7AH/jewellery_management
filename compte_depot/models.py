@@ -2,10 +2,12 @@
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import CheckConstraint, F, Q
 
 from sale.models import Client
+from sale.services.montant_service import ZERO, money_strict
 
 
 class ClientDepot(Client):
@@ -67,9 +69,12 @@ class CompteDepot(models.Model):
 
     def clean(self):
         super().clean()
-        if self.solde is not None:
-            self.solde = Decimal(self.solde).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+        if self.solde is not None:
+            self.solde = money_strict(
+                self.solde,
+                field="solde",
+            )
 
 class CompteDepotTransaction(models.Model):
     TYPE_DEPOT = "DEPOT"
@@ -90,8 +95,8 @@ class CompteDepotTransaction(models.Model):
 
     compte = models.ForeignKey(
         CompteDepot,
-        on_delete=models.CASCADE,
-        related_name="transactions"
+        on_delete=models.PROTECT,
+        related_name="transactions",
     )
     type_transaction = models.CharField(max_length=20, choices=TYPE_CHOICES)
     montant = models.DecimalField(max_digits=12, decimal_places=2)
@@ -156,13 +161,64 @@ class CompteDepotTransaction(models.Model):
 
     def clean(self):
         super().clean()
-        if self.montant is not None:
-            self.montant = Decimal(self.montant).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if self.solde_avant is not None:
-            self.solde_avant = Decimal(self.solde_avant).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if self.solde_apres is not None:
-            self.solde_apres = Decimal(self.solde_apres).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+        if self.montant is not None:
+            self.montant = money_strict(
+                self.montant,
+                field="montant",
+            )
+
+            if self.montant <= ZERO:
+                raise ValidationError({
+                    "montant": (
+                        "Le montant doit être strictement "
+                        "supérieur à zéro."
+                    )
+                })
+
+        if self.solde_avant is not None:
+            self.solde_avant = money_strict(
+                self.solde_avant,
+                field="solde_avant",
+            )
+
+        if self.solde_apres is not None:
+            self.solde_apres = money_strict(
+                self.solde_apres,
+                field="solde_apres",
+            )
+
+        if (
+            self.montant is not None
+            and self.solde_avant is not None
+            and self.solde_apres is not None
+        ):
+            if self.type_transaction == self.TYPE_DEPOT:
+                solde_attendu = (
+                    self.solde_avant + self.montant
+                )
+
+            elif self.type_transaction == self.TYPE_RETRAIT:
+                solde_attendu = (
+                    self.solde_avant - self.montant
+                )
+
+            else:
+                raise ValidationError({
+                    "type_transaction": (
+                        "Type de transaction invalide."
+                    )
+                })
+
+            if self.solde_apres != solde_attendu:
+                raise ValidationError({
+                    "solde_apres": (
+                        "Le solde après transaction "
+                        "est incohérent."
+                    )
+                })
+                
+                
     @property
     def full_name(self):
         c = getattr(self.compte, "client", None)

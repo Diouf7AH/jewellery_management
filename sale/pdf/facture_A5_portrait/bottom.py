@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from reportlab.lib.units import mm
 
-from ..theme_riogold import DARK, GOLD, LINE, MUTED, WHITE, money_fcfa, safe
 from .helpers import dec, discount_total, truncate
 from .qr_utils import make_invoice_qr_reader
+from .theme import DARK, GOLD, LINE, MUTED, WHITE, money_fcfa, safe
 
 
 def draw_qr_verification(

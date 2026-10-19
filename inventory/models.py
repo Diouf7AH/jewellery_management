@@ -139,6 +139,18 @@ class InventoryMovement(models.Model):
         related_name="movements",
     )
 
+    sale_out_unique_key = models.CharField(
+        max_length=100,
+        unique=True,
+        null=True,
+        blank=True,
+        editable=False,
+        db_index=False,
+        help_text=(
+            "Clé unique des mouvements SALE_OUT. "
+            "NULL pour les autres types de mouvements."
+        ),
+    )
     # ========================================================
     # Vente / facture
     # ========================================================
@@ -389,21 +401,6 @@ class InventoryMovement(models.Model):
                     )
                 ),
                 name="ck_adjustment",
-            ),
-
-            # Un seul SALE_OUT par ligne de vente et ProduitLine.
-            #
-            # Cette contrainte est principalement appliquée par les
-            # bases prenant en charge les contraintes conditionnelles.
-            models.UniqueConstraint(
-                fields=[
-                    "vente_ligne",
-                    "produit_line",
-                ],
-                condition=Q(
-                    movement_type=MovementType.SALE_OUT,
-                ),
-                name="uniq_sale_out_per_sale_line_produit_line",
             ),
         ]
 
@@ -894,15 +891,24 @@ class InventoryMovement(models.Model):
     # ========================================================
 
     def save(self, *args, **kwargs):
-        # Un mouvement verrouillé ne doit jamais être modifié.
+        """
+        Enregistre un mouvement d'inventaire.
+
+        Garanties :
+        - Un mouvement verrouillé ne peut pas être modifié.
+        - Les relations lot/achat/vente sont complétées.
+        - Une clé unique protège les SALE_OUT.
+        - Les validations métier sont exécutées.
+        """
+
+        # 1. Protection des mouvements verrouillés
         if self.pk and self.is_locked:
             raise ValidationError(
                 "Mouvement verrouillé. "
                 "Créez un mouvement inverse."
             )
 
-        # Complète automatiquement les relations à partir
-        # de la ProduitLine.
+        # 2. Compléter les relations ProduitLine
         if self.produit_line_id:
             produit_line_lot_id = getattr(
                 self.produit_line,
@@ -935,15 +941,34 @@ class InventoryMovement(models.Model):
                 if lot_achat_id:
                     self.achat_id = lot_achat_id
 
-        # Complète automatiquement vente depuis vente_ligne.
+        # 3. Compléter vente depuis vente_ligne
         if self.vente_ligne_id and not self.vente_id:
             self.vente_id = self.vente_ligne.vente_id
 
+        # 4. Date du mouvement
         if self.occurred_at is None:
             self.occurred_at = timezone.now()
 
+        # 5. Clé unique des SALE_OUT
+        if self.movement_type == MovementType.SALE_OUT:
+            if not self.vente_ligne_id or not self.produit_line_id:
+                raise ValidationError({
+                    "sale_out_unique_key": (
+                        "SALE_OUT nécessite une ligne de vente "
+                        "et une ProduitLine."
+                    )
+                })
+
+            self.sale_out_unique_key = (
+                f"{self.vente_ligne_id}:{self.produit_line_id}"
+            )
+        else:
+            self.sale_out_unique_key = None
+
+        # 6. Validation métier
         self.full_clean()
 
+        # 7. Enregistrement
         return super().save(*args, **kwargs)
 
     # ========================================================

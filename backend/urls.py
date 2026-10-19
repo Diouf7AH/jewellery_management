@@ -50,3 +50,4 @@ if settings.DEBUG:
 
 # jewelerydbbase
 # CREATE DATABASE jewellery_management CHARACTER set utf8 COLLATE utf8_general_ci;
+# CREATE DATABASE jewelerydbbase CHARACTER set utf8 COLLATE utf8_general_ci;

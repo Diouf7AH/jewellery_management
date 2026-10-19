@@ -120,17 +120,46 @@ TEMPLATES = [
 
 
 # --- DRF (fusion de tes deux blocs) ---
+# REST_FRAMEWORK = {
+#     "COERCE_DECIMAL_TO_STRING": True,
+#     "DEFAULT_AUTHENTICATION_CLASSES": (
+#         "rest_framework_simplejwt.authentication.JWTAuthentication",
+#     ),
+#     "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
+#     # "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+#     # "PAGE_SIZE": 20,
+    
+#     # Conserver tes autres paramètres existants.
+#     "DEFAULT_THROTTLE_RATES": {
+#         "login": "5/min",
+#         "registration": "5/hour",
+#         "verification_resend": "3/hour",
+#     },
+# }
+
 REST_FRAMEWORK = {
     "COERCE_DECIMAL_TO_STRING": True,
+
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
-    "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
-    # "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
-    # "PAGE_SIZE": 20,
+
+    "DEFAULT_FILTER_BACKENDS": (
+        "django_filters.rest_framework.DjangoFilterBackend",
+    ),
+
+    "DEFAULT_PERMISSION_CLASSES": (
+        "rest_framework.permissions.IsAuthenticated",
+    ),
+
+    "DEFAULT_THROTTLE_RATES": {
+        "login": "5/min",
+        "registration": "5/hour",
+        "verification_resend": "3/hour",
+    },
 }
 
-# Pagination par défaut
+# Pagination personnalisée pour les vues API
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 100
 
@@ -304,6 +333,10 @@ EMAIL_TOKEN_EXPIRATION = config(
     "EMAIL_TOKEN_EXPIRATION",
     default=86400,
     cast=int,
+)
+
+FACTURE_SIGNING_KEY = os.environ.get(
+    "FACTURE_SIGNING_KEY"
 )
 
 # send_confirmation_email

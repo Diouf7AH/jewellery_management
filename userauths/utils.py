@@ -1,5 +1,7 @@
 # userauths/utils.py
+
 import logging
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
@@ -15,15 +17,55 @@ EMAIL_CONFIRMATION_SALT = "email-confirmation"
 
 
 # ============================================================
-# Génération du token de confirmation
+# HELPERS
+# ============================================================
+
+def get_frontend_url():
+    """
+    Retourne l'URL du frontend Angular.
+    """
+    return getattr(
+        settings,
+        "FRONTEND_URL",
+        "https://rio-gold.com",
+    ).rstrip("/")
+
+
+def get_email_token_serializer():
+    """
+    Serializer signé avec la clé secrète Django.
+    """
+    return URLSafeTimedSerializer(
+        secret_key=settings.SECRET_KEY,
+    )
+
+
+def invalid_email_token_result(status="invalid"):
+    return {
+        "status": status,
+        "user_id": None,
+        "email": None,
+    }
+
+
+# ============================================================
+# 1. GÉNÉRATION DU TOKEN DE CONFIRMATION
 # ============================================================
 
 def generate_email_token(user):
-    serializer = URLSafeTimedSerializer(settings.SECRET_KEY)
+    """
+    Génère un token signé contenant :
+        - l'identifiant utilisateur
+        - l'adresse email
+
+    Le token est limité dans le temps.
+    """
+
+    serializer = get_email_token_serializer()
 
     payload = {
         "user_id": user.pk,
-        "email": user.email,
+        "email": user.email.strip().lower(),
     }
 
     return serializer.dumps(
@@ -33,11 +75,24 @@ def generate_email_token(user):
 
 
 # ============================================================
-# Validation du token de confirmation
+# 2. VÉRIFICATION DU TOKEN DE CONFIRMATION
 # ============================================================
 
 def verify_email_token(token):
-    serializer = URLSafeTimedSerializer(settings.SECRET_KEY)
+    """
+    Vérifie :
+        - la signature du token
+        - son expiration
+        - la structure du contenu
+
+    Retourne :
+        status = ok | expired | invalid
+    """
+
+    if not isinstance(token, str) or not token.strip():
+        return invalid_email_token_result()
+
+    serializer = get_email_token_serializer()
 
     expiration = getattr(
         settings,
@@ -52,58 +107,47 @@ def verify_email_token(token):
             max_age=expiration,
         )
 
-        if not isinstance(payload, dict):
-            return {
-                "status": "invalid",
-                "user_id": None,
-                "email": None,
-            }
-
-        user_id = payload.get("user_id")
-        email = payload.get("email")
-
-        if not user_id or not email:
-            return {
-                "status": "invalid",
-                "user_id": None,
-                "email": None,
-            }
-
-        return {
-            "status": "ok",
-            "user_id": user_id,
-            "email": email,
-        }
-
     except SignatureExpired:
-        return {
-            "status": "expired",
-            "user_id": None,
-            "email": None,
-        }
+        return invalid_email_token_result("expired")
 
     except BadSignature:
-        return {
-            "status": "invalid",
-            "user_id": None,
-            "email": None,
-        }
+        return invalid_email_token_result()
 
     except Exception:
         logger.exception(
             "Erreur inattendue pendant la validation "
-            "du token de confirmation."
+            "d'un token de confirmation."
         )
+        return invalid_email_token_result()
 
-        return {
-            "status": "invalid",
-            "user_id": None,
-            "email": None,
-        }
+    if not isinstance(payload, dict):
+        return invalid_email_token_result()
+
+    user_id = payload.get("user_id")
+    email = payload.get("email")
+
+    if (
+        not isinstance(user_id, int)
+        or isinstance(user_id, bool)
+        or user_id <= 0
+        or not isinstance(email, str)
+    ):
+        return invalid_email_token_result()
+
+    email = email.strip().lower()
+
+    if not email or "@" not in email:
+        return invalid_email_token_result()
+
+    return {
+        "status": "ok",
+        "user_id": user_id,
+        "email": email,
+    }
 
 
 # ============================================================
-# Envoi de l’email de confirmation
+# 3. ENVOI DE L'EMAIL DE CONFIRMATION
 # ============================================================
 
 def send_confirmation_email(
@@ -113,26 +157,44 @@ def send_confirmation_email(
     confirm_url=None,
     home_url=None,
 ):
-    frontend_url = getattr(
-        settings,
-        "FRONTEND_URL",
-        "https://rio-gold.com",
-    ).rstrip("/")
+    """
+    Envoie un email de confirmation HTML + texte.
+
+    Si confirm_url n'est pas fourni :
+        - avec request : lien vers l'API Django
+        - sans request : lien vers Angular
+
+    Les URLs peuvent également être transmises
+    explicitement par la vue.
+    """
+
+    frontend_url = get_frontend_url()
 
     if not confirm_url:
+
         token = generate_email_token(user)
 
-        if request is None:
-            confirm_url = (
-                f"{frontend_url}/confirm-email"
-                f"?token={token}"
-            )
-        else:
-            confirm_url = request.build_absolute_uri(
-                f"{reverse('verify-email')}?token={token}"
+        query = urlencode({
+            "token": token,
+        })
+
+        if request is not None:
+            verification_path = reverse(
+                "verify-email"
             )
 
-    home_url = (home_url or frontend_url).rstrip("/")
+            confirm_url = request.build_absolute_uri(
+                f"{verification_path}?{query}"
+            )
+
+        else:
+            confirm_url = (
+                f"{frontend_url}/confirm-email?{query}"
+            )
+
+    home_url = (
+        home_url or frontend_url
+    ).rstrip("/")
 
     context = {
         "user": user,
@@ -140,8 +202,6 @@ def send_confirmation_email(
         "confirm_url": confirm_url,
         "year": timezone.now().year,
     }
-
-    subject = "Confirmez votre adresse email"
 
     html_message = render_to_string(
         "emails/email_confirmation.html",
@@ -151,7 +211,7 @@ def send_confirmation_email(
     plain_message = strip_tags(html_message)
 
     email = EmailMultiAlternatives(
-        subject=subject,
+        subject="Confirmez votre adresse email",
         body=plain_message,
         from_email=settings.DEFAULT_FROM_EMAIL,
         to=[user.email],
@@ -162,30 +222,44 @@ def send_confirmation_email(
         "text/html",
     )
 
-    email.send(fail_silently=False)
+    sent_count = email.send(
+        fail_silently=False,
+    )
+
+    if sent_count != 1:
+        raise RuntimeError(
+            "L'email de confirmation n'a pas été accepté "
+            "par le backend d'envoi."
+        )
 
     logger.info(
-        "Email de confirmation envoyé à %s.",
-        user.email,
+        "Email de confirmation accepté pour user_id=%s.",
+        user.pk,
     )
 
 
 # ============================================================
-# Envoi de l’email de réinitialisation du mot de passe
+# 4. ENVOI DE L'EMAIL DE RÉINITIALISATION
 # ============================================================
 
 def send_password_reset_email(
     sender,
     instance,
     reset_password_token,
-    *args,
     **kwargs,
 ):
-    frontend_url = getattr(
-        settings,
-        "FRONTEND_URL",
-        "https://rio-gold.com",
-    ).rstrip("/")
+    """
+    Envoie un lien de réinitialisation du mot de passe.
+
+    Les erreurs d'envoi remontent au signal,
+    qui les journalise.
+
+    Ne journalise jamais la clé du token.
+    """
+
+    frontend_url = get_frontend_url()
+
+    reset_user = reset_password_token.user
 
     full_link = (
         f"{frontend_url}/password-reset/"
@@ -194,7 +268,7 @@ def send_password_reset_email(
 
     context = {
         "full_link": full_link,
-        "email_address": reset_password_token.user.email,
+        "email_address": reset_user.email,
     }
 
     html_message = render_to_string(
@@ -204,31 +278,31 @@ def send_password_reset_email(
 
     plain_message = strip_tags(html_message)
 
-    try:
-        email = EmailMultiAlternatives(
-            subject="Réinitialisation de votre mot de passe",
-            body=plain_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[reset_password_token.user.email],
+    email = EmailMultiAlternatives(
+        subject="Réinitialisation de votre mot de passe",
+        body=plain_message,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[reset_user.email],
+    )
+
+    email.attach_alternative(
+        html_message,
+        "text/html",
+    )
+
+    sent_count = email.send(
+        fail_silently=False,
+    )
+
+    if sent_count != 1:
+        raise RuntimeError(
+            "L'email de réinitialisation n'a pas été "
+            "accepté par le backend d'envoi."
         )
 
-        email.attach_alternative(
-            html_message,
-            "text/html",
-        )
-
-        email.send(fail_silently=False)
-
-        logger.info(
-            "Email de réinitialisation envoyé à %s.",
-            reset_password_token.user.email,
-        )
-
-    except Exception:
-        logger.exception(
-            "Erreur lors de l'envoi de l'email "
-            "de réinitialisation à %s.",
-            reset_password_token.user.email,
-        )
-        
+    logger.info(
+        "Email de réinitialisation accepté "
+        "pour user_id=%s.",
+        reset_user.pk,
+    )
 

@@ -10,17 +10,16 @@ class Stock(models.Model):
     """
     Stock magasin d'une ProduitLine dans une bijouterie.
 
-    en_stock :
-        quantité actuellement disponible physiquement
-        dans la bijouterie, hors quantités affectées
-        aux vendeurs.
+    ProduitLine.quantite :
+        quantité historique reçue lors de l'achat.
 
-    La quantité initialement achetée/reçue reste portée
-    par ProduitLine.quantite.
+    Stock.en_stock :
+        quantité actuellement disponible dans le magasin,
+        hors quantités affectées aux vendeurs.
 
-    L'historique des entrées, sorties, affectations,
-    ventes, retours et ajustements est conservé dans
-    InventoryMovement.
+    InventoryMovement :
+        historique des entrées, affectations, ventes,
+        retours et ajustements.
     """
 
     produit_line = models.ForeignKey(
@@ -41,7 +40,6 @@ class Stock(models.Model):
         null=True,
         blank=True,
         editable=False,
-        db_index=True,
     )
 
     en_stock = models.PositiveIntegerField(
@@ -120,9 +118,15 @@ class Stock(models.Model):
             errors["en_stock"] = (
                 "La quantité disponible est obligatoire."
             )
-        elif self.en_stock < 0:
+
+        elif (
+            isinstance(self.en_stock, bool)
+            or not isinstance(self.en_stock, int)
+            or self.en_stock < 0
+        ):
             errors["en_stock"] = (
-                "La quantité disponible ne peut pas être négative."
+                "La quantité disponible doit être "
+                "un entier positif ou nul."
             )
 
         if errors:
@@ -136,6 +140,26 @@ class Stock(models.Model):
             )
         else:
             self.stock_key = None
+
+        update_fields = kwargs.get("update_fields")
+
+        if update_fields is not None:
+            update_fields = set(update_fields)
+
+            if not update_fields:
+                return
+
+            # Conserver la clé calculée lors des sauvegardes
+            # partielles modifiant les identifiants.
+            if (
+                "produit_line" in update_fields
+                or "produit_line_id" in update_fields
+                or "bijouterie" in update_fields
+                or "bijouterie_id" in update_fields
+            ):
+                update_fields.add("stock_key")
+
+            kwargs["update_fields"] = update_fields
 
         self.full_clean()
 
@@ -154,12 +178,26 @@ class Stock(models.Model):
         return self.produit_line.lot
     
 
+
 class VendorStock(models.Model):
     """
     Stock attribué à un vendeur pour une ProduitLine précise.
 
-    Disponible vendeur :
+    quantite_allouee :
+        quantité totale attribuée au vendeur.
+
+    quantite_vendue :
+        quantité vendue et définitivement comptabilisée.
+
+    quantite_disponible :
         quantite_allouee - quantite_vendue
+
+    Règles :
+    - Le vendeur appartient à la bijouterie du stock.
+    - La quantité vendue ne dépasse jamais l'allocation.
+    - Les quantités ne sont jamais négatives.
+    - Un seul VendorStock par ProduitLine, vendeur
+      et bijouterie.
     """
 
     produit_line = models.ForeignKey(
@@ -181,28 +219,21 @@ class VendorStock(models.Model):
     )
 
     quantite_allouee = models.PositiveIntegerField(
-        default=0
+        default=0,
     )
 
     quantite_vendue = models.PositiveIntegerField(
-        default=0
+        default=0,
     )
 
     created_at = models.DateTimeField(
-        auto_now_add=True
+        auto_now_add=True,
     )
 
     updated_at = models.DateTimeField(
-        auto_now=True
+        auto_now=True,
     )
 
-    @property
-    def quantite_disponible(self) -> int:
-        return max(
-            0,
-            self.quantite_allouee - self.quantite_vendue,
-        )
-        
     class Meta:
         ordering = [
             "produit_line_id",
@@ -221,13 +252,13 @@ class VendorStock(models.Model):
             ),
             models.CheckConstraint(
                 condition=Q(
-                    quantite_allouee__gte=0
+                    quantite_allouee__gte=0,
                 ),
                 name="ck_vendorstock_allouee_gte_zero",
             ),
             models.CheckConstraint(
                 condition=Q(
-                    quantite_vendue__gte=0
+                    quantite_vendue__gte=0,
                 ),
                 name="ck_vendorstock_vendue_gte_zero",
             ),
@@ -235,7 +266,7 @@ class VendorStock(models.Model):
                 condition=Q(
                     quantite_vendue__lte=F(
                         "quantite_allouee"
-                    )
+                    ),
                 ),
                 name="ck_vendorstock_vendue_lte_allouee",
             ),
@@ -272,6 +303,12 @@ class VendorStock(models.Model):
             f"disponible:{self.quantite_disponible}"
         )
 
+    @property
+    def quantite_disponible(self) -> int:
+        return max(
+            0,
+            self.quantite_allouee - self.quantite_vendue,
+        )
 
     @property
     def produit_id(self):
@@ -290,6 +327,10 @@ class VendorStock(models.Model):
 
         errors = {}
 
+        # ====================================================
+        # 1. CHAMPS OBLIGATOIRES
+        # ====================================================
+
         if not self.produit_line_id:
             errors["produit_line"] = (
                 "La ligne de produit est obligatoire."
@@ -305,62 +346,79 @@ class VendorStock(models.Model):
                 "La bijouterie est obligatoire."
             )
 
-        if self.quantite_allouee is None:
-            errors["quantite_allouee"] = (
-                "La quantité allouée est obligatoire."
-            )
-        elif self.quantite_allouee < 0:
-            errors["quantite_allouee"] = (
-                "La quantité allouée ne peut pas être négative."
-            )
+        # ====================================================
+        # 2. VALIDATION DES QUANTITÉS
+        # ====================================================
 
-        if self.quantite_vendue is None:
-            errors["quantite_vendue"] = (
-                "La quantité vendue est obligatoire."
-            )
-        elif self.quantite_vendue < 0:
-            errors["quantite_vendue"] = (
-                "La quantité vendue ne peut pas être négative."
-            )
-
-        if (
-            self.quantite_allouee is not None
-            and self.quantite_vendue is not None
-            and self.quantite_vendue
-            > self.quantite_allouee
+        for field_name, label in (
+            ("quantite_allouee", "La quantité allouée"),
+            ("quantite_vendue", "La quantité vendue"),
         ):
-            errors["quantite_vendue"] = (
-                "La quantité vendue ne peut pas dépasser "
-                "la quantité allouée."
-            )
+            value = getattr(self, field_name)
+
+            if value is None:
+                errors[field_name] = (
+                    f"{label} est obligatoire."
+                )
+
+            elif (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                errors[field_name] = (
+                    f"{label} doit être un entier "
+                    "positif ou nul."
+                )
+
+        allouee_valide = (
+            "quantite_allouee" not in errors
+        )
+        vendue_valide = (
+            "quantite_vendue" not in errors
+        )
+
+        if allouee_valide and vendue_valide:
+            if self.quantite_vendue > self.quantite_allouee:
+                errors["quantite_vendue"] = (
+                    "La quantité vendue ne peut pas "
+                    "dépasser la quantité allouée."
+                )
+
+        # ====================================================
+        # 3. VÉRIFICATION VENDEUR / BIJOUTERIE
+        # ====================================================
 
         if self.vendor_id and self.bijouterie_id:
             try:
-                vendor_bijouterie_id = getattr(
-                    self.vendor,
-                    "bijouterie_id",
-                    None,
+                vendor_bijouterie_id = (
+                    self.vendor.bijouterie_id
                 )
+
             except ObjectDoesNotExist:
-                vendor_bijouterie_id = None
                 errors["vendor"] = (
                     "Le vendeur sélectionné est introuvable."
                 )
 
-            if not vendor_bijouterie_id:
-                errors["vendor"] = (
-                    "Le vendeur n'est rattaché "
-                    "à aucune bijouterie."
-                )
+            else:
+                if not vendor_bijouterie_id:
+                    errors["vendor"] = (
+                        "Le vendeur n'est rattaché "
+                        "à aucune bijouterie."
+                    )
 
-            elif (
-                vendor_bijouterie_id
-                != self.bijouterie_id
-            ):
-                errors["bijouterie"] = (
-                    "Le vendeur n'appartient pas "
-                    "à cette bijouterie."
-                )
+                elif (
+                    vendor_bijouterie_id
+                    != self.bijouterie_id
+                ):
+                    errors["bijouterie"] = (
+                        "Le vendeur n'appartient pas "
+                        "à cette bijouterie."
+                    )
+
+        # ====================================================
+        # 4. ERREURS
+        # ====================================================
 
         if errors:
             raise ValidationError(errors)
@@ -370,3 +428,4 @@ class VendorStock(models.Model):
 
         return super().save(*args, **kwargs)
     
+
