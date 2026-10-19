@@ -7,6 +7,10 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from io import BytesIO
 from uuid import UUID
 
+from django.core.paginator import EmptyPage, Paginator
+from django.db.models import (DecimalField, Exists, OuterRef, Prefetch, Q, Sum,
+                              prefetch_related_objects)
+
 logger = logging.getLogger(__name__)
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -1796,109 +1800,94 @@ Filtres :
             status=status.HTTP_200_OK,
         )
         
+
+
 class ListFacturePayeesView(APIView):
     """
-    Liste les factures entièrement payées.
+    Liste paginée des factures entièrement payées.
 
     Règles :
-    - Admin : factures accessibles selon son scope.
+    - Admin : factures de son scope.
     - Manager : factures de ses bijouteries.
-    - Vendor : factures de ses propres ventes.
+    - Vendor : uniquement ses propres ventes.
     - Cashier : factures de sa bijouterie.
 
-    Seules les ventes contenant au moins un bijou
-    sont éligibles à une facture.
+    Exclut les ventes contenant uniquement
+    des prestations.
 
-    Les ventes mixtes (bijoux + prestations)
-    sont autorisées.
+    Optimisations :
+    - EXISTS pour identifier les ventes avec bijoux.
+    - Pagination avant préchargement des relations.
+    - Agrégation des paiements sur la page.
+    - Préchargement des bijoux de la page.
     """
 
     permission_classes = [IsAuthenticated]
 
+    DEFAULT_PAGE_SIZE = 25
+    MAX_PAGE_SIZE = 100
+
+    @staticmethod
+    def parse_positive_int(request, name, default):
+        raw = request.query_params.get(name)
+
+        if raw in (None, ""):
+            return default
+
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+
+        return max(1, value)
+
     @swagger_auto_schema(
         operation_summary="Lister les factures payées",
-        operation_description="""
-Liste les factures entièrement payées.
-
-Rôles :
-- admin : factures autorisées par son scope
-- manager : factures de ses bijouteries
-- vendor : factures de ses propres ventes
-- cashier : factures de sa bijouterie
-
-Seules les ventes contenant au moins un bijou sont incluses.
-
-Les ventes mixtes (bijoux + prestations) sont autorisées.
-Les ventes avec prestations uniquement sont exclues.
-
-Par défaut, les factures de l'année en cours sont affichées.
-
-Filtres disponibles :
-- annee
-- numero_facture
-- vendor_id
-- client_q
-- payment_mode
-- page
-- page_size
-        """,
+        operation_description=(
+            "Liste paginée des factures payées. "
+            "Filtrage par rôle et bijouterie. "
+            "Les ventes de prestations seules sont exclues."
+        ),
         manual_parameters=[
             openapi.Parameter(
                 "annee",
                 openapi.IN_QUERY,
-                description=(
-                    "Année des factures. "
-                    "Par défaut : année en cours."
-                ),
                 type=openapi.TYPE_INTEGER,
+                description="Année, par défaut année courante",
             ),
             openapi.Parameter(
                 "numero_facture",
                 openapi.IN_QUERY,
-                description="Recherche par numéro de facture",
                 type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
                 "vendor_id",
                 openapi.IN_QUERY,
-                description="Filtrer par vendeur",
                 type=openapi.TYPE_INTEGER,
             ),
             openapi.Parameter(
                 "client_q",
                 openapi.IN_QUERY,
-                description=(
-                    "Recherche client par nom, prénom "
-                    "ou téléphone"
-                ),
                 type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
                 "payment_mode",
                 openapi.IN_QUERY,
-                description=(
-                    "Filtrer par code du mode de paiement "
-                    "(cash, wave, orange_money, etc.)"
-                ),
                 type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
                 "page",
                 openapi.IN_QUERY,
-                description="Numéro de page",
                 type=openapi.TYPE_INTEGER,
             ),
             openapi.Parameter(
                 "page_size",
                 openapi.IN_QUERY,
-                description="Nombre d'éléments par page",
                 type=openapi.TYPE_INTEGER,
             ),
         ],
         responses={
-            200: openapi.Response(
-                description="Liste des factures payées"
-            ),
+            200: "Liste des factures payées",
             400: "Erreur de filtre",
             403: "Accès refusé",
         },
@@ -1906,9 +1895,9 @@ Filtres disponibles :
     )
     def get(self, request):
 
-        # =====================================================
+        # ====================================================
         # 1. UTILISATEUR ET RÔLE
-        # =====================================================
+        # ====================================================
 
         user = request.user
 
@@ -1930,14 +1919,14 @@ Filtres disponibles :
                 status_code=status.HTTP_403_FORBIDDEN,
             )
 
-        # =====================================================
-        # 2. PROFIL VENDEUR CONNECTÉ
-        # =====================================================
+        # ====================================================
+        # 2. PROFILS VÉRIFIÉS
+        # ====================================================
 
         my_vendor = None
+        manager_profile = None
 
         if role == ROLE_VENDOR:
-
             my_vendor = getattr(
                 user,
                 "staff_vendor_profile",
@@ -1946,87 +1935,91 @@ Filtres disponibles :
 
             if not (
                 my_vendor
-                and getattr(my_vendor, "verifie", False)
+                and my_vendor.verifie
                 and my_vendor.bijouterie_id
             ):
                 return error_response(
                     code="INVALID_VENDOR_PROFILE",
-                    message=(
-                        "Profil vendeur introuvable, "
-                        "non vérifié ou sans bijouterie."
-                    ),
+                    message="Profil vendeur invalide.",
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
-        # =====================================================
-        # 3. QUERYSET DE BASE
-        # =====================================================
+        elif role == ROLE_MANAGER:
+            manager_profile = getattr(
+                user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if not (
+                manager_profile
+                and manager_profile.verifie
+            ):
+                return error_response(
+                    code="INVALID_MANAGER_PROFILE",
+                    message="Profil manager invalide.",
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        elif role == ROLE_CASHIER:
+            cashier_profile = getattr(
+                user,
+                "staff_cashier_profile",
+                None,
+            )
+
+            if not (
+                cashier_profile
+                and cashier_profile.verifie
+                and cashier_profile.bijouterie_id
+            ):
+                return error_response(
+                    code="INVALID_CASHIER_PROFILE",
+                    message="Profil caissier invalide.",
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        # ====================================================
+        # 3. FACTURES PAYÉES AVEC BIJOUX
+        # ====================================================
+
+        ventes_avec_bijoux = VenteProduit.objects.filter(
+            vente_id=OuterRef("vente_id"),
+        )
 
         qs = (
             Facture.objects
-            .select_related(
-                "bijouterie",
-                "vente",
-                "vente__client",
-                "vente__vendor",
-                "vente__vendor__user",
-            )
-            .prefetch_related(
-                # Paiements
-                "paiements",
-
-                # Bijoux
-                "vente__lignes",
-                "vente__lignes__vendor",
-                "vente__lignes__vendor__user",
-
-                # ProduitLine : source de vérité
-                "vente__lignes__produit_line",
-                "vente__lignes__produit_line__lot",
-
-                # Produit dérivé de ProduitLine
-                "vente__lignes__produit_line__produit",
-                "vente__lignes__produit_line__produit__categorie",
-                "vente__lignes__produit_line__produit__marque",
-                "vente__lignes__produit_line__produit__purete",
-                "vente__lignes__produit_line__produit__modele",
-
-                # Prestations et autres lignes
-                "vente__autres",
-            )
             .filter(
                 status=Facture.STAT_PAYE,
-
-                # Facture autorisée uniquement
-                # si la vente contient un bijou.
-                vente__lignes__isnull=False,
             )
-            .distinct()
-        )
-
-        # =====================================================
-        # 4. SCOPE BIJOUTERIE
-        # =====================================================
-
-        qs = qs.filter(
-            scope_bijouterie_q(
-                user,
-                field="bijouterie_id",
+            .alias(
+                contient_bijoux=Exists(
+                    ventes_avec_bijoux
+                )
+            )
+            .filter(
+                contient_bijoux=True,
+            )
+            .filter(
+                scope_bijouterie_q(
+                    user,
+                    field="bijouterie_id",
+                )
             )
         )
 
-        # =====================================================
-        # 5. VENDEUR : SES PROPRES FACTURES
-        # =====================================================
+        # ====================================================
+        # 4. SCOPE VENDEUR
+        # ====================================================
 
         if role == ROLE_VENDOR:
             qs = qs.filter(
-                vente__vendor_id=my_vendor.id
+                vente__vendor_id=my_vendor.pk,
             )
 
-        # =====================================================
-        # 6. FILTRE ANNÉE
-        # =====================================================
+        # ====================================================
+        # 5. ANNÉE
+        # ====================================================
 
         current_year = timezone.localdate().year
 
@@ -2055,12 +2048,12 @@ Filtres disponibles :
             )
 
         qs = qs.filter(
-            date_creation__year=annee
+            date_creation__year=annee,
         )
 
-        # =====================================================
-        # 7. FILTRE NUMÉRO FACTURE
-        # =====================================================
+        # ====================================================
+        # 6. NUMÉRO FACTURE
+        # ====================================================
 
         numero = (
             request.query_params.get(
@@ -2070,12 +2063,12 @@ Filtres disponibles :
 
         if numero:
             qs = qs.filter(
-                numero_facture__icontains=numero
+                numero_facture__icontains=numero,
             )
 
-        # =====================================================
-        # 8. FILTRE VENDEUR
-        # =====================================================
+        # ====================================================
+        # 7. VENDEUR
+        # ====================================================
 
         vendor_id_raw = request.query_params.get(
             "vendor_id"
@@ -2086,11 +2079,7 @@ Filtres disponibles :
             try:
                 vendor_id = int(vendor_id_raw)
             except (TypeError, ValueError):
-                return error_response(
-                    code="INVALID_VENDOR_ID",
-                    message="vendor_id doit être un entier positif.",
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                )
+                vendor_id = 0
 
             if vendor_id <= 0:
                 return error_response(
@@ -2099,10 +2088,9 @@ Filtres disponibles :
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Le vendeur ne peut filtrer que lui-même.
             if (
                 role == ROLE_VENDOR
-                and vendor_id != my_vendor.id
+                and vendor_id != my_vendor.pk
             ):
                 return error_response(
                     code="VENDOR_SCOPE_FORBIDDEN",
@@ -2113,36 +2101,10 @@ Filtres disponibles :
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
-            # Vérifier que le vendeur demandé appartient
-            # à une bijouterie du manager.
             if role == ROLE_MANAGER:
-
-                manager_profile = getattr(
-                    user,
-                    "staff_manager_profile",
-                    None,
-                )
-
-                if not (
-                    manager_profile
-                    and getattr(
-                        manager_profile,
-                        "verifie",
-                        False,
-                    )
-                ):
-                    return error_response(
-                        code="INVALID_MANAGER_PROFILE",
-                        message="Profil manager invalide.",
-                        status_code=status.HTTP_403_FORBIDDEN,
-                    )
-
                 vendor_allowed = (
-                    manager_profile
-                    .bijouteries
-                    .filter(
-                        vendors__id=vendor_id
-                    )
+                    manager_profile.bijouteries
+                    .filter(vendors__id=vendor_id)
                     .exists()
                 )
 
@@ -2157,12 +2119,12 @@ Filtres disponibles :
                     )
 
             qs = qs.filter(
-                vente__vendor_id=vendor_id
+                vente__vendor_id=vendor_id,
             )
 
-        # =====================================================
-        # 9. FILTRE CLIENT
-        # =====================================================
+        # ====================================================
+        # 8. CLIENT
+        # ====================================================
 
         client_q = (
             request.query_params.get(
@@ -2183,9 +2145,9 @@ Filtres disponibles :
                 )
             )
 
-        # =====================================================
-        # 10. FILTRE MODE DE PAIEMENT
-        # =====================================================
+        # ====================================================
+        # 9. MODE DE PAIEMENT
+        # ====================================================
 
         payment_mode = (
             request.query_params.get(
@@ -2200,57 +2162,34 @@ Filtres disponibles :
                 )
             ).distinct()
 
-        # =====================================================
-        # 11. TRI
-        # =====================================================
+        # ====================================================
+        # 10. TRI ET PAGINATION
+        # ====================================================
 
         qs = qs.order_by(
             "-date_creation",
             "-id",
         )
 
-        # =====================================================
-        # 12. PAGINATION
-        # =====================================================
-
-        def parse_positive_int(
-            name: str,
-            default: int,
-        ) -> int:
-
-            value = request.query_params.get(name)
-
-            if value in (None, ""):
-                return default
-
-            try:
-                value = int(value)
-            except (TypeError, ValueError):
-                return default
-
-            return max(1, value)
-
-        page = parse_positive_int(
+        page = self.parse_positive_int(
+            request,
             "page",
             1,
         )
 
         page_size = min(
-            parse_positive_int(
+            self.parse_positive_int(
+                request,
                 "page_size",
-                DEFAULT_PAGE_SIZE,
+                self.DEFAULT_PAGE_SIZE,
             ),
-            MAX_PAGE_SIZE,
+            self.MAX_PAGE_SIZE,
         )
 
         paginator = Paginator(
             qs,
             page_size,
         )
-
-        # =====================================================
-        # 13. AUCUN RÉSULTAT
-        # =====================================================
 
         if paginator.count == 0:
             return Response(
@@ -2265,10 +2204,6 @@ Filtres disponibles :
                 status=status.HTTP_200_OK,
             )
 
-        # =====================================================
-        # 14. PAGE
-        # =====================================================
-
         try:
             page_obj = paginator.page(page)
         except EmptyPage:
@@ -2276,18 +2211,98 @@ Filtres disponibles :
                 paginator.num_pages
             )
 
-        # =====================================================
-        # 15. SERIALIZATION
-        # =====================================================
-
-        serializer = FactureListSerializer(
-            page_obj.object_list,
-            many=True,
+        factures = list(
+            page_obj.object_list
         )
 
-        # =====================================================
-        # 16. RESPONSE
-        # =====================================================
+        # ====================================================
+        # 11. PRÉCHARGEMENT APRÈS PAGINATION
+        # ====================================================
+
+        produits_qs = (
+            VenteProduit.objects
+            .select_related(
+                "produit_line",
+                "produit_line__lot",
+                "produit_line__produit",
+                "produit_line__produit__categorie",
+                "produit_line__produit__marque",
+                "produit_line__produit__purete",
+                "produit_line__produit__modele",
+                "vendor",
+                "vendor__user",
+            )
+        )
+
+        prefetch_related_objects(
+            factures,
+            "bijouterie",
+            "vente__client",
+            Prefetch(
+                "vente__lignes",
+                queryset=produits_qs,
+            ),
+        )
+
+        # ====================================================
+        # 12. AGRÉGATION DES PAIEMENTS DE LA PAGE
+        # ====================================================
+
+        facture_ids = [
+            facture.pk
+            for facture in factures
+        ]
+
+        totaux_paiements = {
+            facture_id: Decimal("0.00")
+            for facture_id in facture_ids
+        }
+
+        paiements_groupes = (
+            PaiementLigne.objects
+            .filter(
+                paiement__facture_id__in=facture_ids
+            )
+            .values(
+                "paiement__facture_id"
+            )
+            .annotate(
+                total=Sum(
+                    "montant_paye",
+                    output_field=DecimalField(
+                        max_digits=18,
+                        decimal_places=2,
+                    ),
+                )
+            )
+        )
+
+        for ligne in paiements_groupes:
+            facture_id = ligne[
+                "paiement__facture_id"
+            ]
+
+            totaux_paiements[facture_id] = (
+                ligne["total"]
+                or Decimal("0.00")
+            )
+
+        # ====================================================
+        # 13. SERIALIZATION
+        # ====================================================
+
+        serializer = FactureListSerializer(
+            factures,
+            many=True,
+            context={
+                "request": request,
+                "totaux_paiements": totaux_paiements,
+            },
+        )
+
+        # ====================================================
+        # 14. RÉPONSE ANGULAR
+        # ====================================================
 
         return Response(
             {
@@ -2300,6 +2315,8 @@ Filtres disponibles :
             },
             status=status.HTTP_200_OK,
         )
+
+
 
 class PaiementFactureMultiModeView(APIView):
     """
