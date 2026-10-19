@@ -1411,6 +1411,7 @@ class ListRolesAPIView(APIView):
             status=status.HTTP_200_OK,
         )
 
+
 class CreateRoleAPIView(APIView):
     """
     Création d'un rôle personnalisé.
