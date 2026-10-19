@@ -601,6 +601,7 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
 class UserDetailUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
+
         fields = [
             "username",
             "telephone",
@@ -620,15 +621,9 @@ class UserDetailUpdateSerializer(serializers.ModelSerializer):
                 "allow_blank": True,
                 "allow_null": True,
             },
-            "first_name": {
-                "required": False,
-            },
-            "last_name": {
-                "required": False,
-            },
-            "is_active": {
-                "required": False,
-            },
+            "first_name": {"required": False},
+            "last_name": {"required": False},
+            "is_active": {"required": False},
         }
 
     def validate_username(self, value):

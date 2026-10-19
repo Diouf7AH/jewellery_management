@@ -745,28 +745,27 @@ class ValidateTokenView(APIView):
         )
 
 
-
 class UserDetailUpdateView(APIView):
     """
     Consultation, modification et suppression d'utilisateur.
 
     ADMIN :
-        - Accès global.
-        - Modification des informations générales.
-        - Activation et désactivation des comptes.
-        - Suppression définitive sous contraintes.
+        - Consulte tous les utilisateurs.
+        - Modifie les informations générales.
+        - Active ou désactive les comptes.
+        - Peut supprimer définitivement un utilisateur.
 
     MANAGER :
-        - Profil manager vérifié obligatoire.
+        - Profil vérifié obligatoire.
         - Accès limité à ses bijouteries.
-        - Consultation des profils désactivés.
-        - Modification des informations générales.
-        - Interdiction de modifier is_active.
-        - Interdiction de gérer les administrateurs.
-        - Suppression définitive interdite.
+        - Peut consulter les profils désactivés.
+        - Modifie les informations générales.
+        - Ne peut pas modifier is_active.
+        - Ne peut pas gérer un administrateur.
+        - Ne peut pas supprimer un utilisateur.
 
-    Les rôles et profils staff sont gérés
-    par des API dédiées.
+    Les rôles et affectations staff restent
+    gérés par des API dédiées.
     """
 
     renderer_classes = [UserRenderer]
@@ -807,7 +806,6 @@ class UserDetailUpdateView(APIView):
                 "Accès refusé."
             )
 
-        # related_name du modèle Manager
         manager_profile = getattr(
             request.user,
             "staff_manager_profile",
@@ -845,7 +843,7 @@ class UserDetailUpdateView(APIView):
             )
 
         # related_query_name des profils staff.
-        # Les profils désactivés sont inclus.
+        # Inclut les profils désactivés.
 
         belongs_to_manager_scope = (
             User.objects
@@ -884,12 +882,6 @@ class UserDetailUpdateView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Consulter un utilisateur",
-        operation_description=(
-            "L'administrateur consulte tous les utilisateurs. "
-            "Le manager vérifié consulte uniquement "
-            "les utilisateurs de ses bijouteries, "
-            "y compris les profils staff désactivés."
-        ),
         responses={
             200: UserDetailSerializer,
             401: "Authentification requise",
@@ -922,10 +914,9 @@ class UserDetailUpdateView(APIView):
         operation_summary="Modifier un utilisateur",
         operation_description=(
             "Modifie les informations générales. "
-            "Seul l'administrateur peut activer ou "
-            "désactiver un compte avec is_active. "
-            "Les rôles, permissions et profils staff "
-            "ne sont pas modifiables."
+            "Accepte un objet utilisateur complet, "
+            "mais ignore les champs non modifiables. "
+            "Seul l'administrateur peut modifier is_active."
         ),
         request_body=UserDetailUpdateSerializer,
         responses={
@@ -943,28 +934,28 @@ class UserDetailUpdateView(APIView):
             pk,
         )
 
-        # Refuser les champs non autorisés.
-        unknown_fields = (
-            set(request.data.keys())
-            - self.ALLOWED_UPDATE_FIELDS
-        )
+        # Ne conserver que les champs modifiables.
+        # Les autres champs sont ignorés.
 
-        if unknown_fields:
+        data = {
+            key: value
+            for key, value in request.data.items()
+            if key in self.ALLOWED_UPDATE_FIELDS
+        }
+
+        # Si aucun champ modifiable n'est fourni.
+        if not data:
             return Response(
                 {
                     "detail": (
-                        "Certains champs ne sont pas "
-                        "modifiables via cette API."
-                    ),
-                    "champs_interdits": sorted(
-                        unknown_fields
-                    ),
+                        "Aucun champ modifiable fourni."
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Seul l'admin peut modifier is_active.
-        if "is_active" in request.data:
+        # Seul l'administrateur peut modifier is_active.
+        if "is_active" in data:
             if get_role_name(request.user) != "admin":
                 raise PermissionDenied(
                     "Seul un administrateur peut "
@@ -973,7 +964,7 @@ class UserDetailUpdateView(APIView):
 
         serializer = UserDetailUpdateSerializer(
             user,
-            data=request.data,
+            data=data,
             partial=True,
             context={"request": request},
         )
@@ -982,7 +973,9 @@ class UserDetailUpdateView(APIView):
             raise_exception=True,
         )
 
-        # Vérification après conversion du booléen.
+        # Empêcher l'admin de désactiver son propre compte.
+        # Utiliser la valeur validée par DRF.
+
         new_is_active = serializer.validated_data.get(
             "is_active",
             user.is_active,
@@ -1020,9 +1013,7 @@ class UserDetailUpdateView(APIView):
         operation_summary="Supprimer un utilisateur",
         operation_description=(
             "Suppression définitive réservée "
-            "aux administrateurs. "
-            "Les utilisateurs liés à des données "
-            "protégées ne peuvent pas être supprimés."
+            "aux administrateurs."
         ),
         responses={
             204: "Utilisateur supprimé",
