@@ -1018,15 +1018,17 @@ class UsersView(APIView):
             User.objects
             .select_related(
                 "user_role",
-                "staff_vendor_profile__bijouterie",
-                "staff_cashier_profile__bijouterie",
-                "staff_buyer_profile__bijouterie",
+                "vendor_profile__bijouterie",
+                "cashier_profile__bijouterie",
+                "buyer_profile__bijouterie",
+                "manager_profile",
             )
             .prefetch_related(
-                "staff_manager_profile__bijouteries",
+                "manager_profile__bijouteries",
             )
             .order_by("-id")
         )
+
 
         # ==================================================
         # 1. ADMIN : TOUS LES UTILISATEURS
