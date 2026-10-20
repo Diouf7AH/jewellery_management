@@ -156,11 +156,9 @@ class CreateStaffView(APIView):
     def post(self, request):
         serializer = CreateStaffSerializer(
             data=request.data,
+            context={"request": request},
         )
-
-        serializer.is_valid(
-            raise_exception=True,
-        )
+        serializer.is_valid(raise_exception=True)
 
         data = serializer.validated_data
 
@@ -170,17 +168,12 @@ class CreateStaffView(APIView):
                 target_role=data["role"],
                 email=data["email"],
                 bijouterie=data.get("bijouterie_id"),
-                bijouteries=data.get(
-                    "bijouteries",
-                    [],
-                ),
+                bijouteries=data.get("bijouteries", []),
             )
 
         except PermissionError as exc:
             return Response(
-                {
-                    "error": str(exc),
-                },
+                {"error": str(exc)},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -192,109 +185,69 @@ class CreateStaffView(APIView):
                 or "confirmer son email" in message
                 or "n'est pas actif" in message
             ):
-                response_status = (
-                    status.HTTP_400_BAD_REQUEST
-                )
+                response_status = status.HTTP_400_BAD_REQUEST
             else:
-                response_status = (
-                    status.HTTP_409_CONFLICT
-                )
+                response_status = status.HTTP_409_CONFLICT
 
             return Response(
-                {
-                    "error": message,
-                },
+                {"error": message},
                 status=response_status,
             )
 
         staff = result.staff
         user = result.user
 
-        # ====================================================
-        # Bijouteries du staff
-        # ====================================================
-
         if result.staff_type == ROLE_MANAGER:
             bijouteries_data = [
                 {
-                    "id": bijouterie.id,
-                    "nom": bijouterie.nom,
+                    "id": b.id,
+                    "nom": b.nom,
                 }
-                for bijouterie in staff.bijouteries.all()
+                for b in staff.bijouteries.all()
             ]
 
         elif result.staff_type in SINGLE_BIJOUTERIE_ROLES:
-            bijouterie = getattr(
-                staff,
-                "bijouterie",
-                None,
-            )
+            b = staff.bijouterie
 
             bijouteries_data = (
-                [
-                    {
-                        "id": bijouterie.id,
-                        "nom": bijouterie.nom,
-                    }
-                ]
-                if bijouterie
+                [{"id": b.id, "nom": b.nom}]
+                if b
                 else []
             )
 
         else:
             return Response(
-                {
-                    "detail": (
-                        "Rôle staff non pris en charge."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+                {"detail": "Rôle staff non pris en charge."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
-        # ====================================================
-        # Réponse
-        # ====================================================
 
         return Response(
             {
-                "message": (
-                    "✅ Staff créé avec succès"
-                ),
+                "message": "✅ Staff créé avec succès",
                 "staff_type": result.staff_type,
                 "staff": {
                     "id": staff.id,
                     "verifie": staff.verifie,
-                    "bijouteries": (
-                        bijouteries_data
-                    ),
-                    "created_at": (
-                        staff.created_at
-                    ),
-                    "updated_at": (
-                        staff.updated_at
-                    ),
+                    "bijouteries": bijouteries_data,
+                    "created_at": staff.created_at,
+                    "updated_at": staff.updated_at,
                 },
                 "user": {
                     "id": user.id,
                     "email": user.email,
-                    "first_name": (
-                        user.first_name
-                    ),
-                    "last_name": (
-                        user.last_name
-                    ),
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
                     "telephone": getattr(
                         user,
                         "telephone",
                         None,
                     ),
-                    "role": (
-                        result.staff_type
-                    ),
+                    "role": result.staff_type,
                 },
             },
             status=status.HTTP_201_CREATED,
         )
+
 
 class CreateAdminView(APIView):
     """

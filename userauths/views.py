@@ -250,8 +250,105 @@ class UserRegistrationView(APIView):
 # 2. CONFIRMATION EMAIL
 # ============================================================
 
+# @method_decorator(require_GET, name="dispatch")
+# class EmailVerificationView(APIView):
+
+#     permission_classes = [AllowAny]
+
+#     def get(self, request):
+
+#         token = request.query_params.get("token")
+
+#         if not token:
+#             return render(
+#                 request,
+#                 "emails/email_invalid.html",
+#                 status=400,
+#             )
+
+#         result = verify_email_token(token) or {}
+
+#         token_status = result.get("status")
+#         user_id = result.get("user_id")
+#         email = (result.get("email") or "").strip().lower()
+
+#         if token_status == "expired":
+#             return render(
+#                 request,
+#                 "emails/email_expired.html",
+#                 status=410,
+#             )
+
+#         if token_status != "ok" or not user_id or not email:
+#             return render(
+#                 request,
+#                 "emails/email_invalid.html",
+#                 status=400,
+#             )
+
+#         with transaction.atomic():
+
+#             user = (
+#                 User.objects.select_for_update()
+#                 .filter(
+#                     pk=user_id,
+#                     email__iexact=email,
+#                 )
+#                 .first()
+#             )
+
+#             if user is None:
+#                 return render(
+#                     request,
+#                     "emails/email_invalid.html",
+#                     status=404,
+#                 )
+
+#             # Le compte est déjà vérifié.
+#             # Ne jamais réactiver automatiquement.
+#             if user.is_email_verified:
+#                 if not user.is_active:
+#                     return render(
+#                         request,
+#                         "emails/email_invalid.html",
+#                         status=403,
+#                     )
+
+#             else:
+#                 # Première confirmation uniquement.
+#                 user.is_email_verified = True
+#                 user.is_active = True
+
+#                 user.save(
+#                     update_fields=[
+#                         "is_email_verified",
+#                         "is_active",
+#                     ]
+#                 )
+
+#         return render(
+#             request,
+#             "emails/email_confirmed.html",
+#             {
+#                 "frontend_url": getattr(
+#                     settings,
+#                     "FRONTEND_URL",
+#                     "https://rio-gold.com",
+#                 ).rstrip("/"),
+#             },
+#             status=200,
+#         )
+
 @method_decorator(require_GET, name="dispatch")
 class EmailVerificationView(APIView):
+    """
+    Vérification de l'adresse email.
+
+    - Token valide : confirmation de l'email.
+    - Première vérification : activation automatique.
+    - Email déjà vérifié : aucune réactivation.
+    - Token expiré ou invalide : refus.
+    """
 
     permission_classes = [AllowAny]
 
@@ -270,7 +367,9 @@ class EmailVerificationView(APIView):
 
         token_status = result.get("status")
         user_id = result.get("user_id")
-        email = (result.get("email") or "").strip().lower()
+        email = (
+            result.get("email") or ""
+        ).strip().lower()
 
         if token_status == "expired":
             return render(
@@ -279,7 +378,11 @@ class EmailVerificationView(APIView):
                 status=410,
             )
 
-        if token_status != "ok" or not user_id or not email:
+        if (
+            token_status != "ok"
+            or not user_id
+            or not email
+        ):
             return render(
                 request,
                 "emails/email_invalid.html",
@@ -304,9 +407,10 @@ class EmailVerificationView(APIView):
                     status=404,
                 )
 
-            # Le compte est déjà vérifié.
-            # Ne jamais réactiver automatiquement.
+            # Email déjà vérifié :
+            # ne jamais réactiver le compte.
             if user.is_email_verified:
+
                 if not user.is_active:
                     return render(
                         request,
@@ -315,7 +419,8 @@ class EmailVerificationView(APIView):
                     )
 
             else:
-                # Première confirmation uniquement.
+                # Première vérification :
+                # activation automatique.
                 user.is_email_verified = True
                 user.is_active = True
 
@@ -338,8 +443,7 @@ class EmailVerificationView(APIView):
             },
             status=200,
         )
-
-
+        
 # ============================================================
 # 3. RENVOI VIA API
 # ============================================================
@@ -909,13 +1013,11 @@ class UserDetailUpdateView(APIView):
     # ==================================================
     # PUT : MODIFIER UN UTILISATEUR
     # ==================================================
-
     @swagger_auto_schema(
         operation_summary="Modifier un utilisateur",
         operation_description=(
             "Modifie les informations générales. "
-            "Accepte un objet utilisateur complet, "
-            "mais ignore les champs non modifiables. "
+            "Les champs non modifiables sont ignorés. "
             "Seul l'administrateur peut modifier is_active."
         ),
         request_body=UserDetailUpdateSerializer,
@@ -929,38 +1031,30 @@ class UserDetailUpdateView(APIView):
     )
     def put(self, request, pk):
 
-        user = self._get_target_user(
-            request,
-            pk,
-        )
+        user = self._get_target_user(request, pk)
 
-        # Ne conserver que les champs modifiables.
-        # Les autres champs sont ignorés.
-
+        # Conserver uniquement les champs autorisés.
         data = {
             key: value
             for key, value in request.data.items()
             if key in self.ALLOWED_UPDATE_FIELDS
         }
 
-        # Si aucun champ modifiable n'est fourni.
         if not data:
-            return Response(
-                {
-                    "detail": (
-                        "Aucun champ modifiable fourni."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            raise ValidationError({
+                "detail": "Aucun champ modifiable fourni."
+            })
+
+        is_admin = (
+            get_role_name(request.user) == "admin"
+        )
 
         # Seul l'administrateur peut modifier is_active.
-        if "is_active" in data:
-            if get_role_name(request.user) != "admin":
-                raise PermissionDenied(
-                    "Seul un administrateur peut "
-                    "activer ou désactiver un compte."
-                )
+        if "is_active" in data and not is_admin:
+            raise PermissionDenied(
+                "Seul un administrateur peut "
+                "activer ou désactiver un compte."
+            )
 
         serializer = UserDetailUpdateSerializer(
             user,
@@ -969,21 +1063,13 @@ class UserDetailUpdateView(APIView):
             context={"request": request},
         )
 
-        serializer.is_valid(
-            raise_exception=True,
-        )
+        serializer.is_valid(raise_exception=True)
 
-        # Empêcher l'admin de désactiver son propre compte.
-        # Utiliser la valeur validée par DRF.
-
-        new_is_active = serializer.validated_data.get(
-            "is_active",
-            user.is_active,
-        )
-
+        # Empêcher l'administrateur de désactiver
+        # son propre compte.
         if (
             user.pk == request.user.pk
-            and new_is_active is False
+            and serializer.validated_data.get("is_active") is False
         ):
             raise ValidationError({
                 "is_active": (
@@ -995,13 +1081,11 @@ class UserDetailUpdateView(APIView):
         with transaction.atomic():
             serializer.save()
 
-        output_serializer = UserDetailSerializer(
-            user,
-            context={"request": request},
-        )
-
         return Response(
-            output_serializer.data,
+            UserDetailSerializer(
+                user,
+                context={"request": request},
+            ).data,
             status=status.HTTP_200_OK,
         )
 

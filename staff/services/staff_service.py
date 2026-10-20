@@ -146,48 +146,129 @@ def _check_vendor_reassignment(staff, new_bijouterie):
             "par une procédure de transfert dédiée."
         )
 
-
 @transaction.atomic
 def create_staff_member(
-    *, caller_user, target_role: str, email: str,
-    bijouterie=None, bijouteries=None,
+    *,
+    caller_user,
+    target_role: str,
+    email: str,
+    bijouterie=None,
+    bijouteries=None,
 ):
-    """Crée un profil pour un utilisateur existant, vérifié et sans autre profil staff."""
+    """
+    Crée un profil staff pour un utilisateur existant.
+
+    Règles :
+    - L'utilisateur doit avoir confirmé son email.
+    - Le compte utilisateur doit être actif.
+    - Un utilisateur ne peut avoir qu'un profil staff.
+    - Admin : manager, vendor, cashier, buyer.
+    - Manager : vendor, cashier uniquement.
+    - Manager : plusieurs bijouteries.
+    - Autres profils : une seule bijouterie.
+    - Le profil staff est créé avec verifie=True.
+    """
+
     target_role = _normalize_role(target_role)
     email = _normalize_email(email)
+
     if not email:
         raise ValueError("Email requis.")
 
-    caller_role, caller_manager = _check_caller(caller_user, target_role)
+    # Vérifier les permissions du créateur.
+    caller_role, caller_manager = _check_caller(
+        caller_user,
+        target_role,
+    )
+
     Model = ROLE_MODEL_MAP[target_role]
-    user = User.objects.select_for_update().filter(email__iexact=email).first()
+
+    # Verrouiller l'utilisateur pour éviter
+    # deux créations simultanées.
+    user = (
+        User.objects.select_for_update()
+        .filter(email__iexact=email)
+        .first()
+    )
+
+    # Vérifier l'existence, l'activation
+    # et la confirmation de l'email.
     _validate_target_user(user)
+
+    # Interdire la transformation d'un admin.
     if _normalize_role(get_role_name(user)) == ROLE_ADMIN:
-        raise ValueError("Un administrateur ne peut pas être transformé en staff.")
-    if any(_get_existing_staff_flags(user).values()):
-        raise ValueError("Cet utilisateur possède déjà un profil staff.")
+        raise ValueError(
+            "Un administrateur ne peut pas "
+            "être transformé en staff."
+        )
 
+    # Vérifier tous les profils, même désactivés.
+    existing_staff = _get_existing_staff_flags(user)
+
+    if any(existing_staff.values()):
+        raise ValueError(
+            "Cet utilisateur possède déjà un profil staff."
+        )
+
+    # Création d'un manager.
     if target_role == ROLE_MANAGER:
-        validated_bijouteries = _validate_bijouteries(bijouteries)
-        staff = Manager.objects.create(user=user, verifie=True)
-        staff.bijouteries.set(validated_bijouteries)
-    else:
-        bijouterie = _validate_bijouterie(bijouterie)
-        if caller_role == ROLE_MANAGER:
-            _check_manager_scope(caller_manager, bijouterie)
-        staff = Model.objects.create(user=user, bijouterie=bijouterie, verifie=True)
 
-    role_obj, _ = Role.objects.get_or_create(role=target_role)
+        validated_bijouteries = _validate_bijouteries(
+            bijouteries
+        )
+
+        staff = Manager.objects.create(
+            user=user,
+            verifie=True,
+        )
+
+        staff.bijouteries.set(
+            validated_bijouteries
+        )
+
+    # Création vendor, cashier ou buyer.
+    else:
+
+        validated_bijouterie = _validate_bijouterie(
+            bijouterie
+        )
+
+        if caller_role == ROLE_MANAGER:
+            _check_manager_scope(
+                caller_manager,
+                validated_bijouterie,
+            )
+
+        staff = Model.objects.create(
+            user=user,
+            bijouterie=validated_bijouterie,
+            verifie=True,
+        )
+
+    # Affecter le rôle au compte utilisateur.
+    role_obj, _ = Role.objects.get_or_create(
+        role=target_role
+    )
+
     user.user_role = role_obj
-    user.save(update_fields=["user_role"])
+    user.save(
+        update_fields=["user_role"]
+    )
+
     return StaffCreationResult(
-        staff_type=target_role, staff=staff, user=user, created_user=False
+        staff_type=target_role,
+        staff=staff,
+        user=user,
+        created_user=False,
     )
 
 
 @transaction.atomic
 def update_staff_member(
-    *, caller_user, staff_id: int, target_role: str,
+    *,
+    caller_user,
+    staff_id: int,
+    target_role: str,
     email: str | None = None,
     first_name: str | None = None,
     last_name: str | None = None,
@@ -196,81 +277,191 @@ def update_staff_member(
     verifie: bool | None = None,
     raison_desactivation: str | None = None,
 ):
-    """Modifie un profil staff ; désactiver le profil ne désactive pas le compte."""
+    """
+    Modifie un profil staff existant.
+
+    La désactivation du profil staff ne désactive
+    jamais le compte utilisateur.
+    """
+
     target_role = _normalize_role(target_role)
-    caller_role, caller_manager = _check_caller(caller_user, target_role)
+
+    caller_role, caller_manager = _check_caller(
+        caller_user,
+        target_role,
+    )
+
     Model = ROLE_MODEL_MAP[target_role]
 
+    # Validation du statut.
     if verifie is not None and type(verifie) is not bool:
-        raise ValueError("verifie doit être un booléen.")
-    raison_clean = str(raison_desactivation or "").strip()
+        raise ValueError(
+            "verifie doit être un booléen."
+        )
+
+    raison_clean = str(
+        raison_desactivation or ""
+    ).strip()
+
     if verifie is False and not raison_clean:
-        raise ValueError("La raison de désactivation est obligatoire.")
+        raise ValueError(
+            "La raison de désactivation est obligatoire."
+        )
 
-    queryset = Model.objects.select_for_update().select_related("user")
+    # Récupération et verrouillage du staff.
+    queryset = (
+        Model.objects
+        .select_for_update()
+        .select_related("user")
+    )
+
     if target_role == ROLE_MANAGER:
-        queryset = queryset.prefetch_related("bijouteries")
+        queryset = queryset.prefetch_related(
+            "bijouteries"
+        )
     else:
-        queryset = queryset.select_related("bijouterie")
-    staff = queryset.filter(pk=staff_id).first()
+        queryset = queryset.select_related(
+            "bijouterie"
+        )
+
+    staff = queryset.filter(
+        pk=staff_id
+    ).first()
+
     if staff is None:
-        raise ValueError("Staff introuvable.")
+        raise ValueError(
+            "Staff introuvable."
+        )
 
+    # Vérifier le périmètre du manager.
     if caller_role == ROLE_MANAGER:
-        _check_manager_scope(caller_manager, staff.bijouterie)
+
+        _check_manager_scope(
+            caller_manager,
+            staff.bijouterie,
+        )
+
         if bijouterie is not None:
-            _check_manager_scope(
-                caller_manager, _validate_bijouterie(bijouterie)
+            validated_bijouterie = _validate_bijouterie(
+                bijouterie
             )
 
-    user = User.objects.select_for_update().get(pk=staff.user_id)
-    user_fields = []
-    if email is not None:
-        new_email = _normalize_email(email)
-        if not new_email:
-            raise ValueError("L'adresse email ne peut pas être vide.")
-        if user.email != new_email:
-            email_exists = (
-                User.objects.exclude(pk=user.pk)
-                .filter(email__iexact=new_email).exists()
+            _check_manager_scope(
+                caller_manager,
+                validated_bijouterie,
             )
-            if email_exists:
-                raise ValueError("Cet email est déjà utilisé.")
-            user.email = new_email
-            user_fields.append("email")
-    if first_name is not None and user.first_name != first_name:
+
+    # Verrouiller le compte utilisateur.
+    user = (
+        User.objects
+        .select_for_update()
+        .get(pk=staff.user_id)
+    )
+
+    # Email : modification interdite ici.
+    if email is not None:
+
+        new_email = _normalize_email(email)
+
+        if new_email != _normalize_email(user.email):
+            raise ValueError(
+                "La modification de l'adresse email "
+                "doit passer par une procédure "
+                "de vérification dédiée."
+            )
+
+    # Modifier les informations personnelles.
+    user_fields = []
+
+    if (
+        first_name is not None
+        and user.first_name != first_name
+    ):
         user.first_name = first_name
         user_fields.append("first_name")
-    if last_name is not None and user.last_name != last_name:
+
+    if (
+        last_name is not None
+        and user.last_name != last_name
+    ):
         user.last_name = last_name
         user_fields.append("last_name")
+
     if user_fields:
-        user.save(update_fields=user_fields)
+        user.save(
+            update_fields=user_fields
+        )
 
+    # Affectation des bijouteries.
     if target_role == ROLE_MANAGER:
-        if bijouteries is not None:
-            staff.bijouteries.set(_validate_bijouteries(bijouteries))
-    elif bijouterie is not None:
-        bijouterie = _validate_bijouterie(bijouterie)
-        if staff.bijouterie_id != bijouterie.pk:
-            if target_role == ROLE_VENDOR:
-                _check_vendor_reassignment(staff, bijouterie)
-            staff.bijouterie = bijouterie
-            staff.save(update_fields=["bijouterie", "updated_at"])
 
+        if bijouteries is not None:
+            validated_bijouteries = _validate_bijouteries(
+                bijouteries
+            )
+
+            staff.bijouteries.set(
+                validated_bijouteries
+            )
+
+    elif bijouterie is not None:
+
+        validated_bijouterie = _validate_bijouterie(
+            bijouterie
+        )
+
+        if staff.bijouterie_id != validated_bijouterie.pk:
+
+            if target_role == ROLE_VENDOR:
+                _check_vendor_reassignment(
+                    staff,
+                    validated_bijouterie,
+                )
+
+            staff.bijouterie = validated_bijouterie
+
+            staff.save(
+                update_fields=[
+                    "bijouterie",
+                    "updated_at",
+                ]
+            )
+
+    # Désactivation du profil staff.
     if verifie is False and staff.verifie:
-        staff.desactiver(by_user=caller_user, raison=raison_clean)
+
+        staff.desactiver(
+            by_user=caller_user,
+            raison=raison_clean,
+        )
+
+    # Réactivation du profil staff.
     elif verifie is True and not staff.verifie:
+
         staff.reactiver()
+
+    # Modification de la raison si déjà désactivé.
     elif (
-        verifie is False and not staff.verifie and raison_clean
+        verifie is False
+        and not staff.verifie
+        and raison_clean
         and staff.raison_desactivation != raison_clean
     ):
+
         staff.raison_desactivation = raison_clean
-        staff.save(update_fields=["raison_desactivation", "updated_at"])
 
-    return StaffUpdateResult(staff_type=target_role, staff=staff, user=user)
+        staff.save(
+            update_fields=[
+                "raison_desactivation",
+                "updated_at",
+            ]
+        )
 
+    return StaffUpdateResult(
+        staff_type=target_role,
+        staff=staff,
+        user=user,
+    )
 
 @transaction.atomic
 def promote_user_to_admin(*, caller_user, email: str):
