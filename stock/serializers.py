@@ -674,10 +674,12 @@ class StockDisponiblePourVendeurSerializer(
 #             * obj.quantite_disponible
 #         )
 
-
 class VendorStockSerializer(serializers.ModelSerializer):
     """
     Détail d'une ligne de stock vendeur.
+
+    Inclut l'image du produit et les quantités
+    réellement disponibles chez le vendeur.
     """
 
     produit_line_id = serializers.IntegerField(
@@ -698,6 +700,13 @@ class VendorStockSerializer(serializers.ModelSerializer):
 
     sku = serializers.CharField(
         source="produit_line.produit.sku",
+        read_only=True,
+        allow_null=True,
+    )
+
+    # Image principale du produit
+    image = serializers.ImageField(
+        source="produit_line.produit.image",
         read_only=True,
         allow_null=True,
     )
@@ -774,6 +783,7 @@ class VendorStockSerializer(serializers.ModelSerializer):
             "produit_id",
             "produit_nom",
             "sku",
+            "image",
 
             "categorie",
 
@@ -802,10 +812,16 @@ class VendorStockSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_poids_disponible(self, obj):
-        produit = getattr(
-            obj.produit_line,
-            "produit",
+        produit_line = getattr(
+            obj,
+            "produit_line",
             None,
+        )
+
+        produit = (
+            getattr(produit_line, "produit", None)
+            if produit_line
+            else None
         )
 
         if not produit or produit.poids is None:
@@ -818,5 +834,3 @@ class VendorStockSerializer(serializers.ModelSerializer):
         )
 
         return poids * quantite
-    
-

@@ -170,30 +170,13 @@ urlpatterns = [
     path("staff/dashboard", staff_views.StaffDashboardView.as_view(), name="staff-dashboard"),
     path("manager/dashboard/", staff_views.ManagerDashboardView.as_view(),name="manager-dashboard",),
     path("cashier/dashboard/", staff_views.CashierDashboardView.as_view(),name="cashier-dashboard",),
-    #VENDOR
-    # path('vendor/list', vendor_views.ListVendorAPIView.as_view(), name='vendor_list'),
-    # path("scan-qr/",vendor_views.VendorScanQRCodeAPIView.as_view(),name="vendor-scan-qr",),
-     path("scan-qr/",vendor_views.VendorScanQRCodeAPIView.as_view(),name="vendor-scan-qr",),
+    
+    path("scan-qr/",vendor_views.VendorScanQRCodeAPIView.as_view(),name="vendor-scan-qr",),
     path('vendor/stock-vendor', vendor_views.VendorStockView.as_view(), name='Vendor-stock'),
-    # path("staff/vendor/create", vendor_views.CreateVendorView.as_view(), name="create-vendor"),
-    # path("vendor/<int:id>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail"),
-    # path("vendor/by-slug/<slug:slug>/", vendor_views.VendorDetailView.as_view(), name="vendor-detail-by-slug"),
-    # path("vendor/<int:vendor_id>/update", vendor_views.VendorUpdateView.as_view(), name="vendor-update"),
-    # path('vendor/association-produit-to-vendor', vendor_views.VendorProduitAssociationAPIView.as_view(), name='association-du-produit-au-vendor'),
-    # path("api/vendor-stocks-summary-by-produit", vendor_views.VendorStockSummaryByProduitView.as_view(), name="vendor-stocks-summary-by-produit"),
-    # path("api/vendor-stocks-summary-by-vendor-produit", vendor_views.VendorStockSummaryByVendorProduitView.as_view(), name="vendor-stocks-summary-by-vendor-produit"),
-    # path("dashboard/vendeur/stats/", vendor_views.DashboardVendeurStatsView.as_view(), name="dashboard-vendeur-stats"),
-    # path("vendor/<int:user_id>/status", vendor_views.UpdateVendorStatusAPIView.as_view(), name="vendor-status"),
-    # path('vendor/find', vendor_views.RetrieveVendorView.as_view(), name='vendor-find'),
-    # path('vendor/<int:user_id>/update-status', vendor_views.UpdateVendorStatusAPIView.as_view(), name='update_vendor_status'),
+    path("vendor/dashboard/",vendor_views.VendorDashboardView.as_view(),name="vendor-dashboard",),
     # END VENDOR
     
     
-    # CASHIER
-    # path("cashiers", staff_views.CashierListView.as_view(), name="cashier-list"),
-    # path("cashiers/<int:id>", staff_views.CashierDetailView.as_view(), name="cashier-detail"),
-    # path("cashiers/by-slug/<slug:slug>", staff_views.CashierDetailView.as_view(), name="cashier-detail-by-slug"),
-    # END CASHIER
     
 
     
