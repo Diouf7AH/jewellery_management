@@ -1304,142 +1304,304 @@ class VendorScanQRCodeAPIView(APIView):
         
         
 
-
-
 class VendorDashboardView(APIView):
     """
-    Dashboard personnel du vendeur Rio-Gold.
+    Dashboard individuel vendeur.
 
-    Filtres :
-        annee   : 3 dernières années uniquement
-        periode : jour, semaine, mois, annee
-        mois    : 1 à 12, pour la période mois
+    VENDEUR :
+      - son propre dashboard
+      - 3 dernières années
 
-    Par défaut :
-        année courante
-        période mois
-        mois courant
+    MANAGER :
+      - vendeurs de ses bijouteries
+      - 5 dernières années
 
-    Sécurité :
-        vendeur connecté et vérifié uniquement
-        statistiques limitées à ses propres ventes
+    ADMIN :
+      - tous les vendeurs
+      - 5 dernières années
+
+    Pagination manuelle des lignes de vente.
+    Stock disponible calculé sans filtre annuel.
     """
 
     permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "options"]
+
+    DEFAULT_PAGE_SIZE = 10
+    MAX_PAGE_SIZE = 100
 
     @swagger_auto_schema(
-        operation_summary="Dashboard vendeur Rio-Gold",
+        operation_summary="Dashboard vendeur",
         operation_description=(
-            "Affiche les statistiques personnelles du vendeur. "
-            "Les ventes sont limitées aux trois dernières années, "
-            "année courante comprise. "
-            "Par défaut, affiche le mois courant. "
-            "Le stock représente le stock actuel du vendeur."
+            "Statistiques commerciales et stock actuel "
+            "d'un vendeur.\n\n"
+            "### Permissions\n"
+            "- Vendeur : son dashboard, 3 années.\n"
+            "- Manager : vendeurs de ses bijouteries, 5 années.\n"
+            "- Admin : tous les vendeurs, 5 années.\n\n"
+            "### Filtres\n"
+            "- `vendor_email` : obligatoire pour admin/manager.\n"
+            "- `annee` : année courante par défaut.\n"
+            "- `mois` : mois courant par défaut pour "
+            "l'année courante, décembre sinon.\n"
+            "- `periode` : jour, semaine, mois ou annee.\n"
+            "- `page` : page des lignes de vente, défaut 1.\n"
+            "- `page_size` : défaut 10, maximum 100.\n\n"
+            "### Pagination\n"
+            "La pagination concerne les lignes de vente. "
+            "Les statistiques et le top 5 restent globaux "
+            "sur la période filtrée.\n\n"
+            "### Stock\n"
+            "Le stock disponible correspond au stock actuel, "
+            "sans exclusion des affectations anciennes."
         ),
         manual_parameters=[
             openapi.Parameter(
-                name="annee",
-                in_=openapi.IN_QUERY,
+                "vendor_email",
+                openapi.IN_QUERY,
                 description=(
-                    "Année à consulter. "
-                    "Trois dernières années uniquement. "
-                    "Par défaut : année courante."
+                    "Email du vendeur. Obligatoire "
+                    "pour admin et manager."
+                ),
+                type=openapi.TYPE_STRING,
+                required=False,
+            ),
+            openapi.Parameter(
+                "annee",
+                openapi.IN_QUERY,
+                description=(
+                    "Année recherchée. "
+                    "3 dernières années pour vendeur ; "
+                    "5 pour admin/manager."
                 ),
                 type=openapi.TYPE_INTEGER,
                 required=False,
             ),
             openapi.Parameter(
-                name="periode",
-                in_=openapi.IN_QUERY,
-                description="Période des statistiques.",
-                type=openapi.TYPE_STRING,
-                enum=["jour", "semaine", "mois", "annee"],
-                default="mois",
+                "mois",
+                openapi.IN_QUERY,
+                description="Mois de référence entre 1 et 12.",
+                type=openapi.TYPE_INTEGER,
                 required=False,
             ),
             openapi.Parameter(
-                name="mois",
-                in_=openapi.IN_QUERY,
-                description=(
-                    "Mois à consulter (1 à 12). "
-                    "Utilisé avec periode=mois. "
-                    "Par défaut : mois courant pour "
-                    "l'année courante, décembre pour "
-                    "une année précédente."
-                ),
+                "periode",
+                openapi.IN_QUERY,
+                description="Période des statistiques.",
+                type=openapi.TYPE_STRING,
+                enum=["jour", "semaine", "mois", "annee"],
+                required=False,
+            ),
+            openapi.Parameter(
+                "page",
+                openapi.IN_QUERY,
+                description="Page des lignes vendues. Défaut : 1.",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "page_size",
+                openapi.IN_QUERY,
+                description="10 par défaut, maximum 100.",
                 type=openapi.TYPE_INTEGER,
                 required=False,
             ),
         ],
         responses={
-            200: "Dashboard vendeur",
-            400: "Paramètres invalides",
-            403: "Accès refusé",
+            200: openapi.Response(
+                description=(
+                    "Dashboard avec statistiques, stock, "
+                    "top produits et ventes paginées."
+                ),
+            ),
+            400: openapi.Response(
+                description="Paramètres invalides.",
+            ),
+            403: openapi.Response(
+                description="Accès refusé.",
+            ),
+            404: openapi.Response(
+                description="Vendeur ou page introuvable.",
+            ),
         },
+        tags=["vendor"],
     )
     def get(self, request):
 
-        # ==========================================
-        # 1. Vérification du vendeur
-        # ==========================================
+        # ==================================================
+        # 1. IDENTIFICATION DU RÔLE
+        # ==================================================
 
-        if get_role_name(request.user) != ROLE_VENDOR:
+        role = (get_role_name(request.user) or "").lower()
+
+        vendor_email = (
+            request.query_params.get("vendor_email") or ""
+        ).strip().lower()
+
+        if role == ROLE_VENDOR:
+
+            nombre_annees = 3
+
+            vendor = get_connected_vendor(request.user)
+
+            if vendor is None:
+                return Response(
+                    {
+                        "detail": (
+                            "Profil vendeur introuvable "
+                            "ou désactivé."
+                        ),
+                        "code": "VENDOR_UNAVAILABLE",
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            if (
+                vendor_email
+                and vendor_email != vendor.user.email.lower()
+            ):
+                return Response(
+                    {
+                        "detail": (
+                            "Un vendeur ne peut consulter "
+                            "que son propre dashboard."
+                        ),
+                        "code": "ACCESS_DENIED",
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        elif role in {ROLE_ADMIN, ROLE_MANAGER}:
+
+            nombre_annees = 5
+
+            if not vendor_email:
+                return Response(
+                    {
+                        "detail": (
+                            "vendor_email est obligatoire "
+                            "pour admin/manager."
+                        ),
+                        "code": "VENDOR_EMAIL_REQUIRED",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            vendor = (
+                Vendor.objects
+                .select_related("user", "bijouterie")
+                .filter(user__email__iexact=vendor_email)
+                .first()
+            )
+
+            if vendor is None:
+                return Response(
+                    {
+                        "detail": "Vendeur introuvable.",
+                        "code": "VENDOR_NOT_FOUND",
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if not vendor.verifie:
+                return Response(
+                    {
+                        "detail": "Profil vendeur désactivé.",
+                        "code": "VENDOR_DISABLED",
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            if role == ROLE_MANAGER:
+
+                manager = getattr(
+                    request.user,
+                    "staff_manager_profile",
+                    None,
+                )
+
+                if not manager or not manager.verifie:
+                    return Response(
+                        {
+                            "detail": (
+                                "Profil manager introuvable "
+                                "ou désactivé."
+                            ),
+                            "code": "MANAGER_UNAVAILABLE",
+                        },
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
+                allowed = scope_bijouterie_q(
+                    request.user,
+                    prefix="bijouterie",
+                )
+
+                if not (
+                    Vendor.objects
+                    .filter(pk=vendor.pk)
+                    .filter(allowed)
+                    .exists()
+                ):
+                    return Response(
+                        {
+                            "detail": (
+                                "Ce vendeur n'appartient pas "
+                                "à votre périmètre."
+                            ),
+                            "code": "VENDOR_OUT_OF_SCOPE",
+                        },
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
+        else:
             return Response(
                 {
-                    "detail": "Accès réservé aux vendeurs."
+                    "detail": "Accès refusé.",
+                    "code": "ACCESS_DENIED",
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        vendor = (
-            Vendor.objects
-            .select_related("user", "bijouterie")
-            .filter(
-                user=request.user,
-                verifie=True,
-            )
-            .first()
-        )
-
-        if vendor is None:
+        if not vendor.bijouterie_id:
             return Response(
                 {
                     "detail": (
-                        "Profil vendeur introuvable "
-                        "ou désactivé."
-                    )
+                        "Le vendeur n'est rattaché "
+                        "à aucune bijouterie."
+                    ),
+                    "code": "VENDOR_WITHOUT_BIJOUTERIE",
                 },
-                status=status.HTTP_403_FORBIDDEN,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ==========================================
-        # 2. Années autorisées
-        # ==========================================
+        # ==================================================
+        # 2. ANNÉES AUTORISÉES
+        # ==================================================
 
-        now = timezone.localtime()
-        today = now.date()
+        today = timezone.localdate()
+        current_year = today.year
 
-        annee_courante = today.year
+        annee_min = current_year - nombre_annees + 1
+        annee_max = current_year
 
         annees_autorisees = list(
-            range(
-                annee_courante - 2,
-                annee_courante + 1,
-            )
+            range(annee_max, annee_min - 1, -1)
         )
 
-        annee_param = request.query_params.get(
-            "annee",
-            str(annee_courante),
-        )
+        annee_param = request.query_params.get("annee")
 
         try:
-            annee = int(annee_param)
+            annee = (
+                int(annee_param)
+                if annee_param not in (None, "")
+                else current_year
+            )
         except (TypeError, ValueError):
             return Response(
                 {
-                    "detail": "L'année doit être un entier.",
-                    "annees_autorisees": annees_autorisees,
+                    "detail": "annee doit être un entier.",
+                    "code": "INVALID_YEAR",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -1448,62 +1610,37 @@ class VendorDashboardView(APIView):
             return Response(
                 {
                     "detail": (
-                        "Consultation limitée aux "
-                        "trois dernières années."
+                        f"Année non autorisée. "
+                        f"Choisissez entre "
+                        f"{annee_min} et {annee_max}."
                     ),
+                    "code": "YEAR_OUT_OF_RANGE",
                     "annees_autorisees": annees_autorisees,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ==========================================
-        # 3. Période
-        # ==========================================
+        # ==================================================
+        # 3. MOIS
+        # ==================================================
 
-        periode = request.query_params.get(
-            "periode",
-            "mois",
-        ).strip().lower()
+        mois_param = request.query_params.get("mois")
 
-        periodes_autorisees = (
-            "jour",
-            "semaine",
-            "mois",
-            "annee",
-        )
-
-        if periode not in periodes_autorisees:
-            return Response(
-                {
-                    "detail": "Période invalide.",
-                    "periodes_autorisees": (
-                        periodes_autorisees
-                    ),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # ==========================================
-        # 4. Mois
-        # ==========================================
-
-        mois_defaut = (
-            today.month
-            if annee == annee_courante
-            else 12
-        )
-
-        mois_param = request.query_params.get(
-            "mois",
-            str(mois_defaut),
+        default_mois = (
+            today.month if annee == current_year else 12
         )
 
         try:
-            mois = int(mois_param)
+            mois = (
+                int(mois_param)
+                if mois_param not in (None, "")
+                else default_mois
+            )
         except (TypeError, ValueError):
             return Response(
                 {
-                    "detail": "Le mois doit être un entier."
+                    "detail": "mois doit être un entier.",
+                    "code": "INVALID_MONTH",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -1512,62 +1649,113 @@ class VendorDashboardView(APIView):
             return Response(
                 {
                     "detail": (
-                        "Le mois doit être compris "
-                        "entre 1 et 12."
-                    )
+                        "mois doit être compris entre 1 et 12."
+                    ),
+                    "code": "INVALID_MONTH",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         if (
-            annee == annee_courante
+            annee == current_year
             and mois > today.month
         ):
             return Response(
                 {
-                    "detail": (
-                        "Impossible de consulter "
-                        "un mois futur."
-                    )
+                    "detail": "Le mois demandé est futur.",
+                    "code": "FUTURE_MONTH",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ==========================================
-        # 5. Dates de la période
-        # ==========================================
+        # ==================================================
+        # 4. PÉRIODE
+        # ==================================================
+
+        periode = (
+            request.query_params.get("periode") or "mois"
+        ).strip().lower()
+
+        if periode not in {
+            "jour",
+            "semaine",
+            "mois",
+            "annee",
+        }:
+            return Response(
+                {
+                    "detail": (
+                        "periode doit être jour, semaine, "
+                        "mois ou annee."
+                    ),
+                    "code": "INVALID_PERIOD",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ==================================================
+        # 5. PAGINATION MANUELLE
+        # ==================================================
+
+        page_param = request.query_params.get(
+            "page",
+            "1",
+        )
+
+        page_size_param = request.query_params.get(
+            "page_size",
+            str(self.DEFAULT_PAGE_SIZE),
+        )
+
+        try:
+            page_number = int(page_param)
+            page_size = int(page_size_param)
+        except (TypeError, ValueError):
+            return Response(
+                {
+                    "detail": (
+                        "page et page_size doivent être "
+                        "des entiers valides."
+                    ),
+                    "code": "INVALID_PAGINATION",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if page_number < 1 or page_size < 1:
+            return Response(
+                {
+                    "detail": (
+                        "page et page_size doivent être "
+                        "supérieurs ou égaux à 1."
+                    ),
+                    "code": "INVALID_PAGINATION",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        page_size = min(
+            page_size,
+            self.MAX_PAGE_SIZE,
+        )
+
+        # ==================================================
+        # 6. DATES DE LA PÉRIODE
+        # ==================================================
 
         if periode == "annee":
 
             start_date = date(annee, 1, 1)
-
-            end_date = (
-                today
-                if annee == annee_courante
-                else date(annee, 12, 31)
-            )
-
-        elif periode == "mois":
-
-            start_date = date(annee, mois, 1)
-
-            if annee == annee_courante and mois == today.month:
-                end_date = today
-            else:
-                if mois == 12:
-                    next_month = date(annee + 1, 1, 1)
-                else:
-                    next_month = date(annee, mois + 1, 1)
-
-                end_date = next_month - timedelta(days=1)
+            end_date = date(annee + 1, 1, 1)
 
         else:
-            # Pour jour/semaine, on utilise
-            # le dernier jour du mois sélectionné,
-            # ou aujourd'hui si mois courant.
 
-            if annee == annee_courante and mois == today.month:
+            if (
+                annee == current_year
+                and mois == today.month
+            ):
                 reference_date = today
+
             else:
                 if mois == 12:
                     next_month = date(annee + 1, 1, 1)
@@ -1579,46 +1767,55 @@ class VendorDashboardView(APIView):
                 )
 
             if periode == "jour":
+
                 start_date = reference_date
-                end_date = reference_date
+                end_date = (
+                    reference_date + timedelta(days=1)
+                )
+
+            elif periode == "semaine":
+
+                start_date = (
+                    reference_date
+                    - timedelta(
+                        days=reference_date.weekday()
+                    )
+                )
+
+                end_date = (
+                    start_date + timedelta(days=7)
+                )
 
             else:
-                start_date = reference_date - timedelta(
-                    days=reference_date.weekday()
-                )
 
-                end_date = reference_date
+                start_date = date(annee, mois, 1)
 
-                # Empêcher la semaine de dépasser
-                # le début de l'année sélectionnée.
-                start_date = max(
-                    start_date,
-                    date(annee, 1, 1),
-                )
+                if mois == 12:
+                    end_date = date(annee + 1, 1, 1)
+                else:
+                    end_date = date(annee, mois + 1, 1)
 
-        # ==========================================
-        # 6. Bornes datetime
-        # ==========================================
+        # Exclure les dates futures.
+        today_exclusive = today + timedelta(days=1)
+
+        if end_date > today_exclusive:
+            end_date = today_exclusive
+
+        tz = timezone.get_current_timezone()
 
         start_datetime = timezone.make_aware(
-            datetime.combine(
-                start_date,
-                time.min,
-            ),
-            timezone.get_current_timezone(),
+            datetime.combine(start_date, time.min),
+            timezone=tz,
         )
 
         end_datetime = timezone.make_aware(
-            datetime.combine(
-                end_date + timedelta(days=1),
-                time.min,
-            ),
-            timezone.get_current_timezone(),
+            datetime.combine(end_date, time.min),
+            timezone=tz,
         )
 
-        # ==========================================
-        # 7. Ventes personnelles
-        # ==========================================
+        # ==================================================
+        # 7. QUERYSET DES VENTES
+        # ==================================================
 
         ventes = VenteProduit.objects.filter(
             vendor=vendor,
@@ -1626,19 +1823,19 @@ class VendorDashboardView(APIView):
             vente__created_at__lt=end_datetime,
         )
 
-        # À adapter au champ de statut de Vente :
-        # exclure impérativement les ventes annulées
-        # et appliquer les règles des retours.
-        #
-        # Le champ montant_total doit représenter
-        # le montant réel de chaque ligne vendue.
+        # À adapter aux statuts de Vente :
+        # exclure les ventes annulées / retournées.
 
         montant_field = DecimalField(
             max_digits=18,
             decimal_places=2,
         )
 
-        stats_ventes = ventes.aggregate(
+        # ==================================================
+        # 8. STATISTIQUES GLOBALES
+        # ==================================================
+
+        stats = ventes.aggregate(
             nombre_ventes=Count(
                 "vente_id",
                 distinct=True,
@@ -1646,6 +1843,7 @@ class VendorDashboardView(APIView):
             quantite_vendue=Coalesce(
                 Sum("quantite"),
                 0,
+                output_field=IntegerField(),
             ),
             chiffre_affaires=Coalesce(
                 Sum("montant_total"),
@@ -1654,76 +1852,59 @@ class VendorDashboardView(APIView):
             ),
         )
 
-        # ==========================================
-        # 8. Stock actuel du vendeur
-        # ==========================================
+        # ==================================================
+        # 9. ÉVOLUTION DES VENTES
+        # ==================================================
 
-        stock_stats = (
-            VendorStock.objects
-            .filter(vendor=vendor)
-            .aggregate(
-                quantite_allouee=Coalesce(
-                    Sum("quantite_allouee"),
-                    0,
-                ),
-                quantite_vendue=Coalesce(
-                    Sum("quantite_vendue"),
-                    0,
-                ),
-            )
-        )
+        # Une année complète : regroupement mensuel.
+        # Autres périodes : regroupement quotidien.
 
-        quantite_disponible = max(
-            0,
-            stock_stats["quantite_allouee"]
-            - stock_stats["quantite_vendue"],
-        )
+        if periode == "annee":
+            trunc_function = TruncMonth
+        else:
+            trunc_function = TruncDate
 
-        # ==========================================
-        # 9. Évolution quotidienne des ventes
-        # ==========================================
-
-        evolution_queryset = (
+        evolution_qs = (
             ventes
             .annotate(
-                jour=TruncDate(
+                periode_date=trunc_function(
                     "vente__created_at"
                 )
             )
-            .values("jour")
+            .values("periode_date")
             .annotate(
-                nombre_ventes=Count(
-                    "vente_id",
-                    distinct=True,
-                ),
                 quantite_vendue=Coalesce(
                     Sum("quantite"),
                     0,
+                    output_field=IntegerField(),
                 ),
-                montant=Coalesce(
+                chiffre_affaires=Coalesce(
                     Sum("montant_total"),
                     Decimal("0.00"),
                     output_field=montant_field,
                 ),
             )
-            .order_by("jour")
+            .order_by("periode_date")
         )
 
-        evolution_ventes = [
+        evolution = [
             {
-                "date": item["jour"].isoformat(),
-                "nombre_ventes": item["nombre_ventes"],
-                "quantite_vendue": item["quantite_vendue"],
-                "montant": str(item["montant"]),
+                "date": item["periode_date"].isoformat(),
+                "quantite_vendue": item[
+                    "quantite_vendue"
+                ],
+                "chiffre_affaires": str(
+                    item["chiffre_affaires"]
+                ),
             }
-            for item in evolution_queryset
+            for item in evolution_qs
         ]
 
-        # ==========================================
-        # 10. Top 5 produits
-        # ==========================================
+        # ==================================================
+        # 10. TOP 5 PRODUITS
+        # ==================================================
 
-        top_queryset = (
+        top_qs = (
             ventes
             .values(
                 "produit_line__produit_id",
@@ -1733,6 +1914,7 @@ class VendorDashboardView(APIView):
                 quantite_vendue=Coalesce(
                     Sum("quantite"),
                     0,
+                    output_field=IntegerField(),
                 ),
                 chiffre_affaires=Coalesce(
                     Sum("montant_total"),
@@ -1746,115 +1928,258 @@ class VendorDashboardView(APIView):
             )[:5]
         )
 
-        top_produits = [
-            {
-                "produit_id": item[
-                    "produit_line__produit_id"
-                ],
-                "produit_nom": item[
-                    "produit_line__produit__nom"
-                ],
-                "quantite_vendue": item[
-                    "quantite_vendue"
-                ],
-                "chiffre_affaires": str(
-                    item["chiffre_affaires"]
-                ),
-            }
-            for item in top_queryset
+        top_rows = list(top_qs)
+
+        # Charger les images des cinq produits sans N+1.
+        produit_ids = [
+            item["produit_line__produit_id"]
+            for item in top_rows
+            if item["produit_line__produit_id"] is not None
         ]
 
-        # ==========================================
-        # 11. Dernières ventes : 10 maximum
-        # ==========================================
-
-        dernieres_queryset = (
-            ventes
-            .values(
-                "vente_id",
-                "vente__numero_vente",
-                "vente__created_at",
-            )
-            .annotate(
-                montant=Coalesce(
-                    Sum("montant_total"),
-                    Decimal("0.00"),
-                    output_field=montant_field,
-                ),
-                quantite=Coalesce(
-                    Sum("quantite"),
-                    0,
-                ),
-            )
-            .order_by(
-                "-vente__created_at",
-                "-vente_id",
-            )[:10]
+        # Utilise le modèle lié à ProduitLine.produit
+        # sans supposer le chemin d'import de Produit.
+        ProduitModel = (
+            VenteProduit._meta
+            .get_field("produit_line")
+            .remote_field.model
+            ._meta.get_field("produit")
+            .remote_field.model
         )
 
-        dernieres_ventes = [
-            {
-                "vente_id": item["vente_id"],
-                "numero_vente": item[
-                    "vente__numero_vente"
-                ],
-                "date": (
-                    timezone.localtime(
-                        item["vente__created_at"]
-                    ).isoformat()
-                    if item["vente__created_at"]
-                    else None
-                ),
-                "quantite": item["quantite"],
-                "montant": str(item["montant"]),
-            }
-            for item in dernieres_queryset
-        ]
+        produits_map = ProduitModel.objects.in_bulk(
+            produit_ids
+        )
 
-        # ==========================================
-        # 12. Réponse finale
-        # ==========================================
+        def image_url(produit):
+            if not produit:
+                return None
 
-        return Response(
-            {
-                "vendeur": {
-                    "id": vendor.id,
-                    "email": vendor.user.email,
-                    "nom": vendor.user.get_full_name(),
-                    "bijouterie_id": vendor.bijouterie_id,
-                    "bijouterie_nom": vendor.bijouterie.nom,
-                },
-                "filtres": {
-                    "annee": annee,
-                    "annees_autorisees": annees_autorisees,
-                    "periode": periode,
-                    "mois": mois,
-                    "date_debut": start_date.isoformat(),
-                    "date_fin": end_date.isoformat(),
-                },
-                "ventes": {
-                    "nombre": stats_ventes["nombre_ventes"],
-                    "quantite_vendue": stats_ventes[
+            image = getattr(produit, "image", None)
+
+            if not image:
+                return None
+
+            try:
+                url = image.url
+            except (ValueError, AttributeError):
+                return None
+
+            return request.build_absolute_uri(url)
+
+        top_produits = []
+
+        for item in top_rows:
+
+            produit_id = item[
+                "produit_line__produit_id"
+            ]
+
+            produit = produits_map.get(produit_id)
+
+            top_produits.append(
+                {
+                    "produit_id": produit_id,
+                    "produit_nom": item[
+                        "produit_line__produit__nom"
+                    ],
+                    "image": image_url(produit),
+                    "quantite_vendue": item[
                         "quantite_vendue"
                     ],
                     "chiffre_affaires": str(
-                        stats_ventes["chiffre_affaires"]
+                        item["chiffre_affaires"]
+                    ),
+                }
+            )
+
+        # ==================================================
+        # 11. DERNIÈRES VENTES : PAGINATION
+        # ==================================================
+
+        dernieres_ventes_qs = (
+            ventes
+            .select_related(
+                "vente",
+                "produit_line__produit",
+            )
+            .order_by(
+                "-vente__created_at",
+                "-id",
+            )
+        )
+
+        paginator = Paginator(
+            dernieres_ventes_qs,
+            page_size,
+        )
+
+        if paginator.count == 0:
+
+            if page_number != 1:
+                return Response(
+                    {
+                        "detail": "Cette page n'existe pas.",
+                        "code": "PAGE_NOT_FOUND",
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            page_results = []
+            total_pages = 0
+            has_next = False
+            has_previous = False
+
+        else:
+
+            try:
+                page_obj = paginator.page(page_number)
+
+            except EmptyPage:
+                return Response(
+                    {
+                        "detail": "Cette page n'existe pas.",
+                        "code": "PAGE_NOT_FOUND",
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            page_results = page_obj.object_list
+            total_pages = paginator.num_pages
+            has_next = page_obj.has_next()
+            has_previous = page_obj.has_previous()
+
+        dernieres_ventes = []
+
+        for item in page_results:
+
+            produit = item.produit_line.produit
+
+            dernieres_ventes.append(
+                {
+                    "vente_id": item.vente_id,
+                    "numero_vente": (
+                        item.vente.numero_vente
+                    ),
+                    "produit_id": produit.id,
+                    "produit_nom": produit.nom,
+                    "image": image_url(produit),
+                    "quantite": item.quantite,
+                    "montant": str(
+                        item.montant_total
+                    ),
+                    "date": (
+                        item.vente.created_at.isoformat()
+                    ),
+                }
+            )
+
+        pagination = {
+            "page": page_number,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "total_results": paginator.count,
+            "has_next": has_next,
+            "has_previous": has_previous,
+        }
+
+        # ==================================================
+        # 12. STOCK DISPONIBLE ACTUEL
+        # ==================================================
+
+        stock_qs = (
+            VendorStock.objects
+            .filter(
+                vendor=vendor,
+                bijouterie_id=vendor.bijouterie_id,
+            )
+            .annotate(
+                disponible=ExpressionWrapper(
+                    F("quantite_allouee")
+                    - F("quantite_vendue"),
+                    output_field=IntegerField(),
+                )
+            )
+            .filter(disponible__gt=0)
+        )
+
+        stock_stats = stock_qs.aggregate(
+            quantite_disponible=Coalesce(
+                Sum("disponible"),
+                0,
+                output_field=IntegerField(),
+            ),
+            references_disponibles=Count("id"),
+        )
+
+        # ==================================================
+        # 13. RÉPONSE FINALE
+        # ==================================================
+
+        return Response(
+            {
+                "vendor": {
+                    "id": vendor.id,
+                    "email": vendor.user.email,
+                    "full_name": (
+                        vendor.user.get_full_name()
+                        or vendor.user.email
+                    ),
+                    "bijouterie_id": (
+                        vendor.bijouterie_id
+                    ),
+                    "bijouterie_nom": (
+                        vendor.bijouterie.nom
                     ),
                 },
-                "stock": {
-                    "quantite_allouee": stock_stats[
-                        "quantite_allouee"
-                    ],
-                    "quantite_vendue": stock_stats[
-                        "quantite_vendue"
-                    ],
-                    "quantite_disponible": quantite_disponible,
+
+                "permissions": {
+                    "role": role,
+                    "nombre_annees": nombre_annees,
+                    "annee_min": annee_min,
+                    "annee_max": annee_max,
+                    "annees_autorisees": (
+                        annees_autorisees
+                    ),
                 },
-                "evolution_ventes": evolution_ventes,
+
+                "filtre": {
+                    "annee": annee,
+                    "mois": mois,
+                    "periode": periode,
+                    "date_debut": (
+                        start_date.isoformat()
+                    ),
+                    "date_fin_exclue": (
+                        end_date.isoformat()
+                    ),
+                },
+
+                "statistiques": {
+                    "nombre_ventes": (
+                        stats["nombre_ventes"]
+                    ),
+                    "quantite_vendue": (
+                        stats["quantite_vendue"]
+                    ),
+                    "chiffre_affaires": str(
+                        stats["chiffre_affaires"]
+                    ),
+                },
+
+                "stock": stock_stats,
+
+                "evolution": evolution,
+
                 "top_produits": top_produits,
-                "dernieres_ventes": dernieres_ventes,
+
+                "pagination": pagination,
+
+                "count": len(dernieres_ventes),
+
+                "dernieres_ventes": (
+                    dernieres_ventes
+                ),
             },
             status=status.HTTP_200_OK,
         )
-        
-
