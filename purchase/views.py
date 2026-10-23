@@ -4318,6 +4318,114 @@ class ArrivageMetaUpdateView(APIView):
 #         return response
     
     
+# class LotEtiquettesListAPIView(APIView):
+
+#     permission_classes = [
+#         IsAuthenticated,
+#         IsAdminOrManager,
+#     ]
+
+#     @swagger_auto_schema(
+#         operation_summary="Lister les étiquettes d'un lot",
+#         operation_description=(
+#             "Retourne les informations des étiquettes "
+#             "du lot ainsi que les URLs de téléchargement."
+#         ),
+#         tags=["Étiquettes"],
+#         responses={
+#             200: openapi.Response(
+#                 description="Liste des étiquettes."
+#             ),
+#             403: "Accès refusé.",
+#             404: "Lot introuvable.",
+#         },
+#     )
+#     def get(self, request, numero_lot):
+
+#         # -----------------------------------------------------
+#         # 1. QuerySet des lots accessibles
+#         # -----------------------------------------------------
+
+#         lots_queryset = scope_queryset_by_bijouterie(
+#             Lot.objects.select_related(
+#                 "achat",
+#                 "achat__bijouterie",
+#             ),
+#             user=request.user,
+#             field="achat__bijouterie_id",
+#         )
+
+#         # -----------------------------------------------------
+#         # 2. Récupérer uniquement un lot autorisé
+#         # -----------------------------------------------------
+
+#         lot = get_object_or_404(
+#             lots_queryset,
+#             numero_lot=numero_lot,
+#         )
+
+#         # -----------------------------------------------------
+#         # 3. Récupérer les lignes du lot
+#         # -----------------------------------------------------
+
+#         produit_lines = (
+#             ProduitLine.objects
+#             .select_related(
+#                 "lot",
+#                 "produit",
+#                 "produit__purete",
+#                 "produit__marque",
+#                 "produit__categorie",
+#                 "produit__modele",
+#             )
+#             .filter(
+#                 lot=lot,
+#                 numero_ligne_lot__isnull=False,
+#             )
+#             .order_by(
+#                 "numero_ligne_lot",
+#                 "id",
+#             )
+#         )
+
+#         # -----------------------------------------------------
+#         # 4. Construire la liste des étiquettes
+#         # -----------------------------------------------------
+
+#         etiquettes = []
+
+#         for line in produit_lines:
+
+#             code_etiquette = build_code_etiquette(
+#                 line
+#             )
+
+#             download_url = request.build_absolute_uri(
+#                 reverse(
+#                     "lot-etiquette-download",
+#                     kwargs={
+#                         "numero_lot": lot.numero_lot,
+#                         "numero_ligne": line.numero_ligne_lot,
+#                     },
+#                 )
+#             )
+
+#             etiquettes.append({
+#                 "numero_ligne": line.numero_ligne_lot,
+#                 "code": code_etiquette,
+#                 "quantite": int(line.quantite),
+#                 "download_url": download_url,
+#             })
+
+#         # -----------------------------------------------------
+#         # 5. Réponse JSON
+#         # -----------------------------------------------------
+
+#         return Response({
+#             "lot": lot.numero_lot,
+#             "etiquettes": etiquettes,
+#         })
+        
 class LotEtiquettesListAPIView(APIView):
 
     permission_classes = [
@@ -4328,8 +4436,8 @@ class LotEtiquettesListAPIView(APIView):
     @swagger_auto_schema(
         operation_summary="Lister les étiquettes d'un lot",
         operation_description=(
-            "Retourne les informations des étiquettes "
-            "du lot ainsi que les URLs de téléchargement."
+            "Retourne les étiquettes du lot, "
+            "leurs codes QR et les URLs de téléchargement."
         ),
         tags=["Étiquettes"],
         responses={
@@ -4342,10 +4450,7 @@ class LotEtiquettesListAPIView(APIView):
     )
     def get(self, request, numero_lot):
 
-        # -----------------------------------------------------
-        # 1. QuerySet des lots accessibles
-        # -----------------------------------------------------
-
+        # 1. Lots accessibles selon la bijouterie.
         lots_queryset = scope_queryset_by_bijouterie(
             Lot.objects.select_related(
                 "achat",
@@ -4355,19 +4460,13 @@ class LotEtiquettesListAPIView(APIView):
             field="achat__bijouterie_id",
         )
 
-        # -----------------------------------------------------
-        # 2. Récupérer uniquement un lot autorisé
-        # -----------------------------------------------------
-
+        # 2. Récupérer le lot autorisé.
         lot = get_object_or_404(
             lots_queryset,
             numero_lot=numero_lot,
         )
 
-        # -----------------------------------------------------
-        # 3. Récupérer les lignes du lot
-        # -----------------------------------------------------
-
+        # 3. Récupérer les lignes du lot.
         produit_lines = (
             ProduitLine.objects
             .select_related(
@@ -4388,17 +4487,15 @@ class LotEtiquettesListAPIView(APIView):
             )
         )
 
-        # -----------------------------------------------------
-        # 4. Construire la liste des étiquettes
-        # -----------------------------------------------------
-
+        # 4. Construire les étiquettes.
         etiquettes = []
 
         for line in produit_lines:
 
-            code_etiquette = build_code_etiquette(
-                line
-            )
+            code_etiquette = build_code_etiquette(line)
+
+            # QR unique de la ligne d'arrivage.
+            qr_code = f"PL:{line.uuid}"
 
             download_url = request.build_absolute_uri(
                 reverse(
@@ -4413,20 +4510,16 @@ class LotEtiquettesListAPIView(APIView):
             etiquettes.append({
                 "numero_ligne": line.numero_ligne_lot,
                 "code": code_etiquette,
+                "qr": qr_code,
                 "quantite": int(line.quantite),
                 "download_url": download_url,
             })
 
-        # -----------------------------------------------------
-        # 5. Réponse JSON
-        # -----------------------------------------------------
-
+        # 5. Réponse JSON.
         return Response({
             "lot": lot.numero_lot,
             "etiquettes": etiquettes,
         })
-        
-        
 class LotEtiquetteDownloadAPIView(APIView):
 
     permission_classes = [
@@ -4436,6 +4529,10 @@ class LotEtiquetteDownloadAPIView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Télécharger une étiquette",
+        operation_description=(
+            "Génère une étiquette PNG contenant "
+            "le QR code de la ligne d'arrivage."
+        ),
         tags=["Étiquettes"],
         responses={
             200: openapi.Response(
@@ -4453,10 +4550,7 @@ class LotEtiquetteDownloadAPIView(APIView):
         numero_ligne,
     ):
 
-        # -----------------------------------------------------
-        # 1. QuerySet sécurisé par bijouterie
-        # -----------------------------------------------------
-
+        # 1. Limiter aux bijouteries autorisées.
         queryset = scope_queryset_by_bijouterie(
             ProduitLine.objects.select_related(
                 "lot",
@@ -4471,20 +4565,14 @@ class LotEtiquetteDownloadAPIView(APIView):
             field="lot__achat__bijouterie_id",
         )
 
-        # -----------------------------------------------------
-        # 2. Récupérer la ligne autorisée
-        # -----------------------------------------------------
-
+        # 2. Rechercher la ligne du lot.
         line = get_object_or_404(
             queryset,
             lot__numero_lot=numero_lot,
             numero_ligne_lot=numero_ligne,
         )
 
-        # -----------------------------------------------------
-        # 3. Générer UNE étiquette
-        # -----------------------------------------------------
-
+        # 3. Générer l'image de l'étiquette.
         try:
             image_buffer = build_etiquette_produit_png(
                 line
@@ -4496,26 +4584,18 @@ class LotEtiquetteDownloadAPIView(APIView):
 
         except ValueError as exc:
             return Response(
-                {
-                    "detail": str(exc),
-                },
+                {"detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # -----------------------------------------------------
-        # 4. Nom du fichier
-        # -----------------------------------------------------
-
+        # 4. Construire le nom du fichier.
         filename = (
             f"{numero_lot}_"
             f"{line.numero_ligne_lot:02d}_"
             f"{code_etiquette}.png"
         )
 
-        # -----------------------------------------------------
-        # 5. Réponse PNG
-        # -----------------------------------------------------
-
+        # 5. Retourner le fichier PNG.
         response = HttpResponse(
             image_buffer.getvalue(),
             content_type="image/png",
@@ -4526,9 +4606,99 @@ class LotEtiquetteDownloadAPIView(APIView):
         )
 
         return response
-    
 
 
+# class EtiquetteDetailAPIView(APIView):
+
+#     permission_classes = [
+#         IsAuthenticated,
+#         IsAdminOrManager,
+#     ]
+
+#     @swagger_auto_schema(
+#         operation_summary="Rechercher une étiquette par UUID",
+#         tags=["Étiquettes"],
+#         responses={
+#             200: openapi.Response(
+#                 description="Étiquette trouvée."
+#             ),
+#             403: "Accès refusé.",
+#             404: "Étiquette introuvable.",
+#         },
+#     )
+#     def get(self, request, uuid):
+
+#         # -----------------------------------------------------
+#         # 1. QuerySet sécurisé par bijouterie
+#         # -----------------------------------------------------
+
+#         queryset = scope_queryset_by_bijouterie(
+#             ProduitLine.objects.select_related(
+#                 "lot",
+#                 "lot__achat",
+#                 "produit",
+#                 "produit__purete",
+#                 "produit__marque",
+#                 "produit__categorie",
+#                 "produit__modele",
+#             ),
+#             user=request.user,
+#             field="lot__achat__bijouterie_id",
+#         )
+
+#         # -----------------------------------------------------
+#         # 2. Récupérer uniquement une étiquette autorisée
+#         # -----------------------------------------------------
+
+#         produit_line = get_object_or_404(
+#             queryset,
+#             uuid=uuid,
+#         )
+
+#         # -----------------------------------------------------
+#         # 3. Vérifier le numéro de ligne
+#         # -----------------------------------------------------
+
+#         numero_ligne = produit_line.numero_ligne_lot
+
+#         if numero_ligne is None:
+#             return Response(
+#                 {
+#                     "detail": (
+#                         "Cette étiquette ne possède pas "
+#                         "de numéro de ligne."
+#                     )
+#                 },
+#                 status=400,
+#             )
+
+#         # -----------------------------------------------------
+#         # 4. Construire l'URL de téléchargement
+#         # -----------------------------------------------------
+
+#         download_url = request.build_absolute_uri(
+#             reverse(
+#                 "lot-etiquette-download",
+#                 kwargs={
+#                     "numero_lot": produit_line.lot.numero_lot,
+#                     "numero_ligne": numero_ligne,
+#                 },
+#             )
+#         )
+
+#         # -----------------------------------------------------
+#         # 5. Réponse JSON
+#         # -----------------------------------------------------
+
+#         return Response({
+#             "uuid": str(produit_line.uuid),
+#             "lot": produit_line.lot.numero_lot,
+#             "numero_ligne": numero_ligne,
+#             "code": build_code_etiquette(produit_line),
+#             "quantite": produit_line.quantite,
+#             "download_url": download_url,
+#         })
+        
 
 class EtiquetteDetailAPIView(APIView):
 
@@ -4539,21 +4709,24 @@ class EtiquetteDetailAPIView(APIView):
 
     @swagger_auto_schema(
         operation_summary="Rechercher une étiquette par UUID",
+        operation_description=(
+            "Recherche une étiquette à partir de "
+            "l'UUID de ProduitLine et retourne "
+            "son QR code et son URL de téléchargement."
+        ),
         tags=["Étiquettes"],
         responses={
             200: openapi.Response(
                 description="Étiquette trouvée."
             ),
+            400: "Étiquette invalide.",
             403: "Accès refusé.",
             404: "Étiquette introuvable.",
         },
     )
     def get(self, request, uuid):
 
-        # -----------------------------------------------------
-        # 1. QuerySet sécurisé par bijouterie
-        # -----------------------------------------------------
-
+        # 1. Limiter aux bijouteries autorisées.
         queryset = scope_queryset_by_bijouterie(
             ProduitLine.objects.select_related(
                 "lot",
@@ -4568,19 +4741,13 @@ class EtiquetteDetailAPIView(APIView):
             field="lot__achat__bijouterie_id",
         )
 
-        # -----------------------------------------------------
-        # 2. Récupérer uniquement une étiquette autorisée
-        # -----------------------------------------------------
-
+        # 2. Rechercher la ligne par UUID.
         produit_line = get_object_or_404(
             queryset,
             uuid=uuid,
         )
 
-        # -----------------------------------------------------
-        # 3. Vérifier le numéro de ligne
-        # -----------------------------------------------------
-
+        # 3. Vérifier le numéro de ligne.
         numero_ligne = produit_line.numero_ligne_lot
 
         if numero_ligne is None:
@@ -4591,13 +4758,13 @@ class EtiquetteDetailAPIView(APIView):
                         "de numéro de ligne."
                     )
                 },
-                status=400,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # -----------------------------------------------------
-        # 4. Construire l'URL de téléchargement
-        # -----------------------------------------------------
+        # 4. Construire le QR code.
+        qr_code = f"PL:{produit_line.uuid}"
 
+        # 5. Construire l'URL de téléchargement.
         download_url = request.build_absolute_uri(
             reverse(
                 "lot-etiquette-download",
@@ -4608,17 +4775,13 @@ class EtiquetteDetailAPIView(APIView):
             )
         )
 
-        # -----------------------------------------------------
-        # 5. Réponse JSON
-        # -----------------------------------------------------
-
+        # 6. Réponse JSON.
         return Response({
             "uuid": str(produit_line.uuid),
             "lot": produit_line.lot.numero_lot,
             "numero_ligne": numero_ligne,
             "code": build_code_etiquette(produit_line),
-            "quantite": produit_line.quantite,
+            "qr": qr_code,
+            "quantite": int(produit_line.quantite),
             "download_url": download_url,
         })
-        
-
