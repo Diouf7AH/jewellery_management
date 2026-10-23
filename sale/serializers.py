@@ -262,28 +262,23 @@ class VenteAutreInSerializer(serializers.Serializer):
 # ============================================================
 class VenteProduitInSerializer(serializers.Serializer):
     """
-    Serializer d'entrée pour la création d'une ligne de bijou.
+    Serializer d'entrée pour une ligne de bijou.
 
     Identification :
-        - produit_line_id : sélection manuelle
-        - qr : identification par QR code
+        - produit_line_id
+        - qr
 
     Prix :
         - prix_vente_grammes facultatif
-        - si absent ou égal à zéro, le service détermine
-          le tarif applicable
+        - 0 signifie tarif déterminé par le service
 
     Réduction :
         - bijou neuf : remise fixe en FCFA
-        - bijou d'occasion : réduction de 5 à 30 %
-          déterminée à partir de ProduitLine
+        - bijou d'occasion : réduction calculée
+          par le service selon ProduitLine
 
     Les montants sont calculés côté serveur.
     """
-
-    # ========================================================
-    # 1. IDENTIFICATION DU BIJOU
-    # ========================================================
 
     produit_line_id = serializers.IntegerField(
         required=False,
@@ -296,43 +291,41 @@ class VenteProduitInSerializer(serializers.Serializer):
         trim_whitespace=True,
     )
 
-    # ========================================================
-    # 2. QUANTITÉ
-    # ========================================================
-
     quantite = serializers.IntegerField(
         required=False,
         default=1,
         min_value=1,
     )
 
-    # ========================================================
-    # 3. PRIX DE VENTE AU GRAMME
-    # ========================================================
-
     prix_vente_grammes = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
         required=False,
         default=Decimal("0.00"),
+        allow_null=True,
         min_value=Decimal("0.00"),
     )
-
-    # ========================================================
-    # 4. REMISE FIXE
-    # ========================================================
 
     remise = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
         required=False,
         default=Decimal("0.00"),
+        allow_null=True,
         min_value=Decimal("0.00"),
     )
 
-    # ========================================================
-    # 5. VALIDATION GLOBALE
-    # ========================================================
+    def validate_prix_vente_grammes(self, value):
+        if value is None:
+            return Decimal("0.00")
+
+        return value
+
+    def validate_remise(self, value):
+        if value is None:
+            return Decimal("0.00")
+
+        return value
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -340,7 +333,6 @@ class VenteProduitInSerializer(serializers.Serializer):
         produit_line_id = attrs.get("produit_line_id")
         qr = attrs.get("qr")
 
-        # Au moins une méthode d'identification.
         if produit_line_id is None and not qr:
             raise serializers.ValidationError({
                 "produit_line_id": (
@@ -348,7 +340,6 @@ class VenteProduitInSerializer(serializers.Serializer):
                 )
             })
 
-        # Une seule méthode à la fois.
         if produit_line_id is not None and qr:
             raise serializers.ValidationError({
                 "qr": (
@@ -359,64 +350,53 @@ class VenteProduitInSerializer(serializers.Serializer):
 
         return attrs
 
-
 class VenteCreateInSerializer(serializers.Serializer):
     """
     Création d'une vente Rio-Gold.
 
-    Types autorisés :
+    Types :
     - Bijoux uniquement.
     - Prestations uniquement.
     - Bijoux + prestations.
 
     Règles :
-    - produits peut être absent ou vide ;
-    - autres peut être absent ou vide ;
-    - au moins une liste doit être non vide ;
-    - admin / manager : vendor_email obligatoire ;
-    - vendeur : vendor_email non obligatoire ;
-    - aucun stock n'est consommé à la création.
+    - Au moins une ligne obligatoire.
+    - Admin/manager : vendor_email obligatoire.
+    - Vendeur : vendor_email facultatif.
+    - Aucun stock consommé à la création.
     """
 
     vendor_email = serializers.EmailField(
         required=False,
         allow_blank=False,
+        allow_null=True,
     )
 
     client = ClientOptionalInSerializer(
         required=False,
+        allow_null=True,
     )
 
     produits = VenteProduitInSerializer(
         many=True,
         required=False,
         allow_empty=True,
+        allow_null=True,
     )
 
     autres = VenteAutreInSerializer(
         many=True,
         required=False,
         allow_empty=True,
+        allow_null=True,
     )
 
-    # ========================================================
-    # VALIDATION GLOBALE
-    # ========================================================
-
     def validate(self, attrs):
-
         attrs = super().validate(attrs)
 
-        # ----------------------------------------------------
-        # 1. RÉCUPÉRATION DES LIGNES
-        # ----------------------------------------------------
-
+        # Normaliser les listes facultatives.
         produits = attrs.get("produits") or []
         autres = attrs.get("autres") or []
-
-        # ----------------------------------------------------
-        # 2. AU MOINS UNE LIGNE OBLIGATOIRE
-        # ----------------------------------------------------
 
         if not produits and not autres:
             raise serializers.ValidationError({
@@ -426,49 +406,55 @@ class VenteCreateInSerializer(serializers.Serializer):
                 )
             })
 
-        # ----------------------------------------------------
-        # 3. VALIDATION DU VENDEUR
-        # ----------------------------------------------------
-
+        # Vérifier la présence du contexte HTTP.
         request = self.context.get("request")
 
-        if (
-            request is not None
-            and request.user.is_authenticated
-        ):
+        if request is None or not request.user.is_authenticated:
+            raise serializers.ValidationError({
+                "detail": "Authentification requise."
+            })
 
-            from backend.roles import ROLE_ADMIN, ROLE_MANAGER, get_role_name
+        role = (
+            get_role_name(request.user) or ""
+        ).strip().lower()
 
-            role = (
-                get_role_name(request.user) or ""
-            ).lower().strip()
+        # Admin et manager :
+        # le vendeur doit être explicitement choisi.
+        if role in {ROLE_ADMIN, ROLE_MANAGER}:
 
-            if role in {ROLE_ADMIN, ROLE_MANAGER}:
+            vendor_email = (
+                attrs.get("vendor_email") or ""
+            ).strip().lower()
 
-                vendor_email = (
-                    attrs.get("vendor_email") or ""
-                ).strip()
+            if not vendor_email:
+                raise serializers.ValidationError({
+                    "vendor_email": (
+                        "Le vendeur est obligatoire "
+                        "pour un administrateur "
+                        "ou un manager."
+                    )
+                })
 
-                if not vendor_email:
-                    raise serializers.ValidationError({
-                        "vendor_email": (
-                            "Le vendeur est obligatoire "
-                            "pour un administrateur "
-                            "ou un manager."
-                        )
-                    })
+            attrs["vendor_email"] = vendor_email
 
-                attrs["vendor_email"] = vendor_email
+        # Vendeur connecté :
+        # le service identifiera son profil.
+        elif role == ROLE_VENDOR:
 
-        # ----------------------------------------------------
-        # 4. NORMALISATION
-        # ----------------------------------------------------
+            attrs.pop("vendor_email", None)
+
+        else:
+            raise serializers.ValidationError({
+                "detail": (
+                    "Vous n'êtes pas autorisé "
+                    "à créer une vente."
+                )
+            })
 
         attrs["produits"] = produits
         attrs["autres"] = autres
 
         return attrs
-    
 
 # ============================================================
 # PRESTATIONS / AUTRES PRODUITS - SORTIE
