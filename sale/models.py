@@ -1417,16 +1417,20 @@ class Facture(models.Model):
                 )
             })
 
-        if self.appliquer_tva:
-            taux = Decimal(
-                str(
-                    self.taux_tva
-                    if self.taux_tva is not None
-                    else ZERO
+        if self.appliquer_tva and self.taux_tva is None:
+            raise ValidationError({
+                "taux_tva": (
+                    "Le taux de TVA est obligatoire "
+                    "lorsque la TVA est appliquée."
                 )
-            )
+            })
 
-            if taux < ZERO or taux > Decimal("100"):
+        if self.taux_tva is not None:
+            if not (
+                Decimal("0.00")
+                <= self.taux_tva
+                <= Decimal("100.00")
+            ):
                 raise ValidationError({
                     "taux_tva": (
                         "Le taux de TVA doit être compris "
@@ -1528,33 +1532,37 @@ class Facture(models.Model):
     # =========================================================
 
     def recalculer_totaux(self):
-        ht = Decimal(
-            str(self.montant_ht or ZERO)
-        )
+        """
+        Calcule les montants d'une nouvelle facture
+        à partir du taux de TVA déjà sélectionné.
 
-        frais = Decimal(
-            str(self.frais_transaction or ZERO)
-        )
+        Ne récupère jamais automatiquement le taux
+        actuel de la bijouterie.
+        """
 
-        if not self.appliquer_tva:
-            self.taux_tva = None
-            self.montant_tva = None
+        ht = Decimal(str(self.montant_ht or ZERO))
+        frais = Decimal(str(self.frais_transaction or ZERO))
 
-            self.montant_total = (
-                ht + frais
-            ).quantize(
-                TWOPLACES,
-                rounding=ROUND_HALF_UP,
-            )
-            return
+        if self.appliquer_tva:
+            if self.taux_tva is None:
+                raise ValidationError({
+                    "taux_tva": (
+                        "Le taux de TVA est obligatoire "
+                        "lorsque la TVA est appliquée."
+                    )
+                })
 
-        taux = Decimal(
-            str(
-                self.taux_tva
-                if self.taux_tva is not None
-                else ZERO
-            )
-        )
+            taux = Decimal(str(self.taux_tva))
+        else:
+            taux = ZERO
+
+        if not ZERO <= taux <= Decimal("100.00"):
+            raise ValidationError({
+                "taux_tva": (
+                    "Le taux de TVA doit être compris "
+                    "entre 0 et 100."
+                )
+            })
 
         self.taux_tva = taux.quantize(
             TWOPLACES,
@@ -1575,6 +1583,7 @@ class Facture(models.Model):
             rounding=ROUND_HALF_UP,
         )
 
+
     # =========================================================
     # STATUT DE PAIEMENT
     # =========================================================
@@ -1585,27 +1594,46 @@ class Facture(models.Model):
 
     def save(self, *args, **kwargs):
         """
-        Sauvegarde sécurisée.
-
-        - Protection des factures verrouillées.
+        Sauvegarde sécurisée :
         - Numérotation automatique.
-        - Calcul des montants avant validation.
-        - Prise en compte de update_fields.
+        - Calcul de la TVA uniquement à la création.
+        - Conservation des montants historiques.
+        - Protection des factures verrouillées.
         """
 
-        if self.pk:
-            old = (
-                Facture.objects
-                .filter(pk=self.pk)
-                .first()
-            )
+        update_fields = kwargs.get("update_fields")
 
-            if old and old.is_locked:
-                update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            update_fields = set(update_fields)
 
+        champs_figes = {
+            "bijouterie_id",
+            "vente_id",
+            "montant_ht",
+            "appliquer_tva",
+            "taux_tva",
+            "montant_tva",
+            "frais_transaction",
+            "montant_total",
+            "numero_facture",
+        }
+
+        if not self._state.adding:
+            old = Facture.objects.get(pk=self.pk)
+
+            # Interdire la modification des valeurs historiques.
+            for champ in champs_figes:
+                if getattr(self, champ) != getattr(old, champ):
+                    raise ValidationError({
+                        champ: (
+                            "Ce champ ne peut plus être modifié "
+                            "après la création de la facture."
+                        )
+                    })
+
+            if old.is_locked:
                 transition_finale = (
-                    update_fields is not None
-                    and set(update_fields) == {"type_facture"}
+                    update_fields == {"type_facture"}
                     and old.type_facture == self.TYPE_PROFORMA
                     and self.type_facture == self.TYPE_FACTURE
                     and old.status == self.STAT_PAYE
@@ -1618,36 +1646,30 @@ class Facture(models.Model):
                         "Facture verrouillée."
                     )
 
-        if not self.numero_facture:
+        else:
             if not self.bijouterie_id:
                 raise ValidationError({
                     "bijouterie": (
-                        "La bijouterie est obligatoire "
-                        "pour numéroter la facture."
+                        "La bijouterie est obligatoire."
                     )
                 })
 
-            self.numero_facture = (
-                self.generer_numero_unique(
-                    self.bijouterie
+            if not self.numero_facture:
+                self.numero_facture = (
+                    self.generer_numero_unique(
+                        self.bijouterie
+                    )
                 )
-            )
 
-        update_fields = kwargs.get("update_fields")
-        # Une transition de type ne doit pas recalculer les montants figés.
-        transition_type_seule = (
-            self.pk is not None
-            and update_fields is not None
-            and set(update_fields) == {"type_facture"}
-        )
-        if not transition_type_seule:
             self.recalculer_totaux()
+
         self.full_clean()
-        if update_fields is not None and not transition_type_seule:
-            kwargs["update_fields"] = set(update_fields) | {
-                "montant_total", "montant_tva", "taux_tva",
-            }
+
+        if update_fields is not None:
+            kwargs["update_fields"] = update_fields
+
         return super().save(*args, **kwargs)
+
 
     # =========================================================
     # TOTAL PAYÉ

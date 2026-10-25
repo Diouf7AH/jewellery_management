@@ -193,6 +193,23 @@ class Bijouterie(models.Model):
     updated_at = models.DateTimeField(
         auto_now=True,
     )
+    
+    # ==========================================
+    # TAUX DE TVA EFFECTIF
+    # ==========================================
+
+    @property
+    def taux_tva_effectif(self):
+        """
+        Retourne le taux de TVA applicable.
+
+        TVA désactivée : 0 %
+        TVA activée : taux configuré
+        """
+        if not self.appliquer_tva:
+            return Decimal("0.00")
+
+        return self.taux_tva or Decimal("0.00")
 
     # ============================================================
     # META
@@ -215,48 +232,47 @@ class Bijouterie(models.Model):
 
         errors = {}
 
-        # --------------------------------------------------------
+        # ========================================================
         # NOM
-        # --------------------------------------------------------
+        # ========================================================
 
-        if self.nom:
-            self.nom = self.nom.strip()
+        self.nom = (self.nom or "").strip()
 
         if not self.nom:
             errors["nom"] = (
                 "Le nom de la bijouterie est obligatoire."
             )
 
-        # --------------------------------------------------------
+        # ========================================================
         # NINEA
-        # --------------------------------------------------------
+        # ========================================================
+
+        self.ninea = (
+            (self.ninea or "").strip().upper() or None
+        )
 
         if self.ninea:
-            self.ninea = self.ninea.strip().upper()
-
             if not re.fullmatch(r"[A-Z0-9]+", self.ninea):
                 errors["ninea"] = (
                     "Le NINEA doit contenir uniquement "
                     "des lettres et des chiffres."
                 )
-        else:
-            self.ninea = None
 
-        # --------------------------------------------------------
+        # ========================================================
         # TVA
-        # --------------------------------------------------------
+        # ========================================================
 
-        if not self.appliquer_tva:
-            self.taux_tva = None
+        # Si la TVA est activée, un taux est obligatoire.
+        if self.appliquer_tva and self.taux_tva is None:
+            errors["taux_tva"] = (
+                "Le taux de TVA est obligatoire "
+                "lorsque la TVA est activée."
+            )
 
-        else:
-            if self.taux_tva is None:
-                errors["taux_tva"] = (
-                    "Le taux de TVA est obligatoire "
-                    "si la TVA est activée."
-                )
-
-            elif not (
+        # Vérifier le taux configuré, même si la TVA
+        # est désactivée.
+        if self.taux_tva is not None:
+            if not (
                 Decimal("0.00")
                 <= self.taux_tva
                 <= Decimal("100.00")
@@ -266,6 +282,9 @@ class Bijouterie(models.Model):
                     "entre 0 et 100."
                 )
 
+        # Ne jamais remettre taux_tva à None
+        # simplement parce que la TVA est désactivée.
+
         if errors:
             raise ValidationError(errors)
 
@@ -274,23 +293,22 @@ class Bijouterie(models.Model):
     # ============================================================
 
     def save(self, *args, **kwargs):
-        self.full_clean()
-
         update_fields = kwargs.get("update_fields")
 
         if update_fields is not None:
             update_fields = set(update_fields)
 
-            if update_fields:
-                update_fields.update({
-                    "nom",
-                    "ninea",
-                    "taux_tva",
-                })
+            if not update_fields:
+                return super().save(*args, **kwargs)
 
+        # Valider et normaliser les données.
+        self.full_clean()
+
+        if update_fields is not None:
             kwargs["update_fields"] = update_fields
 
         return super().save(*args, **kwargs)
+
     
     
 # Model for Produit Categories

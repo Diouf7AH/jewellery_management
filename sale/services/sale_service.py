@@ -1113,35 +1113,36 @@ def create_sale_one_vendor(
 
     # 14. TVA de la bijouterie
 
-    appliquer_tva = bool(
+    # =========================================================
+    # 14. TVA DE LA BIJOUTERIE
+    # =========================================================
 
-        getattr(bijouterie, "appliquer_tva", False)
+    appliquer_tva = bool(bijouterie.appliquer_tva)
 
-    )
+    if appliquer_tva:
+        if bijouterie.taux_tva is None:
+            raise ValidationError({
+                "taux_tva": (
+                    "La TVA est activée pour cette bijouterie, "
+                    "mais aucun taux n'est configuré."
+                )
+            })
 
-    taux_tva = (
-
-        sale_decimal(
-
-            getattr(bijouterie, "taux_tva", ZERO),
-
+        taux_tva = sale_decimal(
+            bijouterie.taux_tva,
             field="taux_tva",
-
         )
 
-        if appliquer_tva
+        if not ZERO <= taux_tva <= Decimal("100.00"):
+            raise ValidationError({
+                "taux_tva": (
+                    "Le taux de TVA doit être compris "
+                    "entre 0 et 100."
+                )
+            })
+    else:
+        taux_tva = ZERO
 
-        else ZERO
-
-    )
-
-    if taux_tva < ZERO:
-
-        raise ValidationError({
-
-            "taux_tva": "Le taux TVA ne peut pas être négatif."
-
-        })
 
     # 15. Facture proforma
 

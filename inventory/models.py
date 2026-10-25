@@ -896,25 +896,38 @@ class InventoryMovement(models.Model):
 
         Garanties :
         - Un mouvement verrouillé ne peut pas être modifié.
-        - Les relations lot/achat/vente sont complétées.
+        - Les relations ProduitLine, lot et achat sont complétées.
+        - La vente est récupérée depuis la ligne de vente.
         - Une clé unique protège les SALE_OUT.
         - Les validations métier sont exécutées.
         """
 
-        # 1. Protection des mouvements verrouillés
-        if self.pk and self.is_locked:
-            raise ValidationError(
-                "Mouvement verrouillé. "
-                "Créez un mouvement inverse."
+        # ========================================================
+        # 1. PROTECTION DES MOUVEMENTS VERROUILLÉS
+        # ========================================================
+
+        if self.pk:
+            locked_in_db = (
+                type(self).objects
+                .filter(
+                    pk=self.pk,
+                    is_locked=True,
+                )
+                .exists()
             )
 
-        # 2. Compléter les relations ProduitLine
+            if locked_in_db or self.is_locked:
+                raise ValidationError(
+                    "Mouvement verrouillé. "
+                    "Créez un mouvement inverse."
+                )
+
+        # ========================================================
+        # 2. COMPLÉTER LES RELATIONS PRODUITLINE
+        # ========================================================
+
         if self.produit_line_id:
-            produit_line_lot_id = getattr(
-                self.produit_line,
-                "lot_id",
-                None,
-            )
+            produit_line_lot_id = self.produit_line.lot_id
 
             if not self.lot_id and produit_line_lot_id:
                 self.lot_id = produit_line_lot_id
@@ -941,16 +954,26 @@ class InventoryMovement(models.Model):
                 if lot_achat_id:
                     self.achat_id = lot_achat_id
 
-        # 3. Compléter vente depuis vente_ligne
+        # ========================================================
+        # 3. COMPLÉTER LA VENTE
+        # ========================================================
+
         if self.vente_ligne_id and not self.vente_id:
             self.vente_id = self.vente_ligne.vente_id
 
-        # 4. Date du mouvement
+        # ========================================================
+        # 4. DATE DU MOUVEMENT
+        # ========================================================
+
         if self.occurred_at is None:
             self.occurred_at = timezone.now()
 
-        # 5. Clé unique des SALE_OUT
+        # ========================================================
+        # 5. CLÉ UNIQUE SALE_OUT
+        # ========================================================
+
         if self.movement_type == MovementType.SALE_OUT:
+
             if not self.vente_ligne_id or not self.produit_line_id:
                 raise ValidationError({
                     "sale_out_unique_key": (
@@ -962,37 +985,61 @@ class InventoryMovement(models.Model):
             self.sale_out_unique_key = (
                 f"{self.vente_ligne_id}:{self.produit_line_id}"
             )
+
         else:
             self.sale_out_unique_key = None
 
-        # 6. Validation métier
+        # ========================================================
+        # 6. VALIDATION MÉTIER
+        # ========================================================
+
         self.full_clean()
 
-        # 7. Enregistrement
+        # ========================================================
+        # 7. ENREGISTREMENT
+        # ========================================================
+
         return super().save(*args, **kwargs)
 
-    # ========================================================
-    # Verrouillage
-    # ========================================================
 
     def freeze(self, by_user=None):
-        if not self.pk or self.is_locked:
-            return
+        """
+        Verrouille un mouvement d'inventaire.
 
-        self.is_locked = True
+        Le verrouillage est effectué de manière atomique.
+        Un mouvement déjà verrouillé n'est pas modifié.
+        """
 
-        update_fields = [
-            "is_locked",
-        ]
+        if not self.pk:
+            raise ValidationError(
+                "Impossible de verrouiller un mouvement non enregistré."
+            )
 
-        if by_user and not self.created_by_id:
-            self.created_by = by_user
-            update_fields.append("created_by")
+        from django.db import transaction
 
-        # Appel direct du save Django pour ne pas déclencher
-        # la protection des mouvements verrouillés.
-        super().save(
-            update_fields=update_fields,
-        )
+        with transaction.atomic():
+            movement = (
+                type(self).objects
+                .select_for_update()
+                .get(pk=self.pk)
+            )
+
+            if movement.is_locked:
+                self.is_locked = True
+                return
+
+            update_fields = ["is_locked"]
+            movement.is_locked = True
+
+            if by_user and not movement.created_by_id:
+                movement.created_by = by_user
+                update_fields.append("created_by")
+
+            super(InventoryMovement, movement).save(
+                update_fields=update_fields
+            )
+
+            self.is_locked = True
+            self.created_by_id = movement.created_by_id
+
         
-    

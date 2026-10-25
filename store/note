@@ -129,3 +129,5 @@ Exemple :
 erreur : prix 5000 → 50000 ❌
 rollback → retour à 5000
 Rollback manuel → ancien prix restauré
+
+ProduitRechercheView et ProduitRechercheQRView

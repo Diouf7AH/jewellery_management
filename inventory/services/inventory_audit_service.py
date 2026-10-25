@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from django.core.exceptions import ValidationError
+from django.db import transaction
 
 from inventory.models import Bucket, MovementType
 from inventory.services.inventory_movement_service import (_normalize_qty,
@@ -119,22 +120,50 @@ def create_sale_out_consumption(
     by_user,
 ) -> bool:
     """
-    Enregistre le mouvement SALE_OUT d'une ProduitLine précise.
+    Enregistre le mouvement SALE_OUT d'une ProduitLine exacte.
+
+    Flux :
+        VENDOR -> EXTERNAL
+
+    Règles :
+    - La facture doit être intégralement payée.
+    - La vente doit appartenir à la facture.
+    - La ProduitLine doit correspondre à la ligne vendue.
+    - Le vendeur doit appartenir à la bijouterie.
+    - Aucun FIFO.
+    - Aucun changement de lot.
+    - Aucun décrément de ProduitLine.quantite.
+    - Aucun décrément supplémentaire de VendorStock.
+    - Le mouvement SALE_OUT est verrouillé après création.
+    - Un doublon SALE_OUT doit provoquer une erreur.
 
     IMPORTANT :
-    - La facture doit être intégralement payée.
-    - consume_vendor_stock() doit avoir réussi.
-    - La fonction doit être appelée dans la même transaction
-      atomique que consume_vendor_stock().
-    - Aucun FIFO.
-    - Aucun décrément de ProduitLine.quantite.
-    - Aucun nouveau décrément de VendorStock ici.
+    Cette fonction doit être appelée dans la même
+    transaction atomique que consume_vendor_stock().
 
     L'idempotence globale est gérée par
-    confirm_sale_out_from_vendor() et les contraintes SQL.
+    confirm_sale_out_from_vendor().
     """
 
+    # ========================================================
+    # 1. TRANSACTION OBLIGATOIRE
+    # ========================================================
+
+    if not transaction.get_connection().in_atomic_block:
+        raise ValidationError(
+            "La création du mouvement SALE_OUT nécessite "
+            "une transaction atomique."
+        )
+
+    # ========================================================
+    # 2. QUANTITÉ
+    # ========================================================
+
     q = _normalize_qty(qty)
+
+    # ========================================================
+    # 3. VALIDATION DES RELATIONS
+    # ========================================================
 
     vendor = _validate_sale_relations(
         facture=facture,
@@ -143,29 +172,73 @@ def create_sale_out_consumption(
         produit_line=produit_line,
     )
 
-    if facture.status != facture.STAT_PAYE:
+    # ========================================================
+    # 4. FACTURE INTÉGRALEMENT PAYÉE
+    # ========================================================
+
+    if (
+        facture.status != facture.STAT_PAYE
+        or not facture.est_reglee()
+    ):
         raise ValidationError(
-            "SALE_OUT interdit : la facture n'est pas payée."
+            "SALE_OUT interdit : la facture doit être "
+            "intégralement payée."
         )
 
-    log_move(
+    # ========================================================
+    # 5. VÉRIFICATION DE LA BIJOUTERIE
+    # ========================================================
+
+    if vente.bijouterie_id != facture.bijouterie_id:
+        raise ValidationError(
+            "La vente n'appartient pas à la bijouterie "
+            "de la facture."
+        )
+
+    if vendor.bijouterie_id != facture.bijouterie_id:
+        raise ValidationError(
+            "Le vendeur n'appartient pas à la bijouterie "
+            "de la facture."
+        )
+
+    if (
+        produit_line.lot.achat.bijouterie_id
+        != facture.bijouterie_id
+    ):
+        raise ValidationError(
+            "La ProduitLine n'appartient pas "
+            "à cette bijouterie."
+        )
+
+    # ========================================================
+    # 6. CRÉATION DU MOUVEMENT SALE_OUT
+    # ========================================================
+
+    movement = log_move(
         produit=produit_line.produit,
         qty=q,
         movement_type=MovementType.SALE_OUT,
+
         src_bucket=Bucket.VENDOR,
         src_bijouterie_id=facture.bijouterie_id,
+
         dst_bucket=Bucket.EXTERNAL,
         dst_bijouterie_id=None,
+
         vendor=vendor,
         unit_cost=None,
         achat=None,
+
         produit_line=produit_line,
         lot=produit_line.lot,
+
         vente=vente,
         vente_ligne=vente_ligne,
         facture=facture,
+
         user=by_user,
         stock_consumed=True,
+
         reason=(
             f"SALE_OUT | "
             f"vente={vente.numero_vente} | "
@@ -176,11 +249,24 @@ def create_sale_out_consumption(
             f"pl_uuid={produit_line.uuid} | "
             f"lot={produit_line.lot_id}"
         ),
+
         lock=True,
     )
 
-    return True
+    # ========================================================
+    # 7. CONFIRMATION DE L'ENREGISTREMENT
+    # ========================================================
 
+    if movement.pk is None:
+        raise ValidationError(
+            "Le mouvement SALE_OUT n'a pas été enregistré."
+        )
+
+    # ========================================================
+    # 8. CONFIRMATION
+    # ========================================================
+
+    return True
 
 # ============================================================
 # RETURN_IN : EXTERNAL -> BIJOUTERIE

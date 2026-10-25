@@ -260,13 +260,16 @@ class VenteAutreInSerializer(serializers.Serializer):
 # ============================================================
 # 3. CRÉATION D'UNE VENTE
 # ============================================================
+
 class VenteProduitInSerializer(serializers.Serializer):
     """
     Serializer d'entrée pour une ligne de bijou.
 
     Identification :
-        - produit_line_id
-        - qr
+        - produit_line_id : recherche manuelle / SKU
+        - qr : scan QR Code
+
+    Un seul identifiant doit être renseigné.
 
     Prix :
         - prix_vente_grammes facultatif
@@ -287,7 +290,8 @@ class VenteProduitInSerializer(serializers.Serializer):
 
     qr = serializers.CharField(
         required=False,
-        allow_blank=False,
+        allow_blank=True,
+        allow_null=True,
         trim_whitespace=True,
     )
 
@@ -331,8 +335,10 @@ class VenteProduitInSerializer(serializers.Serializer):
         attrs = super().validate(attrs)
 
         produit_line_id = attrs.get("produit_line_id")
-        qr = attrs.get("qr")
 
+        qr = (attrs.get("qr") or "").strip()
+
+        # Aucun identifiant fourni
         if produit_line_id is None and not qr:
             raise serializers.ValidationError({
                 "produit_line_id": (
@@ -340,6 +346,7 @@ class VenteProduitInSerializer(serializers.Serializer):
                 )
             })
 
+        # Deux identifiants fournis
         if produit_line_id is not None and qr:
             raise serializers.ValidationError({
                 "qr": (
@@ -348,27 +355,47 @@ class VenteProduitInSerializer(serializers.Serializer):
                 )
             })
 
+        # Identification par QR
+        if qr:
+            if not qr.upper().startswith("PL:"):
+                raise serializers.ValidationError({
+                    "qr": (
+                        "Format QR invalide. "
+                        "Le QR doit commencer par PL:."
+                    )
+                })
+
+            attrs["qr"] = qr
+
+        # Identification par produit_line_id
+        else:
+            attrs.pop("qr", None)
+
         return attrs
+    
 
 class VenteCreateInSerializer(serializers.Serializer):
     """
     Création d'une vente Rio-Gold.
 
     Types :
-    - Bijoux uniquement.
-    - Prestations uniquement.
-    - Bijoux + prestations.
+    - Bijoux uniquement : proforma.
+    - Prestations uniquement : paiement direct, sans facture.
+    - Bijoux + prestations : proforma.
+
+    Identification des bijoux :
+    - produit_line_id : recherche manuelle / SKU.
+    - qr : scan QR Code.
 
     Règles :
-    - Au moins une ligne obligatoire.
+    - Au moins un bijou ou une prestation obligatoire.
     - Admin/manager : vendor_email obligatoire.
-    - Vendeur : vendor_email facultatif.
+    - Vendeur : utilise son propre profil.
     - Aucun stock consommé à la création.
     """
 
     vendor_email = serializers.EmailField(
         required=False,
-        allow_blank=False,
         allow_null=True,
     )
 
@@ -394,7 +421,6 @@ class VenteCreateInSerializer(serializers.Serializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
 
-        # Normaliser les listes facultatives.
         produits = attrs.get("produits") or []
         autres = attrs.get("autres") or []
 
@@ -406,10 +432,12 @@ class VenteCreateInSerializer(serializers.Serializer):
                 )
             })
 
-        # Vérifier la présence du contexte HTTP.
         request = self.context.get("request")
 
-        if request is None or not request.user.is_authenticated:
+        if (
+            request is None
+            or not request.user.is_authenticated
+        ):
             raise serializers.ValidationError({
                 "detail": "Authentification requise."
             })
@@ -418,8 +446,6 @@ class VenteCreateInSerializer(serializers.Serializer):
             get_role_name(request.user) or ""
         ).strip().lower()
 
-        # Admin et manager :
-        # le vendeur doit être explicitement choisi.
         if role in {ROLE_ADMIN, ROLE_MANAGER}:
 
             vendor_email = (
@@ -437,8 +463,6 @@ class VenteCreateInSerializer(serializers.Serializer):
 
             attrs["vendor_email"] = vendor_email
 
-        # Vendeur connecté :
-        # le service identifiera son profil.
         elif role == ROLE_VENDOR:
 
             attrs.pop("vendor_email", None)
@@ -455,6 +479,7 @@ class VenteCreateInSerializer(serializers.Serializer):
         attrs["autres"] = autres
 
         return attrs
+    
 
 # ============================================================
 # PRESTATIONS / AUTRES PRODUITS - SORTIE

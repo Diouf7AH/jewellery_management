@@ -197,7 +197,7 @@ class VendorStock(models.Model):
     - La quantité vendue ne dépasse jamais l'allocation.
     - Les quantités ne sont jamais négatives.
     - Un seul VendorStock par ProduitLine, vendeur
-      et bijouterie.
+    et bijouterie.
     """
 
     produit_line = models.ForeignKey(
@@ -269,6 +269,30 @@ class VendorStock(models.Model):
                     ),
                 ),
                 name="ck_vendorstock_vendue_lte_allouee",
+            ),
+        ]
+
+        indexes = [
+            models.Index(
+                fields=[
+                    "vendor",
+                    "bijouterie",
+                ],
+                name="idx_vendorstock_vendor_bij",
+            ),
+            models.Index(
+                fields=[
+                    "vendor",
+                    "produit_line",
+                ],
+                name="idx_vendorstock_vendor_pl",
+            ),
+            models.Index(
+                fields=[
+                    "bijouterie",
+                    "produit_line",
+                ],
+                name="idx_vendorstock_bij_pl",
             ),
         ]
 

@@ -1,14 +1,14 @@
 # from knox.auth import TokenAuthentication
 #Export to excel
 import uuid
-from collections import defaultdict
 from decimal import Decimal, InvalidOperation
-from io import BytesIO
 
-import qrcode
-from django.db import transaction
+from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
 from django.db.models import F, Q
-from django.http import Http404, HttpResponse
+from django.db.models.deletion import ProtectedError, RestrictedError
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_datetime
 from django_filters.rest_framework import DjangoFilterBackend
@@ -24,6 +24,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from backend.bijouteries import get_user_bijouteries
 from backend.permissions import (IsAdmin, IsAdminOrManager,
                                  IsAdminOrManagerOrVendor)
 from backend.renderers import UserRenderer
@@ -70,38 +71,63 @@ class BijouterieListAPIView(APIView):
         serializer = BijouterieSerializer(bijouteries, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-
 class BijouterieCreateAPIView(APIView):
     """
-    Création d'une nouvelle bijouterie.
+    Création d'une bijouterie.
 
     Accès :
-        - Administrateur uniquement.
+    - Administrateur uniquement.
+
+    Règles :
+    - Nom unique.
+    - NINEA unique lorsqu'il est renseigné.
+    - TVA désactivée par défaut.
+    - Taux de TVA conservé même si TVA désactivée.
+    - Validation par BijouterieSerializer.
     """
 
-    renderer_classes = [UserRenderer]
-    permission_classes = [IsAdmin]
-    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Créer une bijouterie",
         operation_description=(
-            "Permet uniquement à un administrateur "
-            "de créer une bijouterie avec ses coordonnées, "
-            "logos et paramètres de TVA."
+            "Permet à un administrateur de créer "
+            "une nouvelle bijouterie avec ses "
+            "coordonnées, son NINEA, sa configuration "
+            "TVA et ses logos."
         ),
         request_body=BijouterieSerializer,
         responses={
             201: openapi.Response(
-                description="Bijouterie créée avec succès",
+                description="Bijouterie créée avec succès.",
                 schema=BijouterieSerializer,
             ),
-            400: "Données invalides",
-            401: "Authentification requise",
-            403: "Accès réservé aux administrateurs",
+            400: "Données invalides.",
+            403: "Accès refusé.",
         },
+        tags=["Bijouteries"],
     )
     def post(self, request):
+
+        # =====================================================
+        # 1. Vérifier le rôle administrateur
+        # =====================================================
+
+        if get_role_name(request.user) != ROLE_ADMIN:
+            return Response(
+                {
+                    "detail": (
+                        "Seul un administrateur peut "
+                        "créer une bijouterie."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # =====================================================
+        # 2. Valider les données
+        # =====================================================
+
         serializer = BijouterieSerializer(
             data=request.data,
             context={"request": request},
@@ -109,103 +135,313 @@ class BijouterieCreateAPIView(APIView):
 
         serializer.is_valid(raise_exception=True)
 
-        with transaction.atomic():
-            bijouterie = serializer.save()
+        # =====================================================
+        # 3. Créer la bijouterie
+        # =====================================================
 
-        output_serializer = BijouterieSerializer(
+        try:
+            with transaction.atomic():
+                bijouterie = serializer.save()
+
+        except IntegrityError:
+            return Response(
+                {
+                    "detail": (
+                        "Impossible de créer la bijouterie. "
+                        "Le nom ou le NINEA existe déjà."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # =====================================================
+        # 4. Retourner la bijouterie créée
+        # =====================================================
+
+        response_serializer = BijouterieSerializer(
             bijouterie,
             context={"request": request},
         )
 
         return Response(
-            output_serializer.data,
+            {
+                "message": "Bijouterie créée avec succès.",
+                "bijouterie": response_serializer.data,
+            },
             status=status.HTTP_201_CREATED,
         )
 
 
-
 class BijouterieUpdateAPIView(APIView):
+    """
+    Mise à jour d'une bijouterie Rio-Gold.
+
+    Administrateur :
+        Peut modifier toutes les bijouteries.
+
+    Manager :
+        Peut modifier uniquement les bijouteries
+        auxquelles il est autorisé à accéder.
+
+    PUT :
+        Mise à jour complète.
+
+    PATCH :
+        Mise à jour partielle.
+
+    TVA :
+        Le taux configuré reste enregistré
+        lorsque appliquer_tva=False.
+    """
+
     renderer_classes = [UserRenderer]
+
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+
+    parser_classes = [
+        MultiPartParser,
+        FormParser,
+        JSONParser,
+    ]
+
+    # ========================================================
+    # VÉRIFICATION DES PERMISSIONS
+    # ========================================================
+
+    def check_role(self, request):
+        role = get_role_name(request.user)
+
+        if role not in (ROLE_ADMIN, ROLE_MANAGER):
+            return Response(
+                {
+                    "detail": (
+                        "Vous n'avez pas la permission "
+                        "de modifier une bijouterie."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        return None
+
+    # ========================================================
+    # RÉCUPÉRATION SÉCURISÉE
+    # ========================================================
+
+    def get_bijouterie(self, request, pk):
+        queryset = get_user_bijouteries(request.user)
+
+        return get_object_or_404(
+            queryset,
+            pk=pk,
+        )
+
+    # ========================================================
+    # MISE À JOUR
+    # ========================================================
+
+    def update_bijouterie(
+        self,
+        request,
+        pk,
+        partial=False,
+    ):
+        # 1. Vérifier le rôle.
+        permission_error = self.check_role(request)
+
+        if permission_error is not None:
+            return permission_error
+
+        # 2. Vérifier l'accès à la bijouterie.
+        bijouterie = self.get_bijouterie(
+            request,
+            pk,
+        )
+
+        # 3. Valider les données.
+        serializer = BijouterieSerializer(
+            bijouterie,
+            data=request.data,
+            partial=partial,
+            context={"request": request},
+        )
+
+        serializer.is_valid(raise_exception=True)
+
+        # 4. Enregistrer.
+        try:
+            with transaction.atomic():
+                serializer.save()
+
+        except DjangoValidationError as exc:
+            if hasattr(exc, "message_dict"):
+                errors = exc.message_dict
+            else:
+                errors = exc.messages
+
+            raise ValidationError(errors)
+
+        except IntegrityError:
+            raise ValidationError({
+                "detail": (
+                    "Impossible de modifier la bijouterie. "
+                    "Le nom ou le NINEA existe déjà."
+                )
+            })
+
+        # 5. Retourner les données actualisées.
+        response_serializer = BijouterieSerializer(
+            serializer.instance,
+            context={"request": request},
+        )
+
+        return Response(
+            {
+                "message": (
+                    "Bijouterie mise à jour avec succès."
+                ),
+                "bijouterie": response_serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    # ========================================================
+    # PUT
+    # ========================================================
 
     @swagger_auto_schema(
-        operation_summary="Mettre à jour une bijouterie",
-        operation_description="Permet de modifier les informations d'une bijouterie existante.",
-        manual_parameters=[
-            openapi.Parameter(
-                'pk', openapi.IN_PATH, description="ID de la bijouterie à mettre à jour",
-                type=openapi.TYPE_INTEGER, required=True
-            )
-        ],
+        operation_summary="Modifier une bijouterie",
+        operation_description=(
+            "Mise à jour complète d'une bijouterie."
+        ),
         request_body=BijouterieSerializer,
         responses={
-            200: openapi.Response("Bijouterie mise à jour", BijouterieSerializer),
-            400: "Requête invalide",
-            403: "Accès refusé",
-            404: "Bijouterie introuvable"
-        }
+            200: "Bijouterie mise à jour.",
+            400: "Données invalides.",
+            403: "Accès refusé.",
+            404: "Bijouterie introuvable.",
+        },
+        tags=["Bijouteries"],
     )
     def put(self, request, pk):
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+        return self.update_bijouterie(
+            request,
+            pk,
+            partial=False,
+        )
 
-        try:
-            bijouterie = Bijouterie.objects.get(pk=pk)
-        except Bijouterie.DoesNotExist:
-            return Response({"detail": "Bijouterie introuvable."}, status=404)
+    # ========================================================
+    # PATCH
+    # ========================================================
 
-        serializer = BijouterieSerializer(bijouterie, data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=200)
-        return Response(serializer.errors, status=400)
-
+    @swagger_auto_schema(
+        operation_summary="Modifier partiellement une bijouterie",
+        operation_description=(
+            "Modifie uniquement les champs transmis."
+        ),
+        request_body=BijouterieSerializer,
+        responses={
+            200: "Bijouterie mise à jour.",
+            400: "Données invalides.",
+            403: "Accès refusé.",
+            404: "Bijouterie introuvable.",
+        },
+        tags=["Bijouteries"],
+    )
     def patch(self, request, pk):
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
-
-        try:
-            bijouterie = Bijouterie.objects.get(pk=pk)
-        except Bijouterie.DoesNotExist:
-            return Response({"detail": "Bijouterie introuvable."}, status=404)
-
-        serializer = BijouterieSerializer(bijouterie, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=200)
-        return Response(serializer.errors, status=400)
+        return self.update_bijouterie(
+            request,
+            pk,
+            partial=True,
+        )
+        
 
 
 class BijouterieDeleteAPIView(APIView):
+    """
+    Suppression d'une bijouterie Rio-Gold.
+
+    Règles :
+    - Administrateur uniquement.
+    - Suppression définitive si aucune relation
+      protégée ne bloque l'opération.
+    - Préservation des achats, ventes, factures
+      et autres données protégées.
+    """
+
     renderer_classes = [UserRenderer]
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
         operation_summary="Supprimer une bijouterie",
-        operation_description="Supprime définitivement une bijouterie à partir de son ID.",
-        manual_parameters=[
-            openapi.Parameter(
-                'pk', openapi.IN_PATH, description="ID de la bijouterie à supprimer",
-                type=openapi.TYPE_INTEGER, required=True
-            )
-        ],
+        operation_description=(
+            "Permet à un administrateur de supprimer "
+            "une bijouterie. La suppression est refusée "
+            "si des données liées sont protégées."
+        ),
         responses={
-            204: openapi.Response("Bijouterie supprimée avec succès"),
-            403: "Accès refusé",
-            404: "Bijouterie introuvable"
-        }
+            204: "Bijouterie supprimée avec succès.",
+            403: "Accès refusé.",
+            404: "Bijouterie introuvable.",
+            409: "Suppression impossible : données liées.",
+        },
+        tags=["Bijouteries"],
     )
     def delete(self, request, pk):
-        if not request.user.user_role or request.user.user_role.role not in allowed_roles_admin_manager:
-            return Response({"message": "Access Denied"}, status=status.HTTP_403_FORBIDDEN)
+
+        # =====================================================
+        # 1. Vérifier le rôle administrateur
+        # =====================================================
+
+        if get_role_name(request.user) != ROLE_ADMIN:
+            return Response(
+                {
+                    "detail": (
+                        "Seul un administrateur peut "
+                        "supprimer une bijouterie."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # =====================================================
+        # 2. Rechercher la bijouterie
+        # =====================================================
+
+        bijouterie = get_object_or_404(
+            Bijouterie,
+            pk=pk,
+        )
+
+        # =====================================================
+        # 3. Suppression sécurisée
+        # =====================================================
 
         try:
-            bijouterie = Bijouterie.objects.get(pk=pk)
-            bijouterie.delete()
-            return Response({"message": "Bijouterie supprimée avec succès."}, status=status.HTTP_204_NO_CONTENT)
-        except Bijouterie.DoesNotExist:
-            return Response({"detail": "Bijouterie introuvable."}, status=status.HTTP_404_NOT_FOUND)
+            with transaction.atomic():
+                bijouterie.delete()
+
+        except (ProtectedError, RestrictedError):
+            return Response(
+                {
+                    "detail": (
+                        "Impossible de supprimer cette "
+                        "bijouterie car elle possède "
+                        "des données liées protégées "
+                        "(achats, ventes, stocks, "
+                        "factures ou personnel)."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # =====================================================
+        # 4. Succès
+        # =====================================================
+
+        return Response(
+            status=status.HTTP_204_NO_CONTENT,
+        )
 
 
 class CategorieListAPIView(APIView):

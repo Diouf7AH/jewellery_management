@@ -398,8 +398,12 @@ class VenteProduitCreateView(APIView):
                 .strip()
             )
 
-            if scan_value.upper().startswith("PL:"):
-                scan_value = scan_value[3:].strip()
+            if not scan_value.upper().startswith("PL:"):
+                raise ValidationError({
+                    "qr": "Le QR code doit commencer par PL:."
+                })
+
+            scan_value = scan_value[3:].strip()
 
             try:
                 produit_line_uuid = UUID(scan_value)
@@ -892,6 +896,7 @@ class VenteProduitCreateView(APIView):
                 "montant_ht": str(
                     facture.montant_ht
                 ),
+                "appliquer_tva": facture.appliquer_tva,
                 "taux_tva": (
                     str(facture.taux_tva)
                     if facture.taux_tva is not None

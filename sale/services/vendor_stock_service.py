@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import F
 
 from stock.models import VendorStock
@@ -99,35 +100,39 @@ def _validate_common(
 
     return q
 
-
 def _get_vendor_stock(
     *,
     vendor,
     bijouterie,
     produit_line,
     lock: bool = False,
-):
+) -> VendorStock:
     """
-    Retourne le VendorStock correspondant exactement à :
+    Retourne le VendorStock exact correspondant à :
 
-        vendeur
-        + bijouterie
-        + ProduitLine
+        vendeur + bijouterie + ProduitLine
 
-    Si lock=True, verrouille la ligne SQL avec
-    select_for_update().
+    Règles :
+    - Aucun FIFO.
+    - Aucun fallback vers une autre ProduitLine.
+    - Refuse un stock introuvable.
+    - Refuse plusieurs stocks correspondants.
+    - Verrouille la ligne lorsque lock=True.
 
-    À utiliser uniquement dans une transaction atomique
-    lorsque lock=True.
+    IMPORTANT :
+    lock=True nécessite une transaction.atomic().
     """
+
+    if lock and not transaction.get_connection().in_atomic_block:
+        raise ValidationError({
+            "stock": (
+                "Le verrouillage du stock vendeur "
+                "nécessite une transaction atomique."
+            )
+        })
 
     qs = (
         VendorStock.objects
-        .select_related(
-            "produit_line",
-            "produit_line__produit",
-            "produit_line__lot",
-        )
         .filter(
             vendor=vendor,
             bijouterie=bijouterie,
@@ -138,15 +143,12 @@ def _get_vendor_stock(
     if lock:
         qs = qs.select_for_update()
 
-    vendor_stock = qs.first()
+    try:
+        return qs.get()
 
-    if not vendor_stock:
+    except VendorStock.DoesNotExist:
         identifiant = (
-            getattr(
-                produit_line,
-                "uuid",
-                None,
-            )
+            getattr(produit_line, "uuid", None)
             or produit_line.pk
         )
 
@@ -157,7 +159,15 @@ def _get_vendor_stock(
             )
         })
 
-    return vendor_stock
+    except VendorStock.MultipleObjectsReturned:
+        raise ValidationError({
+            "stock": (
+                "Plusieurs stocks vendeur correspondent "
+                "à la même combinaison vendeur, "
+                "bijouterie et ProduitLine. "
+                "Une correction des données est nécessaire."
+            )
+        })
 
 
 def _available_quantity(
@@ -524,7 +534,7 @@ def ensure_vendor_stock_available(
 # CONSOMMATION STOCK VENDEUR
 # =============================================================
 
-
+@transaction.atomic
 def consume_vendor_stock(
     *,
     vendor,

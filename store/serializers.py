@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -9,12 +10,192 @@ from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
                           MarquePuretePrixHistory, Modele, Produit, Purete)
 
 
-# Define a serializer for the Category model
 class BijouterieSerializer(serializers.ModelSerializer):
+    """
+    Serializer de gestion des bijouteries Rio-Gold.
+
+    Règles métier :
+    - Nom obligatoire et unique.
+    - NINEA facultatif et unique.
+    - TVA configurable par bijouterie.
+    - Conservation du taux configuré.
+    - Taux effectif de 0 % si TVA désactivée.
+    """
+
+    taux_tva_effectif = serializers.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        read_only=True,
+    )
+
     class Meta:
         model = Bijouterie
-        fields = ['id', 'nom', 'telephone_portable_1', 'telephone_portable_2', 'telephone_portable_3', 'telephone_portable_4', 'telephone_portable_5', 'telephone_fix', 'adresse', 'logo_blanc', 'logo_noir', 'nom_de_domaine', 'tiktok', 'facebook', 'instagram']
-        
+
+        fields = [
+            # Identification
+            "id",
+            "nom",
+
+            # Contacts
+            "telephone_portable_1",
+            "telephone_portable_2",
+            "telephone_portable_3",
+            "telephone_portable_4",
+            "telephone_portable_5",
+            "telephone_fix",
+            "adresse",
+
+            # Informations légales
+            "ninea",
+
+            # TVA
+            "appliquer_tva",
+            "taux_tva",
+            "taux_tva_effectif",
+
+            # Logos
+            "logo_blanc",
+            "logo_noir",
+
+            # Web / réseaux sociaux
+            "nom_de_domaine",
+            "tiktok",
+            "facebook",
+            "instagram",
+
+            # Dates
+            "created_at",
+            "updated_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "created_at",
+            "updated_at",
+            "taux_tva_effectif",
+        ]
+
+        extra_kwargs = {
+            "nom": {
+                "required": True,
+                "allow_blank": False,
+            },
+            "ninea": {
+                "required": False,
+                "allow_null": True,
+                "allow_blank": True,
+                "validators": [],
+            },
+            "taux_tva": {
+                "required": False,
+                "allow_null": True,
+            },
+        }
+
+    # ========================================================
+    # VALIDATION DU NOM
+    # ========================================================
+
+    def validate_nom(self, value):
+        nom = value.strip()
+
+        if not nom:
+            raise serializers.ValidationError(
+                "Le nom de la bijouterie est obligatoire."
+            )
+
+        queryset = Bijouterie.objects.filter(
+            nom__iexact=nom
+        )
+
+        if self.instance is not None:
+            queryset = queryset.exclude(
+                pk=self.instance.pk
+            )
+
+        if queryset.exists():
+            raise serializers.ValidationError(
+                "Une bijouterie avec ce nom existe déjà."
+            )
+
+        return nom
+
+    # ========================================================
+    # VALIDATION DU NINEA
+    # ========================================================
+
+    def validate_ninea(self, value):
+        ninea = (value or "").strip().upper()
+
+        if not ninea:
+            return None
+
+        if not re.fullmatch(r"[A-Z0-9]+", ninea):
+            raise serializers.ValidationError(
+                "Le NINEA doit contenir uniquement "
+                "des lettres et des chiffres."
+            )
+
+        queryset = Bijouterie.objects.filter(
+            ninea__iexact=ninea
+        )
+
+        if self.instance is not None:
+            queryset = queryset.exclude(
+                pk=self.instance.pk
+            )
+
+        if queryset.exists():
+            raise serializers.ValidationError(
+                "Ce NINEA est déjà utilisé "
+                "par une autre bijouterie."
+            )
+
+        return ninea
+
+    # ========================================================
+    # VALIDATION GLOBALE
+    # ========================================================
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+
+        appliquer_tva = attrs.get(
+            "appliquer_tva",
+            getattr(self.instance, "appliquer_tva", False),
+        )
+
+        taux_tva = attrs.get(
+            "taux_tva",
+            getattr(self.instance, "taux_tva", None),
+        )
+
+        # TVA activée : taux obligatoire.
+        if appliquer_tva and taux_tva is None:
+            raise serializers.ValidationError({
+                "taux_tva": (
+                    "Le taux de TVA est obligatoire "
+                    "lorsque la TVA est activée."
+                )
+            })
+
+        # Vérifier le taux, même si la TVA est désactivée.
+        if taux_tva is not None:
+            if not (
+                Decimal("0.00")
+                <= taux_tva
+                <= Decimal("100.00")
+            ):
+                raise serializers.ValidationError({
+                    "taux_tva": (
+                        "Le taux de TVA doit être compris "
+                        "entre 0 et 100."
+                    )
+                })
+
+        # Ne jamais effacer le taux configuré.
+        return attrs
+
 
 
 class CategorieSerializer(serializers.ModelSerializer):
