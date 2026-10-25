@@ -1887,18 +1887,34 @@ class VendorDashboardView(APIView):
             .order_by("periode_date")
         )
 
-        evolution = [
-            {
-                "date": item["periode_date"].isoformat(),
-                "quantite_vendue": item[
-                    "quantite_vendue"
-                ],
+        # evolution = [
+        #     {
+        #         "date": item["periode_date"].isoformat(),
+        #         "quantite_vendue": item[
+        #             "quantite_vendue"
+        #         ],
+        #         "chiffre_affaires": str(
+        #             item["chiffre_affaires"]
+        #         ),
+        #     }
+        #     for item in evolution_qs
+        # ]
+        
+        evolution = []
+
+        for item in evolution_qs:
+            periode_date = item["periode_date"]
+
+            if periode_date is None:
+                continue
+
+            evolution.append({
+                "date": periode_date.isoformat(),
+                "quantite_vendue": item["quantite_vendue"],
                 "chiffre_affaires": str(
                     item["chiffre_affaires"]
                 ),
-            }
-            for item in evolution_qs
-        ]
+            })
 
         # ==================================================
         # 10. TOP 5 PRODUITS
@@ -2070,6 +2086,8 @@ class VendorDashboardView(APIView):
                     ),
                     "date": (
                         item.vente.created_at.isoformat()
+                        if item.vente.created_at is not None
+                        else None
                     ),
                 }
             )
