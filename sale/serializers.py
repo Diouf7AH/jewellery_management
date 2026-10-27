@@ -1431,7 +1431,10 @@ class VenteOutWrapperSerializer(serializers.Serializer):
 
     class Meta:
         ref_name = "VenteCreateOut"
+        
+        
 # -----Serializers de sortie avec HT/TTC, vendor et bijouterie-----------
+
 class PaiementModeItemSerializer(serializers.Serializer):
     """
     Ligne de paiement compatible avec
@@ -1465,11 +1468,15 @@ class PaiementModeItemSerializer(serializers.Serializer):
         trim_whitespace=True,
     )
 
-    numero_compte = serializers.CharField(
+    telephone = serializers.CharField(
         required=False,
-        allow_blank=True,
+        allow_blank=False,
         allow_null=True,
         trim_whitespace=True,
+        help_text=(
+            "Numéro de téléphone du client, obligatoire "
+            "uniquement pour le paiement par compte dépôt."
+        ),
     )
 
     def validate_mode(self, value):
@@ -1481,7 +1488,7 @@ class PaiementModeItemSerializer(serializers.Serializer):
         for champ in (
             "reference",
             "provider_reference",
-            "numero_compte",
+            "telephone",
         ):
             valeur = attrs.get(champ)
 
@@ -1490,18 +1497,21 @@ class PaiementModeItemSerializer(serializers.Serializer):
 
         return attrs
 
+
 class PaiementMultiModeSerializer(serializers.Serializer):
     """
     Paiement multimode d'une facture Rio-Gold.
 
     Règles :
     - Numéro de facture obligatoire.
-    - Client facultatif dans le JSON si déjà identifié.
-    - Nom et prénom obligatoires au paiement.
-    - Téléphone facultatif.
+    - Client facultatif dans le JSON.
+    - Nom et prénom obligatoires pour un paiement
+      sans compte dépôt, sauf si déjà renseignés.
+    - Pour un compte dépôt, téléphone obligatoire.
+    - Le titulaire du compte dépôt sera identifié
+      dans la vue.
     - Un mode de paiement une seule fois.
     - Références obligatoires selon le mode.
-    - Compte dépôt obligatoire selon le mode.
     - Paiement partiel ou intégral autorisé.
 
     Les contrôles transactionnels restent dans la vue.
@@ -1542,7 +1552,7 @@ class PaiementMultiModeSerializer(serializers.Serializer):
         numero_facture = attrs["numero_facture"]
 
         # ====================================================
-        # 1. VALIDATION DU CLIENT
+        # 1. FACTURE ET CLIENT EXISTANT
         # ====================================================
 
         facture = (
@@ -1570,54 +1580,20 @@ class PaiementMultiModeSerializer(serializers.Serializer):
             else None
         )
 
-        if client_data:
-            nom = str(
-                client_data.get("nom") or ""
-            ).strip()
-
-            prenom = str(
-                client_data.get("prenom") or ""
-            ).strip()
-
-        else:
-            nom = str(
-                getattr(client_existant, "nom", "") or ""
-            ).strip()
-
-            prenom = str(
-                getattr(client_existant, "prenom", "") or ""
-            ).strip()
-
-        erreurs_client = {}
-
-        if not nom:
-            erreurs_client["nom"] = (
-                "Le nom du client est obligatoire "
-                "pour effectuer le paiement."
-            )
-
-        if not prenom:
-            erreurs_client["prenom"] = (
-                "Le prénom du client est obligatoire "
-                "pour effectuer le paiement."
-            )
-
-        if erreurs_client:
-            raise serializers.ValidationError({
-                "client": erreurs_client
-            })
-
         # ====================================================
         # 2. VALIDATION DES LIGNES
         # ====================================================
-
-        lignes = attrs["lignes"]
 
         total_paiement = Decimal("0.00")
         modes_utilises = set()
         lignes_normalisees = []
 
-        for index, ligne in enumerate(lignes, start=1):
+        paiement_avec_depot = False
+
+        for index, ligne in enumerate(
+            attrs["lignes"],
+            start=1,
+        ):
 
             mode_code = str(
                 ligne["mode"]
@@ -1627,9 +1603,9 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                 str(ligne["montant"])
             )
 
-            # -----------------------------------------------
+            # ------------------------------------------------
             # MODE UNIQUE
-            # -----------------------------------------------
+            # ------------------------------------------------
 
             if mode_code in modes_utilises:
                 raise serializers.ValidationError({
@@ -1641,9 +1617,9 @@ class PaiementMultiModeSerializer(serializers.Serializer):
 
             modes_utilises.add(mode_code)
 
-            # -----------------------------------------------
+            # ------------------------------------------------
             # MODE ACTIF
-            # -----------------------------------------------
+            # ------------------------------------------------
 
             mode_obj = (
                 ModePaiement.objects
@@ -1663,9 +1639,9 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                     )
                 })
 
-            # -----------------------------------------------
+            # ------------------------------------------------
             # MONTANT
-            # -----------------------------------------------
+            # ------------------------------------------------
 
             if montant <= Decimal("0.00"):
                 raise serializers.ValidationError({
@@ -1675,9 +1651,9 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                     )
                 })
 
-            # -----------------------------------------------
-            # RÉFÉRENCES
-            # -----------------------------------------------
+            # ------------------------------------------------
+            # RÉFÉRENCES ET TÉLÉPHONE
+            # ------------------------------------------------
 
             reference = ligne.get("reference")
 
@@ -1685,9 +1661,11 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                 "provider_reference"
             )
 
-            numero_compte = ligne.get(
-                "numero_compte"
-            )
+            telephone = ligne.get("telephone")
+
+            # ------------------------------------------------
+            # RÉFÉRENCE OBLIGATOIRE SELON LE MODE
+            # ------------------------------------------------
 
             if (
                 mode_obj.necessite_reference
@@ -1701,31 +1679,35 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                     )
                 })
 
-            # -----------------------------------------------
+            # ------------------------------------------------
             # COMPTE DÉPÔT
-            # -----------------------------------------------
+            # ------------------------------------------------
 
             if mode_obj.est_mode_depot:
 
-                if not numero_compte:
+                paiement_avec_depot = True
+
+                if not telephone:
                     raise serializers.ValidationError({
                         "lignes": (
-                            "Le numéro de compte dépôt est "
-                            f"obligatoire à la ligne {index}."
+                            "Le numéro de téléphone du client "
+                            "est obligatoire pour le paiement "
+                            f"par compte dépôt à la ligne {index}."
                         )
                     })
 
-            elif numero_compte:
+            elif telephone:
                 raise serializers.ValidationError({
                     "lignes": (
-                        "numero_compte est réservé "
-                        "au mode compte dépôt."
+                        "Le champ telephone dans une ligne "
+                        "est réservé au paiement "
+                        "par compte dépôt."
                     )
                 })
 
-            # -----------------------------------------------
+            # ------------------------------------------------
             # TOTAL
-            # -----------------------------------------------
+            # ------------------------------------------------
 
             total_paiement += montant
 
@@ -1734,7 +1716,7 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                 "montant": montant,
                 "reference": reference,
                 "provider_reference": provider_reference,
-                "numero_compte": numero_compte,
+                "telephone": telephone,
             })
 
         # ====================================================
@@ -1750,14 +1732,60 @@ class PaiementMultiModeSerializer(serializers.Serializer):
             })
 
         # ====================================================
-        # 4. DONNÉES VALIDÉES
+        # 4. VALIDATION DU CLIENT
+        # ====================================================
+
+        if not paiement_avec_depot:
+
+            if client_data:
+
+                nom = str(
+                    client_data.get("nom") or ""
+                ).strip()
+
+                prenom = str(
+                    client_data.get("prenom") or ""
+                ).strip()
+
+            else:
+
+                nom = str(
+                    getattr(client_existant, "nom", "") or ""
+                ).strip()
+
+                prenom = str(
+                    getattr(client_existant, "prenom", "") or ""
+                ).strip()
+
+            erreurs_client = {}
+
+            if not nom:
+                erreurs_client["nom"] = (
+                    "Le nom du client est obligatoire "
+                    "pour effectuer le paiement."
+                )
+
+            if not prenom:
+                erreurs_client["prenom"] = (
+                    "Le prénom du client est obligatoire "
+                    "pour effectuer le paiement."
+                )
+
+            if erreurs_client:
+                raise serializers.ValidationError({
+                    "client": erreurs_client
+                })
+
+        # ====================================================
+        # 5. DONNÉES VALIDÉES
         # ====================================================
 
         attrs["lignes"] = lignes_normalisees
         attrs["total_paiement"] = total_paiement
 
         return attrs
-
+    
+    
 class PaiementLigneResponseSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     mode_paiement = serializers.CharField()
