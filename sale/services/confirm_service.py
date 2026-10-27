@@ -117,8 +117,8 @@ def confirm_sale_out_from_vendor(
     lignes = list(
         VenteProduit.objects
         .select_related(
-            "produit",
             "produit_line",
+            "produit_line__produit",
             "produit_line__lot",
             "vendor",
             "vendor__bijouterie",
@@ -128,11 +128,6 @@ def confirm_sale_out_from_vendor(
         )
         .order_by("id")
     )
-
-    if not lignes:
-        raise ValidationError(
-            "La vente ne contient aucune ligne produit."
-        )
 
     # =========================================================
     # 5. VARIABLES D'AUDIT
