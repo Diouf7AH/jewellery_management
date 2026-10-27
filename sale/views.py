@@ -2721,24 +2721,155 @@ class PaiementFactureMultiModeView(APIView):
             )
 
         # ====================================================
-        # 9. CLIENT
+        # 9. IDENTIFICATION DU CLIENT
         # ====================================================
 
-        try:
-            client = upsert_client_for_payment(
-                facture=facture,
-                client_data=client_data,
-            )
+        client_existant = vente.client
+        client_depot = None
 
-        except DjangoValidationError as exc:
-            transaction.set_rollback(True)
+        # Retrouver le client du compte dépôt.
+        for item in normalized_lignes:
 
+            compte = item.get("compte")
+
+            if compte is None:
+                continue
+
+            titulaire = compte.client
+
+            if (
+                client_depot is not None
+                and client_depot.pk != titulaire.pk
+            ):
+                return error_response(
+                    code="DEPOT_CLIENT_CONFLICT",
+                    message=(
+                        "Les comptes dépôts utilisés "
+                        "appartiennent à des clients différents."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            client_depot = titulaire
+
+
+        # ====================================================
+        # 9.1. PAIEMENT AVEC COMPTE DÉPÔT
+        # ====================================================
+
+        if client_depot is not None:
+
+            if (
+                client_existant is not None
+                and client_existant.pk != client_depot.pk
+            ):
+                return error_response(
+                    code="DEPOT_CLIENT_MISMATCH",
+                    message=(
+                        "Le compte dépôt n'appartient pas "
+                        "au client associé à la vente."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            client = client_depot
+
+            # Les informations client éventuellement fournies
+            # ne doivent pas contredire le titulaire du dépôt.
+            if client_data:
+
+                nom_saisi = str(
+                    client_data.get("nom") or ""
+                ).strip().casefold()
+
+                prenom_saisi = str(
+                    client_data.get("prenom") or ""
+                ).strip().casefold()
+
+                nom_compte = str(
+                    client.nom or ""
+                ).strip().casefold()
+
+                prenom_compte = str(
+                    client.prenom or ""
+                ).strip().casefold()
+
+                if (
+                    nom_saisi != nom_compte
+                    or prenom_saisi != prenom_compte
+                ):
+                    return error_response(
+                        code="DEPOT_CLIENT_MISMATCH",
+                        message=(
+                            "Les informations du client "
+                            "ne correspondent pas au titulaire "
+                            "du compte dépôt."
+                        ),
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                    )
+
+
+        # ====================================================
+        # 9.2. PAIEMENT ORDINAIRE
+        # ====================================================
+
+        elif client_data:
+
+            try:
+                client = upsert_client_for_payment(
+                    facture=facture,
+                    client_data=client_data,
+                )
+
+            except DjangoValidationError as exc:
+                transaction.set_rollback(True)
+
+                return error_response(
+                    code="CLIENT_INVALID",
+                    message="Informations client invalides.",
+                    details=self._validation_error_detail(exc),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+        else:
+            client = client_existant
+
+
+        # ====================================================
+        # 9.3. NOM ET PRÉNOM OBLIGATOIRES
+        # ====================================================
+
+        if client is None:
             return error_response(
-                code="CLIENT_INVALID",
-                message="Informations client invalides.",
-                details=self._validation_error_detail(exc),
+                code="CLIENT_REQUIRED",
+                message=(
+                    "Le nom et le prénom du client "
+                    "sont obligatoires pour le paiement."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
+        nom = str(client.nom or "").strip()
+        prenom = str(client.prenom or "").strip()
+
+        if not nom or not prenom:
+            return error_response(
+                code="CLIENT_INCOMPLETE",
+                message=(
+                    "Le nom et le prénom du client "
+                    "doivent être renseignés."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+        # ====================================================
+        # 9.4. ASSOCIATION À LA VENTE
+        # ====================================================
+
+        if vente.client_id != client.pk:
+            vente.client = client
+            vente.save(update_fields=["client"])
         # ====================================================
         # 10. CRÉATION DU PAIEMENT
         # ====================================================
