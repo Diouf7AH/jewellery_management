@@ -501,191 +501,25 @@ class StockDisponiblePourVendeurSerializer(
         return str(marque)
     
     
-# class VendorStockSerializer(serializers.ModelSerializer):
-#     """
-#     Une ligne de stock actuellement attribuée à un vendeur.
-#     """
 
-#     # ------------------------------------------------------------
-#     # ProduitLine
-#     # ------------------------------------------------------------
-
-#     produit_line_id = serializers.IntegerField(
-#         source="produit_line.id",
-#         read_only=True,
-#     )
-
-#     # ------------------------------------------------------------
-#     # Produit
-#     # ------------------------------------------------------------
-
-#     produit_id = serializers.IntegerField(
-#         source="produit_line.produit.id",
-#         read_only=True,
-#     )
-
-#     produit_nom = serializers.CharField(
-#         source="produit_line.produit.nom",
-#         read_only=True,
-#     )
-
-#     sku = serializers.CharField(
-#         source="produit_line.produit.sku",
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     # ------------------------------------------------------------
-#     # Catégorie
-#     # ------------------------------------------------------------
-
-#     categorie = serializers.CharField(
-#         source="produit_line.produit.categorie.nom",
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     # ------------------------------------------------------------
-#     # Marque
-#     # ------------------------------------------------------------
-
-#     marque_id = serializers.IntegerField(
-#         source="produit_line.produit.marque.id",
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     marque = serializers.CharField(
-#         source="produit_line.produit.marque.marque",
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     # ------------------------------------------------------------
-#     # Pureté
-#     # ------------------------------------------------------------
-
-#     purete_id = serializers.IntegerField(
-#         source="produit_line.produit.purete.id",
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     purete = serializers.CharField(
-#         source="produit_line.produit.purete.purete",
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     # ------------------------------------------------------------
-#     # Modèle
-#     # ------------------------------------------------------------
-
-#     modele = serializers.CharField(
-#         source="produit_line.produit.modele.modele",
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     # ------------------------------------------------------------
-#     # Poids
-#     # ------------------------------------------------------------
-
-#     poids_unitaire = serializers.DecimalField(
-#         source="produit_line.produit.poids",
-#         max_digits=12,
-#         decimal_places=2,
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     poids_disponible = serializers.SerializerMethodField()
-
-#     # ------------------------------------------------------------
-#     # Lot
-#     # ------------------------------------------------------------
-
-#     lot_id = serializers.IntegerField(
-#         source="produit_line.lot.id",
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     numero_lot = serializers.CharField(
-#         source="produit_line.lot.numero_lot",
-#         read_only=True,
-#         allow_null=True,
-#     )
-
-#     # ------------------------------------------------------------
-#     # Quantité disponible
-#     # ------------------------------------------------------------
-
-#     quantite_disponible = serializers.IntegerField(
-#         read_only=True,
-#     )
-
-#     class Meta:
-#         model = VendorStock
-
-#         fields = [
-#             "id",
-
-#             "produit_line_id",
-
-#             "produit_id",
-#             "produit_nom",
-#             "sku",
-
-#             "categorie",
-
-#             "marque_id",
-#             "marque",
-
-#             "purete_id",
-#             "purete",
-
-#             "modele",
-
-#             "poids_unitaire",
-#             "poids_disponible",
-
-#             "lot_id",
-#             "numero_lot",
-
-#             "quantite_allouee",
-#             "quantite_vendue",
-#             "quantite_disponible",
-
-#             "created_at",
-#             "updated_at",
-#         ]
-
-#         read_only_fields = fields
-
-#     def get_poids_disponible(self, obj):
-#         produit = obj.produit_line.produit
-
-#         if produit.poids is None:
-#             return None
-
-#         return str(
-#             produit.poids
-#             * obj.quantite_disponible
-#         )
 
 class VendorStockSerializer(serializers.ModelSerializer):
     """
     Détail d'une ligne de stock vendeur.
 
-    Inclut l'image du produit et les quantités
-    réellement disponibles chez le vendeur.
+    - Identification par produit_line_id ou QR.
+    - QR au format PL:<uuid ProduitLine>.
+    - Quantités disponibles chez le vendeur.
+    - Informations du produit et du lot.
     """
 
     produit_line_id = serializers.IntegerField(
         source="produit_line.id",
         read_only=True,
     )
+
+    # QR Code de la ProduitLine
+    qr = serializers.SerializerMethodField()
 
     produit_id = serializers.IntegerField(
         source="produit_line.produit.id",
@@ -704,7 +538,6 @@ class VendorStockSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
 
-    # Image principale du produit
     image = serializers.ImageField(
         source="produit_line.produit.image",
         read_only=True,
@@ -769,16 +602,16 @@ class VendorStockSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
 
-    quantite_disponible = serializers.IntegerField(
-        read_only=True,
-    )
+    quantite_disponible = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorStock
 
         fields = [
             "id",
+
             "produit_line_id",
+            "qr",
 
             "produit_id",
             "produit_nom",
@@ -811,7 +644,52 @@ class VendorStockSerializer(serializers.ModelSerializer):
 
         read_only_fields = fields
 
+    def get_qr(self, obj):
+        """
+        Retourne le QR de la ProduitLine.
+
+        Exemple :
+        PL:550e8400-e29b-41d4-a716-446655440000
+        """
+
+        produit_line = getattr(
+            obj,
+            "produit_line",
+            None,
+        )
+
+        if produit_line is None:
+            return None
+
+        uuid = getattr(
+            produit_line,
+            "uuid",
+            None,
+        )
+
+        if uuid is None:
+            return None
+
+        return f"PL:{uuid}"
+
+    def get_quantite_disponible(self, obj):
+        """
+        Stock réellement disponible du vendeur.
+        """
+
+        quantite_allouee = obj.quantite_allouee or 0
+        quantite_vendue = obj.quantite_vendue or 0
+
+        return max(
+            quantite_allouee - quantite_vendue,
+            0,
+        )
+
     def get_poids_disponible(self, obj):
+        """
+        Poids unitaire × quantité disponible.
+        """
+
         produit_line = getattr(
             obj,
             "produit_line",
@@ -830,7 +708,9 @@ class VendorStockSerializer(serializers.ModelSerializer):
         poids = Decimal(str(produit.poids))
 
         quantite = Decimal(
-            str(obj.quantite_disponible)
+            str(self.get_quantite_disponible(obj))
         )
 
         return poids * quantite
+    
+    
