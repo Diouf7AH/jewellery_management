@@ -1047,19 +1047,24 @@ def create_sale_one_vendor(
 
             })
 
-    # 9. Création de la vente
+    # =========================================================
+    # 9. CRÉATION DE LA VENTE OU PRESTATION
+    # =========================================================
 
-    vente = Vente.objects.create(
-
-        client=client,
-
-        created_by=user,
-
-        bijouterie=bijouterie,
-
-        vendor=vendor,
-
+    prefixe = (
+        "VENTE"
+        if lignes_preparees
+        else "PREST"
     )
+
+    vente = Vente(
+        client=client,
+        created_by=user,
+        bijouterie=bijouterie,
+        vendor=vendor,
+    )
+
+    vente.save(prefixe_operation=prefixe)
 
     # 10. Création des bijoux
 

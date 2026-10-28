@@ -922,9 +922,20 @@ class VenteProduitCreateView(APIView):
         return Response(
             {
                 "message": (
-                    "Vente créée. Paiement direct requis."
+                    "Prestation enregistrée. Paiement direct requis."
                     if paiement_direct
                     else "Vente créée avec proforma."
+                ),
+                "vente_id": vente.pk,
+                "numero_vente": (
+                    vente.numero_vente
+                    if not paiement_direct
+                    else None
+                ),
+                "numero_prestation": (
+                    vente.numero_vente
+                    if paiement_direct
+                    else None
                 ),
                 "vente_id": vente.pk,
                 "numero_vente": vente.numero_vente,

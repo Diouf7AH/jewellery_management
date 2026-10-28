@@ -266,35 +266,40 @@ class Vente(models.Model):
                 )
             })
 
-    def generer_numero_vente(self) -> str:
+    def generer_numero_vente(self, prefixe="VENTE") -> str:
+        if prefixe not in {"VENTE", "PREST"}:
+            raise ValidationError({
+                "numero_vente": "Préfixe d'opération invalide."
+            })
+
         now = timezone.now()
 
         suffixe = "".join(
-            random.choices(
-                "0123456789",
-                k=4,
-            )
+            random.choices("0123456789", k=4)
         )
 
         return (
-            f"VENTE-"
+            f"{prefixe}-"
             f"{now.strftime('%m%d%Y%H%M%S')}-"
             f"{suffixe}"
         ).upper()
 
+
     def save(self, *args, **kwargs):
+        prefixe_operation = kwargs.pop(
+            "prefixe_operation",
+            "VENTE",
+        )
+
         if not self.numero_vente:
             for _ in range(10):
-                self.numero_vente = (
-                    self.generer_numero_vente()
+                self.numero_vente = self.generer_numero_vente(
+                    prefixe=prefixe_operation
                 )
 
                 try:
                     with transaction.atomic():
-                        super().save(
-                            *args,
-                            **kwargs,
-                        )
+                        super().save(*args, **kwargs)
                     break
 
                 except IntegrityError:
@@ -302,16 +307,13 @@ class Vente(models.Model):
 
             else:
                 raise ValueError(
-                    "Impossible de générer un numéro "
-                    "de vente unique après 10 tentatives."
+                    "Impossible de générer un numéro unique "
+                    "après 10 tentatives."
                 )
 
             return
 
-        return super().save(
-            *args,
-            **kwargs,
-        )
+        return super().save(*args, **kwargs)
 
     def marquer_livree(self, by_user):
         self.delivered_at = timezone.now()
