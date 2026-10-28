@@ -9,10 +9,10 @@ from inventory.models import Bucket, MovementType
 from inventory.services.inventory_movement_service import (_normalize_qty,
                                                            log_move)
 
+
 # ============================================================
 # HELPERS
 # ============================================================
-
 def _validate_sale_relations(
     *,
     facture,
@@ -21,9 +21,21 @@ def _validate_sale_relations(
     produit_line,
 ):
     """
-    Vérifie la cohérence des relations communes aux
-    mouvements SALE_OUT et RETURN_IN.
+    Vérifie la cohérence des relations communes
+    aux mouvements SALE_OUT et RETURN_IN.
+
+    Règles :
+    - Facture, vente, ligne et ProduitLine obligatoires.
+    - La facture appartient à la vente.
+    - La ligne appartient à la vente.
+    - La ProduitLine est celle sélectionnée à la vente.
+    - La ProduitLine possède un produit et un lot.
+    - Le vendeur appartient à la bonne bijouterie.
     """
+
+    # ========================================================
+    # 1. OBJETS OBLIGATOIRES
+    # ========================================================
 
     if facture is None or facture.pk is None:
         raise ValidationError("facture requise.")
@@ -37,19 +49,39 @@ def _validate_sale_relations(
     if produit_line is None or produit_line.pk is None:
         raise ValidationError("produit_line requise.")
 
+    # ========================================================
+    # 2. FACTURE / VENTE
+    # ========================================================
+
     if facture.vente_id != vente.pk:
         raise ValidationError(
             "La facture ne correspond pas à la vente."
         )
 
-    if vente_ligne.vente_id != vente.pk:
+    if facture.bijouterie_id != vente.bijouterie_id:
         raise ValidationError(
-            "La ligne de vente ne correspond pas à la vente."
+            "La facture et la vente appartiennent "
+            "à des bijouteries différentes."
         )
 
-    if not vente_ligne.produit_id:
+    # ========================================================
+    # 3. LIGNE DE VENTE / VENTE
+    # ========================================================
+
+    if vente_ligne.vente_id != vente.pk:
         raise ValidationError(
-            "La ligne de vente ne possède pas de produit."
+            "La ligne de vente ne correspond pas "
+            "à la vente."
+        )
+
+    # ========================================================
+    # 4. PRODUITLINE OBLIGATOIRE
+    # ========================================================
+
+    if not vente_ligne.produit_line_id:
+        raise ValidationError(
+            "La ligne de vente ne possède "
+            "pas de ProduitLine."
         )
 
     if not produit_line.produit_id:
@@ -59,16 +91,13 @@ def _validate_sale_relations(
 
     if not produit_line.lot_id:
         raise ValidationError(
-            "La ProduitLine doit être rattachée à un lot."
+            "La ProduitLine doit être rattachée "
+            "à un lot."
         )
 
-    if produit_line.produit_id != vente_ligne.produit_id:
-        raise ValidationError({
-            "produit_line": (
-                "La ProduitLine ne correspond pas "
-                "au produit de la ligne de vente."
-            )
-        })
+    # ========================================================
+    # 5. VÉRIFIER LA PRODUITLINE EXACTE
+    # ========================================================
 
     if vente_ligne.produit_line_id != produit_line.pk:
         raise ValidationError({
@@ -77,6 +106,10 @@ def _validate_sale_relations(
                 "de celle sélectionnée lors de la vente."
             )
         })
+
+    # ========================================================
+    # 6. VENDEUR
+    # ========================================================
 
     vendor = (
         getattr(vente_ligne, "vendor", None)
@@ -88,6 +121,10 @@ def _validate_sale_relations(
             "Vendeur requis pour le mouvement."
         )
 
+    # ========================================================
+    # 7. VENDEUR DE LA VENTE
+    # ========================================================
+
     if (
         vente.vendor_id
         and vendor.pk != vente.vendor_id
@@ -97,6 +134,10 @@ def _validate_sale_relations(
             "du vendeur de la vente."
         )
 
+    # ========================================================
+    # 8. VENDEUR / BIJOUTERIE
+    # ========================================================
+
     if vendor.bijouterie_id != facture.bijouterie_id:
         raise ValidationError(
             "Le vendeur n'appartient pas "
@@ -104,7 +145,6 @@ def _validate_sale_relations(
         )
 
     return vendor
-
 
 # ============================================================
 # SALE_OUT : VENDOR -> EXTERNAL

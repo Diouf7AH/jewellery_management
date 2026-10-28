@@ -240,21 +240,35 @@ def build_facture_pdf_data(facture) -> dict:
 
     else:
 
-        taux_tva = None
-        montant_tva = None
+        taux_enregistre = validate_pdf_amount(
+            facture.taux_tva
+            if facture.taux_tva is not None
+            else ZERO,
+            "facture.taux_tva",
+        )
 
-        if facture.taux_tva is not None:
+        montant_enregistre = validate_pdf_amount(
+            facture.montant_tva
+            if facture.montant_tva is not None
+            else ZERO,
+            "facture.montant_tva",
+        )
+
+        if taux_enregistre != ZERO:
             raise ValueError(
                 "La TVA est désactivée, "
-                "mais un taux de TVA est renseigné."
+                "mais un taux de TVA non nul est enregistré."
             )
 
-        if facture.montant_tva is not None:
+        if montant_enregistre != ZERO:
             raise ValueError(
                 "La TVA est désactivée, "
-                "mais un montant TVA est renseigné."
+                "mais un montant TVA non nul est enregistré."
             )
 
+        taux_tva = ZERO
+        montant_tva = ZERO
+    
     # --------------------------------------------------------
     # TOTAL TTC
     # --------------------------------------------------------

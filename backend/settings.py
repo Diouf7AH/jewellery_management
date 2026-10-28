@@ -335,9 +335,7 @@ EMAIL_TOKEN_EXPIRATION = config(
     cast=int,
 )
 
-FACTURE_SIGNING_KEY = os.environ.get(
-    "FACTURE_SIGNING_KEY"
-)
+FACTURE_SIGNING_KEY = config("FACTURE_SIGNING_KEY")
 
 # send_confirmation_email
 # En dev, mets un backend sûr   

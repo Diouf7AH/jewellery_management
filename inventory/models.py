@@ -821,59 +821,109 @@ class InventoryMovement(models.Model):
     # ========================================================
 
     def _validate_relations(self):
+        """
+        Vérifie la cohérence des relations du mouvement.
+
+        - ProduitLine -> Produit
+        - ProduitLine -> Lot
+        - VenteProduit -> Vente
+        - VenteProduit -> ProduitLine exacte
+        - Facture -> Vente
+        """
+
         errors = {}
 
-        if (
-            self.produit_line_id
-            and self.produit_line.produit_id
-            != self.produit_id
-        ):
-            errors["produit_line"] = (
-                "La ProduitLine ne correspond pas au produit."
-            )
+        # ========================================================
+        # 1. PRODUITLINE / PRODUIT
+        # ========================================================
+
+        if self.produit_line_id:
+
+            if self.produit_line.produit_id != self.produit_id:
+                errors["produit_line"] = (
+                    "La ProduitLine ne correspond pas "
+                    "au produit du mouvement."
+                )
+
+        # ========================================================
+        # 2. PRODUITLINE / LOT
+        # ========================================================
 
         if (
             self.produit_line_id
             and self.lot_id
-            and self.produit_line.lot_id
-            != self.lot_id
+            and self.produit_line.lot_id != self.lot_id
         ):
             errors["lot"] = (
                 "Le lot ne correspond pas à la ProduitLine."
             )
 
+        # ========================================================
+        # 3. LIGNE DE VENTE / VENTE
+        # ========================================================
+
         if (
             self.vente_ligne_id
             and self.vente_id
-            and self.vente_ligne.vente_id
-            != self.vente_id
+            and self.vente_ligne.vente_id != self.vente_id
         ):
             errors["vente"] = (
                 "La ligne de vente ne correspond pas à la vente."
             )
 
-        if (
-            self.vente_ligne_id
-            and self.produit_id
-            and self.vente_ligne.produit_id
-            != self.produit_id
-        ):
-            errors["produit"] = (
-                "Le produit ne correspond pas à la ligne de vente."
-            )
+        # ========================================================
+        # 4. LIGNE DE VENTE / PRODUITLINE EXACTE
+        # ========================================================
+
+        if self.vente_ligne_id:
+
+            if not self.vente_ligne.produit_line_id:
+                errors["vente_ligne"] = (
+                    "La ligne de vente ne possède "
+                    "pas de ProduitLine."
+                )
+
+            elif (
+                self.produit_line_id
+                and self.vente_ligne.produit_line_id
+                != self.produit_line_id
+            ):
+                errors["produit_line"] = (
+                    "La ProduitLine du mouvement est "
+                    "différente de celle sélectionnée "
+                    "lors de la vente."
+                )
+
+            elif (
+                self.produit_id
+                and self.vente_ligne.produit_line.produit_id
+                != self.produit_id
+            ):
+                errors["produit"] = (
+                    "Le produit du mouvement ne correspond "
+                    "pas au produit de la ligne de vente."
+                )
+
+        # ========================================================
+        # 5. FACTURE / VENTE
+        # ========================================================
 
         if (
             self.facture_id
             and self.vente_id
-            and getattr(self.facture, "vente_id", None)
             and self.facture.vente_id != self.vente_id
         ):
             errors["facture"] = (
                 "La facture ne correspond pas à la vente."
             )
 
+        # ========================================================
+        # 6. VALIDATION FINALE
+        # ========================================================
+
         if errors:
             raise ValidationError(errors)
+
 
     # ========================================================
     # Coût

@@ -2322,24 +2322,21 @@ class ListFacturePayeesView(APIView):
         )
 
 
-
 class PaiementFactureMultiModeView(APIView):
     """
-    Encaissement d'une facture avec plusieurs modes de paiement.
+    Encaissement multimode d'une facture Rio-Gold.
 
-    Réservé aux ventes contenant des bijoux.
-
-    Règles :
     - Manager ou caissier autorisé.
     - Vérification de la bijouterie.
-    - Facture payable.
     - Paiement partiel ou intégral.
-    - Un seul paiement par mode dans une requête.
-    - Contrôle des références.
-    - Contrôle et retrait du compte dépôt.
-    - Stock consommé uniquement après paiement intégral.
-    - Conversion proforma -> facture définitive.
-    - Génération du PDF après paiement intégral.
+    - Un mode une seule fois par requête.
+    - Référence obligatoire selon le mode.
+    - Compte dépôt recherché par client.telephone.
+    - Client du dépôt récupéré automatiquement.
+    - Retrait dépôt et paiement sous transaction.
+    - Stock consommé après paiement intégral.
+    - Conversion proforma en facture définitive.
+    - Génération du hash, QR et PDF.
     """
 
     permission_classes = [
@@ -2363,18 +2360,21 @@ class PaiementFactureMultiModeView(APIView):
     @swagger_auto_schema(
         operation_summary="Paiement facture multimode",
         operation_description=(
-            "Permet au manager ou au caissier de payer "
-            "une facture avec un ou plusieurs modes de paiement. "
-            "Le paiement peut être partiel ou intégral. "
-            "La facture définitive et la consommation du stock "
-            "interviennent après paiement intégral."
+            "Paiement partiel ou intégral d'une facture "
+            "par un manager ou un caissier. "
+            "Le compte dépôt est recherché avec "
+            "client.telephone. "
+            "Les références des retraits sont générées "
+            "automatiquement. La facture définitive "
+            "et la consommation du stock interviennent "
+            "après paiement intégral."
         ),
         request_body=PaiementMultiModeSerializer,
         responses={
             201: "Paiement effectué avec succès.",
             400: "Données invalides ou solde insuffisant.",
             403: "Accès refusé.",
-            404: "Facture introuvable.",
+            404: "Facture ou compte dépôt introuvable.",
         },
         tags=["Paiements"],
     )
@@ -2405,7 +2405,7 @@ class PaiementFactureMultiModeView(APIView):
             )
 
         # ====================================================
-        # 2. VALIDATION DES DONNÉES
+        # 2. VALIDATION DU JSON
         # ====================================================
 
         serializer = PaiementMultiModeSerializer(
@@ -2420,9 +2420,15 @@ class PaiementFactureMultiModeView(APIView):
         numero_facture = data["numero_facture"]
         client_data = data.get("client") or {}
         lignes_data = data["lignes"]
+
         total_paiement = data["total_paiement"]
+
+        telephone_client = str(
+            client_data.get("telephone") or ""
+        ).strip()
+
         # ====================================================
-        # 3. FACTURE + VERROU TRANSACTIONNEL
+        # 3. VERROUILLAGE DE LA FACTURE
         # ====================================================
 
         facture = (
@@ -2435,7 +2441,7 @@ class PaiementFactureMultiModeView(APIView):
                 "bijouterie",
             )
             .filter(
-                numero_facture__iexact=numero_facture,
+                numero_facture__iexact=numero_facture
             )
             .first()
         )
@@ -2448,7 +2454,7 @@ class PaiementFactureMultiModeView(APIView):
             )
 
         # ====================================================
-        # 4. BIJOUTERIE
+        # 4. ACCÈS À LA BIJOUTERIE
         # ====================================================
 
         if not user_can_access_bijouterie(
@@ -2474,7 +2480,10 @@ class PaiementFactureMultiModeView(APIView):
         except DjangoValidationError as exc:
             return error_response(
                 code="FACTURE_NOT_PAYABLE",
-                message="Cette facture ne peut pas être encaissée.",
+                message=(
+                    "Cette facture ne peut pas "
+                    "être encaissée."
+                ),
                 details=self._validation_error_detail(exc),
             )
 
@@ -2486,7 +2495,25 @@ class PaiementFactureMultiModeView(APIView):
 
         vente = facture.vente
 
-        if vente is None or not vente.lignes.exists():
+        if vente is None:
+            return error_response(
+                code="SALE_NOT_FOUND",
+                message="Aucune vente liée à la facture.",
+            )
+
+        if vente.bijouterie_id != facture.bijouterie_id:
+            return error_response(
+                code="SALE_SHOP_MISMATCH",
+                message=(
+                    "La vente et la facture "
+                    "n'appartiennent pas à la "
+                    "même bijouterie."
+                ),
+            )
+
+        if not VenteProduit.objects.filter(
+            vente_id=vente.pk
+        ).exists():
             return error_response(
                 code="SALE_WITHOUT_JEWELRY",
                 message=(
@@ -2495,7 +2522,6 @@ class PaiementFactureMultiModeView(APIView):
                 ),
             )
 
-        # Recalcul du solde APRÈS verrouillage.
         reste_a_payer = Decimal(
             str(facture.reste_a_payer or "0.00")
         )
@@ -2507,12 +2533,13 @@ class PaiementFactureMultiModeView(APIView):
             )
 
         # ====================================================
-        # 6. CAISSIER
+        # 6. PROFIL CAISSIER
         # ====================================================
 
         cashier = None
 
         if role == ROLE_CASHIER:
+
             cashier = (
                 Cashier.objects
                 .select_related("bijouterie", "user")
@@ -2544,24 +2571,38 @@ class PaiementFactureMultiModeView(APIView):
                 )
 
         # ====================================================
-        # 7. VALIDATION DES LIGNES APRÈS VERROU
+        # 7. CONTRÔLE DES LIGNES APRÈS VERROUILLAGE
         # ====================================================
 
-        total_paiement = Decimal("0.00")
         normalized_lignes = []
         modes_utilises = set()
+        total_verifie = Decimal("0.00")
 
-        for index, item in enumerate(lignes_data, start=1):
+        # Recherche et verrouillage du compte dépôt
+        # uniquement si une ligne utilise ce mode.
+        compte_depot = None
 
-            mode_code = str(item["mode"]).lower().strip()
-            montant = Decimal(str(item["montant"]))
+        for index, item in enumerate(
+            lignes_data,
+            start=1,
+        ):
+
+            mode_code = str(
+                item["mode"]
+            ).lower().strip()
+
+            montant = Decimal(
+                str(item["montant"])
+            )
+
+            reference = item.get("reference")
 
             if mode_code in modes_utilises:
                 return error_response(
                     code="DUPLICATE_PAYMENT_MODE",
                     message=(
                         f"Le mode '{mode_code}' "
-                        "est présent plusieurs fois."
+                        "apparaît plusieurs fois."
                     ),
                 )
 
@@ -2580,7 +2621,8 @@ class PaiementFactureMultiModeView(APIView):
                 return error_response(
                     code="INVALID_PAYMENT_MODE",
                     message=(
-                        f"Mode invalide ou inactif : {mode_code}."
+                        f"Mode invalide ou inactif : "
+                        f"{mode_code}."
                     ),
                 )
 
@@ -2588,70 +2630,107 @@ class PaiementFactureMultiModeView(APIView):
                 return error_response(
                     code="INVALID_AMOUNT",
                     message=(
-                        f"Montant invalide à la ligne {index}."
+                        f"Montant invalide "
+                        f"à la ligne {index}."
                     ),
                 )
 
-            reference = item.get("reference")
-            provider_reference = item.get("provider_reference")
-            numero_compte = item.get("numero_compte")
+            # ================================================
+            # 7.1. RÉFÉRENCE DES MODES ORDINAIRES
+            # ================================================
 
-            if (
-                mode_obj.necessite_reference
-                and not reference
-                and not provider_reference
-            ):
-                return error_response(
-                    code="PAYMENT_REFERENCE_REQUIRED",
-                    message=(
-                        f"Une référence est obligatoire "
-                        f"pour le mode '{mode_obj.nom}'."
-                    ),
-                )
+            if not mode_obj.est_mode_depot:
 
-            compte = None
-
-            if mode_obj.est_mode_depot:
-
-                if not numero_compte:
+                if (
+                    mode_obj.necessite_reference
+                    and not reference
+                ):
                     return error_response(
-                        code="DEPOT_ACCOUNT_REQUIRED",
+                        code="PAYMENT_REFERENCE_REQUIRED",
                         message=(
-                            "Le numéro de compte dépôt "
-                            "est obligatoire."
+                            "Une référence est obligatoire "
+                            f"pour le mode '{mode_obj.nom}'."
                         ),
                     )
 
-                compte = (
-                    CompteDepot.objects
-                    .select_for_update()
-                    .select_related(
-                        "client",
-                        "client__bijouterie",
-                    )
-                    .filter(
-                        numero_compte__iexact=numero_compte,
-                    )
-                    .first()
-                )
+                compte = None
 
-                if compte is None:
+            # ================================================
+            # 7.2. COMPTE DÉPÔT PAR TÉLÉPHONE
+            # ================================================
+
+            else:
+
+                if reference:
                     return error_response(
-                        code="DEPOT_ACCOUNT_NOT_FOUND",
-                        message="Compte dépôt introuvable.",
-                        status_code=status.HTTP_404_NOT_FOUND,
+                        code="DEPOT_REFERENCE_NOT_ALLOWED",
+                        message=(
+                            "La référence du compte dépôt "
+                            "est générée automatiquement."
+                        ),
                     )
+
+                if not telephone_client:
+                    return error_response(
+                        code="DEPOT_PHONE_REQUIRED",
+                        message=(
+                            "Le numéro de téléphone est "
+                            "obligatoire pour le compte dépôt."
+                        ),
+                    )
+
+                if compte_depot is None:
+
+                    comptes = list(
+                        CompteDepot.objects
+                        .select_for_update()
+                        .select_related(
+                            "client",
+                            "client__bijouterie",
+                        )
+                        .filter(
+                            client__telephone=telephone_client,
+                            client__bijouterie_id=(
+                                facture.bijouterie_id
+                            ),
+                        )
+                        .order_by("pk")[:2]
+                    )
+
+                    if not comptes:
+                        return error_response(
+                            code="DEPOT_ACCOUNT_NOT_FOUND",
+                            message=(
+                                "Aucun compte dépôt trouvé "
+                                "pour ce numéro de téléphone."
+                            ),
+                            status_code=(
+                                status.HTTP_404_NOT_FOUND
+                            ),
+                        )
+
+                    if len(comptes) > 1:
+                        return error_response(
+                            code="DEPOT_ACCOUNT_AMBIGUOUS",
+                            message=(
+                                "Plusieurs comptes dépôts "
+                                "correspondent à ce numéro."
+                            ),
+                        )
+
+                    compte_depot = comptes[0]
+
+                compte = compte_depot
 
                 if not compte.client_id:
                     return error_response(
                         code="DEPOT_ACCOUNT_WITHOUT_CLIENT",
                         message=(
-                            "Ce compte dépôt n'est associé "
+                            "Le compte dépôt n'est associé "
                             "à aucun client."
                         ),
                     )
 
-                # Refuser également l'absence de bijouterie.
                 if (
                     compte.client.bijouterie_id
                     != facture.bijouterie_id
@@ -2659,10 +2738,12 @@ class PaiementFactureMultiModeView(APIView):
                     return error_response(
                         code="DEPOT_ACCOUNT_OUT_OF_SCOPE",
                         message=(
-                            "Ce compte dépôt n'appartient pas "
-                            "à la bijouterie de la facture."
+                            "Le compte dépôt n'appartient "
+                            "pas à cette bijouterie."
                         ),
-                        status_code=status.HTTP_403_FORBIDDEN,
+                        status_code=(
+                            status.HTTP_403_FORBIDDEN
+                        ),
                     )
 
                 solde_disponible = Decimal(
@@ -2672,37 +2753,39 @@ class PaiementFactureMultiModeView(APIView):
                 if montant > solde_disponible:
                     return error_response(
                         code="SOLDE_COMPTE_DEPOT_INSUFFISANT",
-                        message="Solde du compte dépôt insuffisant.",
+                        message=(
+                            "Solde du compte dépôt "
+                            "insuffisant."
+                        ),
                         details={
-                            "numero_compte": compte.numero_compte,
-                            "solde_disponible": str(solde_disponible),
+                            "solde_disponible": str(
+                                solde_disponible
+                            ),
                             "montant_demande": str(montant),
                         },
                     )
 
-            elif numero_compte:
-                return error_response(
-                    code="DEPOT_ACCOUNT_NOT_ALLOWED",
-                    message=(
-                        "numero_compte est réservé "
-                        "au mode compte dépôt."
-                    ),
-                )
-
-            total_paiement += montant
+            total_verifie += montant
 
             normalized_lignes.append({
                 "mode_obj": mode_obj,
                 "montant": montant,
                 "reference": reference,
-                "provider_reference": provider_reference,
-                "numero_compte": numero_compte,
                 "compte": compte,
             })
 
         # ====================================================
-        # 8. CONTRÔLE DU SOLDE
+        # 8. CONTRÔLE DU MONTANT TOTAL
         # ====================================================
+
+        if total_verifie != total_paiement:
+            return error_response(
+                code="PAYMENT_TOTAL_MISMATCH",
+                message=(
+                    "Le montant total validé est "
+                    "incohérent."
+                ),
+            )
 
         if total_paiement > reste_a_payer:
             return error_response(
@@ -2725,151 +2808,122 @@ class PaiementFactureMultiModeView(APIView):
         # ====================================================
 
         client_existant = vente.client
-        client_depot = None
 
-        # Retrouver le client du compte dépôt.
-        for item in normalized_lignes:
+        if compte_depot is not None:
 
-            compte = item.get("compte")
-
-            if compte is None:
-                continue
-
-            titulaire = compte.client
-
-            if (
-                client_depot is not None
-                and client_depot.pk != titulaire.pk
-            ):
-                return error_response(
-                    code="DEPOT_CLIENT_CONFLICT",
-                    message=(
-                        "Les comptes dépôts utilisés "
-                        "appartiennent à des clients différents."
-                    ),
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                )
-
-            client_depot = titulaire
-
-
-        # ====================================================
-        # 9.1. PAIEMENT AVEC COMPTE DÉPÔT
-        # ====================================================
-
-        if client_depot is not None:
+            # Le compte dépôt détermine le titulaire.
+            client = compte_depot.client
 
             if (
                 client_existant is not None
-                and client_existant.pk != client_depot.pk
+                and client_existant.pk != client.pk
             ):
                 return error_response(
                     code="DEPOT_CLIENT_MISMATCH",
                     message=(
                         "Le compte dépôt n'appartient pas "
-                        "au client associé à la vente."
+                        "au client de cette vente."
                     ),
-                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
-            client = client_depot
+            # Vérifier les informations éventuellement
+            # transmises en plus du téléphone.
 
-            # Les informations client éventuellement fournies
-            # ne doivent pas contredire le titulaire du dépôt.
-            if client_data:
+            nom_saisi = str(
+                client_data.get("nom") or ""
+            ).strip()
 
-                nom_saisi = str(
-                    client_data.get("nom") or ""
-                ).strip().casefold()
+            prenom_saisi = str(
+                client_data.get("prenom") or ""
+            ).strip()
 
-                prenom_saisi = str(
-                    client_data.get("prenom") or ""
-                ).strip().casefold()
-
-                nom_compte = str(
-                    client.nom or ""
-                ).strip().casefold()
-
-                prenom_compte = str(
-                    client.prenom or ""
-                ).strip().casefold()
-
-                if (
-                    nom_saisi != nom_compte
-                    or prenom_saisi != prenom_compte
-                ):
-                    return error_response(
-                        code="DEPOT_CLIENT_MISMATCH",
-                        message=(
-                            "Les informations du client "
-                            "ne correspondent pas au titulaire "
-                            "du compte dépôt."
-                        ),
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                    )
-
-
-        # ====================================================
-        # 9.2. PAIEMENT ORDINAIRE
-        # ====================================================
-
-        elif client_data:
-
-            try:
-                client = upsert_client_for_payment(
-                    facture=facture,
-                    client_data=client_data,
-                )
-
-            except DjangoValidationError as exc:
-                transaction.set_rollback(True)
-
+            if nom_saisi and (
+                nom_saisi.casefold()
+                != str(client.nom or "").strip().casefold()
+            ):
                 return error_response(
-                    code="CLIENT_INVALID",
-                    message="Informations client invalides.",
-                    details=self._validation_error_detail(exc),
-                    status_code=status.HTTP_400_BAD_REQUEST,
+                    code="DEPOT_CLIENT_MISMATCH",
+                    message=(
+                        "Le nom saisi ne correspond pas "
+                        "au titulaire du compte dépôt."
+                    ),
+                )
+
+            if prenom_saisi and (
+                prenom_saisi.casefold()
+                != str(client.prenom or "").strip().casefold()
+            ):
+                return error_response(
+                    code="DEPOT_CLIENT_MISMATCH",
+                    message=(
+                        "Le prénom saisi ne correspond pas "
+                        "au titulaire du compte dépôt."
+                    ),
                 )
 
         else:
-            client = client_existant
 
+            # Paiement ordinaire :
+            # conserver le client existant ou
+            # créer/mettre à jour selon le service.
+
+            if client_data:
+
+                try:
+                    client = upsert_client_for_payment(
+                        facture=facture,
+                        client_data=client_data,
+                    )
+
+                except DjangoValidationError as exc:
+                    transaction.set_rollback(True)
+
+                    return error_response(
+                        code="CLIENT_INVALID",
+                        message=(
+                            "Informations client invalides."
+                        ),
+                        details=(
+                            self._validation_error_detail(exc)
+                        ),
+                    )
+
+            else:
+                client = client_existant
 
         # ====================================================
-        # 9.3. NOM ET PRÉNOM OBLIGATOIRES
+        # 9.1. VALIDATION FINALE DU CLIENT
         # ====================================================
 
         if client is None:
+            transaction.set_rollback(True)
+
             return error_response(
                 code="CLIENT_REQUIRED",
                 message=(
                     "Le nom et le prénom du client "
-                    "sont obligatoires pour le paiement."
+                    "sont obligatoires au paiement."
                 ),
-                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
-        nom = str(client.nom or "").strip()
-        prenom = str(client.prenom or "").strip()
+        if (
+            not str(client.nom or "").strip()
+            or not str(client.prenom or "").strip()
+        ):
+            transaction.set_rollback(True)
 
-        if not nom or not prenom:
             return error_response(
                 code="CLIENT_INCOMPLETE",
                 message=(
                     "Le nom et le prénom du client "
                     "doivent être renseignés."
                 ),
-                status_code=status.HTTP_400_BAD_REQUEST,
             )
-
-
-        # ====================================================
-        # 9.4. ASSOCIATION À LA VENTE
-        # ====================================================
 
         if vente.client_id != client.pk:
             vente.client = client
             vente.save(update_fields=["client"])
+
         # ====================================================
         # 10. CRÉATION DU PAIEMENT
         # ====================================================
@@ -2884,22 +2938,28 @@ class PaiementFactureMultiModeView(APIView):
         lignes_creees = []
 
         # ====================================================
-        # 11. LIGNES ET RETRAITS DÉPÔT
+        # 11. CRÉATION DES LIGNES ET RETRAITS
         # ====================================================
 
         for item in normalized_lignes:
 
             mode_obj = item["mode_obj"]
             montant = item["montant"]
+            reference = item["reference"]
 
             if mode_obj.est_mode_depot:
 
                 compte = item["compte"]
 
-                # Le compte est déjà verrouillé.
+                # Le compte a été verrouillé.
+                # Nouvelle lecture avant le retrait.
                 compte.refresh_from_db()
 
-                if montant > Decimal(str(compte.solde or "0.00")):
+                solde_actuel = Decimal(
+                    str(compte.solde or "0.00")
+                )
+
+                if montant > solde_actuel:
                     transaction.set_rollback(True)
 
                     return error_response(
@@ -2910,16 +2970,20 @@ class PaiementFactureMultiModeView(APIView):
                         ),
                     )
 
+                # Référence interne unique au paiement.
+                reference_retrait = (
+                    f"FACTURE-{facture.numero_facture}"
+                    f"-PAIEMENT-{paiement.pk}"
+                )
+
                 try:
                     tx = effectuer_retrait(
-                        compte_id=compte.id,
+                        compte_id=compte.pk,
                         montant=montant,
                         user=user,
-                        reference=(
-                            f"FACTURE-{facture.numero_facture}"
-                        ),
+                        reference=reference_retrait,
                         commentaire=(
-                            f"Paiement facture "
+                            "Paiement de la facture "
                             f"{facture.numero_facture}"
                         ),
                     )
@@ -2929,17 +2993,26 @@ class PaiementFactureMultiModeView(APIView):
 
                     return error_response(
                         code="DEPOT_WITHDRAWAL_FAILED",
-                        message="Le retrait du compte dépôt a échoué.",
-                        details=self._validation_error_detail(exc),
+                        message=(
+                            "Le retrait du compte dépôt "
+                            "a échoué."
+                        ),
+                        details=(
+                            self._validation_error_detail(exc)
+                        ),
                     )
+
+                # Référence automatiquement générée
+                # et rattachée au retrait.
+                reference_depot = (
+                    f"COMPTE_DEPOT-{tx.pk}"
+                )
 
                 ligne = PaiementLigne.objects.create(
                     paiement=paiement,
                     mode_paiement=mode_obj,
                     montant_paye=montant,
-                    reference=(
-                        f"COMPTE_DEPOT-{compte.numero_compte}"
-                    ),
+                    reference=reference_depot,
                     compte_depot=compte,
                     transaction_depot=tx,
                 )
@@ -2951,18 +3024,18 @@ class PaiementFactureMultiModeView(APIView):
                 )
 
             else:
+
                 ligne = PaiementLigne.objects.create(
                     paiement=paiement,
                     mode_paiement=mode_obj,
                     montant_paye=montant,
-                    reference=item["reference"],
-                    provider_reference=item["provider_reference"],
+                    reference=reference,
                 )
 
             lignes_creees.append(ligne)
 
         # ====================================================
-        # 12. RECALCUL DU STATUT
+        # 12. RECALCUL DU STATUT DE LA FACTURE
         # ====================================================
 
         Facture.recompute_facture_status(facture)
@@ -2984,7 +3057,7 @@ class PaiementFactureMultiModeView(APIView):
             )
 
         # ====================================================
-        # 14. CONSOMMATION DU STOCK
+        # 14. CONSOMMATION DU STOCK VENDEUR
         # ====================================================
 
         audit = {
@@ -2997,6 +3070,7 @@ class PaiementFactureMultiModeView(APIView):
             facture.status == Facture.STAT_PAYE
             and not facture.stock_consumed
         ):
+
             try:
                 audit = confirm_sale_out_from_vendor(
                     facture=facture,
@@ -3011,14 +3085,16 @@ class PaiementFactureMultiModeView(APIView):
                 return error_response(
                     code="STOCK_CONSUMPTION_FAILED",
                     message=(
-                        "La consommation du stock vendeur "
-                        "a échoué."
+                        "La consommation du stock "
+                        "vendeur a échoué."
                     ),
-                    details=self._validation_error_detail(exc),
+                    details=(
+                        self._validation_error_detail(exc)
+                    ),
                 )
 
         # ====================================================
-        # 15. PDF DÉFINITIF
+        # 15. GÉNÉRATION DE LA FACTURE PDF
         # ====================================================
 
         facture_pdf_url = None
@@ -3044,19 +3120,23 @@ class PaiementFactureMultiModeView(APIView):
                     )
 
             try:
-                facture_pdf_url = request.build_absolute_uri(
-                    facture.facture_pdf.url
+                facture_pdf_url = (
+                    request.build_absolute_uri(
+                        facture.facture_pdf.url
+                    )
                 )
+
             except (AttributeError, ValueError):
                 facture_pdf_url = None
 
         # ====================================================
-        # 16. VERROUILLAGE DE LA FACTURE
+        # 16. VERROUILLAGE DE LA FACTURE PAYÉE
         # ====================================================
 
         if facture.status == Facture.STAT_PAYE:
 
             if not facture.is_locked:
+
                 facture.is_locked = True
                 facture.locked_at = timezone.now()
 
@@ -3073,7 +3153,7 @@ class PaiementFactureMultiModeView(APIView):
 
         facture_download_url = request.build_absolute_uri(
             reverse(
-                "facture-a5-paysage",
+                "facture-a5-portrait",
                 kwargs={
                     "numero_facture": facture.numero_facture,
                 },
@@ -3081,42 +3161,66 @@ class PaiementFactureMultiModeView(APIView):
         )
 
         # ====================================================
-        # 18. RÉPONSE
+        # 18. RÉPONSE HTTP 201
         # ====================================================
 
         return Response(
             {
                 "status": "success",
-                "message": "Paiement effectué avec succès.",
-                "paiement_id": paiement.id,
+                "message": (
+                    "Paiement effectué avec succès."
+                ),
+                "paiement_id": paiement.pk,
+
                 "vente": {
-                    "id": vente.id,
+                    "id": vente.pk,
                     "numero_vente": vente.numero_vente,
-                    "montant_total": str(vente.montant_total),
+                    "montant_total": str(
+                        vente.montant_total
+                    ),
                 },
+
                 "facture": {
-                    "id": facture.id,
-                    "numero_facture": facture.numero_facture,
+                    "id": facture.pk,
+                    "numero_facture": (
+                        facture.numero_facture
+                    ),
                     "type_facture": facture.type_facture,
                     "status": facture.status,
-                    "montant_total": str(facture.montant_total),
-                    "total_paye": str(facture.total_paye),
-                    "reste_a_payer": str(facture.reste_a_payer),
-                    "stock_consumed": facture.stock_consumed,
+                    "montant_total": str(
+                        facture.montant_total
+                    ),
+                    "total_paye": str(
+                        facture.total_paye
+                    ),
+                    "reste_a_payer": str(
+                        facture.reste_a_payer
+                    ),
+                    "stock_consumed": (
+                        facture.stock_consumed
+                    ),
                 },
+
                 "client": {
-                    "id": client.id if client else None,
-                    "nom": getattr(client, "nom", None),
-                    "prenom": getattr(client, "prenom", None),
-                    "telephone": getattr(client, "telephone", None),
+                    "id": client.pk,
+                    "nom": client.nom,
+                    "prenom": client.prenom,
+                    "telephone": client.telephone,
                 },
+
                 "lignes": [
                     {
-                        "id": ligne.id,
-                        "mode_paiement": ligne.mode_paiement.code,
-                        "montant_paye": str(ligne.montant_paye),
+                        "id": ligne.pk,
+                        "mode_paiement": (
+                            ligne.mode_paiement.code
+                        ),
+                        "montant_paye": str(
+                            ligne.montant_paye
+                        ),
                         "reference": ligne.reference,
-                        "provider_reference": ligne.provider_reference,
+                        "provider_reference": (
+                            ligne.provider_reference
+                        ),
                         "numero_compte": (
                             ligne.compte_depot.numero_compte
                             if ligne.compte_depot_id
@@ -3125,9 +3229,16 @@ class PaiementFactureMultiModeView(APIView):
                     }
                     for ligne in lignes_creees
                 ],
+
                 "stock": audit,
-                "facture_pdf_url": facture_pdf_url,
-                "facture_download_url": facture_download_url,
+
+                "facture_pdf_url": (
+                    facture_pdf_url
+                ),
+
+                "facture_download_url": (
+                    facture_download_url
+                ),
             },
             status=status.HTTP_201_CREATED,
         )
