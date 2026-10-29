@@ -182,7 +182,8 @@ urlpatterns = [
     
     # SALE
     path('vente/add-vente', sale_views.VenteProduitCreateView.as_view(), name='creation-vente'),
-    
+    path("prestations/create/", sale_views.PrestationCreateAPIView.as_view(),name="prestation-create",),
+    path("prestations/list/",sale_views.PrestationListAPIView.as_view(),name="prestation-list",),
     # PDF
     path("factures/<str:numero_facture>/ticket-58mm/",sale_views.TicketProforma58mmView.as_view(),name="ticket-proforma-58mm",),
     path("factures/<str:numero_facture>/ticket-paiement-80mm/",sale_views.TicketPaiement80mmESCPosView.as_view(),name="ticket-paiement-80mm",),

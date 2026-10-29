@@ -8,8 +8,18 @@ from io import BytesIO
 from uuid import UUID
 
 from django.core.paginator import EmptyPage, Paginator
-from django.db.models import (DecimalField, Exists, OuterRef, Prefetch, Q, Sum,
-                              prefetch_related_objects)
+from django.db.models import (DecimalField, Exists, OuterRef, Prefetch, Q,
+                              Subquery, Sum, Value, prefetch_related_objects)
+from rest_framework import generics, status
+from rest_framework.exceptions import PermissionDenied
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from backend.bijouteries import get_user_bijouteries
+from backend.permissions import CanCreateSale
+from sale.models import Vente, VenteAutre, VenteProduit
 
 logger = logging.getLogger(__name__)
 from django.conf import settings
@@ -56,6 +66,8 @@ from sale.pdf.facture_A5_portrait.builder import build_facture_a5_portrait_pdf
 from sale.serializers import (CancelProformaVenteSerializer,
                               FactureListSerializer,
                               PaiementMultiModeSerializer,
+                              PrestationCreateInSerializer,
+                              PrestationListSerializer,
                               RetourVenteProduitSerializer,
                               UpdateVenteProduitSerializer,
                               VenteCreateInSerializer, VenteDetailSerializer,
@@ -202,6 +214,7 @@ MAX_PAGE_SIZE = getattr(
 
 ZERO = Decimal("0.00")
 
+
 # ============================================================
 # RÉPONSES D'ERREUR STANDARDISÉES
 # ============================================================
@@ -228,28 +241,75 @@ def error_response(
     )
     
 
+
+def verifier_acces_liste_ventes(user):
+    """
+    Vérifie les droits de consultation
+    des ventes et prestations.
+
+    Retourne le profil staff ou None pour admin.
+    """
+
+    if not user.is_authenticated or not user.is_active:
+        raise PermissionDenied(
+            "Compte utilisateur non autorisé."
+        )
+
+    role = get_role_name(user)
+
+    if role == ROLE_ADMIN:
+        return None
+
+    profils = {
+        ROLE_MANAGER: "staff_manager_profile",
+        ROLE_VENDOR: "staff_vendor_profile",
+        ROLE_CASHIER: "staff_cashier_profile",
+    }
+
+    profile_name = profils.get(role)
+
+    if profile_name is None:
+        raise PermissionDenied(
+            "Vous n'êtes pas autorisé à consulter les ventes."
+        )
+
+    profile = getattr(user, profile_name, None)
+
+    if not profile or not profile.is_active_staff:
+        raise PermissionDenied(
+            "Profil staff désactivé ou non autorisé."
+        )
+
+    if role in {ROLE_VENDOR, ROLE_CASHIER}:
+        if not profile.bijouterie_id:
+            raise PermissionDenied(
+                "Aucune bijouterie affectée."
+            )
+
+    return profile
+
+
 class VenteProduitCreateView(APIView):
     """
     Création d'une vente pour un seul vendeur.
 
-    TYPES :
+    Types autorisés :
     - Bijoux uniquement : proforma.
-    - Prestations uniquement : sans facture.
     - Bijoux + prestations : proforma.
 
-    IDENTIFICATION :
+    Identification :
     - produit_line_id : recherche manuelle.
-    - qr : recherche automatique.
+    - qr : scan PL:<uuid>.
 
-    STOCK :
+    Stock :
     - ProduitLine exacte.
     - Vérification VendorStock.
     - Aucun FIFO.
     - Aucun SALE_OUT à la création.
 
-    PAIEMENT :
-    - Bijoux / mixte : circuit facture.
-    - Prestations seules : paiement direct avec reçu.
+    Paiement :
+    - Circuit facture.
+    - Consommation du stock après paiement intégral.
     """
 
     permission_classes = [CanCreateSale]
@@ -282,11 +342,11 @@ class VenteProduitCreateView(APIView):
         produit_line,
     ):
         """
-        Vérifie que le bijou est présent dans le stock
-        du vendeur connecté.
+        Vérifie que le bijou est disponible
+        dans le stock du vendeur connecté.
 
-        Le service create_sale_one_vendor() vérifie
-        ensuite la quantité totale sous verrou.
+        La quantité exacte est ensuite vérifiée
+        par create_sale_one_vendor().
         """
 
         if role != ROLE_VENDOR:
@@ -295,10 +355,9 @@ class VenteProduitCreateView(APIView):
         vendor = self._get_vendor_for_user(user)
 
         if vendor is None:
-            raise ValidationError({
+            raise DjangoValidationError({
                 "vendor": (
-                    "Profil vendeur introuvable "
-                    "ou désactivé."
+                    "Profil vendeur introuvable ou désactivé."
                 )
             })
 
@@ -308,15 +367,13 @@ class VenteProduitCreateView(APIView):
                 vendor=vendor,
                 bijouterie=vendor.bijouterie,
                 produit_line=produit_line,
-                quantite_allouee__gt=F(
-                    "quantite_vendue"
-                ),
+                quantite_allouee__gt=F("quantite_vendue"),
             )
             .exists()
         )
 
         if not exists:
-            raise ValidationError({
+            raise DjangoValidationError({
                 "produit_line": (
                     "Ce bijou n'est pas disponible "
                     "dans le stock du vendeur."
@@ -335,13 +392,12 @@ class VenteProduitCreateView(APIView):
         role,
     ):
         """
-        Retourne l'identifiant d'une ProduitLine.
+        Retourne l'identifiant ProduitLine.
 
         Recherche manuelle :
             produit_line_id
 
-        Recherche automatique :
-            qr = UUID
+        Recherche QR :
             qr = PL:<uuid>
         """
 
@@ -349,7 +405,7 @@ class VenteProduitCreateView(APIView):
         qr = item.get("qr")
 
         if produit_line_id is not None and qr:
-            raise ValidationError({
+            raise DjangoValidationError({
                 "produit_line": (
                     "Fournissez produit_line_id ou qr, "
                     "pas les deux."
@@ -357,7 +413,7 @@ class VenteProduitCreateView(APIView):
             })
 
         if produit_line_id is None and not qr:
-            raise ValidationError({
+            raise DjangoValidationError({
                 "produit_line": (
                     "Vous devez fournir "
                     "produit_line_id ou qr."
@@ -369,14 +425,14 @@ class VenteProduitCreateView(APIView):
             try:
                 produit_line_id = int(produit_line_id)
             except (TypeError, ValueError):
-                raise ValidationError({
+                raise DjangoValidationError({
                     "produit_line_id": (
                         "Identifiant ProduitLine invalide."
                     )
                 })
 
             if produit_line_id <= 0:
-                raise ValidationError({
+                raise DjangoValidationError({
                     "produit_line_id": (
                         "L'identifiant doit être positif."
                     )
@@ -390,7 +446,6 @@ class VenteProduitCreateView(APIView):
             )
 
         else:
-
             scan_value = (
                 str(qr)
                 .replace("\n", "")
@@ -399,8 +454,10 @@ class VenteProduitCreateView(APIView):
             )
 
             if not scan_value.upper().startswith("PL:"):
-                raise ValidationError({
-                    "qr": "Le QR code doit commencer par PL:."
+                raise DjangoValidationError({
+                    "qr": (
+                        "Le QR code doit commencer par PL:."
+                    )
                 })
 
             scan_value = scan_value[3:].strip()
@@ -408,7 +465,7 @@ class VenteProduitCreateView(APIView):
             try:
                 produit_line_uuid = UUID(scan_value)
             except (ValueError, TypeError, AttributeError):
-                raise ValidationError({
+                raise DjangoValidationError({
                     "qr": (
                         "QR code invalide. "
                         "UUID ProduitLine attendu."
@@ -423,21 +480,19 @@ class VenteProduitCreateView(APIView):
             )
 
         if produit_line is None:
-            raise ValidationError({
-                "produit_line": (
-                    "ProduitLine introuvable."
-                )
+            raise DjangoValidationError({
+                "produit_line": "ProduitLine introuvable."
             })
 
         if not produit_line.produit_id:
-            raise ValidationError({
+            raise DjangoValidationError({
                 "produit_line": (
                     "Cette ProduitLine n'a aucun produit."
                 )
             })
 
         if not produit_line.lot_id:
-            raise ValidationError({
+            raise DjangoValidationError({
                 "produit_line": (
                     "Cette ProduitLine n'a aucun lot."
                 )
@@ -462,17 +517,9 @@ class VenteProduitCreateView(APIView):
         user,
         role,
     ):
-        """
-        Convertit les QR codes en produit_line_id.
-
-        Le service de création reçoit uniquement
-        des identifiants ProduitLine.
-        """
-
         normalized = []
 
         for item in produits:
-
             item = dict(item)
 
             item["produit_line_id"] = (
@@ -498,38 +545,26 @@ class VenteProduitCreateView(APIView):
     @swagger_auto_schema(
         operation_id="creer_vente_rio_gold",
         operation_summary=(
-            "Créer une vente : bijoux, prestations ou mixte"
+            "Créer une vente de bijoux ou une vente mixte"
         ),
         operation_description="""
         Création d'une vente Rio-Gold pour un seul vendeur.
 
+        TYPES AUTORISÉS
+        ----------------
+        1. Bijoux uniquement : facture proforma.
+        2. Bijoux + prestations : facture proforma.
+
+        Les prestations seules utilisent
+        PrestationCreateAPIView.
+
         IDENTIFICATION DES BIJOUX
-        ------------------------
+        -------------------------
         Recherche manuelle :
-        - produit_line_id : identifiant de ProduitLine.
+        - produit_line_id
 
         Recherche automatique :
-        - qr : UUID de ProduitLine.
-        - qr : PL:<uuid>.
-
-        Un seul identifiant par bijou.
-
-        TYPES DE VENTES
-        ---------------
-        1. Bijoux uniquement :
-           création d'une facture proforma.
-
-        2. Prestations uniquement :
-           aucune facture, paiement direct avec reçu.
-
-        3. Bijoux + prestations :
-           création d'une facture proforma.
-
-        RÉDUCTIONS
-        ----------
-        - Bijou neuf : remise fixe en FCFA.
-        - Bijou occasion : pourcentage automatique
-          depuis ProduitLine.pourcentage_occasion.
+        - qr = PL:<uuid>
 
         STOCK
         -----
@@ -540,20 +575,20 @@ class VenteProduitCreateView(APIView):
 
         AUTORISATIONS
         -------------
-        - Vendeur : utilise son propre profil.
+        - Vendeur : son propre profil.
         - Admin / Manager : vendor_email obligatoire.
-        - Manager : vendeur dans une bijouterie autorisée.
+        - Manager : bijouterie autorisée.
         """,
         request_body=VenteCreateInSerializer,
         responses={
             201: openapi.Response(
-                description="Vente créée avec succès",
+                description="Vente créée avec proforma"
             ),
             400: openapi.Response(
-                description="Erreur de validation",
+                description="Erreur de validation"
             ),
             403: openapi.Response(
-                description="Accès refusé",
+                description="Accès refusé"
             ),
         },
         tags=["Ventes"],
@@ -569,7 +604,6 @@ class VenteProduitCreateView(APIView):
             data=request.data,
             context={"request": request},
         )
-
         serializer.is_valid(raise_exception=True)
 
         validated = serializer.validated_data
@@ -579,7 +613,7 @@ class VenteProduitCreateView(APIView):
         ).lower().strip()
 
         # ====================================================
-        # 7. VENDEUR POUR ADMIN / MANAGER
+        # 7. VENDEUR ADMIN / MANAGER
         # ====================================================
 
         vendor_email = (
@@ -613,8 +647,7 @@ class VenteProduitCreateView(APIView):
                 return Response(
                     {
                         "detail": (
-                            "Vendeur introuvable "
-                            "ou désactivé."
+                            "Vendeur introuvable ou désactivé."
                         )
                     },
                     status=status.HTTP_400_BAD_REQUEST,
@@ -662,21 +695,21 @@ class VenteProduitCreateView(APIView):
                     )
 
         # ====================================================
-        # 8. PRODUITS ET PRESTATIONS
+        # 8. BIJOUX ET PRESTATIONS
         # ====================================================
 
         produits_in = validated.get("produits") or []
         autres = validated.get("autres") or []
 
-        if not produits_in and not autres:
-            return Response(
-                {
-                    "detail": (
-                        "La vente doit contenir au moins "
-                        "un bijou ou une prestation."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+        if not produits_in:
+            return error_response(
+                code="SALE_PRODUCT_REQUIRED",
+                message=(
+                    "Une vente doit contenir au moins un bijou. "
+                    "Pour une prestation seule, utilisez "
+                    "l'API de création des prestations."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
 
         # ====================================================
@@ -692,11 +725,12 @@ class VenteProduitCreateView(APIView):
                 )
             )
 
-        except ValidationError as exc:
+        except (DjangoValidationError, DRFValidationError) as exc:
             return Response(
                 {
                     "detail": (
                         getattr(exc, "message_dict", None)
+                        or getattr(exc, "detail", None)
                         or getattr(exc, "messages", None)
                         or str(exc)
                     )
@@ -732,11 +766,12 @@ class VenteProduitCreateView(APIView):
                 )
             )
 
-        except ValidationError as exc:
+        except (DjangoValidationError, DRFValidationError) as exc:
             return Response(
                 {
                     "detail": (
                         getattr(exc, "message_dict", None)
+                        or getattr(exc, "detail", None)
                         or getattr(exc, "messages", None)
                         or str(exc)
                     )
@@ -744,25 +779,17 @@ class VenteProduitCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if facture is None:
+            raise RuntimeError(
+                "Une vente contenant des bijoux doit "
+                "générer une facture proforma."
+            )
+
         # ====================================================
         # 12. TYPE DE VENTE
         # ====================================================
 
-        contient_bijoux = bool(produits_normalized)
-        contient_prestations = bool(autres)
-
-        if contient_bijoux and contient_prestations:
-            type_vente = "mixte"
-
-        elif contient_bijoux:
-            type_vente = "bijoux"
-
-        else:
-            type_vente = "prestations"
-
-        paiement_direct = (
-            type_vente == "prestations"
-        )
+        type_vente = "mixte" if autres else "bijoux"
 
         # ====================================================
         # 13. PRODUITS POUR LA RÉPONSE
@@ -784,7 +811,6 @@ class VenteProduitCreateView(APIView):
             produit_line = ligne.produit_line
             produit = produit_line.produit
 
-            # Snapshot historique de la vente.
             etat = ligne.etat_vente
 
             pourcentage_occasion = Decimal(
@@ -843,12 +869,10 @@ class VenteProduitCreateView(APIView):
                     montant_reduction
                 ),
                 "remise": str(
-                    ligne.remise
-                    or Decimal("0.00")
+                    ligne.remise or Decimal("0.00")
                 ),
                 "montant_total": str(
-                    ligne.montant_total
-                    or Decimal("0.00")
+                    ligne.montant_total or Decimal("0.00")
                 ),
             })
 
@@ -859,8 +883,8 @@ class VenteProduitCreateView(APIView):
         autres_response = [
             {
                 "id": autre.pk,
-                "type_autre": autre.type_autre,
-                "type_autre_label": (
+                "type_prestation": autre.type_autre,
+                "libelle_prestation": (
                     autre.get_type_autre_display()
                 ),
                 "quantite": autre.quantite,
@@ -875,42 +899,30 @@ class VenteProduitCreateView(APIView):
         ]
 
         # ====================================================
-        # 15. FACTURE OPTIONNELLE
+        # 15. FACTURE
         # ====================================================
 
-        facture_response = None
-
-        if facture is not None:
-
-            facture_response = {
-                "facture_id": facture.pk,
-                "numero_facture": (
-                    facture.numero_facture
-                ),
-                "type_facture": (
-                    facture.type_facture
-                ),
-                "status_facture": (
-                    facture.status
-                ),
-                "montant_ht": str(
-                    facture.montant_ht
-                ),
-                "appliquer_tva": facture.appliquer_tva,
-                "taux_tva": (
-                    str(facture.taux_tva)
-                    if facture.taux_tva is not None
-                    else None
-                ),
-                "montant_tva": (
-                    str(facture.montant_tva)
-                    if facture.montant_tva is not None
-                    else None
-                ),
-                "montant_total": str(
-                    facture.montant_total
-                ),
-            }
+        facture_response = {
+            "facture_id": facture.pk,
+            "numero_facture": facture.numero_facture,
+            "type_facture": facture.type_facture,
+            "status_facture": facture.status,
+            "montant_ht": str(facture.montant_ht),
+            "appliquer_tva": facture.appliquer_tva,
+            "taux_tva": (
+                str(facture.taux_tva)
+                if facture.taux_tva is not None
+                else None
+            ),
+            "montant_tva": (
+                str(facture.montant_tva)
+                if facture.montant_tva is not None
+                else None
+            ),
+            "montant_total": str(
+                facture.montant_total
+            ),
+        }
 
         # ====================================================
         # 16. RÉPONSE FINALE
@@ -921,26 +933,12 @@ class VenteProduitCreateView(APIView):
 
         return Response(
             {
-                "message": (
-                    "Prestation enregistrée. Paiement direct requis."
-                    if paiement_direct
-                    else "Vente créée avec proforma."
-                ),
-                "vente_id": vente.pk,
-                "numero_vente": (
-                    vente.numero_vente
-                    if not paiement_direct
-                    else None
-                ),
-                "numero_prestation": (
-                    vente.numero_vente
-                    if paiement_direct
-                    else None
-                ),
+                "message": "Vente créée avec proforma.",
                 "vente_id": vente.pk,
                 "numero_vente": vente.numero_vente,
+                "numero_prestation": None,
                 "type_vente": type_vente,
-                "paiement_direct": paiement_direct,
+                "paiement_direct": False,
                 "paiement_effectue": False,
                 "recu_paiement": None,
                 "montant_total_vente": str(
@@ -955,20 +953,16 @@ class VenteProduitCreateView(APIView):
                 },
                 "client": {
                     "id": (
-                        client.pk
-                        if client else None
+                        client.pk if client else None
                     ),
                     "nom": (
-                        client.nom
-                        if client else None
+                        client.nom if client else None
                     ),
                     "prenom": (
-                        client.prenom
-                        if client else None
+                        client.prenom if client else None
                     ),
                     "telephone": (
-                        client.telephone
-                        if client else None
+                        client.telephone if client else None
                     ),
                 },
                 "produits": produits_response,
@@ -978,73 +972,714 @@ class VenteProduitCreateView(APIView):
         )
 
 
+class PrestationCreateAPIView(APIView):
+    """
+    Création d'une vente composée uniquement
+    de prestations.
+
+    Règles :
+    - Aucun bijou.
+    - Au moins une prestation.
+    - Aucune facture.
+    - Aucun ticket proforma.
+    - Paiement direct.
+    - Reçu après encaissement.
+
+    Le service create_sale_one_vendor()
+    reste responsable des règles métier.
+    """
+
+    permission_classes = [CanCreateSale]
+    http_method_names = ["post", "options"]
+
+    @swagger_auto_schema(
+        operation_id="creer_prestation_rio_gold",
+        operation_summary="Créer une prestation",
+        operation_description=(
+            "Crée une vente contenant uniquement "
+            "des prestations. "
+            "Aucune facture ou proforma n'est générée. "
+            "Le paiement s'effectue directement, "
+            "avec un reçu après encaissement."
+        ),
+        request_body=PrestationCreateInSerializer,
+        responses={
+            201: openapi.Response(
+                description="Prestation créée avec succès."
+            ),
+            400: openapi.Response(
+                description="Erreur de validation."
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+        },
+        tags=["Prestations"],
+    )
+    @transaction.atomic
+    def post(self, request):
+
+        # ====================================================
+        # 1. VALIDATION DES DONNÉES
+        # ====================================================
+
+        serializer = PrestationCreateInSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+
+        serializer.is_valid(raise_exception=True)
+
+        validated = serializer.validated_data
+
+        # ====================================================
+        # 2. RÔLE UTILISATEUR
+        # ====================================================
+
+        role = (
+            get_role_name(request.user) or ""
+        ).lower().strip()
+
+        # ====================================================
+        # 3. VÉRIFICATION DES PRESTATIONS
+        # ====================================================
+
+        autres = validated.get("autres") or []
+
+        if not autres:
+            return error_response(
+                code="PRESTATION_REQUIRED",
+                message=(
+                    "Vous devez fournir au moins "
+                    "une prestation."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ====================================================
+        # 4. CONSTRUCTION DU PAYLOAD
+        # ====================================================
+
+        payload = {
+            "vendor_email": validated.get("vendor_email"),
+
+            "client": (
+                {"id": validated["client_id"]}
+                if validated.get("client_id")
+                else {}
+            ),
+
+            # Une prestation seule ne contient
+            # jamais de bijoux.
+            "produits": [],
+
+            "autres": autres,
+        }
+
+        # ====================================================
+        # 5. CRÉATION DE LA VENTE
+        # ====================================================
+
+        try:
+            vente, facture, audit_created = (
+                create_sale_one_vendor(
+                    user=request.user,
+                    role=role,
+                    payload=payload,
+                )
+            )
+
+        except (
+            DjangoValidationError,
+            DRFValidationError,
+        ) as exc:
+
+            return error_response(
+                code="PRESTATION_VALIDATION_ERROR",
+                message=(
+                    "Impossible de créer la prestation."
+                ),
+                details=(
+                    getattr(exc, "message_dict", None)
+                    or getattr(exc, "detail", None)
+                    or getattr(exc, "messages", None)
+                    or str(exc)
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ====================================================
+        # 6. GARANTIE : AUCUNE FACTURE
+        # ====================================================
+
+        if facture is not None:
+            raise RuntimeError(
+                "Une prestation seule ne doit "
+                "jamais générer de facture."
+            )
+
+        # ====================================================
+        # 7. CONSTRUCTION DE LA RÉPONSE
+        # ====================================================
+
+        prestations_response = [
+            {
+                "id": autre.pk,
+
+                "type_prestation": autre.type_autre,
+
+                "libelle_prestation": (
+                    autre.get_type_autre_display()
+                ),
+
+                "quantite": autre.quantite,
+
+                "prix_unitaire": str(
+                    autre.prix_unitaire
+                ),
+
+                "montant_total": str(
+                    autre.montant_total
+                ),
+            }
+            for autre in vente.autres.all()
+        ]
+
+        # ====================================================
+        # 8. RÉPONSE FINALE
+        # ====================================================
+
+        return Response(
+            {
+                "message": (
+                    "Prestation enregistrée. "
+                    "Paiement direct requis."
+                ),
+
+                "vente_id": vente.pk,
+
+                "numero_vente": vente.numero_vente,
+
+                "numero_prestation": vente.numero_vente,
+
+                "type_vente": "prestations",
+
+                "paiement_direct": True,
+
+                "paiement_effectue": False,
+
+                "montant_total": str(
+                    vente.montant_total
+                    or Decimal("0.00")
+                ),
+
+                "facture": None,
+
+                "recu_paiement": None,
+
+                "audit_created": bool(
+                    audit_created
+                ),
+
+                "prestations": prestations_response,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+
+class PrestationListAPIView(generics.ListAPIView):
+    """
+    Liste paginée des prestations seules.
+
+    Règles métier :
+    - Prestations uniquement.
+    - Aucun bijou.
+    - Aucune facture.
+    - Paiements directs.
+    - Aucun mouvement de stock.
+
+    Accès :
+    - Admin : toutes les bijouteries.
+    - Manager : ses bijouteries.
+    - Vendor : ses propres prestations.
+    - Cashier : sa bijouterie.
+    - Buyer : interdit.
+
+    Période :
+    - Année en cours uniquement.
+    - Mois en cours par défaut.
+    - mois=1 à 12 : filtre mensuel.
+    - mois=tous : toute l'année en cours.
+
+    Autres filtres :
+    - numero
+    - bijouterie_id
+    - statut_paiement
+
+    Pagination :
+    - PrestationPagination du backend.
+    """
+
+    serializer_class = PrestationListSerializer
+    permission_classes = [IsAuthenticated]
+
+    http_method_names = [
+        "get",
+        "head",
+        "options",
+    ]
+
+    def get_queryset(self):
+
+        user = self.request.user
+
+        role = (
+            get_role_name(user) or ""
+        ).lower().strip()
+
+        # ====================================================
+        # 1. VÉRIFICATION DU RÔLE
+        # ====================================================
+
+        if role not in {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_VENDOR,
+            ROLE_CASHIER,
+        }:
+            raise PermissionDenied(
+                "Vous n'êtes pas autorisé "
+                "à consulter les prestations."
+            )
+
+        if not user.is_active:
+            raise PermissionDenied(
+                "Compte utilisateur désactivé."
+            )
+
+        # ====================================================
+        # 2. VÉRIFICATION DES PROFILS STAFF
+        # ====================================================
+
+        vendor = None
+
+        if role == ROLE_MANAGER:
+
+            manager = getattr(
+                user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if not (
+                manager
+                and manager.is_active_staff
+            ):
+                raise PermissionDenied(
+                    "Profil manager invalide ou désactivé."
+                )
+
+        elif role == ROLE_VENDOR:
+
+            vendor = getattr(
+                user,
+                "staff_vendor_profile",
+                None,
+            )
+
+            if not (
+                vendor
+                and vendor.is_active_staff
+                and vendor.bijouterie_id
+            ):
+                raise PermissionDenied(
+                    "Profil vendeur invalide, désactivé "
+                    "ou sans bijouterie."
+                )
+
+        elif role == ROLE_CASHIER:
+
+            cashier = getattr(
+                user,
+                "staff_cashier_profile",
+                None,
+            )
+
+            if not (
+                cashier
+                and cashier.is_active_staff
+                and cashier.bijouterie_id
+            ):
+                raise PermissionDenied(
+                    "Profil caissier invalide, désactivé "
+                    "ou sans bijouterie."
+                )
+
+        # ====================================================
+        # 3. BIJOUTERIES AUTORISÉES
+        # ====================================================
+
+        bijouteries = get_user_bijouteries(user)
+
+        # ====================================================
+        # 4. SOUS-REQUÊTES BIJOUX ET PRESTATIONS
+        # ====================================================
+
+        bijoux = VenteProduit.objects.filter(
+            vente_id=OuterRef("pk")
+        )
+
+        prestations = VenteAutre.objects.filter(
+            vente_id=OuterRef("pk")
+        )
+
+        # ====================================================
+        # 5. TOTAL DES PAIEMENTS DIRECTS
+        # ====================================================
+
+        montant_field = DecimalField(
+            max_digits=18,
+            decimal_places=2,
+        )
+
+        paiements_directs = (
+            PaiementLigne.objects
+            .filter(
+                paiement__vente_id=OuterRef("pk"),
+                paiement__facture__isnull=True,
+            )
+            .order_by()
+            .values("paiement__vente_id")
+            .annotate(
+                total=Sum("montant_paye")
+            )
+            .values("total")[:1]
+        )
+
+        # ====================================================
+        # 6. QUERYSET PRINCIPAL
+        # ====================================================
+
+        queryset = (
+            Vente.objects
+            .filter(
+                bijouterie__in=bijouteries,
+            )
+            # Contient au moins une prestation.
+            .filter(
+                Exists(prestations)
+            )
+            # Ne contient aucun bijou.
+            .filter(
+                ~Exists(bijoux)
+            )
+            .annotate(
+                total_paye_calc=Coalesce(
+                    Subquery(
+                        paiements_directs,
+                        output_field=montant_field,
+                    ),
+                    Value(
+                        Decimal("0.00"),
+                        output_field=montant_field,
+                    ),
+                    output_field=montant_field,
+                )
+            )
+        )
+
+        # ====================================================
+        # 7. RESTRICTION VENDEUR
+        # ====================================================
+
+        if role == ROLE_VENDOR:
+
+            queryset = queryset.filter(
+                vendor_id=vendor.pk
+            )
+
+        # ====================================================
+        # 8. ANNÉE EN COURS UNIQUEMENT
+        # ====================================================
+
+        today = timezone.localdate()
+
+        annee = today.year
+        mois_courant = today.month
+
+        annee_raw = self.request.query_params.get(
+            "annee"
+        )
+
+        mois_raw = self.request.query_params.get(
+            "mois"
+        )
+
+        if annee_raw is not None:
+
+            if annee_raw.strip() != str(annee):
+                raise DRFValidationError({
+                    "annee": (
+                        "Seules les prestations de "
+                        "l'année en cours sont autorisées."
+                    )
+                })
+
+        # ====================================================
+        # 9. FILTRE MENSUEL
+        # ====================================================
+
+        if mois_raw is None:
+            mois = mois_courant
+
+        elif mois_raw.strip().lower() == "tous":
+            mois = None
+
+        else:
+            try:
+                mois = int(mois_raw)
+
+            except (TypeError, ValueError):
+                raise DRFValidationError({
+                    "mois": (
+                        "Le mois doit être compris entre "
+                        "1 et 12, ou 'tous'."
+                    )
+                })
+
+            if not 1 <= mois <= 12:
+                raise DRFValidationError({
+                    "mois": (
+                        "Le mois doit être compris "
+                        "entre 1 et 12."
+                    )
+                })
+
+        # Toujours limiter à l'année en cours.
+        queryset = queryset.filter(
+            created_at__year=annee
+        )
+
+        # Appliquer le filtre mensuel.
+        if mois is not None:
+            queryset = queryset.filter(
+                created_at__month=mois
+            )
+
+        # ====================================================
+        # 10. FILTRE NUMÉRO
+        # ====================================================
+
+        numero = (
+            self.request.query_params.get(
+                "numero", ""
+            ) or ""
+        ).strip()
+
+        if numero:
+
+            queryset = queryset.filter(
+                numero_vente__icontains=numero
+            )
+
+        # ====================================================
+        # 11. FILTRE BIJOUTERIE
+        # ====================================================
+
+        bijouterie_id = self.request.query_params.get(
+            "bijouterie_id"
+        )
+
+        if bijouterie_id is not None:
+
+            if (
+                not bijouterie_id.isdigit()
+                or int(bijouterie_id) <= 0
+            ):
+                raise DRFValidationError({
+                    "bijouterie_id": (
+                        "Identifiant de bijouterie invalide."
+                    )
+                })
+
+            queryset = queryset.filter(
+                bijouterie_id=int(bijouterie_id)
+            )
+
+        # ====================================================
+        # 12. FILTRE STATUT PAIEMENT
+        # ====================================================
+
+        statut_paiement = (
+            self.request.query_params.get(
+                "statut_paiement"
+            )
+        )
+
+        if statut_paiement is not None:
+
+            statuts_valides = {
+                "non_paye",
+                "partiel",
+                "paye",
+            }
+
+            if statut_paiement not in statuts_valides:
+                raise DRFValidationError({
+                    "statut_paiement": (
+                        "Valeurs autorisées : "
+                        "non_paye, partiel, paye."
+                    )
+                })
+
+            if statut_paiement == "non_paye":
+
+                queryset = queryset.filter(
+                    total_paye_calc=Decimal("0.00")
+                )
+
+            elif statut_paiement == "partiel":
+
+                queryset = queryset.filter(
+                    total_paye_calc__gt=Decimal("0.00"),
+                    total_paye_calc__lt=F("montant_total"),
+                )
+
+            elif statut_paiement == "paye":
+
+                queryset = queryset.filter(
+                    total_paye_calc__gte=F("montant_total"),
+                    montant_total__gt=0,
+                )
+
+        # ====================================================
+        # 13. OPTIMISATION SQL ET TRI
+        # ====================================================
+
+        return (
+            queryset
+            .select_related(
+                "client",
+                "bijouterie",
+                "vendor",
+                "vendor__user",
+            )
+            .prefetch_related(
+                "autres",
+            )
+            .order_by(
+                "-created_at",
+                "-pk",
+            )
+        )
+
+
 class VenteListAPIView(APIView):
     """
     Liste paginée des ventes Rio-Gold.
 
-    Rôles :
-    - admin : toutes les ventes accessibles
-    - manager : ventes de ses bijouteries
-    - vendor : uniquement ses ventes
-    - cashier : ventes de sa bijouterie
+    Types :
+    - Bijoux uniquement.
+    - Bijoux + prestations.
 
-    Comprend :
-    - bijoux : vente.lignes
-    - prestations : vente.autres
+    Les prestations seules sont exclues.
+
+    Période :
+    - Année en cours uniquement.
+    - Mois en cours par défaut.
+    - mois=1 à 12 : filtre mensuel.
+    - mois=tous : toute l'année en cours.
+
+    Accès :
+    - Admin : toutes les bijouteries.
+    - Manager : ses bijouteries.
+    - Vendor : uniquement ses ventes.
+    - Cashier : sa bijouterie.
+    - Buyer : interdit.
     """
 
     permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "head", "options"]
 
     @swagger_auto_schema(
+        operation_id="liste_ventes_rio_gold",
         operation_summary="Lister les ventes",
         operation_description="""
-Liste les ventes selon le rôle connecté.
+        Liste paginée des ventes de bijoux et des ventes mixtes.
 
-Par défaut, affiche les ventes de l'année en cours.
+        PÉRIODE
+        -------
+        Par défaut : mois en cours.
 
-Les ventes peuvent contenir :
-- uniquement des bijoux ;
-- uniquement des prestations ;
-- des bijoux et des prestations.
+        L'année est toujours l'année en cours.
 
-Filtres disponibles :
-- annee
-- numero_vente
-- client_q
-- vendor_id
-- status_facture
-- page
-- page_size
+        mois=1 à 12 : sélectionner un mois.
+        mois=tous : toutes les ventes de l'année en cours.
+
+        TYPES
+        -----
+        - Bijoux uniquement.
+        - Bijoux + prestations.
+
+        Les prestations seules sont exclues.
+
+        FILTRES
+        -------
+        - annee : année en cours uniquement.
+        - mois : 1 à 12 ou tous.
+        - numero_vente
+        - client_q
+        - vendor_id
+        - status_facture
+        - page
+        - page_size
         """,
         manual_parameters=[
             openapi.Parameter(
                 "annee",
                 openapi.IN_QUERY,
-                description="Année des ventes. Par défaut : année en cours.",
+                description=(
+                    "Année des ventes. "
+                    "Seule l'année en cours est autorisée."
+                ),
                 type=openapi.TYPE_INTEGER,
+            ),
+            openapi.Parameter(
+                "mois",
+                openapi.IN_QUERY,
+                description=(
+                    "Mois : 1 à 12. "
+                    "Par défaut : mois en cours. "
+                    "Utiliser 'tous' pour toute l'année."
+                ),
+                type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
                 "numero_vente",
                 openapi.IN_QUERY,
-                description="Recherche par numéro de vente",
+                description="Recherche par numéro de vente.",
                 type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
                 "client_q",
                 openapi.IN_QUERY,
-                description="Recherche client par nom, prénom ou téléphone",
+                description=(
+                    "Recherche client par nom, "
+                    "prénom ou téléphone."
+                ),
                 type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
                 "vendor_id",
                 openapi.IN_QUERY,
-                description="Filtrer par vendeur",
+                description="Filtrer par vendeur.",
                 type=openapi.TYPE_INTEGER,
             ),
             openapi.Parameter(
                 "status_facture",
                 openapi.IN_QUERY,
-                description="Statut facture : non_paye, partiel ou paye",
+                description="Statut de la facture.",
                 type=openapi.TYPE_STRING,
                 enum=[
                     "non_paye",
@@ -1055,22 +1690,26 @@ Filtres disponibles :
             openapi.Parameter(
                 "page",
                 openapi.IN_QUERY,
-                description="Numéro de page",
+                description="Numéro de page.",
                 type=openapi.TYPE_INTEGER,
             ),
             openapi.Parameter(
                 "page_size",
                 openapi.IN_QUERY,
-                description="Nombre d'éléments par page",
+                description=(
+                    "Nombre de ventes par page. "
+                    "Maximum : 100."
+                ),
                 type=openapi.TYPE_INTEGER,
             ),
         ],
         responses={
             200: openapi.Response(
-                description="Liste des ventes"
+                description="Liste paginée des ventes."
             ),
-            400: "Erreur de filtre",
-            403: "Accès refusé",
+            400: "Erreur de filtre.",
+            403: "Accès refusé.",
+            404: "Page introuvable.",
         },
         tags=["Ventes"],
     )
@@ -1100,13 +1739,41 @@ Filtres disponibles :
                 status_code=status.HTTP_403_FORBIDDEN,
             )
 
+        if not user.is_active:
+            return error_response(
+                code="INACTIVE_USER",
+                message="Compte utilisateur désactivé.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
         # =====================================================
-        # 2. PROFIL VENDEUR
+        # 2. VÉRIFICATION DES PROFILS STAFF
         # =====================================================
 
         my_vendor = None
 
-        if role == ROLE_VENDOR:
+        if role == ROLE_MANAGER:
+
+            manager = getattr(
+                user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if not (
+                manager
+                and manager.is_active_staff
+            ):
+                return error_response(
+                    code="INVALID_MANAGER_PROFILE",
+                    message=(
+                        "Profil manager introuvable "
+                        "ou désactivé."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        elif role == ROLE_VENDOR:
 
             my_vendor = getattr(
                 user,
@@ -1116,24 +1783,65 @@ Filtres disponibles :
 
             if not (
                 my_vendor
-                and getattr(my_vendor, "verifie", False)
+                and my_vendor.is_active_staff
                 and my_vendor.bijouterie_id
             ):
                 return error_response(
                     code="INVALID_VENDOR_PROFILE",
                     message=(
                         "Profil vendeur introuvable, "
-                        "non vérifié ou sans bijouterie."
+                        "désactivé ou sans bijouterie."
+                    ),
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+
+        elif role == ROLE_CASHIER:
+
+            cashier = getattr(
+                user,
+                "staff_cashier_profile",
+                None,
+            )
+
+            if not (
+                cashier
+                and cashier.is_active_staff
+                and cashier.bijouterie_id
+            ):
+                return error_response(
+                    code="INVALID_CASHIER_PROFILE",
+                    message=(
+                        "Profil caissier introuvable, "
+                        "désactivé ou sans bijouterie."
                     ),
                     status_code=status.HTTP_403_FORBIDDEN,
                 )
 
         # =====================================================
-        # 3. QUERYSET DE BASE
+        # 3. SOUS-REQUÊTE BIJOUX
+        # =====================================================
+
+        bijoux = VenteProduit.objects.filter(
+            vente_id=OuterRef("pk")
+        )
+
+        # =====================================================
+        # 4. QUERYSET PRINCIPAL
         # =====================================================
 
         qs = (
             Vente.objects
+            .filter(
+                scope_bijouterie_q(
+                    user,
+                    field="bijouterie_id",
+                )
+            )
+            # Au moins un bijou.
+            # Exclut les prestations seules.
+            .filter(
+                Exists(bijoux)
+            )
             .select_related(
                 "client",
                 "vendor",
@@ -1142,22 +1850,13 @@ Filtres disponibles :
                 "facture_vente",
             )
             .prefetch_related(
-                # Bijoux
                 "lignes",
                 "lignes__produit_line",
                 "lignes__produit_line__produit",
                 "lignes__produit_line__lot",
                 "lignes__vendor",
                 "lignes__vendor__user",
-
-                # Prestations et autres lignes
                 "autres",
-            )
-            .filter(
-                scope_bijouterie_q(
-                    user,
-                    field="bijouterie_id",
-                )
             )
             .order_by(
                 "-created_at",
@@ -1166,50 +1865,85 @@ Filtres disponibles :
         )
 
         # =====================================================
-        # 4. VENDEUR : SES VENTES UNIQUEMENT
+        # 5. VENDEUR : UNIQUEMENT SES VENTES
         # =====================================================
 
         if role == ROLE_VENDOR:
             qs = qs.filter(
-                vendor_id=my_vendor.id
+                vendor_id=my_vendor.pk
             )
 
         # =====================================================
-        # 5. FILTRE ANNÉE
+        # 6. ANNÉE EN COURS UNIQUEMENT
         # =====================================================
 
-        current_year = timezone.localdate().year
+        today = timezone.localdate()
 
-        annee_raw = (
-            request.query_params.get("annee")
-            or str(current_year)
-        )
+        annee = today.year
+        mois_courant = today.month
 
-        try:
-            annee = int(annee_raw)
-        except (TypeError, ValueError):
-            return error_response(
-                code="INVALID_YEAR",
-                message="annee doit être une année valide.",
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
+        annee_raw = request.query_params.get("annee")
+        mois_raw = request.query_params.get("mois")
 
-        if annee < 2000 or annee > current_year:
-            return error_response(
-                code="INVALID_YEAR",
-                message=(
-                    f"annee doit être comprise entre "
-                    f"2000 et {current_year}."
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
+        if annee_raw is not None:
 
+            if annee_raw.strip() != str(annee):
+                return error_response(
+                    code="YEAR_NOT_ALLOWED",
+                    message=(
+                        "Seules les ventes de l'année "
+                        "en cours sont autorisées."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # =====================================================
+        # 7. FILTRE MENSUEL
+        # =====================================================
+
+        if mois_raw is None:
+            mois = mois_courant
+
+        elif mois_raw.strip().lower() == "tous":
+            mois = None
+
+        else:
+            try:
+                mois = int(mois_raw)
+
+            except (TypeError, ValueError):
+                return error_response(
+                    code="INVALID_MONTH",
+                    message=(
+                        "Le mois doit être compris "
+                        "entre 1 et 12, ou 'tous'."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if not 1 <= mois <= 12:
+                return error_response(
+                    code="INVALID_MONTH",
+                    message=(
+                        "Le mois doit être compris "
+                        "entre 1 et 12."
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Toujours l'année en cours.
         qs = qs.filter(
             created_at__year=annee
         )
 
+        # Filtre mensuel si différent de "tous".
+        if mois is not None:
+            qs = qs.filter(
+                created_at__month=mois
+            )
+
         # =====================================================
-        # 6. FILTRE NUMÉRO DE VENTE
+        # 8. FILTRE NUMÉRO DE VENTE
         # =====================================================
 
         numero_vente = (
@@ -1224,7 +1958,7 @@ Filtres disponibles :
             )
 
         # =====================================================
-        # 7. FILTRE CLIENT
+        # 9. FILTRE CLIENT
         # =====================================================
 
         client_q = (
@@ -1241,7 +1975,7 @@ Filtres disponibles :
             )
 
         # =====================================================
-        # 8. FILTRE VENDEUR
+        # 10. FILTRE VENDEUR
         # =====================================================
 
         vendor_id_raw = request.query_params.get(
@@ -1252,23 +1986,30 @@ Filtres disponibles :
 
             try:
                 vendor_id = int(vendor_id_raw)
+
             except (TypeError, ValueError):
                 return error_response(
                     code="INVALID_VENDOR_ID",
-                    message="vendor_id doit être un entier positif.",
+                    message=(
+                        "vendor_id doit être "
+                        "un entier positif."
+                    ),
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             if vendor_id <= 0:
                 return error_response(
                     code="INVALID_VENDOR_ID",
-                    message="vendor_id doit être un entier positif.",
+                    message=(
+                        "vendor_id doit être "
+                        "un entier positif."
+                    ),
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             if (
                 role == ROLE_VENDOR
-                and vendor_id != my_vendor.id
+                and vendor_id != my_vendor.pk
             ):
                 return error_response(
                     code="VENDOR_SCOPE_FORBIDDEN",
@@ -1284,7 +2025,7 @@ Filtres disponibles :
             )
 
         # =====================================================
-        # 9. FILTRE STATUT FACTURE
+        # 11. FILTRE STATUT FACTURE
         # =====================================================
 
         status_facture = (
@@ -1316,13 +2057,10 @@ Filtres disponibles :
             )
 
         # =====================================================
-        # 10. PAGINATION
+        # 12. PAGINATION
         # =====================================================
 
-        def parse_positive_int(
-            name: str,
-            default: int,
-        ) -> int:
+        def parse_positive_int(name, default):
 
             raw_value = request.query_params.get(name)
 
@@ -1332,20 +2070,41 @@ Filtres disponibles :
             try:
                 value = int(raw_value)
             except (TypeError, ValueError):
-                return default
+                return None
 
-            return max(1, value)
+            if value <= 0:
+                return None
+
+            return value
 
         page = parse_positive_int(
             "page",
             1,
         )
 
+        page_size = parse_positive_int(
+            "page_size",
+            20,
+        )
+
+        if page is None:
+            return error_response(
+                code="INVALID_PAGE",
+                message="page doit être un entier positif.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if page_size is None:
+            return error_response(
+                code="INVALID_PAGE_SIZE",
+                message=(
+                    "page_size doit être un entier positif."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
         page_size = min(
-            parse_positive_int(
-                "page_size",
-                20,
-            ),
+            page_size,
             100,
         )
 
@@ -1355,10 +2114,18 @@ Filtres disponibles :
         )
 
         # =====================================================
-        # 11. AUCUN RÉSULTAT
+        # 13. AUCUN RÉSULTAT
         # =====================================================
 
         if paginator.count == 0:
+
+            if page != 1:
+                return error_response(
+                    code="PAGE_NOT_FOUND",
+                    message="La page demandée n'existe pas.",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+
             return Response(
                 {
                     "count": 0,
@@ -1366,33 +2133,38 @@ Filtres disponibles :
                     "page_size": page_size,
                     "num_pages": 0,
                     "annee": annee,
+                    "mois": mois,
                     "results": [],
                 },
                 status=status.HTTP_200_OK,
             )
 
         # =====================================================
-        # 12. PAGE
+        # 14. PAGE DEMANDÉE
         # =====================================================
 
         try:
             page_obj = paginator.page(page)
+
         except EmptyPage:
-            page_obj = paginator.page(
-                paginator.num_pages
+            return error_response(
+                code="PAGE_NOT_FOUND",
+                message="La page demandée n'existe pas.",
+                status_code=status.HTTP_404_NOT_FOUND,
             )
 
         # =====================================================
-        # 13. SERIALIZATION
+        # 15. SERIALIZATION
         # =====================================================
 
         serializer = VenteListSerializer(
             page_obj.object_list,
             many=True,
+            context={"request": request},
         )
 
         # =====================================================
-        # 14. RÉPONSE
+        # 16. RÉPONSE FINALE
         # =====================================================
 
         return Response(
@@ -1402,6 +2174,7 @@ Filtres disponibles :
                 "page_size": page_size,
                 "num_pages": paginator.num_pages,
                 "annee": annee,
+                "mois": mois,
                 "results": serializer.data,
             },
             status=status.HTTP_200_OK,

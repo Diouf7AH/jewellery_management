@@ -41,6 +41,7 @@ from sale.models import Facture, Paiement, PaiementLigne, Vente
 
 ZERO = Decimal("0.00")
 
+
 class CreateStaffView(APIView):
     """
     API unique de création de staff.

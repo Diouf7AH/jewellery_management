@@ -158,6 +158,8 @@ class Cashier(StaffCore):
         on_delete=models.PROTECT,
         null=True,
         blank=True,
+        # null=False,
+        # blank=False,
         related_name="cashiers",
         related_query_name="cashier",
     )

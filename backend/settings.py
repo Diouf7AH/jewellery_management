@@ -157,6 +157,11 @@ REST_FRAMEWORK = {
         "registration": "5/hour",
         "verification_resend": "3/hour",
     },
+    
+    "DEFAULT_PAGINATION_CLASS": (
+        "rest_framework.pagination.PageNumberPagination"
+    ),
+    "PAGE_SIZE": 20,
 }
 
 # Pagination personnalisée pour les vues API

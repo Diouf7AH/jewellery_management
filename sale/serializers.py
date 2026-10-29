@@ -142,35 +142,49 @@ class VenteProduitSerializer(serializers.ModelSerializer):
         return attrs
     
 
+
 class ClientOptionalInSerializer(serializers.Serializer):
-    nom = serializers.CharField(required=False, allow_blank=True)
-    prenom = serializers.CharField(required=False, allow_blank=True)
-    telephone = serializers.CharField(required=False, allow_blank=True)
+    nom = serializers.CharField(
+        required=False,
+        allow_blank=True,
+    )
+    prenom = serializers.CharField(
+        required=False,
+        allow_blank=True,
+    )
+    telephone = serializers.CharField(
+        required=False,
+        allow_blank=True,
+    )
 
     def validate(self, attrs):
         nom = (attrs.get("nom") or "").strip()
         prenom = (attrs.get("prenom") or "").strip()
-        tel = (attrs.get("telephone") or "").strip()
+        telephone = (attrs.get("telephone") or "").strip()
 
-        # si le bloc client est vide => ok (optionnel)
-        if not nom and not prenom and not tel:
+        if not nom and not prenom and not telephone:
             return {}
 
-        # si partiellement rempli => refuse données sales
         if not nom or not prenom:
-            raise serializers.ValidationError("Si client est fourni, nom et prenom sont obligatoires.")
-        attrs["nom"] = nom
-        attrs["prenom"] = prenom
-        attrs["telephone"] = tel
-        return attrs
-    
+            raise serializers.ValidationError({
+                "client": (
+                    "Si un client est renseigné, "
+                    "son nom et son prénom sont obligatoires."
+                )
+            })
+
+        return {
+            "nom": nom,
+            "prenom": prenom,
+            "telephone": telephone,
+        }
 
 
 class ClientInSerializer(serializers.Serializer):
     nom = serializers.CharField(required=True, allow_blank=False)
     prenom = serializers.CharField(required=True, allow_blank=False)
     telephone = serializers.CharField(required=False, allow_blank=True)
-
+    
 
 # ============================================================
 # 1. LIGNE DE BIJOU POUR CRÉATION D'UNE VENTE
@@ -505,6 +519,285 @@ class VenteAutreSerializer(serializers.ModelSerializer):
 
         read_only_fields = fields
 
+
+# ============================================================
+# 1. SERIALIZER D'UNE LIGNE DE PRESTATION
+# ============================================================
+
+class PrestationLigneInSerializer(serializers.Serializer):
+    """
+    Serializer d'entrée pour une ligne de prestation.
+
+    - type_prestation : type de prestation.
+    - quantite : quantité, minimum 1.
+    - prix_unitaire : montant en FCFA.
+    - montant_total : calculé côté serveur.
+
+    Le champ type_prestation est converti
+    automatiquement en type_autre.
+    """
+
+    type_prestation = serializers.ChoiceField(
+        source="type_autre",
+        choices=VenteAutre.TYPE_CHOICES,
+        required=True,
+    )
+
+    quantite = serializers.IntegerField(
+        min_value=1,
+        default=1,
+    )
+
+    prix_unitaire = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0.01"),
+        required=True,
+    )
+    
+
+# ============================================================
+# 2. SERIALIZER DE CRÉATION D'UNE PRESTATION
+# ============================================================
+
+
+class PrestationCreateInSerializer(serializers.Serializer):
+    """
+    Création d'une vente contenant uniquement des prestations.
+
+    - Client facultatif.
+    - Admin/manager : vendor_email obligatoire.
+    - Vendeur : utilise son propre profil.
+    - Au moins une prestation obligatoire.
+    - Aucun bijou autorisé.
+    """
+
+    vendor_email = serializers.EmailField(
+        required=False,
+        allow_null=True,
+    )
+
+    client = ClientOptionalInSerializer(
+        required=False,
+        allow_null=True,
+    )
+
+    autres = PrestationLigneInSerializer(
+        many=True,
+        required=True,
+        allow_empty=False,
+    )
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+
+        if "produits" in self.initial_data:
+            raise serializers.ValidationError({
+                "produits": (
+                    "Les bijoux ne sont pas autorisés "
+                    "dans une prestation seule."
+                )
+            })
+
+        request = self.context.get("request")
+
+        if request is None or not request.user.is_authenticated:
+            raise serializers.ValidationError({
+                "detail": "Authentification requise."
+            })
+
+        role = (
+            get_role_name(request.user) or ""
+        ).strip().lower()
+
+        if role in {ROLE_ADMIN, ROLE_MANAGER}:
+            vendor_email = (
+                attrs.get("vendor_email") or ""
+            ).strip().lower()
+
+            if not vendor_email:
+                raise serializers.ValidationError({
+                    "vendor_email": (
+                        "Le vendeur est obligatoire "
+                        "pour un administrateur ou un manager."
+                    )
+                })
+
+            attrs["vendor_email"] = vendor_email
+
+        elif role == ROLE_VENDOR:
+            attrs.pop("vendor_email", None)
+
+        else:
+            raise serializers.ValidationError({
+                "detail": (
+                    "Vous n'êtes pas autorisé "
+                    "à créer une prestation."
+                )
+            })
+
+        attrs["client"] = attrs.get("client") or {}
+
+        return attrs
+
+
+
+# ============================================================
+# 1. DÉTAIL D'UNE LIGNE DE PRESTATION
+# ============================================================
+
+class PrestationLigneListSerializer(serializers.ModelSerializer):
+
+    type_prestation = serializers.CharField(
+        source="type_autre",
+        read_only=True,
+    )
+
+    libelle_prestation = serializers.CharField(
+        source="get_type_autre_display",
+        read_only=True,
+    )
+
+    class Meta:
+        model = VenteAutre
+
+        fields = [
+            "id",
+            "type_prestation",
+            "libelle_prestation",
+            "quantite",
+            "prix_unitaire",
+            "montant_total",
+        ]
+
+        read_only_fields = fields
+
+
+# ============================================================
+# 2. LISTE DES PRESTATIONS
+# ============================================================
+class PrestationListSerializer(serializers.ModelSerializer):
+
+    numero_prestation = serializers.CharField(
+        source="numero_vente",
+        read_only=True,
+    )
+
+    client_id = serializers.IntegerField(
+        read_only=True,
+    )
+
+    vendor_id = serializers.IntegerField(
+        read_only=True,
+    )
+
+    bijouterie_id = serializers.IntegerField(
+        read_only=True,
+    )
+
+    bijouterie_nom = serializers.CharField(
+        source="bijouterie.nom",
+        read_only=True,
+    )
+
+    vendor_email = serializers.EmailField(
+        source="vendor.user.email",
+        read_only=True,
+        allow_null=True,
+    )
+
+    prestations = PrestationLigneListSerializer(
+        source="autres",
+        many=True,
+        read_only=True,
+    )
+
+    # ========================================================
+    # PAIEMENTS DIRECTS
+    # ========================================================
+
+    total_paye = serializers.DecimalField(
+        source="total_paye_calc",
+        max_digits=18,
+        decimal_places=2,
+        read_only=True,
+    )
+
+    reste_a_payer = serializers.SerializerMethodField()
+
+    statut_paiement = serializers.SerializerMethodField()
+
+    # ========================================================
+    # META
+    # ========================================================
+
+    class Meta:
+        model = Vente
+
+        fields = [
+            "id",
+            "uuid",
+            "numero_prestation",
+            "client_id",
+            "vendor_id",
+            "vendor_email",
+            "bijouterie_id",
+            "bijouterie_nom",
+            "source_vente",
+            "montant_total",
+            "total_paye",
+            "reste_a_payer",
+            "statut_paiement",
+            "created_at",
+            "is_cancelled",
+            "prestations",
+        ]
+
+        read_only_fields = fields
+
+    # ========================================================
+    # RESTE À PAYER
+    # ========================================================
+
+    def get_reste_a_payer(self, obj):
+
+        montant_total = (
+            obj.montant_total or Decimal("0.00")
+        )
+
+        total_paye = (
+            obj.total_paye_calc or Decimal("0.00")
+        )
+
+        reste = max(
+            montant_total - total_paye,
+            Decimal("0.00"),
+        )
+
+        return f"{reste:.2f}"
+
+    # ========================================================
+    # STATUT DU PAIEMENT
+    # ========================================================
+
+    def get_statut_paiement(self, obj):
+
+        montant_total = (
+            obj.montant_total or Decimal("0.00")
+        )
+
+        total_paye = (
+            obj.total_paye_calc or Decimal("0.00")
+        )
+
+        if montant_total > 0 and total_paye >= montant_total:
+            return "paye"
+
+        if total_paye > 0:
+            return "partiel"
+
+        return "non_paye"
+    
 # ============================================================
 # FACTURE - SORTIE
 # ============================================================
