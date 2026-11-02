@@ -676,6 +676,7 @@ class PrestationLigneListSerializer(serializers.ModelSerializer):
 # ============================================================
 # 2. LISTE DES PRESTATIONS
 # ============================================================
+
 class PrestationListSerializer(serializers.ModelSerializer):
 
     numero_prestation = serializers.CharField(
@@ -683,17 +684,9 @@ class PrestationListSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
-    client_id = serializers.IntegerField(
-        read_only=True,
-    )
-
-    vendor_id = serializers.IntegerField(
-        read_only=True,
-    )
-
-    bijouterie_id = serializers.IntegerField(
-        read_only=True,
-    )
+    client_id = serializers.IntegerField(read_only=True)
+    vendor_id = serializers.IntegerField(read_only=True)
+    bijouterie_id = serializers.IntegerField(read_only=True)
 
     bijouterie_nom = serializers.CharField(
         source="bijouterie.nom",
@@ -712,10 +705,6 @@ class PrestationListSerializer(serializers.ModelSerializer):
         read_only=True,
     )
 
-    # ========================================================
-    # PAIEMENTS DIRECTS
-    # ========================================================
-
     total_paye = serializers.DecimalField(
         source="total_paye_calc",
         max_digits=18,
@@ -724,12 +713,7 @@ class PrestationListSerializer(serializers.ModelSerializer):
     )
 
     reste_a_payer = serializers.SerializerMethodField()
-
     statut_paiement = serializers.SerializerMethodField()
-
-    # ========================================================
-    # META
-    # ========================================================
 
     class Meta:
         model = Vente
@@ -755,18 +739,12 @@ class PrestationListSerializer(serializers.ModelSerializer):
 
         read_only_fields = fields
 
-    # ========================================================
-    # RESTE À PAYER
-    # ========================================================
-
     def get_reste_a_payer(self, obj):
-
-        montant_total = (
-            obj.montant_total or Decimal("0.00")
-        )
+        montant_total = obj.montant_total or Decimal("0.00")
 
         total_paye = (
-            obj.total_paye_calc or Decimal("0.00")
+            getattr(obj, "total_paye_calc", None)
+            or Decimal("0.00")
         )
 
         reste = max(
@@ -776,18 +754,12 @@ class PrestationListSerializer(serializers.ModelSerializer):
 
         return f"{reste:.2f}"
 
-    # ========================================================
-    # STATUT DU PAIEMENT
-    # ========================================================
-
     def get_statut_paiement(self, obj):
-
-        montant_total = (
-            obj.montant_total or Decimal("0.00")
-        )
+        montant_total = obj.montant_total or Decimal("0.00")
 
         total_paye = (
-            obj.total_paye_calc or Decimal("0.00")
+            getattr(obj, "total_paye_calc", None)
+            or Decimal("0.00")
         )
 
         if montant_total > 0 and total_paye >= montant_total:
@@ -798,6 +770,180 @@ class PrestationListSerializer(serializers.ModelSerializer):
 
         return "non_paye"
     
+
+
+# ============================================================
+# SERIALIZER DU PAIEMENT DIRECT D'UNE PRESTATION
+# ============================================================
+
+
+# ============================================================
+# 1. SERIALIZER D'UNE LIGNE DE PAIEMENT DE PRESTATION
+# ============================================================
+
+class PaiementPrestationLigneSerializer(serializers.Serializer):
+
+    # cash, wave, orange_money, bank, depot_client...
+    mode_paiement = serializers.CharField(
+        max_length=50,
+        trim_whitespace=True,
+    )
+
+    montant_paye = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        min_value=Decimal("0.01"),
+    )
+
+    reference = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=255,
+        default="",
+        trim_whitespace=True,
+    )
+
+    numero_compte_depot = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=100,
+        default="",
+        trim_whitespace=True,
+    )
+
+    def validate(self, attrs):
+
+        # ====================================================
+        # 1. VÉRIFIER LE MODE DE PAIEMENT
+        # ====================================================
+
+        code = attrs["mode_paiement"].strip().lower()
+
+        mode = ModePaiement.objects.filter(
+            code__iexact=code,
+            active=True,
+        ).first()
+
+        if mode is None:
+            raise serializers.ValidationError({
+                "mode_paiement": (
+                    "Mode de paiement inexistant "
+                    "ou désactivé."
+                )
+            })
+
+        # ====================================================
+        # 2. VÉRIFIER LA RÉFÉRENCE
+        # ====================================================
+
+        reference = (
+            attrs.get("reference") or ""
+        ).strip()
+
+        if mode.necessite_reference and not reference:
+            raise serializers.ValidationError({
+                "reference": (
+                    f"Une référence est obligatoire "
+                    f"pour le mode '{mode.nom}'."
+                )
+            })
+
+        # ====================================================
+        # 3. VÉRIFIER LE NUMÉRO DU COMPTE DÉPÔT
+        # ====================================================
+
+        numero_compte = (
+            attrs.get("numero_compte_depot") or ""
+        ).strip()
+
+        if mode.est_mode_depot:
+
+            if not numero_compte:
+                raise serializers.ValidationError({
+                    "numero_compte_depot": (
+                        "Le numéro de compte dépôt "
+                        "est obligatoire."
+                    )
+                })
+
+        elif numero_compte:
+
+            raise serializers.ValidationError({
+                "numero_compte_depot": (
+                    "Ce champ est réservé au "
+                    "paiement par dépôt client."
+                )
+            })
+
+        # ====================================================
+        # 4. NORMALISER LES DONNÉES
+        # ====================================================
+
+        attrs["mode_paiement"] = mode.code
+        attrs["mode_paiement_id"] = mode.pk
+        attrs["reference"] = reference
+        attrs["numero_compte_depot"] = numero_compte
+
+        return attrs
+
+
+# ============================================================
+# 2. SERIALIZER DU PAIEMENT DIRECT D'UNE PRESTATION
+# ============================================================
+
+class PaiementPrestationSerializer(serializers.Serializer):
+
+    numero_prestation = serializers.CharField(
+        max_length=100,
+        trim_whitespace=True,
+    )
+
+    # Exactement une ligne par opération
+    lignes = PaiementPrestationLigneSerializer(
+        many=True,
+        allow_empty=False,
+        min_length=1,
+        max_length=1,
+    )
+
+    def validate_numero_prestation(self, value):
+
+        numero = value.strip()
+
+        if not numero:
+            raise serializers.ValidationError(
+                "Le numéro de prestation est obligatoire."
+            )
+
+        return numero
+
+    def validate(self, attrs):
+
+        lignes = attrs["lignes"]
+
+        # ====================================================
+        # 1. UN SEUL MODE DE PAIEMENT
+        # ====================================================
+
+        if len(lignes) != 1:
+            raise serializers.ValidationError({
+                "lignes": (
+                    "Le paiement direct d'une prestation "
+                    "doit contenir exactement "
+                    "un seul mode de paiement."
+                )
+            })
+
+        # ====================================================
+        # 2. MONTANT DU PAIEMENT
+        # ====================================================
+
+        attrs["montant_paiement"] = lignes[0]["montant_paye"]
+
+        return attrs
+
+
+
 # ============================================================
 # FACTURE - SORTIE
 # ============================================================

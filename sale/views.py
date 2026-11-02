@@ -17,7 +17,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.bijouteries import get_user_bijouteries
+from backend.bijouteries import (get_user_bijouteries,
+                                 user_has_bijouterie_access)
 from backend.permissions import CanCreateSale
 from sale.models import Vente, VenteAutre, VenteProduit
 
@@ -66,6 +67,7 @@ from sale.pdf.facture_A5_portrait.builder import build_facture_a5_portrait_pdf
 from sale.serializers import (CancelProformaVenteSerializer,
                               FactureListSerializer,
                               PaiementMultiModeSerializer,
+                              PaiementPrestationSerializer,
                               PrestationCreateInSerializer,
                               PrestationListSerializer,
                               RetourVenteProduitSerializer,
@@ -79,6 +81,8 @@ from sale.services.facture_hash_service import generate_facture_hash
 from sale.services.facture_pdf_data_service import build_facture_pdf_data
 from sale.services.facture_pdf_service import generate_facture_pdf
 from sale.services.facture_qr_service import generate_facture_qr
+from sale.services.paiement_prestation_service import \
+    enregistrer_paiement_direct_prestation
 from sale.services.sale_service import (create_sale_one_vendor,
                                         upsert_client_for_payment,
                                         validate_facture_payable)
@@ -1187,48 +1191,148 @@ class PrestationCreateAPIView(APIView):
         )
 
 
-
 class PrestationListAPIView(generics.ListAPIView):
     """
-    Liste paginée des prestations seules.
+    Liste paginée des ventes contenant uniquement des prestations.
 
     Règles métier :
-    - Prestations uniquement.
+    - Au moins une prestation.
     - Aucun bijou.
     - Aucune facture.
-    - Paiements directs.
-    - Aucun mouvement de stock.
+    - Paiements directs uniquement.
+    - Aucun mouvement de stock généré par cette vue.
 
-    Accès :
+    Autorisations :
     - Admin : toutes les bijouteries.
-    - Manager : ses bijouteries.
-    - Vendor : ses propres prestations.
-    - Cashier : sa bijouterie.
+    - Manager : ses bijouteries autorisées.
+    - Vendor : sa bijouterie et ses propres prestations.
+    - Cashier : toutes les prestations de sa bijouterie.
     - Buyer : interdit.
 
     Période :
     - Année en cours uniquement.
-    - Mois en cours par défaut.
+    - Toute l'année par défaut.
     - mois=1 à 12 : filtre mensuel.
-    - mois=tous : toute l'année en cours.
+    - mois=tous : toute l'année.
 
-    Autres filtres :
-    - numero
-    - bijouterie_id
-    - statut_paiement
+    Paiements :
+    - non_paye
+    - partiel
+    - paye
 
     Pagination :
-    - PrestationPagination du backend.
+    - Pagination globale DRF.
     """
 
     serializer_class = PrestationListSerializer
     permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "head", "options"]
 
-    http_method_names = [
-        "get",
-        "head",
-        "options",
-    ]
+    # ========================================================
+    # 1. DOCUMENTATION SWAGGER
+    # ========================================================
+
+    @swagger_auto_schema(
+        operation_id="liste_prestations_rio_gold",
+        operation_summary="Lister les prestations",
+        operation_description="""
+        Retourne les ventes contenant uniquement des prestations.
+
+        RÈGLES MÉTIER
+        -------------
+        - Au moins une prestation.
+        - Aucun bijou.
+        - Aucune facture.
+        - Paiement direct uniquement.
+
+        AUTORISATIONS
+        -------------
+        - Admin : toutes les bijouteries.
+        - Manager : ses bijouteries autorisées.
+        - Vendor : ses propres prestations.
+        - Cashier : toutes les prestations de sa bijouterie.
+        - Buyer : accès interdit.
+
+        FILTRES
+        -------
+        - annee : année en cours uniquement.
+        - mois : 1 à 12 ou "tous".
+        - numero : recherche partielle.
+        - bijouterie_id : identifiant de bijouterie.
+        - statut_paiement : non_paye, partiel, paye.
+
+        PAR DÉFAUT
+        ----------
+        - Toutes les prestations de l'année en cours.
+        - Tous les statuts de paiement.
+
+        PAGINATION
+        ----------
+        Pagination globale DRF.
+        """,
+        manual_parameters=[
+            openapi.Parameter(
+                "annee",
+                openapi.IN_QUERY,
+                description="Année en cours uniquement.",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "mois",
+                openapi.IN_QUERY,
+                description=(
+                    "Mois de 1 à 12 ou 'tous'. "
+                    "Par défaut : toute l'année."
+                ),
+                type=openapi.TYPE_STRING,
+                required=False,
+            ),
+            openapi.Parameter(
+                "numero",
+                openapi.IN_QUERY,
+                description="Recherche par numéro de prestation.",
+                type=openapi.TYPE_STRING,
+                required=False,
+            ),
+            openapi.Parameter(
+                "bijouterie_id",
+                openapi.IN_QUERY,
+                description="Identifiant de la bijouterie.",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "statut_paiement",
+                openapi.IN_QUERY,
+                description="Statut du paiement direct.",
+                type=openapi.TYPE_STRING,
+                enum=["non_paye", "partiel", "paye"],
+                required=False,
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Liste paginée des prestations."
+            ),
+            400: openapi.Response(
+                description="Paramètres invalides."
+            ),
+            401: openapi.Response(
+                description="Authentification requise."
+            ),
+            403: openapi.Response(
+                description="Accès refusé."
+            ),
+        },
+        tags=["Prestations"],
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+    # ========================================================
+    # 2. QUERYSET
+    # ========================================================
 
     def get_queryset(self):
 
@@ -1239,7 +1343,7 @@ class PrestationListAPIView(generics.ListAPIView):
         ).lower().strip()
 
         # ====================================================
-        # 1. VÉRIFICATION DU RÔLE
+        # 3. VÉRIFICATION DU RÔLE
         # ====================================================
 
         if role not in {
@@ -1249,8 +1353,7 @@ class PrestationListAPIView(generics.ListAPIView):
             ROLE_CASHIER,
         }:
             raise PermissionDenied(
-                "Vous n'êtes pas autorisé "
-                "à consulter les prestations."
+                "Vous n'êtes pas autorisé à consulter les prestations."
             )
 
         if not user.is_active:
@@ -1259,10 +1362,11 @@ class PrestationListAPIView(generics.ListAPIView):
             )
 
         # ====================================================
-        # 2. VÉRIFICATION DES PROFILS STAFF
+        # 4. VÉRIFICATION DES PROFILS STAFF
         # ====================================================
 
         vendor = None
+        cashier = None
 
         if role == ROLE_MANAGER:
 
@@ -1317,13 +1421,38 @@ class PrestationListAPIView(generics.ListAPIView):
                 )
 
         # ====================================================
-        # 3. BIJOUTERIES AUTORISÉES
+        # 5. BIJOUTERIES AUTORISÉES
         # ====================================================
 
-        bijouteries = get_user_bijouteries(user)
+        if role == ROLE_VENDOR:
+
+            # Bijouterie du vendeur connecté.
+            bijouterie_ids = [
+                vendor.bijouterie_id
+            ]
+
+        elif role == ROLE_CASHIER:
+
+            # Bijouterie du caissier connecté.
+            bijouterie_ids = [
+                cashier.bijouterie_id
+            ]
+
+        else:
+
+            # Admin : toutes les bijouteries.
+            # Manager : ses bijouteries autorisées.
+            bijouteries = get_user_bijouteries(user)
+
+            bijouterie_ids = list(
+                bijouteries.values_list(
+                    "id",
+                    flat=True,
+                )
+            )
 
         # ====================================================
-        # 4. SOUS-REQUÊTES BIJOUX ET PRESTATIONS
+        # 6. SOUS-REQUÊTES
         # ====================================================
 
         bijoux = VenteProduit.objects.filter(
@@ -1334,8 +1463,17 @@ class PrestationListAPIView(generics.ListAPIView):
             vente_id=OuterRef("pk")
         )
 
+        # Exclure les ventes ayant une facture.
+        # Les prestations seules ne doivent pas générer
+        # de facture.
+        from sale.models import Facture
+
+        factures = Facture.objects.filter(
+            vente_id=OuterRef("pk")
+        )
+
         # ====================================================
-        # 5. TOTAL DES PAIEMENTS DIRECTS
+        # 7. TOTAL DES PAIEMENTS DIRECTS
         # ====================================================
 
         montant_field = DecimalField(
@@ -1358,21 +1496,22 @@ class PrestationListAPIView(generics.ListAPIView):
         )
 
         # ====================================================
-        # 6. QUERYSET PRINCIPAL
+        # 8. QUERYSET PRINCIPAL
         # ====================================================
 
         queryset = (
             Vente.objects
             .filter(
-                bijouterie__in=bijouteries,
+                bijouterie_id__in=bijouterie_ids
             )
-            # Contient au moins une prestation.
             .filter(
                 Exists(prestations)
             )
-            # Ne contient aucun bijou.
             .filter(
                 ~Exists(bijoux)
+            )
+            .filter(
+                ~Exists(factures)
             )
             .annotate(
                 total_paye_calc=Coalesce(
@@ -1390,7 +1529,7 @@ class PrestationListAPIView(generics.ListAPIView):
         )
 
         # ====================================================
-        # 7. RESTRICTION VENDEUR
+        # 9. RESTRICTION VENDEUR
         # ====================================================
 
         if role == ROLE_VENDOR:
@@ -1400,20 +1539,14 @@ class PrestationListAPIView(generics.ListAPIView):
             )
 
         # ====================================================
-        # 8. ANNÉE EN COURS UNIQUEMENT
+        # 10. ANNÉE EN COURS
         # ====================================================
 
         today = timezone.localdate()
-
         annee = today.year
-        mois_courant = today.month
 
         annee_raw = self.request.query_params.get(
             "annee"
-        )
-
-        mois_raw = self.request.query_params.get(
-            "mois"
         )
 
         if annee_raw is not None:
@@ -1426,14 +1559,23 @@ class PrestationListAPIView(generics.ListAPIView):
                     )
                 })
 
+        # Toutes les prestations de l'année courante.
+        queryset = queryset.filter(
+            created_at__year=annee
+        )
+
         # ====================================================
-        # 9. FILTRE MENSUEL
+        # 11. FILTRE MENSUEL
         # ====================================================
 
-        if mois_raw is None:
-            mois = mois_courant
+        mois_raw = self.request.query_params.get(
+            "mois"
+        )
 
-        elif mois_raw.strip().lower() == "tous":
+        if (
+            mois_raw is None
+            or mois_raw.strip().lower() == "tous"
+        ):
             mois = None
 
         else:
@@ -1456,19 +1598,14 @@ class PrestationListAPIView(generics.ListAPIView):
                     )
                 })
 
-        # Toujours limiter à l'année en cours.
-        queryset = queryset.filter(
-            created_at__year=annee
-        )
-
-        # Appliquer le filtre mensuel.
         if mois is not None:
+
             queryset = queryset.filter(
                 created_at__month=mois
             )
 
         # ====================================================
-        # 10. FILTRE NUMÉRO
+        # 12. FILTRE NUMÉRO
         # ====================================================
 
         numero = (
@@ -1484,7 +1621,7 @@ class PrestationListAPIView(generics.ListAPIView):
             )
 
         # ====================================================
-        # 11. FILTRE BIJOUTERIE
+        # 13. FILTRE BIJOUTERIE
         # ====================================================
 
         bijouterie_id = self.request.query_params.get(
@@ -1508,13 +1645,11 @@ class PrestationListAPIView(generics.ListAPIView):
             )
 
         # ====================================================
-        # 12. FILTRE STATUT PAIEMENT
+        # 14. FILTRE STATUT PAIEMENT
         # ====================================================
 
-        statut_paiement = (
-            self.request.query_params.get(
-                "statut_paiement"
-            )
+        statut_paiement = self.request.query_params.get(
+            "statut_paiement"
         )
 
         if statut_paiement is not None:
@@ -1554,7 +1689,7 @@ class PrestationListAPIView(generics.ListAPIView):
                 )
 
         # ====================================================
-        # 13. OPTIMISATION SQL ET TRI
+        # 15. OPTIMISATION SQL ET TRI
         # ====================================================
 
         return (
@@ -1573,7 +1708,444 @@ class PrestationListAPIView(generics.ListAPIView):
                 "-pk",
             )
         )
+        
 
+
+class PaiementPrestationAPIView(APIView):
+    """
+    Paiement direct d'une vente contenant
+    uniquement des prestations.
+
+    Autorisés :
+    - ADMIN
+    - MANAGER
+    - CASHIER
+
+    Règles :
+    - Aucune facture ni proforma.
+    - Un seul mode par opération.
+    - Paiement partiel ou total.
+    - Plusieurs paiements successifs possibles.
+    - Aucun dépassement du reste à payer.
+    - Aucun mouvement de stock.
+    """
+
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["post", "options"]
+
+    # ====================================================
+    # SWAGGER
+    # ====================================================
+
+    @swagger_auto_schema(
+        operation_id="paiement_direct_prestation",
+        operation_summary=(
+            "Encaisser une prestation par son numéro"
+        ),
+        operation_description=(
+            "Enregistre un paiement direct pour une vente "
+            "contenant uniquement des prestations.\n\n"
+
+            "**Identification :**\n"
+            "- `numero_prestation` correspond à "
+            "`Vente.numero_vente`.\n\n"
+
+            "**Paiement :**\n"
+            "- Un seul mode de paiement par opération.\n"
+            "- Paiement partiel ou total autorisé.\n"
+            "- Plusieurs opérations successives possibles.\n"
+            "- `mode_paiement` : code du mode.\n"
+            "- `montant_paye` : montant versé.\n"
+            "- `reference` : obligatoire selon le mode.\n"
+            "- `numero_compte_depot` : obligatoire "
+            "pour un dépôt client.\n\n"
+
+            "**Rôles autorisés :**\n"
+            "- ADMIN : toutes les bijouteries.\n"
+            "- MANAGER : ses bijouteries.\n"
+            "- CASHIER : sa bijouterie.\n\n"
+
+            "**Règles métier :**\n"
+            "- Aucune facture ni proforma.\n"
+            "- Aucun dépassement du reste à payer.\n"
+            "- Vente annulée interdite.\n"
+            "- Vente avec bijoux interdite.\n"
+            "- Dépôt client indisponible tant que "
+            "le service de débit n'est pas raccordé."
+        ),
+        tags=["Prestations"],
+        request_body=PaiementPrestationSerializer,
+        responses={
+            201: openapi.Response(
+                description="Paiement enregistré avec succès.",
+                schema=openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        "message": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "paiement_id": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                        ),
+                        "vente_id": openapi.Schema(
+                            type=openapi.TYPE_INTEGER,
+                        ),
+                        "numero_prestation": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "montant_total": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "montant_paiement": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "total_paye": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "reste_a_payer": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                        ),
+                        "statut_paiement": openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            enum=[
+                                "non_paye",
+                                "partiel",
+                                "paye",
+                            ],
+                        ),
+                        "modes_paiement": openapi.Schema(
+                            type=openapi.TYPE_ARRAY,
+                            items=openapi.Schema(
+                                type=openapi.TYPE_OBJECT,
+                                properties={
+                                    "mode_paiement_id": openapi.Schema(
+                                        type=openapi.TYPE_INTEGER,
+                                    ),
+                                    "mode_paiement": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                    "nom_mode_paiement": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                    "montant_paye": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                    "reference": openapi.Schema(
+                                        type=openapi.TYPE_STRING,
+                                    ),
+                                },
+                            ),
+                        ),
+                    },
+                ),
+            ),
+            400: "Données invalides ou paiement impossible.",
+            401: "Authentification requise.",
+            403: "Accès interdit.",
+        },
+    )
+    @transaction.atomic
+    def post(self, request):
+
+        # ================================================
+        # 1. AUTORISATIONS
+        # ================================================
+
+        user = request.user
+
+        if not user.is_active:
+            raise PermissionDenied(
+                "Compte utilisateur désactivé."
+            )
+
+        role = (
+            get_role_name(user) or ""
+        ).lower().strip()
+
+        if role not in {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_CASHIER,
+        }:
+            raise PermissionDenied(
+                "Vous n'êtes pas autorisé "
+                "à encaisser une prestation."
+            )
+
+        # ================================================
+        # 2. VALIDATION DU SERIALIZER
+        # ================================================
+
+        serializer = PaiementPrestationSerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
+
+        data = serializer.validated_data
+        numero_prestation = data["numero_prestation"]
+
+        # ================================================
+        # 3. RECHERCHE DE LA PRESTATION
+        # ================================================
+
+        ventes = list(
+            Vente.objects
+            .select_for_update()
+            .filter(numero_vente=numero_prestation)[:2]
+        )
+
+        if not ventes:
+            raise ValidationError({
+                "numero_prestation": (
+                    "Aucune prestation trouvée "
+                    "avec ce numéro."
+                )
+            })
+
+        if len(ventes) > 1:
+            raise ValidationError({
+                "numero_prestation": (
+                    "Plusieurs ventes possèdent ce numéro. "
+                    "Contactez l'administrateur."
+                )
+            })
+
+        vente = ventes[0]
+
+        # ================================================
+        # 4. CONTRÔLE DE LA BIJOUTERIE
+        # ================================================
+
+        if not user_has_bijouterie_access(
+            user,
+            vente.bijouterie_id,
+        ):
+            raise PermissionDenied(
+                "Vous n'avez pas accès à cette bijouterie."
+            )
+
+        if role == ROLE_MANAGER:
+
+            manager = getattr(
+                user,
+                "staff_manager_profile",
+                None,
+            )
+
+            if not (
+                manager
+                and manager.is_active_staff
+            ):
+                raise PermissionDenied(
+                    "Profil manager invalide ou désactivé."
+                )
+
+        elif role == ROLE_CASHIER:
+
+            cashier = getattr(
+                user,
+                "staff_cashier_profile",
+                None,
+            )
+
+            if not (
+                cashier
+                and cashier.is_active_staff
+                and cashier.bijouterie_id == vente.bijouterie_id
+            ):
+                raise PermissionDenied(
+                    "Profil caissier invalide "
+                    "ou bijouterie non autorisée."
+                )
+
+        # ================================================
+        # 5. VALIDATION DE LA PRESTATION
+        # ================================================
+
+        if vente.is_cancelled:
+            raise ValidationError({
+                "numero_prestation": (
+                    "Cette prestation est annulée."
+                )
+            })
+
+        if not VenteAutre.objects.filter(
+            vente_id=vente.pk
+        ).exists():
+            raise ValidationError({
+                "numero_prestation": (
+                    "Cette vente ne contient aucune prestation."
+                )
+            })
+
+        if VenteProduit.objects.filter(
+            vente_id=vente.pk
+        ).exists():
+            raise ValidationError({
+                "numero_prestation": (
+                    "Cette vente contient des bijoux. "
+                    "Utilisez le paiement via facture."
+                )
+            })
+
+        if Facture.objects.filter(
+            vente_id=vente.pk
+        ).exists():
+            raise ValidationError({
+                "numero_prestation": (
+                    "Une facture existe déjà pour cette vente."
+                )
+            })
+
+        # ================================================
+        # 6. CALCUL DU RESTE À PAYER
+        # ================================================
+
+        montant_total = vente.montant_total or ZERO
+
+        if montant_total <= ZERO:
+            raise ValidationError({
+                "numero_prestation": (
+                    "Le montant total doit être "
+                    "supérieur à zéro."
+                )
+            })
+
+        total_deja_paye = (
+            PaiementLigne.objects
+            .filter(
+                paiement__vente_id=vente.pk,
+                paiement__facture__isnull=True,
+            )
+            .aggregate(total=Sum("montant_paye"))["total"]
+            or ZERO
+        )
+
+        reste_avant = montant_total - total_deja_paye
+
+        if reste_avant <= ZERO:
+            raise ValidationError({
+                "numero_prestation": (
+                    "Cette prestation est déjà "
+                    "entièrement payée."
+                )
+            })
+
+        montant_demande = data["montant_paiement"]
+
+        if montant_demande > reste_avant:
+            raise ValidationError({
+                "lignes": (
+                    f"Montant demandé : "
+                    f"{montant_demande:.2f} FCFA. "
+                    f"Reste à payer : {reste_avant:.2f} FCFA."
+                )
+            })
+
+        # ================================================
+        # 7. PRÉPARATION DE L'UNIQUE LIGNE
+        # ================================================
+
+        ligne = data["lignes"][0]
+
+        lignes_service = [{
+            "mode_paiement_id": ligne["mode_paiement_id"],
+            "montant_paye": ligne["montant_paye"],
+            "reference": ligne.get("reference", ""),
+            "numero_compte_depot": ligne.get(
+                "numero_compte_depot", ""
+            ),
+        }]
+
+        # ================================================
+        # 8. ENREGISTREMENT DU PAIEMENT
+        # ================================================
+
+        paiement = enregistrer_paiement_direct_prestation(
+            vente=vente,
+            lignes=lignes_service,
+            utilisateur=user,
+        )
+
+        montant_paiement = paiement.montant_total_paye
+
+        # ================================================
+        # 9. DÉTAIL DU MODE UTILISÉ
+        # ================================================
+
+        modes_paiement = [
+            {
+                "mode_paiement_id": ligne.mode_paiement_id,
+                "mode_paiement": ligne.mode_paiement.code,
+                "nom_mode_paiement": ligne.mode_paiement.nom,
+                "montant_paye": f"{ligne.montant_paye:.2f}",
+                "reference": ligne.reference or "",
+            }
+            for ligne in paiement.lignes.select_related(
+                "mode_paiement"
+            ).all()
+        ]
+
+        # ================================================
+        # 10. NOUVEAU TOTAL PAYÉ
+        # ================================================
+
+        total_paye = (
+            PaiementLigne.objects
+            .filter(
+                paiement__vente_id=vente.pk,
+                paiement__facture__isnull=True,
+            )
+            .aggregate(total=Sum("montant_paye"))["total"]
+            or ZERO
+        )
+
+        reste_a_payer = montant_total - total_paye
+
+        if reste_a_payer < ZERO:
+            raise ValidationError({
+                "paiement": (
+                    "Le total payé dépasse "
+                    "le montant de la prestation."
+                )
+            })
+
+        # ================================================
+        # 11. STATUT DU PAIEMENT
+        # ================================================
+
+        if reste_a_payer == ZERO:
+            statut_paiement = "paye"
+
+        elif total_paye > ZERO:
+            statut_paiement = "partiel"
+
+        else:
+            statut_paiement = "non_paye"
+
+        # ================================================
+        # 12. RÉPONSE
+        # ================================================
+
+        return Response(
+            {
+                "message": (
+                    "Paiement de prestation "
+                    "enregistré avec succès."
+                ),
+                "paiement_id": paiement.pk,
+                "vente_id": vente.pk,
+                "numero_prestation": vente.numero_vente,
+                "montant_total": f"{montant_total:.2f}",
+                "montant_paiement": f"{montant_paiement:.2f}",
+                "total_paye": f"{total_paye:.2f}",
+                "reste_a_payer": f"{reste_a_payer:.2f}",
+                "statut_paiement": statut_paiement,
+                "modes_paiement": modes_paiement,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+        
 
 class VenteListAPIView(APIView):
     """
