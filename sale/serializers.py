@@ -560,26 +560,24 @@ class PrestationLigneInSerializer(serializers.Serializer):
 # 2. SERIALIZER DE CRÉATION D'UNE PRESTATION
 # ============================================================
 
-
 class PrestationCreateInSerializer(serializers.Serializer):
     """
-    Création d'une vente contenant uniquement des prestations.
+    Création d'une vente contenant uniquement
+    des prestations.
 
-    - Client facultatif.
+    Règles :
+    - Aucun client demandé à la création.
     - Admin/manager : vendor_email obligatoire.
     - Vendeur : utilise son propre profil.
     - Au moins une prestation obligatoire.
     - Aucun bijou autorisé.
+    - Aucun paiement à cette étape.
     """
 
     vendor_email = serializers.EmailField(
         required=False,
         allow_null=True,
-    )
-
-    client = ClientOptionalInSerializer(
-        required=False,
-        allow_null=True,
+        allow_blank=True,
     )
 
     autres = PrestationLigneInSerializer(
@@ -591,26 +589,54 @@ class PrestationCreateInSerializer(serializers.Serializer):
     def validate(self, attrs):
         attrs = super().validate(attrs)
 
+        # ====================================================
+        # 1. INTERDIRE LES BIJOUX
+        # ====================================================
+
         if "produits" in self.initial_data:
             raise serializers.ValidationError({
                 "produits": (
                     "Les bijoux ne sont pas autorisés "
-                    "dans une prestation seule."
+                    "dans une vente de prestations seules."
                 )
             })
 
+        # ====================================================
+        # 2. CLIENT RENSEIGNÉ UNIQUEMENT AU PAIEMENT
+        # ====================================================
+
+        if "client" in self.initial_data:
+            raise serializers.ValidationError({
+                "client": (
+                    "Les informations du client doivent "
+                    "être renseignées au moment du paiement."
+                )
+            })
+
+        # ====================================================
+        # 3. AUTHENTIFICATION
+        # ====================================================
+
         request = self.context.get("request")
 
-        if request is None or not request.user.is_authenticated:
+        if (
+            request is None
+            or not request.user.is_authenticated
+        ):
             raise serializers.ValidationError({
                 "detail": "Authentification requise."
             })
+
+        # ====================================================
+        # 4. VÉRIFICATION DU RÔLE
+        # ====================================================
 
         role = (
             get_role_name(request.user) or ""
         ).strip().lower()
 
         if role in {ROLE_ADMIN, ROLE_MANAGER}:
+
             vendor_email = (
                 attrs.get("vendor_email") or ""
             ).strip().lower()
@@ -619,13 +645,16 @@ class PrestationCreateInSerializer(serializers.Serializer):
                 raise serializers.ValidationError({
                     "vendor_email": (
                         "Le vendeur est obligatoire "
-                        "pour un administrateur ou un manager."
+                        "pour un administrateur "
+                        "ou un manager."
                     )
                 })
 
             attrs["vendor_email"] = vendor_email
 
         elif role == ROLE_VENDOR:
+
+            # Le vendeur connecté utilise son profil.
             attrs.pop("vendor_email", None)
 
         else:
@@ -636,11 +665,7 @@ class PrestationCreateInSerializer(serializers.Serializer):
                 )
             })
 
-        attrs["client"] = attrs.get("client") or {}
-
         return attrs
-
-
 
 # ============================================================
 # 1. DÉTAIL D'UNE LIGNE DE PRESTATION
@@ -771,12 +796,6 @@ class PrestationListSerializer(serializers.ModelSerializer):
         return "non_paye"
     
 
-
-# ============================================================
-# SERIALIZER DU PAIEMENT DIRECT D'UNE PRESTATION
-# ============================================================
-
-
 # ============================================================
 # 1. SERIALIZER D'UNE LIGNE DE PAIEMENT DE PRESTATION
 # ============================================================
@@ -893,12 +912,33 @@ class PaiementPrestationLigneSerializer(serializers.Serializer):
 
 class PaiementPrestationSerializer(serializers.Serializer):
 
+    # ====================================================
+    # 1. IDENTIFICATION DE LA PRESTATION
+    # ====================================================
+
     numero_prestation = serializers.CharField(
         max_length=100,
         trim_whitespace=True,
     )
 
-    # Exactement une ligne par opération
+    # ====================================================
+    # 2. INFORMATIONS DU CLIENT
+    # ====================================================
+
+    nom_client = serializers.CharField(
+        max_length=150,
+        trim_whitespace=True,
+    )
+
+    telephone_client = serializers.CharField(
+        max_length=30,
+        trim_whitespace=True,
+    )
+
+    # ====================================================
+    # 3. PAIEMENT
+    # ====================================================
+
     lignes = PaiementPrestationLigneSerializer(
         many=True,
         allow_empty=False,
@@ -906,8 +946,11 @@ class PaiementPrestationSerializer(serializers.Serializer):
         max_length=1,
     )
 
-    def validate_numero_prestation(self, value):
+    # ====================================================
+    # 4. VALIDATIONS
+    # ====================================================
 
+    def validate_numero_prestation(self, value):
         numero = value.strip()
 
         if not numero:
@@ -917,31 +960,42 @@ class PaiementPrestationSerializer(serializers.Serializer):
 
         return numero
 
+    def validate_nom_client(self, value):
+        nom = value.strip()
+
+        if not nom:
+            raise serializers.ValidationError(
+                "Le nom du client est obligatoire."
+            )
+
+        return nom
+
+    def validate_telephone_client(self, value):
+        telephone = value.strip()
+
+        if not telephone:
+            raise serializers.ValidationError(
+                "Le téléphone du client est obligatoire."
+            )
+
+        return telephone
+
     def validate(self, attrs):
 
         lignes = attrs["lignes"]
 
-        # ====================================================
-        # 1. UN SEUL MODE DE PAIEMENT
-        # ====================================================
-
         if len(lignes) != 1:
             raise serializers.ValidationError({
                 "lignes": (
-                    "Le paiement direct d'une prestation "
+                    "Le paiement d'une prestation "
                     "doit contenir exactement "
                     "un seul mode de paiement."
                 )
             })
 
-        # ====================================================
-        # 2. MONTANT DU PAIEMENT
-        # ====================================================
-
         attrs["montant_paiement"] = lignes[0]["montant_paye"]
 
         return attrs
-
 
 
 # ============================================================
