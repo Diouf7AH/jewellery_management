@@ -47,48 +47,19 @@ class ClientDepotSerializer(serializers.ModelSerializer):
 # ============================================================
 
 class ClientDepotOuvertureSerializer(serializers.Serializer):
-    """
-    Permet d'ouvrir un compte dépôt pour :
-    - un nouveau client ;
-    - un client commercial existant ;
-    - un client ayant déjà un profil dépôt.
-
-    L'unicité du téléphone est gérée dans la vue.
-    """
-
-    nom = serializers.CharField(
-        max_length=100,
-    )
-
-    prenom = serializers.CharField(
-        max_length=100,
-    )
-
-    telephone = serializers.CharField(
-        max_length=15,
-    )
+    nom = serializers.CharField(max_length=100)
+    prenom = serializers.CharField(max_length=100)
+    telephone = serializers.CharField(max_length=15)
 
     def validate_telephone(self, value):
         value = str(value).strip()
 
-        if not value:
+        if not value.isdigit() or len(value) < 9:
             raise serializers.ValidationError(
-                "Le téléphone est obligatoire."
-            )
-
-        if not value.isdigit():
-            raise serializers.ValidationError(
-                "Le téléphone doit contenir uniquement des chiffres."
-            )
-
-        if len(value) < 9:
-            raise serializers.ValidationError(
-                "Le téléphone doit contenir au moins 9 chiffres."
+                "Numéro de téléphone invalide."
             )
 
         return value
-    
-    
 
 # =========================
 # COMPTE DEPOT (LECTURE)
@@ -136,27 +107,20 @@ class CompteDepotSerializer(serializers.ModelSerializer):
 # CREATE OR DEPOSIT INPUT
 # ============================================================
 
-class CreateOrDepotCompteSerializer(serializers.Serializer):
 
+class CreateOrDepotCompteSerializer(serializers.Serializer):
     client = ClientDepotOuvertureSerializer()
 
     montant = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
+        min_value=0.01,
     )
 
     bijouterie_id = serializers.IntegerField(
         required=False,
         allow_null=True,
     )
-
-    def validate_montant(self, value):
-        if value is None or value <= 0:
-            raise serializers.ValidationError(
-                "Le montant doit être supérieur à 0."
-            )
-
-        return value
 
 # =========================
 # TRANSACTION OUTPUT
