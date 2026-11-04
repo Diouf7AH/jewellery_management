@@ -6,6 +6,7 @@ from userauths.serializers import UserMiniSerializer
 
 from .models import ClientDepot, CompteDepot, CompteDepotTransaction
 
+
 class ClientDepotSerializer(serializers.ModelSerializer):
 
     class Meta:
@@ -39,6 +40,56 @@ class ClientDepotSerializer(serializers.ModelSerializer):
         return value
     
     
+
+
+# ============================================================
+# CLIENT DEPOT - OUVERTURE DE COMPTE
+# ============================================================
+
+class ClientDepotOuvertureSerializer(serializers.Serializer):
+    """
+    Permet d'ouvrir un compte dépôt pour :
+    - un nouveau client ;
+    - un client commercial existant ;
+    - un client ayant déjà un profil dépôt.
+
+    L'unicité du téléphone est gérée dans la vue.
+    """
+
+    nom = serializers.CharField(
+        max_length=100,
+    )
+
+    prenom = serializers.CharField(
+        max_length=100,
+    )
+
+    telephone = serializers.CharField(
+        max_length=15,
+    )
+
+    def validate_telephone(self, value):
+        value = str(value).strip()
+
+        if not value:
+            raise serializers.ValidationError(
+                "Le téléphone est obligatoire."
+            )
+
+        if not value.isdigit():
+            raise serializers.ValidationError(
+                "Le téléphone doit contenir uniquement des chiffres."
+            )
+
+        if len(value) < 9:
+            raise serializers.ValidationError(
+                "Le téléphone doit contenir au moins 9 chiffres."
+            )
+
+        return value
+    
+    
+
 # =========================
 # COMPTE DEPOT (LECTURE)
 # =========================
@@ -79,12 +130,15 @@ class CompteDepotSerializer(serializers.ModelSerializer):
         ]
 
         read_only_fields = fields
-        
-# =========================
+
+
+# ============================================================
 # CREATE OR DEPOSIT INPUT
-# =========================
+# ============================================================
+
 class CreateOrDepotCompteSerializer(serializers.Serializer):
-    client = ClientDepotSerializer()
+
+    client = ClientDepotOuvertureSerializer()
 
     montant = serializers.DecimalField(
         max_digits=12,
@@ -103,8 +157,7 @@ class CreateOrDepotCompteSerializer(serializers.Serializer):
             )
 
         return value
-    
-    
+
 # =========================
 # TRANSACTION OUTPUT
 # =========================
