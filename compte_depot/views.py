@@ -4,7 +4,7 @@ import uuid
 from decimal import Decimal
 
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Count, Sum
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
@@ -14,6 +14,7 @@ from drf_yasg.utils import swagger_auto_schema
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -27,6 +28,7 @@ from backend.utils.helpers import (resolve_bijouterie_for_user,
 from compte_depot.models import CompteDepot, CompteDepotTransaction
 from compte_depot.notifications import (send_compte_created_notification,
                                         send_compte_depot_notification)
+from sale.models import Client
 
 from .models import ClientDepot, CompteDepot, CompteDepotTransaction
 from .pdf import generate_transaction_ticket_80mm_pdf
@@ -36,8 +38,93 @@ from .serializers import (ClientDepotSerializer, CompteDepotSerializer,
                           CreateOrDepotCompteSerializer)
 from .services import effectuer_depot, effectuer_retrait
 
+# ============================================================
+# RATTACHER UN CLIENT COMMERCIAL À CLIENTDEPOT
+# ============================================================
+
+def creer_profil_depot_client_existant(
+    client,
+    bijouterie,
+):
+    """
+    Crée uniquement la ligne enfant ClientDepot.
+
+    Le client commercial existe déjà dans sale.Client.
+
+    Ne modifie jamais :
+    - son nom
+    - son prénom
+    - son téléphone
+    - sa CNI
+    - son utilisateur
+    - son historique commercial
+
+    À appeler dans transaction.atomic(), après avoir
+    verrouillé le client parent.
+    """
+
+    profil = ClientDepot.objects.filter(
+        pk=client.pk
+    ).first()
+
+    if profil:
+        return profil
+
+    parent_link = ClientDepot._meta.get_ancestor_link(
+        Client
+    )
+
+    table = connection.ops.quote_name(
+        ClientDepot._meta.db_table
+    )
+
+    parent_col = connection.ops.quote_name(
+        parent_link.column
+    )
+
+    bijouterie_col = connection.ops.quote_name(
+        ClientDepot._meta.get_field(
+            "bijouterie"
+        ).column
+    )
+
+    photo_field = ClientDepot._meta.get_field("photo")
+
+    photo_col = connection.ops.quote_name(
+        photo_field.column
+    )
+
+    photo_default = photo_field.get_default()
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            INSERT INTO {table}
+                (
+                    {parent_col},
+                    {bijouterie_col},
+                    {photo_col}
+                )
+            VALUES (%s, %s, %s)
+            """,
+            [
+                client.pk,
+                bijouterie.pk,
+                photo_default,
+            ],
+        )
+
+    return ClientDepot.objects.get(
+        pk=client.pk
+    )
+
+
+# ============================================================
+# CRÉER OU ALIMENTER UN COMPTE DÉPÔT
+# ============================================================
 
 class CreateOrDepotCompteView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     ALLOWED_ROLES = {
@@ -48,97 +135,38 @@ class CreateOrDepotCompteView(APIView):
 
     @swagger_auto_schema(
         operation_id="createOrDepotCompte",
-        operation_summary="Créer ou alimenter un compte dépôt",
+        operation_summary=(
+            "Créer ou alimenter un compte dépôt"
+        ),
         operation_description=(
-            "Crée un client et un compte dépôt si nécessaire.\n\n"
-            "Si le client possède déjà un compte via son téléphone, "
-            "effectue directement un dépôt sur ce compte.\n\n"
-            "### Règles d'accès\n"
-            "- Admin : autorisé, `bijouterie_id` obligatoire.\n"
-            "- Manager : autorisé, `bijouterie_id` obligatoire et doit appartenir à ses bijouteries.\n"
-            "- Caissier : autorisé, sa bijouterie est utilisée automatiquement.\n"
-            "- Vendor : non autorisé.\n"
-            "- Buyer : non autorisé.\n\n"
-            "### Comportement\n"
-            "- Client inexistant : création client + compte + dépôt initial.\n"
-            "- Client existant sans compte : création du compte + dépôt initial.\n"
-            "- Client avec compte existant : dépôt directement sur le compte.\n"
+            "Crée un compte dépôt ou alimente un compte "
+            "existant.\n\n"
+            "Un client commercial déjà enregistré est "
+            "réutilisé sans doublon.\n\n"
+            "Admin et manager : bijouterie_id obligatoire.\n"
+            "Caissier : bijouterie automatique.\n"
+            "Vendeur et acheteur : non autorisés."
         ),
         request_body=CreateOrDepotCompteSerializer,
         responses={
             200: openapi.Response(
-                description="Compte existant détecté et dépôt effectué.",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "message": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                        ),
-                        "operation_type": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            example="deposit_existing_account",
-                        ),
-                        "client": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                        ),
-                        "bijouterie": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                        ),
-                        "compte": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                        ),
-                        "transaction": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                        ),
-                    },
-                ),
+                description="Dépôt sur compte existant."
             ),
-
             201: openapi.Response(
-                description="Nouveau compte créé puis crédité avec succès.",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "message": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                        ),
-                        "operation_type": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            example="create_client_account_and_deposit",
-                        ),
-                        "client": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                        ),
-                        "bijouterie": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                        ),
-                        "compte": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                        ),
-                        "transaction": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                        ),
-                    },
-                ),
+                description="Compte créé et crédité."
             ),
-
-            400: openapi.Response(
-                description=(
-                    "Données invalides, montant incorrect "
-                    "ou bijouterie_id manquant."
-                )
-            ),
-
-            403: openapi.Response(
-                description=(
-                    "Accès refusé ou bijouterie non accessible."
-                )
-            ),
+            400: "Données invalides.",
+            403: "Accès refusé.",
         },
         tags=["compte dépôt"],
     )
     @transaction.atomic
     def post(self, request):
+
+        # ====================================================
+        # 1. RÔLE
+        # ====================================================
+
         role = get_role_name(request.user)
 
         if role not in self.ALLOWED_ROLES:
@@ -146,6 +174,10 @@ class CreateOrDepotCompteView(APIView):
                 {"detail": "Accès refusé."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        # ====================================================
+        # 2. VALIDATION
+        # ====================================================
 
         serializer = CreateOrDepotCompteSerializer(
             data=request.data
@@ -155,303 +187,292 @@ class CreateOrDepotCompteView(APIView):
         client_data = serializer.validated_data["client"]
         montant = serializer.validated_data["montant"]
         telephone = client_data["telephone"]
+
         bijouterie_id = serializer.validated_data.get(
             "bijouterie_id"
         )
 
-        # =====================================================
-        # BIJOUTERIES ACCESSIBLES
-        # =====================================================
+        # ====================================================
+        # 3. BIJOUTERIE AUTORISÉE
+        # ====================================================
 
         bijouteries = get_user_bijouteries(
             request.user
         )
 
-        if not bijouteries.exists():
-            return Response(
-                {
-                    "detail":
-                    "Aucune bijouterie accessible pour cet utilisateur."
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        # =====================================================
-        # CASHIER
-        # =====================================================
-
         if role == ROLE_CASHIER:
+
             user_bijouterie = bijouteries.first()
 
             if not user_bijouterie:
                 return Response(
                     {
-                        "detail":
-                        "Aucune bijouterie associée au caissier."
+                        "detail": (
+                            "Aucune bijouterie associée "
+                            "au caissier."
+                        )
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        # =====================================================
-        # ADMIN / MANAGER
-        # =====================================================
-
         else:
+
             if not bijouterie_id:
-                return Response(
-                    {
-                        "detail":
-                        "Le champ bijouterie_id est obligatoire "
-                        "pour l'admin et le manager."
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                raise ValidationError({
+                    "bijouterie_id": (
+                        "Ce champ est obligatoire pour "
+                        "l'admin et le manager."
+                    )
+                })
 
             user_bijouterie = (
                 bijouteries
-                .filter(id=bijouterie_id)
+                .filter(pk=bijouterie_id)
                 .first()
             )
 
             if not user_bijouterie:
                 return Response(
                     {
-                        "detail":
-                        "Cette bijouterie est introuvable "
-                        "ou vous n'y avez pas accès."
+                        "detail": (
+                            "Bijouterie introuvable "
+                            "ou accès refusé."
+                        )
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        # =====================================================
-        # RECHERCHE CLIENT
-        # =====================================================
+        # ====================================================
+        # 4. RECHERCHER D'ABORD DANS CLIENT
+        # ====================================================
 
-        client = (
-            ClientDepot.objects
+        client_base = (
+            Client.objects
             .select_for_update()
             .filter(telephone=telephone)
             .first()
         )
 
-        # =====================================================
-        # CAS 1 : CLIENT EXISTANT
-        # =====================================================
+        nouveau_client = False
+        nouveau_profil = False
 
-        if client:
-            if not client.bijouterie_id:
+        # ====================================================
+        # 5. CLIENT COMMERCIAL EXISTANT
+        # ====================================================
+
+        if client_base:
+
+            client_depot = (
+                ClientDepot.objects
+                .filter(pk=client_base.pk)
+                .first()
+            )
+
+            if client_depot is None:
+
+                client_depot = (
+                    creer_profil_depot_client_existant(
+                        client=client_base,
+                        bijouterie=user_bijouterie,
+                    )
+                )
+
+                nouveau_profil = True
+
+        # ====================================================
+        # 6. CLIENT TOTALEMENT NOUVEAU
+        # ====================================================
+
+        else:
+
+            client_depot = ClientDepot.objects.create(
+                **client_data,
+                bijouterie=user_bijouterie,
+            )
+
+            nouveau_client = True
+            nouveau_profil = True
+
+        # ====================================================
+        # 7. VÉRIFIER LA BIJOUTERIE DU PROFIL
+        # ====================================================
+
+        if client_depot.bijouterie_id is None:
+
+            # Ne pas rattacher automatiquement un profil
+            # existant sans connaître son historique.
+            if not nouveau_profil:
                 return Response(
                     {
-                        "detail":
-                        "Ce client n'est lié à aucune bijouterie."
+                        "detail": (
+                            "Le profil dépôt existe, "
+                            "mais aucune bijouterie "
+                            "ne lui est associée."
+                        )
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if client.bijouterie_id != user_bijouterie.id:
-                return Response(
-                    {
-                        "detail":
-                        "Ce client appartient à une autre bijouterie."
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+        elif (
+            client_depot.bijouterie_id
+            != user_bijouterie.pk
+        ):
 
-            compte = (
-                CompteDepot.objects
-                .select_for_update()
-                .filter(client=client)
-                .first()
+            return Response(
+                {
+                    "detail": (
+                        "Ce profil dépôt appartient "
+                        "à une autre bijouterie."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-            # =================================================
-            # CAS 1A : COMPTE EXISTANT
-            # =================================================
+        # ====================================================
+        # 8. RECHERCHER LE COMPTE DÉPÔT
+        # ====================================================
 
-            if compte:
-                tx = effectuer_depot(
-                    compte_id=compte.id,
-                    montant=montant,
-                    user=request.user,
-                    reference="DEPOT_COMPTE_EXISTANT",
-                    commentaire=(
-                        "Dépôt effectué sur compte existant "
-                        "via téléphone client."
-                    ),
-                )
+        compte = (
+            CompteDepot.objects
+            .select_for_update()
+            .filter(client=client_depot)
+            .first()
+        )
 
-                transaction.on_commit(
-                    lambda tx=tx:
+        # ====================================================
+        # 9. COMPTE EXISTANT : DÉPÔT
+        # ====================================================
+
+        if compte:
+
+            tx = effectuer_depot(
+                compte_id=compte.pk,
+                montant=montant,
+                user=request.user,
+                reference="DEPOT_COMPTE_EXISTANT",
+                commentaire=(
+                    "Dépôt sur compte existant."
+                ),
+            )
+
+            operation_type = "deposit_existing_account"
+
+            message = (
+                "Compte existant détecté, "
+                "dépôt effectué avec succès."
+            )
+
+            http_status = status.HTTP_200_OK
+
+            transaction.on_commit(
+                lambda tx=tx: (
                     send_compte_depot_notification(tx)
                 )
+            )
 
-                compte.refresh_from_db()
+        # ====================================================
+        # 10. COMPTE INEXISTANT : OUVERTURE
+        # ====================================================
 
-                return Response(
-                    {
-                        "message":
-                        "Compte existant détecté, dépôt effectué avec succès.",
-
-                        "operation_type":
-                        "deposit_existing_account",
-
-                        "client":
-                        ClientDepotSerializer(client).data,
-
-                        "bijouterie": {
-                            "id": user_bijouterie.id,
-                            "nom": user_bijouterie.nom,
-                        },
-
-                        "compte": {
-                            "id": compte.id,
-                            "numero_compte": compte.numero_compte,
-                            "solde": str(compte.solde),
-                            "created_at": compte.created_at,
-                        },
-
-                        "transaction":
-                        CompteDepotTransactionSerializer(tx).data,
-                    },
-                    status=status.HTTP_200_OK,
-                )
-
-            # =================================================
-            # CAS 1B : CLIENT EXISTANT SANS COMPTE
-            # =================================================
+        else:
 
             numero = self.generer_numero_compte(
                 telephone
             )
 
             compte = CompteDepot.objects.create(
-                client=client,
+                client=client_depot,
                 numero_compte=numero,
                 created_by=request.user,
                 solde=Decimal("0.00"),
             )
 
             tx = effectuer_depot(
-                compte_id=compte.id,
+                compte_id=compte.pk,
                 montant=montant,
                 user=request.user,
-                reference="OUVERTURE_COMPTE_CLIENT_EXISTANT",
+                reference="OUVERTURE_COMPTE",
                 commentaire=(
-                    "Nouveau compte créé puis crédité "
-                    "pour un client existant."
+                    "Ouverture et alimentation "
+                    "du compte dépôt."
                 ),
             )
 
+            if nouveau_client:
+
+                operation_type = (
+                    "create_client_account_and_deposit"
+                )
+
+                message = (
+                    "Nouveau client créé, "
+                    "compte dépôt ouvert et crédité."
+                )
+
+            else:
+
+                operation_type = (
+                    "create_account_and_deposit"
+                )
+
+                message = (
+                    "Client commercial existant "
+                    "réutilisé, compte dépôt "
+                    "ouvert et crédité."
+                )
+
+            http_status = status.HTTP_201_CREATED
+
             transaction.on_commit(
-                lambda compte=compte, montant=montant:
-                send_compte_created_notification(
-                    compte,
-                    montant,
+                lambda compte=compte, montant=montant: (
+                    send_compte_created_notification(
+                        compte,
+                        montant,
+                    )
                 )
             )
 
-            compte.refresh_from_db()
-
-            return Response(
-                {
-                    "message":
-                    "Nouveau compte créé puis crédité avec succès.",
-
-                    "operation_type":
-                    "create_account_and_deposit",
-
-                    "client":
-                    ClientDepotSerializer(client).data,
-
-                    "bijouterie": {
-                        "id": user_bijouterie.id,
-                        "nom": user_bijouterie.nom,
-                    },
-
-                    "compte": {
-                        "id": compte.id,
-                        "numero_compte": compte.numero_compte,
-                        "solde": str(compte.solde),
-                        "created_at": compte.created_at,
-                    },
-
-                    "transaction":
-                    CompteDepotTransactionSerializer(tx).data,
-                },
-                status=status.HTTP_201_CREATED,
-            )
-
-        # =====================================================
-        # CAS 2 : NOUVEAU CLIENT
-        # =====================================================
-
-        client = ClientDepot.objects.create(
-            **client_data,
-            bijouterie=user_bijouterie,
-        )
-
-        numero = self.generer_numero_compte(
-            telephone
-        )
-
-        compte = CompteDepot.objects.create(
-            client=client,
-            numero_compte=numero,
-            created_by=request.user,
-            solde=Decimal("0.00"),
-        )
-
-        tx = effectuer_depot(
-            compte_id=compte.id,
-            montant=montant,
-            user=request.user,
-            reference="OUVERTURE_NOUVEAU_COMPTE",
-            commentaire=(
-                "Nouveau client créé, "
-                "compte ouvert et crédité."
-            ),
-        )
-
-        transaction.on_commit(
-            lambda compte=compte, montant=montant:
-            send_compte_created_notification(
-                compte,
-                montant,
-            )
-        )
-
-        compte.refresh_from_db()
+        # ====================================================
+        # 11. RÉPONSE
+        # ====================================================
 
         return Response(
             {
-                "message":
-                "Nouveau client créé, compte ouvert et crédité avec succès.",
+                "message": message,
 
-                "operation_type":
-                "create_client_account_and_deposit",
+                "operation_type": operation_type,
 
-                "client":
-                ClientDepotSerializer(client).data,
+                "client": ClientDepotSerializer(
+                    client_depot
+                ).data,
 
                 "bijouterie": {
-                    "id": user_bijouterie.id,
+                    "id": user_bijouterie.pk,
                     "nom": user_bijouterie.nom,
                 },
 
                 "compte": {
-                    "id": compte.id,
+                    "id": compte.pk,
                     "numero_compte": compte.numero_compte,
-                    "solde": str(compte.solde),
+                    "solde": str(tx.solde_apres),
                     "created_at": compte.created_at,
                 },
 
-                "transaction":
-                CompteDepotTransactionSerializer(tx).data,
+                "transaction": (
+                    CompteDepotTransactionSerializer(
+                        tx
+                    ).data
+                ),
             },
-            status=status.HTTP_201_CREATED,
+            status=http_status,
         )
 
+    # ========================================================
+    # 12. GÉNÉRATION NUMÉRO COMPTE
+    # ========================================================
+
     def generer_numero_compte(self, telephone):
+
         date_str = timezone.localtime(
             timezone.now()
         ).strftime("%y%m")
@@ -464,6 +485,7 @@ class CreateOrDepotCompteView(APIView):
             return prefix
 
         for _ in range(10):
+
             suffix = uuid.uuid4().hex[:4].upper()
 
             numero = f"{prefix}-{suffix}"
@@ -473,9 +495,12 @@ class CreateOrDepotCompteView(APIView):
             ).exists():
                 return numero
 
-        raise RuntimeError(
-            "Impossible de générer un numéro de compte unique."
-        )
+        raise ValidationError({
+            "numero_compte": (
+                "Impossible de générer "
+                "un numéro de compte unique."
+            )
+        })
 
 
 class DepotView(APIView):
