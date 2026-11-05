@@ -20,7 +20,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from backend.bijouteries import get_user_bijouteries
-from backend.permissions import IsManagerOrCashier
+from backend.permissions import IsAdminOrManagerOrCashier
 from backend.renderers import UserRenderer
 from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
                            get_role_name)
@@ -129,7 +129,7 @@ class ClientRechercheDepotAPIView(APIView):
 
     permission_classes = [
         IsAuthenticated,
-        IsManagerOrCashier,
+        IsAdminOrManagerOrCashier,
     ]
 
     @swagger_auto_schema(
@@ -245,7 +245,7 @@ class CreateOrDepotCompteView(APIView):
 
     permission_classes = [
         IsAuthenticated,
-        IsManagerOrCashier,
+        IsAdminOrManagerOrCashier,
     ]
 
     ALLOWED_ROLES = {
@@ -627,7 +627,7 @@ class CreateOrDepotCompteView(APIView):
 class DepotView(APIView):
     permission_classes = [
         IsAuthenticated,
-        IsManagerOrCashier,
+        IsAdminOrManagerOrCashier,
     ]
 
     @swagger_auto_schema(
@@ -833,7 +833,7 @@ class DepotView(APIView):
 class RetraitView(APIView):
     permission_classes = [
         IsAuthenticated,
-        IsManagerOrCashier,
+        IsAdminOrManagerOrCashier,
     ]
 
     @swagger_auto_schema(
@@ -985,7 +985,7 @@ class RetraitView(APIView):
 class GetSoldeAPIView(APIView):
     permission_classes = [
         IsAuthenticated,
-        IsManagerOrCashier,
+        IsAdminOrManagerOrCashier,
     ]
     renderer_classes = [UserRenderer]
 
@@ -1101,7 +1101,7 @@ class GetSoldeAPIView(APIView):
 class ListerTousComptesAPIView(APIView):
     permission_classes = [
         IsAuthenticated,
-        IsManagerOrCashier,
+        IsAdminOrManagerOrCashier,
     ]
 
     @swagger_auto_schema(
@@ -1208,7 +1208,7 @@ class ListerTousComptesAPIView(APIView):
 # LISTE TRANSACTIONS
 # =========================================================
 class ListerToutesCompteDepotTransactionsAPIView(APIView):
-    permission_classes = [IsAuthenticated, IsManagerOrCashier]
+    permission_classes = [IsAuthenticated, IsAdminOrManagerOrCashier,]
 
     @swagger_auto_schema(
         operation_summary="Lister les transactions compte dépôt",
@@ -1360,7 +1360,7 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
 class ExportCompteDepotTransactionsExcelAPIView(APIView):
     permission_classes = [
         IsAuthenticated,
-        IsManagerOrCashier,
+        IsAdminOrManagerOrCashier,
     ]
 
     @swagger_auto_schema(
@@ -1601,7 +1601,7 @@ class ExportCompteDepotTransactionsExcelAPIView(APIView):
     
 # sauvegarde état des soldes actuels
 class ExportCompteDepotSoldesExcelAPIView(APIView):
-    permission_classes = [IsAuthenticated, IsManagerOrCashier]
+    permission_classes = [IsAuthenticated, IsAdminOrManagerOrCashier,]
 
     @swagger_auto_schema(
         operation_summary="Exporter les soldes des comptes dépôt en Excel",
@@ -1828,7 +1828,7 @@ class ExportCompteDepotSoldesExcelAPIView(APIView):
 class CompteDepotDashboardAPIView(APIView):
     permission_classes = [
         IsAuthenticated,
-        IsManagerOrCashier,
+        IsAdminOrManagerOrCashier,
     ]
 
     @swagger_auto_schema(
@@ -2036,7 +2036,7 @@ class CompteDepotDashboardAPIView(APIView):
 # RECU PDF 80MM
 # =========================================================
 class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
-    permission_classes = [IsAuthenticated, IsManagerOrCashier]
+    permission_classes = [IsAuthenticated, IsAdminOrManagerOrCashier,]
 
     @swagger_auto_schema(
         operation_id="compteDepotTransactionReceipt",

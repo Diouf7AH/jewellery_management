@@ -720,3 +720,26 @@ class IsManagerOrCashier(BasePermission):
         )
         
         
+
+#########################################################""
+############# 
+class IsAdminOrManagerOrCashier(BasePermission):
+    message = (
+        "Accès réservé à l'administrateur, "
+        "au manager et au caissier."
+    )
+
+    def has_permission(self, request, view):
+        user = request.user
+
+        if not user or not user.is_authenticated:
+            return False
+
+        return get_role_name(user) in {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_CASHIER,
+        }
+        
+        
+        
