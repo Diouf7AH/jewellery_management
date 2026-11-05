@@ -9,6 +9,7 @@ from django.db.models import Count, Sum
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from openpyxl import Workbook
@@ -32,6 +33,7 @@ from compte_depot.notifications import (send_compte_created_notification,
 from sale.models import Client
 
 from .models import ClientDepot, CompteDepot, CompteDepotTransaction
+from .pagination import CompteDepotTransactionPagination
 from .pdf import generate_transaction_ticket_80mm_pdf
 from .serializers import (ClientDepotSerializer, CompteDepotSerializer,
                           CompteDepotTelephoneTransactionSerializer,
@@ -1208,16 +1210,24 @@ class ListerTousComptesAPIView(APIView):
 # LISTE TRANSACTIONS
 # =========================================================
 class ListerToutesCompteDepotTransactionsAPIView(APIView):
-    permission_classes = [IsAuthenticated, IsAdminOrManagerOrCashier,]
+
+    permission_classes = [
+        IsAuthenticated,
+        IsAdminOrManagerOrCashier,
+    ]
+
+    pagination_class = CompteDepotTransactionPagination
 
     @swagger_auto_schema(
         operation_summary="Lister les transactions compte dépôt",
         operation_description=(
-            "Liste les transactions compte dépôt accessibles à l'utilisateur.\n\n"
-            "### Règles\n"
+            "Liste paginée des transactions compte dépôt.\n\n"
+            "Règles :\n"
             "- Admin : toutes les bijouteries.\n"
             "- Manager : uniquement ses bijouteries.\n"
-            "- Caissier : uniquement sa bijouterie.\n"
+            "- Caissier : uniquement sa bijouterie.\n\n"
+            "Pagination : 20 transactions par défaut, "
+            "100 maximum par page."
         ),
         manual_parameters=[
             openapi.Parameter(
@@ -1236,12 +1246,14 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
                 "type_transaction",
                 openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
+                enum=["DEPOT", "RETRAIT"],
                 required=False,
             ),
             openapi.Parameter(
                 "statut",
                 openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
+                enum=["TERMINE", "ECHOUE", "ATTENTE"],
                 required=False,
             ),
             openapi.Parameter(
@@ -1258,19 +1270,34 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
                 format=openapi.FORMAT_DATE,
                 required=False,
             ),
+            openapi.Parameter(
+                "page",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description="Numéro de page.",
+                required=False,
+            ),
+            openapi.Parameter(
+                "page_size",
+                openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                description="Nombre de transactions (maximum 100).",
+                required=False,
+            ),
         ],
         responses={
-            200: openapi.Response(
-                "Liste des transactions",
-                CompteDepotTransactionSerializer(many=True),
-            ),
-            403: openapi.Response(
-                description="Accès refusé",
-            ),
+            200: "Liste paginée des transactions.",
+            400: "Paramètres invalides.",
+            403: "Accès refusé.",
         },
         tags=["compte dépôt"],
     )
     def get(self, request):
+
+        # =====================================================
+        # 1. VÉRIFICATION DU RÔLE
+        # =====================================================
+
         role = get_role_name(request.user)
 
         if role not in {
@@ -1279,9 +1306,13 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
             ROLE_CASHIER,
         }:
             return Response(
-                {"message": "Accès refusé."},
+                {"detail": "Accès refusé."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        # =====================================================
+        # 2. BIJOUTERIES ACCESSIBLES
+        # =====================================================
 
         bijouteries = get_user_bijouteries(request.user)
 
@@ -1290,6 +1321,10 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
                 {"detail": "Aucune bijouterie accessible."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        # =====================================================
+        # 3. QUERYSET OPTIMISÉ
+        # =====================================================
 
         qs = (
             CompteDepotTransaction.objects
@@ -1302,13 +1337,16 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
             .filter(
                 compte__client__bijouterie__in=bijouteries
             )
-            .order_by("-date_transaction")
         )
+
+        # =====================================================
+        # 4. FILTRES
+        # =====================================================
 
         telephone = request.query_params.get("telephone")
         numero_compte = request.query_params.get("numero_compte")
         type_transaction = request.query_params.get("type_transaction")
-        statut = request.query_params.get("statut")
+        statut_tx = request.query_params.get("statut")
         start_date = request.query_params.get("start_date")
         end_date = request.query_params.get("end_date")
 
@@ -1323,34 +1361,97 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
             )
 
         if type_transaction:
+            if type_transaction not in {
+                "DEPOT",
+                "RETRAIT",
+            }:
+                raise ValidationError({
+                    "type_transaction": "Type de transaction invalide."
+                })
+
             qs = qs.filter(
                 type_transaction=type_transaction
             )
 
-        if statut:
+        if statut_tx:
+            if statut_tx not in {
+                "TERMINE",
+                "ECHOUE",
+                "ATTENTE",
+            }:
+                raise ValidationError({
+                    "statut": "Statut invalide."
+                })
+
             qs = qs.filter(
-                statut=statut
+                statut=statut_tx
             )
 
+        date_debut = None
+        date_fin = None
+
         if start_date:
+            date_debut = parse_date(start_date)
+
+            if date_debut is None:
+                raise ValidationError({
+                    "start_date": "Format attendu : YYYY-MM-DD."
+                })
+
             qs = qs.filter(
-                date_transaction__date__gte=start_date
+                date_transaction__date__gte=date_debut
             )
 
         if end_date:
+            date_fin = parse_date(end_date)
+
+            if date_fin is None:
+                raise ValidationError({
+                    "end_date": "Format attendu : YYYY-MM-DD."
+                })
+
             qs = qs.filter(
-                date_transaction__date__lte=end_date
+                date_transaction__date__lte=date_fin
             )
 
-        serializer = CompteDepotTransactionSerializer(
+        if date_debut and date_fin and date_debut > date_fin:
+            raise ValidationError({
+                "end_date": (
+                    "La date de fin doit être supérieure "
+                    "ou égale à la date de début."
+                )
+            })
+
+        # =====================================================
+        # 5. TRI
+        # =====================================================
+
+        qs = qs.order_by(
+            "-date_transaction",
+            "-id",
+        )
+
+        # =====================================================
+        # 6. PAGINATION
+        # =====================================================
+
+        paginator = self.pagination_class()
+
+        page = paginator.paginate_queryset(
             qs,
+            request,
+            view=self,
+        )
+
+        serializer = CompteDepotTransactionSerializer(
+            page,
             many=True,
         )
 
-        return Response(
-            serializer.data,
-            status=status.HTTP_200_OK,
+        return paginator.get_paginated_response(
+            serializer.data
         )
+
         
 # =========================================================
 # EXPORT EXCEL TRANSACTIONS
