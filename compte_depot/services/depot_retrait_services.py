@@ -6,7 +6,7 @@ from rest_framework.exceptions import ValidationError
 
 from sale.services.montant_service import ZERO, money_strict
 
-from .models import CompteDepot, CompteDepotTransaction
+from ..models import CompteDepot, CompteDepotTransaction
 
 _money = money_strict
 

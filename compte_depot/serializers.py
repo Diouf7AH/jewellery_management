@@ -1,5 +1,7 @@
 # compte_depot/serializers.py
 
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from userauths.serializers import UserMiniSerializer
@@ -114,7 +116,7 @@ class CreateOrDepotCompteSerializer(serializers.Serializer):
     montant = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
-        min_value=0.01,
+        min_value=Decimal("0.01"),
     )
 
     bijouterie_id = serializers.IntegerField(

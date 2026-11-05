@@ -14,7 +14,7 @@ from django.db.models import Sum
 from backend.roles import ROLE_CASHIER, ROLE_MANAGER, get_role_name
 from backend.utils.helpers import user_can_access_bijouterie
 from compte_depot.models import CompteDepot
-from compte_depot.services import effectuer_retrait
+from compte_depot.services.depot_retrait_services import effectuer_retrait
 from sale.models import (Facture, ModePaiement, Paiement, PaiementLigne, Vente,
                          VenteAutre, VenteProduit)
 from sale.services.confirm_service import confirm_sale_out_from_vendor

@@ -39,6 +39,11 @@ class CompteDepot(models.Model):
         blank=True,
         related_name="compte"
     )
+    # client = models.OneToOneField(
+    #         ClientDepot,
+    #         on_delete=models.PROTECT,
+    #         related_name="compte",
+    #     )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -226,3 +231,49 @@ class CompteDepotTransaction(models.Model):
             return ""
         nom = getattr(c, "full_name", None) or getattr(c, "nom_complet", None)
         return nom() if callable(nom) else (nom or "")
+
+
+# table de protection contre les doublons
+# ============================================================
+# PROTECTION CONTRE LES OPÉRATIONS EN DOUBLE
+# ============================================================
+
+class DepotIdempotence(models.Model):
+
+    cle = models.UUIDField(
+        unique=True,
+    )
+
+    empreinte = models.CharField(
+        max_length=64,
+    )
+
+    reponse = models.JSONField(
+        null=True,
+        blank=True,
+    )
+
+    code_http = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="operations_depot_idempotentes",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+
+        indexes = [
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return str(self.cle)

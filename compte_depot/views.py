@@ -36,7 +36,7 @@ from .serializers import (ClientDepotSerializer, CompteDepotSerializer,
                           CompteDepotTelephoneTransactionSerializer,
                           CompteDepotTransactionSerializer,
                           CreateOrDepotCompteSerializer)
-from .services import effectuer_depot, effectuer_retrait
+from .services.depot_retrait_services import effectuer_depot, effectuer_retrait
 
 # ============================================================
 # RATTACHER UN CLIENT COMMERCIAL À CLIENTDEPOT

@@ -54,7 +54,7 @@ from backend.utils.helpers import user_can_access_bijouterie
 from compte_depot.models import (ClientDepot, CompteDepot,
                                  CompteDepotTransaction)
 from compte_depot.notifications import send_compte_depot_facture_notification
-from compte_depot.services import effectuer_retrait
+from compte_depot.services.depot_retrait_services import effectuer_retrait
 from inventory.models import Bucket, InventoryMovement, MovementType
 from inventory.services import log_move
 from purchase.models import ProduitLine
