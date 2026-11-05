@@ -724,22 +724,56 @@ class IsManagerOrCashier(BasePermission):
 #########################################################""
 ############# 
 class IsAdminOrManagerOrCashier(BasePermission):
+    """
+    Compte dépôt Rio-Gold.
+
+    ADMIN :
+        Accès autorisé.
+
+    MANAGER :
+        Profil actif et vérifié.
+
+    CASHIER :
+        Profil actif, vérifié et rattaché
+        à une bijouterie.
+
+    VENDOR / BUYER :
+        Accès refusé.
+    """
+
     message = (
-        "Accès réservé à l'administrateur, "
-        "au manager et au caissier."
+        "Accès réservé aux administrateurs, "
+        "managers et caissiers autorisés."
     )
 
     def has_permission(self, request, view):
         user = request.user
 
-        if not user or not user.is_authenticated:
+        if not _user_is_authenticated(user):
             return False
 
-        return get_role_name(user) in {
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_CASHIER,
-        }
-        
-        
-        
+        role = get_role_name(user)
+
+        if role == ROLE_ADMIN:
+            return True
+
+        if role == ROLE_MANAGER:
+            return bool(
+                _manager_profile(user)
+            )
+
+        if role == ROLE_CASHIER:
+            cashier = _cashier_profile(user)
+
+            return bool(
+                cashier
+                and getattr(
+                    cashier,
+                    "bijouterie_id",
+                    None,
+                )
+            )
+
+        return False
+    
+    
