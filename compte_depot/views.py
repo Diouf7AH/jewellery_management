@@ -18,6 +18,7 @@ from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.settings import api_settings
 from rest_framework.views import APIView
 
 from backend.bijouteries import get_user_bijouteries
@@ -1101,6 +1102,7 @@ class GetSoldeAPIView(APIView):
 # LISTE COMPTES AVEC FILTRE
 # =========================================================
 class ListerTousComptesAPIView(APIView):
+
     permission_classes = [
         IsAuthenticated,
         IsAdminOrManagerOrCashier,
@@ -1109,13 +1111,16 @@ class ListerTousComptesAPIView(APIView):
     @swagger_auto_schema(
         operation_summary="Lister les comptes dépôt",
         operation_description="""
-        Liste les comptes dépôt accessibles à l'utilisateur.
+        Liste paginée des comptes dépôt accessibles.
 
         Règles :
         - Admin : tous les comptes
         - Manager : uniquement ses bijouteries
         - Caissier : uniquement sa bijouterie
-        - Vendor : uniquement sa bijouterie
+
+        Pagination :
+        - 20 comptes par page par défaut
+        - Utiliser ?page=2 pour la page suivante
         """,
         manual_parameters=[
             openapi.Parameter(
@@ -1124,12 +1129,18 @@ class ListerTousComptesAPIView(APIView):
                 description="Numéro de téléphone partiel ou complet",
                 type=openapi.TYPE_STRING,
                 required=False,
-            )
+            ),
+            openapi.Parameter(
+                "page",
+                openapi.IN_QUERY,
+                description="Numéro de la page",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
         ],
         responses={
             200: openapi.Response(
-                "Liste des comptes",
-                CompteDepotSerializer(many=True),
+                description="Liste paginée des comptes dépôt"
             ),
             403: openapi.Response(
                 description="Accès refusé"
@@ -1138,13 +1149,17 @@ class ListerTousComptesAPIView(APIView):
         tags=["compte dépôt"],
     )
     def get(self, request):
+
+        # ==========================================
+        # 1. VÉRIFICATION DU RÔLE
+        # ==========================================
+
         role = get_role_name(request.user)
 
         if role not in {
             ROLE_ADMIN,
             ROLE_MANAGER,
             ROLE_CASHIER,
-            ROLE_VENDOR,
         }:
             return Response(
                 {"message": "Accès refusé."},
@@ -1152,22 +1167,26 @@ class ListerTousComptesAPIView(APIView):
             )
 
         # ==========================================
-        # BIJOUTERIES ACCESSIBLES
+        # 2. BIJOUTERIES ACCESSIBLES
         # ==========================================
 
-        bijouteries = get_user_bijouteries(request.user)
+        bijouteries = get_user_bijouteries(
+            request.user
+        )
 
         if not bijouteries.exists():
             return Response(
                 {
-                    "detail":
-                    "Aucune bijouterie accessible pour cet utilisateur."
+                    "detail": (
+                        "Aucune bijouterie accessible "
+                        "pour cet utilisateur."
+                    )
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         # ==========================================
-        # COMPTES ACCESSIBLES
+        # 3. COMPTES ACCESSIBLES
         # ==========================================
 
         comptes = (
@@ -1183,17 +1202,60 @@ class ListerTousComptesAPIView(APIView):
         )
 
         # ==========================================
-        # FILTRE TELEPHONE
+        # 4. FILTRE TÉLÉPHONE
         # ==========================================
 
-        telephone = request.query_params.get("telephone")
+        telephone = request.query_params.get(
+            "telephone",
+            ""
+        ).strip()
 
         if telephone:
             comptes = comptes.filter(
                 client__telephone__icontains=telephone
             )
 
-        comptes = comptes.order_by("-created_at")
+        # ==========================================
+        # 5. TRI
+        # ==========================================
+
+        comptes = comptes.order_by(
+            "-created_at",
+            "-pk",
+        )
+
+        # ==========================================
+        # 6. PAGINATION GLOBALE DRF
+        # ==========================================
+
+        pagination_class = (
+            api_settings.DEFAULT_PAGINATION_CLASS
+        )
+
+        if pagination_class is not None:
+
+            paginator = pagination_class()
+
+            page = paginator.paginate_queryset(
+                comptes,
+                request,
+                view=self,
+            )
+
+            if page is not None:
+
+                serializer = CompteDepotSerializer(
+                    page,
+                    many=True,
+                )
+
+                return paginator.get_paginated_response(
+                    serializer.data
+                )
+
+        # ==========================================
+        # 7. RÉPONSE SANS PAGINATION
+        # ==========================================
 
         serializer = CompteDepotSerializer(
             comptes,
@@ -1204,253 +1266,254 @@ class ListerTousComptesAPIView(APIView):
             serializer.data,
             status=status.HTTP_200_OK,
         )
-    
-    
+        
+        
+
 # =========================================================
 # LISTE TRANSACTIONS
-# =========================================================
-class ListerToutesCompteDepotTransactionsAPIView(APIView):
+# # =========================================================
+# class ListerToutesCompteDepotTransactionsAPIView(APIView):
 
-    permission_classes = [
-        IsAuthenticated,
-        IsAdminOrManagerOrCashier,
-    ]
+#     permission_classes = [
+#         IsAuthenticated,
+#         IsAdminOrManagerOrCashier,
+#     ]
 
-    pagination_class = CompteDepotTransactionPagination
+#     pagination_class = CompteDepotTransactionPagination
 
-    @swagger_auto_schema(
-        operation_summary="Lister les transactions compte dépôt",
-        operation_description=(
-            "Liste paginée des transactions compte dépôt.\n\n"
-            "Règles :\n"
-            "- Admin : toutes les bijouteries.\n"
-            "- Manager : uniquement ses bijouteries.\n"
-            "- Caissier : uniquement sa bijouterie.\n\n"
-            "Pagination : 20 transactions par défaut, "
-            "100 maximum par page."
-        ),
-        manual_parameters=[
-            openapi.Parameter(
-                "telephone",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-            ),
-            openapi.Parameter(
-                "numero_compte",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                required=False,
-            ),
-            openapi.Parameter(
-                "type_transaction",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                enum=["DEPOT", "RETRAIT"],
-                required=False,
-            ),
-            openapi.Parameter(
-                "statut",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                enum=["TERMINE", "ECHOUE", "ATTENTE"],
-                required=False,
-            ),
-            openapi.Parameter(
-                "start_date",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATE,
-                required=False,
-            ),
-            openapi.Parameter(
-                "end_date",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_STRING,
-                format=openapi.FORMAT_DATE,
-                required=False,
-            ),
-            openapi.Parameter(
-                "page",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description="Numéro de page.",
-                required=False,
-            ),
-            openapi.Parameter(
-                "page_size",
-                openapi.IN_QUERY,
-                type=openapi.TYPE_INTEGER,
-                description="Nombre de transactions (maximum 100).",
-                required=False,
-            ),
-        ],
-        responses={
-            200: "Liste paginée des transactions.",
-            400: "Paramètres invalides.",
-            403: "Accès refusé.",
-        },
-        tags=["compte dépôt"],
-    )
-    def get(self, request):
+#     @swagger_auto_schema(
+#         operation_summary="Lister les transactions compte dépôt",
+#         operation_description=(
+#             "Liste paginée des transactions compte dépôt.\n\n"
+#             "Règles :\n"
+#             "- Admin : toutes les bijouteries.\n"
+#             "- Manager : uniquement ses bijouteries.\n"
+#             "- Caissier : uniquement sa bijouterie.\n\n"
+#             "Pagination : 20 transactions par défaut, "
+#             "100 maximum par page."
+#         ),
+#         manual_parameters=[
+#             openapi.Parameter(
+#                 "telephone",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#             ),
+#             openapi.Parameter(
+#                 "numero_compte",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 required=False,
+#             ),
+#             openapi.Parameter(
+#                 "type_transaction",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 enum=["DEPOT", "RETRAIT"],
+#                 required=False,
+#             ),
+#             openapi.Parameter(
+#                 "statut",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 enum=["TERMINE", "ECHOUE", "ATTENTE"],
+#                 required=False,
+#             ),
+#             openapi.Parameter(
+#                 "start_date",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 format=openapi.FORMAT_DATE,
+#                 required=False,
+#             ),
+#             openapi.Parameter(
+#                 "end_date",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_STRING,
+#                 format=openapi.FORMAT_DATE,
+#                 required=False,
+#             ),
+#             openapi.Parameter(
+#                 "page",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description="Numéro de page.",
+#                 required=False,
+#             ),
+#             openapi.Parameter(
+#                 "page_size",
+#                 openapi.IN_QUERY,
+#                 type=openapi.TYPE_INTEGER,
+#                 description="Nombre de transactions (maximum 100).",
+#                 required=False,
+#             ),
+#         ],
+#         responses={
+#             200: "Liste paginée des transactions.",
+#             400: "Paramètres invalides.",
+#             403: "Accès refusé.",
+#         },
+#         tags=["compte dépôt"],
+#     )
+#     def get(self, request):
 
-        # =====================================================
-        # 1. VÉRIFICATION DU RÔLE
-        # =====================================================
+#         # =====================================================
+#         # 1. VÉRIFICATION DU RÔLE
+#         # =====================================================
 
-        role = get_role_name(request.user)
+#         role = get_role_name(request.user)
 
-        if role not in {
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-            ROLE_CASHIER,
-        }:
-            return Response(
-                {"detail": "Accès refusé."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+#         if role not in {
+#             ROLE_ADMIN,
+#             ROLE_MANAGER,
+#             ROLE_CASHIER,
+#         }:
+#             return Response(
+#                 {"detail": "Accès refusé."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
 
-        # =====================================================
-        # 2. BIJOUTERIES ACCESSIBLES
-        # =====================================================
+#         # =====================================================
+#         # 2. BIJOUTERIES ACCESSIBLES
+#         # =====================================================
 
-        bijouteries = get_user_bijouteries(request.user)
+#         bijouteries = get_user_bijouteries(request.user)
 
-        if not bijouteries.exists():
-            return Response(
-                {"detail": "Aucune bijouterie accessible."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+#         if not bijouteries.exists():
+#             return Response(
+#                 {"detail": "Aucune bijouterie accessible."},
+#                 status=status.HTTP_403_FORBIDDEN,
+#             )
 
-        # =====================================================
-        # 3. QUERYSET OPTIMISÉ
-        # =====================================================
+#         # =====================================================
+#         # 3. QUERYSET OPTIMISÉ
+#         # =====================================================
 
-        qs = (
-            CompteDepotTransaction.objects
-            .select_related(
-                "compte",
-                "compte__client",
-                "compte__client__bijouterie",
-                "user",
-            )
-            .filter(
-                compte__client__bijouterie__in=bijouteries
-            )
-        )
+#         qs = (
+#             CompteDepotTransaction.objects
+#             .select_related(
+#                 "compte",
+#                 "compte__client",
+#                 "compte__client__bijouterie",
+#                 "user",
+#             )
+#             .filter(
+#                 compte__client__bijouterie__in=bijouteries
+#             )
+#         )
 
-        # =====================================================
-        # 4. FILTRES
-        # =====================================================
+#         # =====================================================
+#         # 4. FILTRES
+#         # =====================================================
 
-        telephone = request.query_params.get("telephone")
-        numero_compte = request.query_params.get("numero_compte")
-        type_transaction = request.query_params.get("type_transaction")
-        statut_tx = request.query_params.get("statut")
-        start_date = request.query_params.get("start_date")
-        end_date = request.query_params.get("end_date")
+#         telephone = request.query_params.get("telephone")
+#         numero_compte = request.query_params.get("numero_compte")
+#         type_transaction = request.query_params.get("type_transaction")
+#         statut_tx = request.query_params.get("statut")
+#         start_date = request.query_params.get("start_date")
+#         end_date = request.query_params.get("end_date")
 
-        if telephone:
-            qs = qs.filter(
-                compte__client__telephone__icontains=telephone
-            )
+#         if telephone:
+#             qs = qs.filter(
+#                 compte__client__telephone__icontains=telephone
+#             )
 
-        if numero_compte:
-            qs = qs.filter(
-                compte__numero_compte__icontains=numero_compte
-            )
+#         if numero_compte:
+#             qs = qs.filter(
+#                 compte__numero_compte__icontains=numero_compte
+#             )
 
-        if type_transaction:
-            if type_transaction not in {
-                "DEPOT",
-                "RETRAIT",
-            }:
-                raise ValidationError({
-                    "type_transaction": "Type de transaction invalide."
-                })
+#         if type_transaction:
+#             if type_transaction not in {
+#                 "DEPOT",
+#                 "RETRAIT",
+#             }:
+#                 raise ValidationError({
+#                     "type_transaction": "Type de transaction invalide."
+#                 })
 
-            qs = qs.filter(
-                type_transaction=type_transaction
-            )
+#             qs = qs.filter(
+#                 type_transaction=type_transaction
+#             )
 
-        if statut_tx:
-            if statut_tx not in {
-                "TERMINE",
-                "ECHOUE",
-                "ATTENTE",
-            }:
-                raise ValidationError({
-                    "statut": "Statut invalide."
-                })
+#         if statut_tx:
+#             if statut_tx not in {
+#                 "TERMINE",
+#                 "ECHOUE",
+#                 "ATTENTE",
+#             }:
+#                 raise ValidationError({
+#                     "statut": "Statut invalide."
+#                 })
 
-            qs = qs.filter(
-                statut=statut_tx
-            )
+#             qs = qs.filter(
+#                 statut=statut_tx
+#             )
 
-        date_debut = None
-        date_fin = None
+#         date_debut = None
+#         date_fin = None
 
-        if start_date:
-            date_debut = parse_date(start_date)
+#         if start_date:
+#             date_debut = parse_date(start_date)
 
-            if date_debut is None:
-                raise ValidationError({
-                    "start_date": "Format attendu : YYYY-MM-DD."
-                })
+#             if date_debut is None:
+#                 raise ValidationError({
+#                     "start_date": "Format attendu : YYYY-MM-DD."
+#                 })
 
-            qs = qs.filter(
-                date_transaction__date__gte=date_debut
-            )
+#             qs = qs.filter(
+#                 date_transaction__date__gte=date_debut
+#             )
 
-        if end_date:
-            date_fin = parse_date(end_date)
+#         if end_date:
+#             date_fin = parse_date(end_date)
 
-            if date_fin is None:
-                raise ValidationError({
-                    "end_date": "Format attendu : YYYY-MM-DD."
-                })
+#             if date_fin is None:
+#                 raise ValidationError({
+#                     "end_date": "Format attendu : YYYY-MM-DD."
+#                 })
 
-            qs = qs.filter(
-                date_transaction__date__lte=date_fin
-            )
+#             qs = qs.filter(
+#                 date_transaction__date__lte=date_fin
+#             )
 
-        if date_debut and date_fin and date_debut > date_fin:
-            raise ValidationError({
-                "end_date": (
-                    "La date de fin doit être supérieure "
-                    "ou égale à la date de début."
-                )
-            })
+#         if date_debut and date_fin and date_debut > date_fin:
+#             raise ValidationError({
+#                 "end_date": (
+#                     "La date de fin doit être supérieure "
+#                     "ou égale à la date de début."
+#                 )
+#             })
 
-        # =====================================================
-        # 5. TRI
-        # =====================================================
+#         # =====================================================
+#         # 5. TRI
+#         # =====================================================
 
-        qs = qs.order_by(
-            "-date_transaction",
-            "-id",
-        )
+#         qs = qs.order_by(
+#             "-date_transaction",
+#             "-id",
+#         )
 
-        # =====================================================
-        # 6. PAGINATION
-        # =====================================================
+#         # =====================================================
+#         # 6. PAGINATION
+#         # =====================================================
 
-        paginator = self.pagination_class()
+#         paginator = self.pagination_class()
 
-        page = paginator.paginate_queryset(
-            qs,
-            request,
-            view=self,
-        )
+#         page = paginator.paginate_queryset(
+#             qs,
+#             request,
+#             view=self,
+#         )
 
-        serializer = CompteDepotTransactionSerializer(
-            page,
-            many=True,
-        )
+#         serializer = CompteDepotTransactionSerializer(
+#             page,
+#             many=True,
+#         )
 
-        return paginator.get_paginated_response(
-            serializer.data
-        )
+#         return paginator.get_paginated_response(
+#             serializer.data
+#         )
 
         
 # =========================================================
