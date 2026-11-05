@@ -695,3 +695,28 @@ class IsSameBijouterieOrAdmin(BasePermission):
             bijouterie_id,
         )
         
+        
+
+
+######################################################################
+##############"" Compte depot Permissions ""##############
+class IsManagerOrCashier(BasePermission):
+    """
+    Autorise uniquement :
+    - Manager actif et vérifié
+    - Caissier actif, vérifié et rattaché à une bijouterie
+    """
+
+    message = (
+        "Accès réservé aux managers "
+        "et aux caissiers autorisés."
+    )
+
+    def has_permission(self, request, view):
+        return (
+            IsManager().has_permission(request, view)
+            or
+            IsCashierOnly().has_permission(request, view)
+        )
+        
+        

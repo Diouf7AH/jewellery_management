@@ -20,6 +20,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from backend.bijouteries import get_user_bijouteries
+from backend.permissions import IsManagerOrCashier
 from backend.renderers import UserRenderer
 from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
                            get_role_name)
@@ -117,6 +118,123 @@ def creer_profil_depot_client_existant(
     return ClientDepot.objects.get(
         pk=client.pk
     )
+    
+    
+
+# ============================================================
+# rechercher un compte dépôt par téléphone
+# ==========================================================
+
+class ClientRechercheDepotAPIView(APIView):
+
+    permission_classes = [
+        IsAuthenticated,
+        IsManagerOrCashier,
+    ]
+
+    @swagger_auto_schema(
+        operation_summary="Rechercher un client pour un dépôt",
+        operation_description=(
+            "Réservé au manager et au caissier. "
+            "Recherche un client par téléphone et indique "
+            "s'il possède déjà un compte dépôt."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                name="telephone",
+                in_=openapi.IN_QUERY,
+                description="Téléphone du client",
+                type=openapi.TYPE_STRING,
+                required=True,
+            ),
+        ],
+        responses={
+            200: openapi.Response(
+                description="Résultat de la recherche",
+                examples={
+                    "application/json": {
+                        "client_existe": True,
+                        "compte_existe": True,
+                        "client": {
+                            "id": 15,
+                            "nom": "Diop",
+                            "prenom": "Mamadou",
+                            "telephone": "771234567",
+                        },
+                        "compte": {
+                            "numero_compte": "CD-000123",
+                            "solde": "150000.00",
+                        },
+                    }
+                },
+            ),
+            400: "Téléphone obligatoire",
+            401: "Authentification requise",
+            403: "Accès interdit",
+        },
+        tags=["Compte dépôt"],
+    )
+    def get(self, request):
+
+        telephone = (
+            request.query_params.get("telephone") or ""
+        ).strip()
+
+        if not telephone:
+            return Response(
+                {
+                    "detail": "Le téléphone est obligatoire."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        client = Client.objects.filter(
+            telephone=telephone
+        ).first()
+
+        if client is None:
+            return Response({
+                "client_existe": False,
+                "compte_existe": False,
+                "client": None,
+                "compte": None,
+            })
+
+        client_data = {
+            "id": client.pk,
+            "nom": client.nom,
+            "prenom": client.prenom,
+            "telephone": client.telephone,
+        }
+
+        profil = ClientDepot.objects.filter(
+            pk=client.pk
+        ).first()
+
+        if profil is None:
+            return Response({
+                "client_existe": True,
+                "compte_existe": False,
+                "client": client_data,
+                "compte": None,
+            })
+
+        compte = CompteDepot.objects.filter(
+            client=profil
+        ).first()
+
+        return Response({
+            "client_existe": True,
+            "compte_existe": compte is not None,
+            "client": client_data,
+            "compte": (
+                {
+                    "numero_compte": compte.numero_compte,
+                    "solde": str(compte.solde),
+                }
+                if compte else None
+            ),
+        })
 
 
 # ============================================================
@@ -125,7 +243,10 @@ def creer_profil_depot_client_existant(
 
 class CreateOrDepotCompteView(APIView):
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsManagerOrCashier,
+    ]
 
     ALLOWED_ROLES = {
         ROLE_ADMIN,
@@ -504,7 +625,10 @@ class CreateOrDepotCompteView(APIView):
 
 
 class DepotView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsManagerOrCashier,
+    ]
 
     @swagger_auto_schema(
         operation_id="depotCompteDepot",
@@ -707,7 +831,10 @@ class DepotView(APIView):
 # RETRAIT
 # =========================================================
 class RetraitView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsManagerOrCashier,
+    ]
 
     @swagger_auto_schema(
         operation_summary="Effectuer un retrait sur un compte dépôt",
@@ -856,7 +983,10 @@ class RetraitView(APIView):
 # SOLDE
 # =========================================================
 class GetSoldeAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsManagerOrCashier,
+    ]
     renderer_classes = [UserRenderer]
 
     @swagger_auto_schema(
@@ -969,7 +1099,10 @@ class GetSoldeAPIView(APIView):
 # LISTE COMPTES AVEC FILTRE
 # =========================================================
 class ListerTousComptesAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsManagerOrCashier,
+    ]
 
     @swagger_auto_schema(
         operation_summary="Lister les comptes dépôt",
@@ -1075,7 +1208,7 @@ class ListerTousComptesAPIView(APIView):
 # LISTE TRANSACTIONS
 # =========================================================
 class ListerToutesCompteDepotTransactionsAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsManagerOrCashier]
 
     @swagger_auto_schema(
         operation_summary="Lister les transactions compte dépôt",
@@ -1225,7 +1358,10 @@ class ListerToutesCompteDepotTransactionsAPIView(APIView):
 
 # historique mouvements
 class ExportCompteDepotTransactionsExcelAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsManagerOrCashier,
+    ]
 
     @swagger_auto_schema(
         operation_summary="Exporter les transactions compte dépôt en Excel",
@@ -1465,7 +1601,7 @@ class ExportCompteDepotTransactionsExcelAPIView(APIView):
     
 # sauvegarde état des soldes actuels
 class ExportCompteDepotSoldesExcelAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsManagerOrCashier]
 
     @swagger_auto_schema(
         operation_summary="Exporter les soldes des comptes dépôt en Excel",
@@ -1690,7 +1826,10 @@ class ExportCompteDepotSoldesExcelAPIView(APIView):
 # DASHBOARD COMPTE DEPOT
 # =========================================================
 class CompteDepotDashboardAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [
+        IsAuthenticated,
+        IsManagerOrCashier,
+    ]
 
     @swagger_auto_schema(
         operation_summary="Dashboard comptes dépôt",
@@ -1897,7 +2036,7 @@ class CompteDepotDashboardAPIView(APIView):
 # RECU PDF 80MM
 # =========================================================
 class CompteDepotTransactionReceipt80mmPDFAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsManagerOrCashier]
 
     @swagger_auto_schema(
         operation_id="compteDepotTransactionReceipt",

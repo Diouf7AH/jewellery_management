@@ -105,6 +105,17 @@ class CompteDepotSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ClientRechercheDepotSerializer(serializers.Serializer):
+    client_existe = serializers.BooleanField()
+    compte_existe = serializers.BooleanField()
+    client = serializers.DictField(
+        allow_null=True
+    )
+    compte = serializers.DictField(
+        allow_null=True
+    )
+
+
 # ============================================================
 # CREATE OR DEPOSIT INPUT
 # ============================================================
