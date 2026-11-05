@@ -136,48 +136,47 @@ class ClientRechercheDepotAPIView(APIView):
     ]
 
     @swagger_auto_schema(
-        operation_summary="Rechercher un client pour un dépôt",
+        operation_summary="Rechercher des clients pour un dépôt",
         operation_description=(
-            "Réservé au manager et au caissier. "
-            "Recherche un client par téléphone et indique "
-            "s'il possède déjà un compte dépôt."
+            "Recherche paginée des clients par téléphone. "
+            "Retourne les clients accessibles à l'utilisateur "
+            "et indique si chaque client possède un compte dépôt. "
+            "Pagination : 20 clients par page."
         ),
         manual_parameters=[
             openapi.Parameter(
-                name="telephone",
-                in_=openapi.IN_QUERY,
-                description="Téléphone du client",
+                "telephone",
+                openapi.IN_QUERY,
+                description="Numéro de téléphone partiel ou complet",
                 type=openapi.TYPE_STRING,
                 required=True,
+            ),
+            openapi.Parameter(
+                "page",
+                openapi.IN_QUERY,
+                description="Numéro de la page",
+                type=openapi.TYPE_INTEGER,
+                required=False,
             ),
         ],
         responses={
             200: openapi.Response(
-                description="Résultat de la recherche",
-                examples={
-                    "application/json": {
-                        "client_existe": True,
-                        "compte_existe": True,
-                        "client": {
-                            "id": 15,
-                            "nom": "Diop",
-                            "prenom": "Mamadou",
-                            "telephone": "771234567",
-                        },
-                        "compte": {
-                            "numero_compte": "CD-000123",
-                            "solde": "150000.00",
-                        },
-                    }
-                },
+                description="Liste paginée des clients"
             ),
-            400: "Téléphone obligatoire",
-            401: "Authentification requise",
-            403: "Accès interdit",
+            400: openapi.Response(
+                description="Téléphone obligatoire"
+            ),
+            403: openapi.Response(
+                description="Accès refusé"
+            ),
         },
-        tags=["Compte dépôt"],
+        tags=["compte dépôt"],
     )
     def get(self, request):
+
+        # ==========================================
+        # 1. TÉLÉPHONE
+        # ==========================================
 
         telephone = (
             request.query_params.get("telephone") or ""
@@ -191,54 +190,132 @@ class ClientRechercheDepotAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        client = Client.objects.filter(
-            telephone=telephone
-        ).first()
+        # ==========================================
+        # 2. BIJOUTERIES ACCESSIBLES
+        # ==========================================
 
-        if client is None:
-            return Response({
-                "client_existe": False,
-                "compte_existe": False,
-                "client": None,
-                "compte": None,
-            })
+        bijouteries = get_user_bijouteries(
+            request.user
+        )
 
-        client_data = {
-            "id": client.pk,
-            "nom": client.nom,
-            "prenom": client.prenom,
-            "telephone": client.telephone,
+        if not bijouteries.exists():
+            return Response(
+                {
+                    "detail": "Aucune bijouterie accessible."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # ==========================================
+        # 3. RECHERCHE DES CLIENTS
+        # ==========================================
+
+        clients = (
+            Client.objects
+            .filter(
+                bijouterie__in=bijouteries,
+                telephone__icontains=telephone,
+            )
+            .order_by("nom", "prenom", "pk")
+        )
+
+        # ==========================================
+        # 4. PAGINATION GLOBALE
+        # ==========================================
+
+        pagination_class = (
+            api_settings.DEFAULT_PAGINATION_CLASS
+        )
+
+        paginator = (
+            pagination_class()
+            if pagination_class is not None
+            else None
+        )
+
+        if paginator is not None:
+            page = paginator.paginate_queryset(
+                clients,
+                request,
+                view=self,
+            )
+        else:
+            page = None
+
+        clients_page = (
+            page if page is not None else clients
+        )
+
+        # ==========================================
+        # 5. COMPTES DÉPÔT DES CLIENTS
+        # ==========================================
+
+        client_ids = [
+            client.pk for client in clients_page
+        ]
+
+        profils = ClientDepot.objects.filter(
+            pk__in=client_ids
+        )
+
+        comptes = (
+            CompteDepot.objects
+            .filter(client_id__in=client_ids)
+        )
+
+        profils_ids = {
+            profil.pk for profil in profils
         }
 
-        profil = ClientDepot.objects.filter(
-            pk=client.pk
-        ).first()
+        comptes_par_client = {
+            compte.client_id: compte
+            for compte in comptes
+        }
 
-        if profil is None:
-            return Response({
+        # ==========================================
+        # 6. CONSTRUCTION DES RÉSULTATS
+        # ==========================================
+
+        results = []
+
+        for client in clients_page:
+
+            compte = comptes_par_client.get(
+                client.pk
+            )
+
+            results.append({
                 "client_existe": True,
-                "compte_existe": False,
-                "client": client_data,
-                "compte": None,
+                "compte_existe": compte is not None,
+                "client": {
+                    "id": client.pk,
+                    "nom": client.nom,
+                    "prenom": client.prenom,
+                    "telephone": client.telephone,
+                },
+                "compte": (
+                    {
+                        "numero_compte": compte.numero_compte,
+                        "solde": str(compte.solde),
+                    }
+                    if compte is not None
+                    else None
+                ),
             })
 
-        compte = CompteDepot.objects.filter(
-            client=profil
-        ).first()
+        # ==========================================
+        # 7. RÉPONSE PAGINÉE
+        # ==========================================
 
-        return Response({
-            "client_existe": True,
-            "compte_existe": compte is not None,
-            "client": client_data,
-            "compte": (
-                {
-                    "numero_compte": compte.numero_compte,
-                    "solde": str(compte.solde),
-                }
-                if compte else None
-            ),
-        })
+        if paginator is not None and page is not None:
+            return paginator.get_paginated_response(
+                results
+            )
 
+        return Response(
+            results,
+            status=status.HTTP_200_OK,
+        )
 
 # ============================================================
 # CRÉER OU ALIMENTER UN COMPTE DÉPÔT
