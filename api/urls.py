@@ -219,7 +219,7 @@ urlpatterns = [
     # path("comptes", compte_depot_views.ListCompteDepotView.as_view()),
     path("comptes/search", compte_depot_views.ListerTousComptesAPIView.as_view()),
     # transactions
-    path("transactions", compte_depot_views.ListerToutesCompteDepotTransactionsAPIView.as_view()),
+    # path("transactions", compte_depot_views.ListerToutesCompteDepotTransactionsAPIView.as_view()),
     path("transactions/export-excel", compte_depot_views.ExportCompteDepotTransactionsExcelAPIView.as_view()),
     path("compte-depot/soldes/export-excel/",compte_depot_views.ExportCompteDepotSoldesExcelAPIView.as_view(),name="compte-depot-soldes-export-excel",),
     # dashboard
