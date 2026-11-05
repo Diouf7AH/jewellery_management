@@ -138,10 +138,11 @@ class ClientRechercheDepotAPIView(APIView):
     @swagger_auto_schema(
         operation_summary="Rechercher des clients pour un dépôt",
         operation_description=(
-            "Recherche paginée des clients par téléphone. "
-            "Retourne les clients accessibles à l'utilisateur "
-            "et indique si chaque client possède un compte dépôt. "
-            "Pagination : 20 clients par page."
+            "Recherche paginée des clients commerciaux par téléphone, "
+            "avec ou sans profil dépôt. "
+            "Les informations financières sont uniquement retournées "
+            "pour les comptes des bijouteries accessibles. "
+            "Pagination globale : 20 clients par page."
         ),
         manual_parameters=[
             openapi.Parameter(
@@ -164,7 +165,7 @@ class ClientRechercheDepotAPIView(APIView):
                 description="Liste paginée des clients"
             ),
             400: openapi.Response(
-                description="Téléphone obligatoire"
+                description="Téléphone obligatoire ou page invalide"
             ),
             403: openapi.Response(
                 description="Accès refusé"
@@ -194,11 +195,13 @@ class ClientRechercheDepotAPIView(APIView):
         # 2. BIJOUTERIES ACCESSIBLES
         # ==========================================
 
-        bijouteries = get_user_bijouteries(
-            request.user
+        bijouteries = get_user_bijouteries(request.user)
+
+        bijouterie_ids = set(
+            bijouteries.values_list("pk", flat=True)
         )
 
-        if not bijouteries.exists():
+        if not bijouterie_ids:
             return Response(
                 {
                     "detail": "Aucune bijouterie accessible."
@@ -207,16 +210,26 @@ class ClientRechercheDepotAPIView(APIView):
             )
 
         # ==========================================
-        # 3. RECHERCHE DES CLIENTS
+        # 3. RECHERCHE DES CLIENTS COMMERCIAUX
         # ==========================================
+
+        # Hypothèse métier :
+        # les utilisateurs autorisés peuvent rechercher
+        # les clients commerciaux dans un répertoire partagé.
+        #
+        # Les données financières restent protégées
+        # par les bijouteries accessibles.
 
         clients = (
             Client.objects
             .filter(
-                bijouterie__in=bijouteries,
-                telephone__icontains=telephone,
+                telephone__icontains=telephone
             )
-            .order_by("nom", "prenom", "pk")
+            .order_by(
+                "nom",
+                "prenom",
+                "pk",
+            )
         )
 
         # ==========================================
@@ -243,29 +256,49 @@ class ClientRechercheDepotAPIView(APIView):
             page = None
 
         clients_page = (
-            page if page is not None else clients
+            page if page is not None else list(clients)
         )
 
         # ==========================================
-        # 5. COMPTES DÉPÔT DES CLIENTS
+        # 5. IDENTIFIANTS DES CLIENTS
         # ==========================================
 
         client_ids = [
-            client.pk for client in clients_page
+            client.pk
+            for client in clients_page
         ]
 
-        profils = ClientDepot.objects.filter(
-            pk__in=client_ids
+        # ==========================================
+        # 6. PROFILS CLIENT DÉPÔT
+        # ==========================================
+
+        profils = (
+            ClientDepot.objects
+            .filter(
+                pk__in=client_ids
+            )
+            .only(
+                "id",
+                "bijouterie_id",
+            )
         )
+
+        profils_par_client = {
+            profil.pk: profil
+            for profil in profils
+        }
+
+        # ==========================================
+        # 7. COMPTES DÉPÔT ACCESSIBLES
+        # ==========================================
 
         comptes = (
             CompteDepot.objects
-            .filter(client_id__in=client_ids)
+            .filter(
+                client_id__in=client_ids,
+                client__bijouterie_id__in=bijouterie_ids,
+            )
         )
-
-        profils_ids = {
-            profil.pk for profil in profils
-        }
 
         comptes_par_client = {
             compte.client_id: compte
@@ -273,38 +306,75 @@ class ClientRechercheDepotAPIView(APIView):
         }
 
         # ==========================================
-        # 6. CONSTRUCTION DES RÉSULTATS
+        # 8. CONSTRUCTION DES RÉSULTATS
         # ==========================================
 
         results = []
 
         for client in clients_page:
 
+            profil = profils_par_client.get(
+                client.pk
+            )
+
             compte = comptes_par_client.get(
                 client.pk
             )
 
-            results.append({
-                "client_existe": True,
-                "compte_existe": compte is not None,
-                "client": {
-                    "id": client.pk,
-                    "nom": client.nom,
-                    "prenom": client.prenom,
-                    "telephone": client.telephone,
-                },
-                "compte": (
+            # Vérification de l'accès au profil
+            profil_accessible = (
+                profil is not None
+                and profil.bijouterie_id in bijouterie_ids
+            )
+
+            # --------------------------------------
+            # Profil situé dans une autre bijouterie
+            # --------------------------------------
+
+            if profil is not None and not profil_accessible:
+
+                profil_depot_existe = None
+                compte_existe = None
+                compte_data = None
+
+            # --------------------------------------
+            # Aucun profil ou profil accessible
+            # --------------------------------------
+
+            else:
+
+                profil_depot_existe = (
+                    profil is not None
+                )
+
+                compte_existe = (
+                    compte is not None
+                )
+
+                compte_data = (
                     {
                         "numero_compte": compte.numero_compte,
                         "solde": str(compte.solde),
                     }
                     if compte is not None
                     else None
-                ),
+                )
+
+            results.append({
+                "client_existe": True,
+                "profil_depot_existe": profil_depot_existe,
+                "compte_existe": compte_existe,
+                "client": {
+                    "id": client.pk,
+                    "nom": client.nom,
+                    "prenom": client.prenom,
+                    "telephone": client.telephone,
+                },
+                "compte": compte_data,
             })
 
         # ==========================================
-        # 7. RÉPONSE PAGINÉE
+        # 9. RÉPONSE PAGINÉE
         # ==========================================
 
         if paginator is not None and page is not None:
@@ -316,6 +386,7 @@ class ClientRechercheDepotAPIView(APIView):
             results,
             status=status.HTTP_200_OK,
         )
+
 
 # ============================================================
 # CRÉER OU ALIMENTER UN COMPTE DÉPÔT
