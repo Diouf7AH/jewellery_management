@@ -271,51 +271,17 @@ class VendorStock(models.Model):
                 name="ck_vendorstock_vendue_lte_allouee",
             ),
         ]
-
         indexes = [
             models.Index(
-                fields=[
-                    "vendor",
-                    "bijouterie",
-                ],
+                fields=["vendor", "bijouterie"],
                 name="idx_vendorstock_vendor_bij",
             ),
             models.Index(
-                fields=[
-                    "vendor",
-                    "produit_line",
-                ],
+                fields=["vendor", "produit_line"],
                 name="idx_vendorstock_vendor_pl",
             ),
             models.Index(
-                fields=[
-                    "bijouterie",
-                    "produit_line",
-                ],
-                name="idx_vendorstock_bij_pl",
-            ),
-        ]
-
-        indexes = [
-            models.Index(
-                fields=[
-                    "vendor",
-                    "bijouterie",
-                ],
-                name="idx_vendorstock_vendor_bij",
-            ),
-            models.Index(
-                fields=[
-                    "vendor",
-                    "produit_line",
-                ],
-                name="idx_vendorstock_vendor_pl",
-            ),
-            models.Index(
-                fields=[
-                    "bijouterie",
-                    "produit_line",
-                ],
+                fields=["bijouterie", "produit_line"],
                 name="idx_vendorstock_bij_pl",
             ),
         ]

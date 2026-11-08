@@ -10,11 +10,15 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from purchase.models import ProduitLine
-from sale.models import Client, Facture, Vente, VenteAutre, VenteProduit
+from sale.models import (Client, ClientBijouterie, Facture, Vente, VenteAutre,
+                         VenteProduit)
+from sale.services.client_bijouterie_service import verifier_client_associe
 from sale.services.sale_context_service import \
     resolve_vendor_and_bijouterie_for_sale
 from stock.models import VendorStock
 from store.models import MarquePurete
+from vendor.services.qr_scan_service import decode_etiquette_qr
+from vendor.services.qr_utils import decode_etiquette_qr
 
 ZERO = Decimal("0.00")
 
@@ -198,147 +202,206 @@ def calculer_montants(
 
     }
 
-# ============================================================
-
-# CLIENT AU PAIEMENT
-
-# ============================================================
-
+@transaction.atomic
 def upsert_client_for_payment(
-
     *,
-
     client_data: dict,
-
     facture=None,
-
     vente=None,
-
 ):
+    """
+    Associe un client à une vente au moment du paiement.
+
+    - Client déjà lié : conserver sa fiche.
+    - Client existant : vérifier son association.
+    - Nouveau client : créer sa fiche et son association.
+    - Aucune modification automatique des fiches existantes.
+    """
+
+    # ========================================================
+    # 1. RÉCUPÉRATION DE LA VENTE
+    # ========================================================
 
     if facture is not None:
 
-        if vente is not None and facture.vente_id != vente.pk:
-
+        if (
+            vente is not None
+            and facture.vente_id != vente.pk
+        ):
             raise ValidationError({
-
-                "vente": "La vente ne correspond pas à la facture."
-
+                "vente": (
+                    "La vente ne correspond pas "
+                    "à la facture."
+                )
             })
 
         vente = facture.vente
 
     if vente is None:
-
         raise ValidationError({
-
-            "vente": "Une vente ou une facture est obligatoire."
-
+            "vente": (
+                "Une vente ou une facture "
+                "est obligatoire."
+            )
         })
 
     if not isinstance(client_data, dict):
-
         raise ValidationError({
-
-            "client": "Un objet est attendu."
-
+            "client": "Un objet JSON est attendu."
         })
 
-    nom = str(client_data.get("nom") or "").strip()
+    # ========================================================
+    # 2. RÉCUPÉRATION DE LA BIJOUTERIE ET DU CLIENT
+    # ========================================================
 
-    prenom = str(client_data.get("prenom") or "").strip()
+    bijouterie = vente.bijouterie
+    client = vente.client
 
-    telephone = str(client_data.get("telephone") or "").strip()
+    # ========================================================
+    # 3. INFORMATIONS REÇUES
+    # ========================================================
+
+    nom = str(
+        client_data.get("nom") or ""
+    ).strip()
+
+    prenom = str(
+        client_data.get("prenom") or ""
+    ).strip()
+
+    telephone = str(
+        client_data.get("telephone") or ""
+    ).strip()
+
+    # ========================================================
+    # 4. CLIENT DÉJÀ ASSOCIÉ À LA VENTE
+    # ========================================================
+
+    if client is not None:
+
+        verifier_client_associe(
+            client=client,
+            bijouterie=bijouterie,
+        )
+
+        if telephone:
+            existing_by_phone = (
+                Client.objects
+                .filter(telephone=telephone)
+                .first()
+            )
+
+            if (
+                existing_by_phone is not None
+                and existing_by_phone.pk != client.pk
+            ):
+                raise ValidationError({
+                    "telephone": (
+                        "Ce téléphone appartient "
+                        "à un autre client."
+                    )
+                })
+
+        # Ne pas modifier nom, prénom ou téléphone.
+        return client
+
+    # ========================================================
+    # 5. IDENTIFICATION D'UN CLIENT NON ENCORE LIÉ
+    # ========================================================
+
+    client_id = client_data.get("id")
+
+    if client_id not in (None, ""):
+
+        client_id = sale_positive_int(
+            client_id,
+            field="client.id",
+        )
+
+        client = Client.objects.filter(
+            pk=client_id,
+        ).first()
+
+        if client is None:
+            raise ValidationError({
+                "client": "Client introuvable."
+            })
+
+        verifier_client_associe(
+            client=client,
+            bijouterie=bijouterie,
+        )
+
+        # L'identité doit avoir été vérifiée
+        # par le processus métier autorisé.
+        vente.client = client
+        vente.full_clean()
+        vente.save(update_fields=["client"])
+
+        return client
+
+    # ========================================================
+    # 6. VÉRIFICATION DES DONNÉES DU NOUVEAU CLIENT
+    # ========================================================
 
     if not nom or not prenom:
-
         raise ValidationError({
-
-            "client": "nom et prenom sont obligatoires au paiement."
-
+            "client": (
+                "Le nom et le prénom sont obligatoires "
+                "pour créer une nouvelle fiche client."
+            )
         })
 
-    client = vente.client
+    # ========================================================
+    # 7. RECHERCHE PAR TÉLÉPHONE
+    # ========================================================
 
     existing_by_phone = None
 
     if telephone:
-
         existing_by_phone = (
-
             Client.objects
-
             .filter(telephone=telephone)
-
             .first()
-
         )
 
-    if client is not None:
-
-        if (
-
-            existing_by_phone is not None
-
-            and existing_by_phone.pk != client.pk
-
-        ):
-
-            raise ValidationError({
-
-                "telephone": "Ce téléphone appartient à un autre client."
-
-            })
-
-        changed_fields = []
-
-        if client.nom != nom:
-
-            client.nom = nom
-
-            changed_fields.append("nom")
-
-        if client.prenom != prenom:
-
-            client.prenom = prenom
-
-            changed_fields.append("prenom")
-
-        if telephone and client.telephone != telephone:
-
-            client.telephone = telephone
-
-            changed_fields.append("telephone")
-
-        if changed_fields:
-
-            client.save(update_fields=changed_fields)
-
-        return client
-
     if existing_by_phone is not None:
+        # Ne jamais rattacher automatiquement un client
+        # sur la seule base de son numéro de téléphone.
 
-        vente.client = existing_by_phone
+        raise ValidationError({
+            "client": (
+                "Un client existe déjà avec ce téléphone. "
+                "Sélectionnez sa fiche client après "
+                "avoir confirmé son identité."
+            )
+        })
 
-        vente.save(update_fields=["client"])
-
-        return existing_by_phone
+    # ========================================================
+    # 8. CRÉATION D'UN NOUVEAU CLIENT
+    # ========================================================
 
     client = Client.objects.create(
-
         nom=nom,
-
         prenom=prenom,
-
         telephone=telephone or None,
-
     )
 
-    vente.client = client
+    ClientBijouterie.objects.get_or_create(
+        client=client,
+        bijouterie=bijouterie,
+    )
 
+    # ========================================================
+    # 9. ASSOCIATION DU CLIENT À LA VENTE
+    # ========================================================
+
+    vente.client = client
+    vente.full_clean()
     vente.save(update_fields=["client"])
 
     return client
+
 
 # ============================================================
 
@@ -346,91 +409,78 @@ def upsert_client_for_payment(
 
 # ============================================================
 
+
 def resolve_produit_line_for_sale(item, *, index):
+    """
+    Résout la ligne de produit à vendre.
+
+    - produit_line_id : ligne choisie après recherche SKU.
+    - qr : ligne identifiée par le QR code.
+
+    Aucun stock n'est modifié.
+    """
+
+    if not isinstance(item, dict):
+        raise ValidationError({
+            f"produits[{index}]": (
+                "Un objet JSON est attendu."
+            )
+        })
 
     produit_line_id = item.get("produit_line_id")
-
     qr = item.get("qr")
 
-    if produit_line_id is not None and qr:
+    has_id = produit_line_id not in (None, "")
+    has_qr = qr not in (None, "")
 
+    if has_id == has_qr:
         raise ValidationError({
-
             f"produits[{index}]": (
-
-                "Fournissez produit_line_id ou qr, pas les deux."
-
+                "Fournissez exactement un champ : "
+                "produit_line_id ou qr."
             )
-
         })
 
-    if produit_line_id is None and not qr:
+    # =====================================================
+    # RECHERCHE PAR PRODUIT_LINE_ID
+    # =====================================================
 
-        raise ValidationError({
-
-            f"produits[{index}]": (
-
-                "produit_line_id ou qr est obligatoire."
-
-            )
-
-        })
-
-    if produit_line_id is not None:
-
+    if has_id:
         line_id = sale_positive_int(
-
             produit_line_id,
-
             field=f"produits[{index}].produit_line_id",
-
         )
 
         produit_line = (
-
             ProduitLine.objects
-
             .filter(pk=line_id)
-
             .first()
-
         )
+
+    # =====================================================
+    # RECHERCHE PAR QR CODE
+    # =====================================================
 
     else:
-
         try:
+            line_uuid = decode_etiquette_qr(qr)
 
-            scan_value = str(qr).strip()
-
-            if scan_value.upper().startswith("PL:"):
-                scan_value = scan_value[3:].strip()
-
-            line_uuid = UUID(scan_value)
-
-        except (ValueError, TypeError, AttributeError):
-
+        except ValueError as exc:
             raise ValidationError({
-
-                f"produits[{index}].qr": "UUID invalide."
-
-            })
+                f"produits[{index}].qr": str(exc)
+            }) from exc
 
         produit_line = (
-
             ProduitLine.objects
-
             .filter(uuid=line_uuid)
-
             .first()
-
         )
 
     if produit_line is None:
-
         raise ValidationError({
-
-            f"produits[{index}]": "ProduitLine introuvable."
-
+            f"produits[{index}]": (
+                "Ligne de produit introuvable."
+            )
         })
 
     return produit_line
@@ -1021,7 +1071,9 @@ def create_sale_one_vendor(
 
             })
 
-    # 8. Client facultatif
+    # ============================================================
+    # 8. CLIENT FACULTATIF
+    # ============================================================
 
     client = None
 
@@ -1030,22 +1082,25 @@ def create_sale_one_vendor(
     if client_id not in (None, ""):
 
         client_id = sale_positive_int(
-
             client_id,
-
             field="client.id",
-
         )
 
-        client = Client.objects.filter(pk=client_id).first()
+        client = (
+            Client.objects
+            .filter(pk=client_id)
+            .first()
+        )
 
         if client is None:
-
             raise ValidationError({
-
                 "client": "Client introuvable."
-
             })
+
+        verifier_client_associe(
+            client=client,
+            bijouterie=bijouterie,
+        )
 
     # =========================================================
     # 9. CRÉATION DE LA VENTE OU PRESTATION
@@ -1064,6 +1119,7 @@ def create_sale_one_vendor(
         vendor=vendor,
     )
 
+    vente.full_clean()
     vente.save(prefixe_operation=prefixe)
 
     # 10. Création des bijoux

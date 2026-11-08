@@ -14,7 +14,8 @@ from store.serializers import BijouterieSerializer, ProduitSerializer
 from vendor.models import Vendor
 from vendor.serializer import VendorSerializer
 
-from .models import Facture, ModePaiement, Vente, VenteAutre, VenteProduit
+from .models import (Client, ClientBijouterie, Facture, ModePaiement, Vente,
+                     VenteAutre, VenteProduit)
 
 
 # ---- store serializers light ----
@@ -270,6 +271,107 @@ class VenteAutreInSerializer(serializers.Serializer):
         min_value=Decimal("0.00"),
         required=True,
     )
+
+
+# =============client bijouterie==============================
+
+class ClientBijouterieSerializer(serializers.ModelSerializer):
+
+    bijouterie_nom = serializers.CharField(
+        source="bijouterie.nom",
+        read_only=True,
+    )
+
+    class Meta:
+        model = ClientBijouterie
+        fields = [
+            "id",
+            "client",
+            "bijouterie",
+            "bijouterie_nom",
+            "created_at",
+        ]
+
+        read_only_fields = [
+            "id",
+            "bijouterie_nom",
+            "created_at",
+        ]
+
+    def validate(self, attrs):
+        client = attrs.get(
+            "client",
+            getattr(self.instance, "client", None),
+        )
+
+        bijouterie = attrs.get(
+            "bijouterie",
+            getattr(self.instance, "bijouterie", None),
+        )
+
+        if client and bijouterie:
+            qs = ClientBijouterie.objects.filter(
+                client=client,
+                bijouterie=bijouterie,
+            )
+
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+
+            if qs.exists():
+                raise serializers.ValidationError({
+                    "bijouterie": (
+                        "Ce client est déjà associé "
+                        "à cette bijouterie."
+                    )
+                })
+
+        return attrs
+
+
+class ClientBijouterieMiniSerializer(serializers.ModelSerializer):
+
+    id = serializers.IntegerField(
+        source="bijouterie_id",
+        read_only=True,
+    )
+
+    nom = serializers.CharField(
+        source="bijouterie.nom",
+        read_only=True,
+    )
+
+    class Meta:
+        model = ClientBijouterie
+        fields = [
+            "id",
+            "nom",
+        ]
+
+
+class ClientAvecBijouteriesSerializer(serializers.ModelSerializer):
+
+    bijouteries = ClientBijouterieMiniSerializer(
+        source="associations_bijouteries",
+        many=True,
+        read_only=True,
+    )
+
+    class Meta:
+        model = Client
+        fields = [
+            "id",
+            "prenom",
+            "nom",
+            "telephone",
+            "cni",
+            "address",
+            "bijouteries",
+            "created_at",
+        ]
+
+# ============================================================
+
 
 # ============================================================
 # 3. CRÉATION D'UNE VENTE

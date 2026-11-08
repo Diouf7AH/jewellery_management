@@ -9,6 +9,7 @@ from datetime import datetime, time, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.core.paginator import EmptyPage, Paginator
 from django.db.models import (Avg, Count, DecimalField, ExpressionWrapper, F,
                               IntegerField, OuterRef, Q, Subquery, Sum, Value)
@@ -33,6 +34,7 @@ from stock.models import Stock, VendorStock
 from stock.serializers import VendorStockSerializer
 from vendor.services.qr_scan_service import (decode_etiquette_qr,
                                              resolve_scan_vendor)
+from vendor.services.sku_search_service import rechercher_lots_par_sku
 from vendor.services.vendor_service import get_connected_vendor
 
 from .models import Vendor
@@ -1303,6 +1305,38 @@ class VendorScanQRCodeAPIView(APIView):
         )
         
         
+
+class RechercheLotsParSKUAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            resultat = rechercher_lots_par_sku(
+                user=request.user,
+                role=get_role_name(request.user),
+                sku=request.query_params.get("sku"),
+                qr=request.query_params.get("qr"),
+                vendor_email=request.query_params.get(
+                    "vendor_email"
+                ),
+            )
+
+            return Response(
+                resultat,
+                status=status.HTTP_200_OK,
+            )
+
+        except ValidationError as exc:
+            return Response(
+                {
+                    "errors": (
+                        exc.message_dict
+                        if hasattr(exc, "message_dict")
+                        else exc.messages
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 class VendorDashboardView(APIView):
     """

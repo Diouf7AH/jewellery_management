@@ -67,6 +67,13 @@ class Client(models.Model):
         null=True,
         verbose_name="Adresse",
     )
+    
+    bijouteries = models.ManyToManyField(
+        "store.Bijouterie",
+        through="sale.ClientBijouterie",
+        related_name="clients",
+        blank=True,
+    )
 
     created_at = models.DateTimeField(
         auto_now_add=True,
@@ -97,7 +104,52 @@ class Client(models.Model):
             or self.telephone
             or f"Client #{self.pk}"
         )
-        
+
+
+class ClientBijouterie(models.Model):
+    """
+    Association entre un client commercial
+    et une bijouterie.
+
+    Un client peut appartenir à plusieurs bijouteries.
+    Une même association ne peut exister qu'une fois.
+    """
+
+    client = models.ForeignKey(
+        "sale.Client",
+        on_delete=models.CASCADE,
+        related_name="associations_bijouteries",
+    )
+
+    bijouterie = models.ForeignKey(
+        "store.Bijouterie",
+        on_delete=models.PROTECT,
+        related_name="associations_clients",
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    class Meta:
+        verbose_name = "Client de bijouterie"
+        verbose_name_plural = "Clients des bijouteries"
+
+        ordering = ["-created_at"]
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=["client", "bijouterie"],
+                name="unique_client_bijouterie",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.client.full_name} - "
+            f"{self.bijouterie.nom}"
+        )
+
 
 class Vente(models.Model):
     uuid = models.UUIDField(
@@ -248,23 +300,52 @@ class Vente(models.Model):
             f"- {date_txt}"
         )
 
+    # def clean(self):
+    #     super().clean()
+
+    #     if not self.vendor_id or not self.bijouterie_id:
+    #         return
+
+    #     vendor_bijouterie_id = (
+    #         self.vendor.bijouterie_id
+    #     )
+
+    #     if vendor_bijouterie_id != self.bijouterie_id:
+    #         raise ValidationError({
+    #             "vendor": (
+    #                 "Le vendeur sélectionné n'appartient pas "
+    #                 "à la bijouterie de cette vente."
+    #             )
+    #         })
+    
+    
     def clean(self):
         super().clean()
 
-        if not self.vendor_id or not self.bijouterie_id:
-            return
+        errors = {}
 
-        vendor_bijouterie_id = (
-            self.vendor.bijouterie_id
-        )
-
-        if vendor_bijouterie_id != self.bijouterie_id:
-            raise ValidationError({
-                "vendor": (
+        # Vérification du vendeur
+        if self.vendor_id and self.bijouterie_id:
+            if self.vendor.bijouterie_id != self.bijouterie_id:
+                errors["vendor"] = (
                     "Le vendeur sélectionné n'appartient pas "
                     "à la bijouterie de cette vente."
                 )
-            })
+
+        # Vérification du client
+        if self.client_id and self.bijouterie_id:
+            if not ClientBijouterie.objects.filter(
+                client_id=self.client_id,
+                bijouterie_id=self.bijouterie_id,
+            ).exists():
+                errors["client"] = (
+                    "Ce client n'est pas associé "
+                    "à cette bijouterie."
+                )
+
+        if errors:
+            raise ValidationError(errors)
+        
 
     def generer_numero_vente(self, prefixe="VENTE") -> str:
         if prefixe not in {"VENTE", "PREST"}:

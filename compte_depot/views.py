@@ -28,14 +28,14 @@ from backend.roles import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, ROLE_VENDOR,
                            get_role_name)
 from backend.utils.helpers import (resolve_bijouterie_for_user,
                                    user_can_access_bijouterie)
-from compte_depot.models import CompteDepot, CompteDepotTransaction
+from compte_depot.models import (ClientDepot, CompteDepot,
+                                 CompteDepotTransaction)
 from compte_depot.notifications import (send_compte_created_notification,
                                         send_compte_depot_notification)
+from compte_depot.pagination import (ClientRechercheDepotPagination,
+                                     CompteDepotTransactionPagination)
 from sale.models import Client
 
-from .models import ClientDepot, CompteDepot, CompteDepotTransaction
-from .pagination import CompteDepotTransactionPagination
-from .pdf import generate_transaction_ticket_80mm_pdf
 from .serializers import (ClientDepotSerializer, CompteDepotSerializer,
                           CompteDepotTelephoneTransactionSerializer,
                           CompteDepotTransactionSerializer,
@@ -127,9 +127,7 @@ def creer_profil_depot_client_existant(
 # ============================================================
 # rechercher un compte dépôt par téléphone
 # ==========================================================
-
 class ClientRechercheDepotAPIView(APIView):
-
     permission_classes = [
         IsAuthenticated,
         IsAdminOrManagerOrCashier,
@@ -138,166 +136,104 @@ class ClientRechercheDepotAPIView(APIView):
     @swagger_auto_schema(
         operation_summary="Rechercher des clients pour un dépôt",
         operation_description=(
-            "Recherche paginée des clients commerciaux par téléphone, "
-            "avec ou sans profil dépôt. "
-            "Les informations financières sont uniquement retournées "
-            "pour les comptes des bijouteries accessibles. "
-            "Pagination globale : 20 clients par page."
+            "Recherche paginée des clients commerciaux "
+            "par téléphone, avec ou sans profil dépôt. "
+            "Les comptes et soldes ne sont visibles que "
+            "pour les bijouteries autorisées. "
+            "20 résultats par défaut, 100 maximum."
         ),
         manual_parameters=[
             openapi.Parameter(
                 "telephone",
                 openapi.IN_QUERY,
-                description="Numéro de téléphone partiel ou complet",
+                description="Téléphone partiel ou complet",
                 type=openapi.TYPE_STRING,
                 required=True,
             ),
             openapi.Parameter(
                 "page",
                 openapi.IN_QUERY,
-                description="Numéro de la page",
+                description="Numéro de page",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "page_size",
+                openapi.IN_QUERY,
+                description="Nombre de résultats (maximum 100)",
                 type=openapi.TYPE_INTEGER,
                 required=False,
             ),
         ],
         responses={
-            200: openapi.Response(
-                description="Liste paginée des clients"
-            ),
-            400: openapi.Response(
-                description="Téléphone obligatoire ou page invalide"
-            ),
-            403: openapi.Response(
-                description="Accès refusé"
-            ),
+            200: "Clients trouvés",
+            400: "Téléphone obligatoire",
+            403: "Accès refusé",
+            404: "Page introuvable",
         },
         tags=["compte dépôt"],
     )
     def get(self, request):
 
-        # ==========================================
-        # 1. TÉLÉPHONE
-        # ==========================================
-
+        # 1. Téléphone
         telephone = (
             request.query_params.get("telephone") or ""
         ).strip()
 
         if not telephone:
             return Response(
-                {
-                    "detail": "Le téléphone est obligatoire."
-                },
+                {"detail": "Le téléphone est obligatoire."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ==========================================
-        # 2. BIJOUTERIES ACCESSIBLES
-        # ==========================================
-
-        bijouteries = get_user_bijouteries(request.user)
-
+        # 2. Bijouteries accessibles
         bijouterie_ids = set(
-            bijouteries.values_list("pk", flat=True)
+            get_user_bijouteries(request.user)
+            .values_list("pk", flat=True)
         )
 
         if not bijouterie_ids:
             return Response(
-                {
-                    "detail": "Aucune bijouterie accessible."
-                },
+                {"detail": "Aucune bijouterie accessible."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # ==========================================
-        # 3. RECHERCHE DES CLIENTS COMMERCIAUX
-        # ==========================================
-
-        # Hypothèse métier :
-        # les utilisateurs autorisés peuvent rechercher
-        # les clients commerciaux dans un répertoire partagé.
-        #
-        # Les données financières restent protégées
-        # par les bijouteries accessibles.
-
+        # 3. Répertoire commercial partagé
         clients = (
             Client.objects
-            .filter(
-                telephone__icontains=telephone
-            )
-            .order_by(
-                "nom",
-                "prenom",
-                "pk",
-            )
+            .filter(telephone__icontains=telephone)
+            .order_by("nom", "prenom", "pk")
         )
 
-        # ==========================================
-        # 4. PAGINATION GLOBALE
-        # ==========================================
+        # 4. Pagination
+        paginator = ClientRechercheDepotPagination()
 
-        pagination_class = (
-            api_settings.DEFAULT_PAGINATION_CLASS
+        clients_page = paginator.paginate_queryset(
+            clients,
+            request,
+            view=self,
         )
 
-        paginator = (
-            pagination_class()
-            if pagination_class is not None
-            else None
-        )
+        client_ids = [client.pk for client in clients_page]
 
-        if paginator is not None:
-            page = paginator.paginate_queryset(
-                clients,
-                request,
-                view=self,
-            )
-        else:
-            page = None
-
-        clients_page = (
-            page if page is not None else list(clients)
-        )
-
-        # ==========================================
-        # 5. IDENTIFIANTS DES CLIENTS
-        # ==========================================
-
-        client_ids = [
-            client.pk
-            for client in clients_page
-        ]
-
-        # ==========================================
-        # 6. PROFILS CLIENT DÉPÔT
-        # ==========================================
-
-        profils = (
-            ClientDepot.objects
-            .filter(
-                pk__in=client_ids
-            )
-            .only(
-                "id",
-                "bijouterie_id",
-            )
-        )
+        # 5. Profils dépôt
+        profils = ClientDepot.objects.filter(
+            pk__in=client_ids
+        ).only("bijouterie_id")
 
         profils_par_client = {
             profil.pk: profil
             for profil in profils
         }
 
-        # ==========================================
-        # 7. COMPTES DÉPÔT ACCESSIBLES
-        # ==========================================
-
-        comptes = (
-            CompteDepot.objects
-            .filter(
-                client_id__in=client_ids,
-                client__bijouterie_id__in=bijouterie_ids,
-            )
+        # 6. Comptes accessibles
+        comptes = CompteDepot.objects.filter(
+            client_id__in=client_ids,
+            client__bijouterie_id__in=bijouterie_ids,
+        ).only(
+            "client_id",
+            "numero_compte",
+            "solde",
         )
 
         comptes_par_client = {
@@ -305,51 +241,26 @@ class ClientRechercheDepotAPIView(APIView):
             for compte in comptes
         }
 
-        # ==========================================
-        # 8. CONSTRUCTION DES RÉSULTATS
-        # ==========================================
-
+        # 7. Réponse
         results = []
 
         for client in clients_page:
+            profil = profils_par_client.get(client.pk)
 
-            profil = profils_par_client.get(
-                client.pk
-            )
-
-            compte = comptes_par_client.get(
-                client.pk
-            )
-
-            # Vérification de l'accès au profil
             profil_accessible = (
                 profil is not None
                 and profil.bijouterie_id in bijouterie_ids
             )
 
-            # --------------------------------------
-            # Profil situé dans une autre bijouterie
-            # --------------------------------------
-
             if profil is not None and not profil_accessible:
-
                 profil_depot_existe = None
                 compte_existe = None
                 compte_data = None
-
-            # --------------------------------------
-            # Aucun profil ou profil accessible
-            # --------------------------------------
-
             else:
+                compte = comptes_par_client.get(client.pk)
 
-                profil_depot_existe = (
-                    profil is not None
-                )
-
-                compte_existe = (
-                    compte is not None
-                )
+                profil_depot_existe = profil is not None
+                compte_existe = compte is not None
 
                 compte_data = (
                     {
@@ -373,20 +284,7 @@ class ClientRechercheDepotAPIView(APIView):
                 "compte": compte_data,
             })
 
-        # ==========================================
-        # 9. RÉPONSE PAGINÉE
-        # ==========================================
-
-        if paginator is not None and page is not None:
-            return paginator.get_paginated_response(
-                results
-            )
-
-        return Response(
-            results,
-            status=status.HTTP_200_OK,
-        )
-
+        return paginator.get_paginated_response(results)
 
 # ============================================================
 # CRÉER OU ALIMENTER UN COMPTE DÉPÔT

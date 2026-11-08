@@ -172,6 +172,7 @@ urlpatterns = [
     path("cashier/dashboard/", staff_views.CashierDashboardView.as_view(),name="cashier-dashboard",),
     
     path("scan-qr/",vendor_views.VendorScanQRCodeAPIView.as_view(),name="vendor-scan-qr",),
+    path("produits/recherche-sku/",vendor_views.RechercheLotsParSKUAPIView.as_view(),name="recherche_lots_sku",),
     path('vendor/stock-vendor', vendor_views.VendorStockView.as_view(), name='Vendor-stock'),
     path("vendor/dashboard/",vendor_views.VendorDashboardView.as_view(),name="vendor-dashboard",),
     # END VENDOR
