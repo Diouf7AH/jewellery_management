@@ -33,6 +33,7 @@ from compte_depot.models import (ClientDepot, CompteDepot,
 from compte_depot.notifications import (send_compte_created_notification,
                                         send_compte_depot_notification)
 from compte_depot.pagination import (ClientRechercheDepotPagination,
+                                     CompteDepotPagination,
                                      CompteDepotTransactionPagination)
 from sale.models import Client
 
@@ -42,250 +43,282 @@ from .serializers import (ClientDepotSerializer, CompteDepotSerializer,
                           CreateOrDepotCompteSerializer)
 from .services.depot_retrait_services import effectuer_depot, effectuer_retrait
 
+
 # ============================================================
 # RATTACHER UN CLIENT COMMERCIAL À CLIENTDEPOT
 # ============================================================
-
 def creer_profil_depot_client_existant(
     client,
     bijouterie,
 ):
     """
-    Crée uniquement la ligne enfant ClientDepot.
+    Crée uniquement le profil ClientDepot
+    d'un client commercial existant.
 
-    Le client commercial existe déjà dans sale.Client.
-
-    Ne modifie jamais :
-    - son nom
-    - son prénom
-    - son téléphone
-    - sa CNI
-    - son utilisateur
-    - son historique commercial
-
-    À appeler dans transaction.atomic(), après avoir
-    verrouillé le client parent.
+    Ne modifie pas les données du parent Client.
     """
 
-    profil = ClientDepot.objects.filter(
-        pk=client.pk
-    ).first()
+    with transaction.atomic():
 
-    if profil:
-        return profil
-
-    parent_link = ClientDepot._meta.get_ancestor_link(
-        Client
-    )
-
-    table = connection.ops.quote_name(
-        ClientDepot._meta.db_table
-    )
-
-    parent_col = connection.ops.quote_name(
-        parent_link.column
-    )
-
-    bijouterie_col = connection.ops.quote_name(
-        ClientDepot._meta.get_field(
-            "bijouterie"
-        ).column
-    )
-
-    photo_field = ClientDepot._meta.get_field("photo")
-
-    photo_col = connection.ops.quote_name(
-        photo_field.column
-    )
-
-    photo_default = photo_field.get_default()
-
-    with connection.cursor() as cursor:
-        cursor.execute(
-            f"""
-            INSERT INTO {table}
-                (
-                    {parent_col},
-                    {bijouterie_col},
-                    {photo_col}
-                )
-            VALUES (%s, %s, %s)
-            """,
-            [
-                client.pk,
-                bijouterie.pk,
-                photo_default,
-            ],
+        # Verrouiller le client commercial
+        client = (
+            Client.objects
+            .select_for_update()
+            .get(pk=client.pk)
         )
 
-    return ClientDepot.objects.get(
-        pk=client.pk
-    )
-    
-    
+        # Vérifier si le profil existe déjà
+        profil = (
+            ClientDepot.objects
+            .filter(pk=client.pk)
+            .first()
+        )
+
+        if profil is not None:
+
+            if profil.bijouterie_id != bijouterie.pk:
+                raise ValidationError({
+                    "bijouterie": (
+                        "Ce client possède déjà un profil "
+                        "dépôt dans une autre bijouterie."
+                    )
+                })
+
+            return profil
+
+        # Récupérer le lien d'héritage Django
+        parent_link = (
+            ClientDepot._meta.get_ancestor_link(Client)
+        )
+
+        if parent_link is None:
+            raise ValidationError({
+                "client": (
+                    "ClientDepot ne possède pas de lien "
+                    "d'héritage avec Client."
+                )
+            })
+
+        quote = connection.ops.quote_name
+
+        table = quote(
+            ClientDepot._meta.db_table
+        )
+
+        parent_col = quote(
+            parent_link.column
+        )
+
+        bijouterie_col = quote(
+            ClientDepot._meta.get_field(
+                "bijouterie"
+            ).column
+        )
+
+        photo_field = (
+            ClientDepot._meta.get_field("photo")
+        )
+
+        photo_col = quote(
+            photo_field.column
+        )
+
+        photo_default = photo_field.get_default()
+
+        # Insérer uniquement dans la table enfant
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO {table}
+                    (
+                        {parent_col},
+                        {bijouterie_col},
+                        {photo_col}
+                    )
+                VALUES (%s, %s, %s)
+                """,
+                [
+                    client.pk,
+                    bijouterie.pk,
+                    photo_default,
+                ],
+            )
+
+        return ClientDepot.objects.get(
+            pk=client.pk
+        )
+        
 
 # ============================================================
 # rechercher un compte dépôt par téléphone
 # ==========================================================
 class ClientRechercheDepotAPIView(APIView):
+
     permission_classes = [
         IsAuthenticated,
         IsAdminOrManagerOrCashier,
     ]
 
     @swagger_auto_schema(
-        operation_summary="Rechercher des clients pour un dépôt",
-        operation_description=(
-            "Recherche paginée des clients commerciaux "
-            "par téléphone, avec ou sans profil dépôt. "
-            "Les comptes et soldes ne sont visibles que "
-            "pour les bijouteries autorisées. "
-            "20 résultats par défaut, 100 maximum."
-        ),
+        operation_summary="Rechercher les comptes dépôt par téléphone",
+        operation_description="""
+        Recherche paginée des comptes dépôt par téléphone.
+
+        Règles d'accès :
+        - Admin : tous les comptes
+        - Manager : uniquement ses bijouteries
+        - Caissier : uniquement sa bijouterie
+
+        Pagination :
+        - 20 comptes par page par défaut
+        - Maximum 100 comptes par page
+        - Paramètres : telephone, page, page_size
+
+        Le résultat utilise le même CompteDepotSerializer
+        que ListerTousComptesAPIView.
+        """,
         manual_parameters=[
             openapi.Parameter(
                 "telephone",
                 openapi.IN_QUERY,
-                description="Téléphone partiel ou complet",
+                description="Numéro de téléphone partiel ou complet",
                 type=openapi.TYPE_STRING,
                 required=True,
             ),
             openapi.Parameter(
                 "page",
                 openapi.IN_QUERY,
-                description="Numéro de page",
+                description="Numéro de la page",
                 type=openapi.TYPE_INTEGER,
                 required=False,
             ),
             openapi.Parameter(
                 "page_size",
                 openapi.IN_QUERY,
-                description="Nombre de résultats (maximum 100)",
+                description="Nombre de résultats par page (maximum 100)",
                 type=openapi.TYPE_INTEGER,
                 required=False,
             ),
         ],
         responses={
-            200: "Clients trouvés",
-            400: "Téléphone obligatoire",
-            403: "Accès refusé",
-            404: "Page introuvable",
+            200: openapi.Response(
+                description="Liste paginée des comptes dépôt"
+            ),
+            400: openapi.Response(
+                description="Téléphone obligatoire ou pagination invalide"
+            ),
+            403: openapi.Response(
+                description="Accès refusé"
+            ),
+            404: openapi.Response(
+                description="Page introuvable"
+            ),
         },
         tags=["compte dépôt"],
     )
     def get(self, request):
 
-        # 1. Téléphone
+        # ==========================================
+        # 1. VÉRIFICATION DU RÔLE
+        # ==========================================
+
+        role = get_role_name(request.user)
+
+        if role not in {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_CASHIER,
+        }:
+            return Response(
+                {"detail": "Accès refusé."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # ==========================================
+        # 2. VÉRIFICATION DU TÉLÉPHONE
+        # ==========================================
+
         telephone = (
             request.query_params.get("telephone") or ""
         ).strip()
 
         if not telephone:
             return Response(
-                {"detail": "Le téléphone est obligatoire."},
+                {
+                    "detail": "Le téléphone est obligatoire."
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 2. Bijouteries accessibles
-        bijouterie_ids = set(
-            get_user_bijouteries(request.user)
-            .values_list("pk", flat=True)
+        # ==========================================
+        # 3. BIJOUTERIES ACCESSIBLES
+        # ==========================================
+
+        bijouteries = get_user_bijouteries(
+            request.user
         )
 
-        if not bijouterie_ids:
+        if not bijouteries.exists():
             return Response(
-                {"detail": "Aucune bijouterie accessible."},
+                {
+                    "detail": (
+                        "Aucune bijouterie accessible "
+                        "pour cet utilisateur."
+                    )
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # 3. Répertoire commercial partagé
-        clients = (
-            Client.objects
-            .filter(telephone__icontains=telephone)
-            .order_by("nom", "prenom", "pk")
+        # ==========================================
+        # 4. RECHERCHE DES COMPTES DÉPÔT
+        # ==========================================
+
+        comptes = (
+            CompteDepot.objects
+            .select_related(
+                "client",
+                "client__bijouterie",
+                "created_by",
+            )
+            .filter(
+                client__bijouterie__in=bijouteries,
+                client__telephone__icontains=telephone,
+            )
+            .order_by(
+                "-created_at",
+                "-pk",
+            )
         )
 
-        # 4. Pagination
+        # ==========================================
+        # 5. PAGINATION
+        # ==========================================
+
         paginator = ClientRechercheDepotPagination()
 
-        clients_page = paginator.paginate_queryset(
-            clients,
+        page = paginator.paginate_queryset(
+            comptes,
             request,
             view=self,
         )
 
-        client_ids = [client.pk for client in clients_page]
+        # ==========================================
+        # 6. SÉRIALISATION
+        # ==========================================
 
-        # 5. Profils dépôt
-        profils = ClientDepot.objects.filter(
-            pk__in=client_ids
-        ).only("bijouterie_id")
-
-        profils_par_client = {
-            profil.pk: profil
-            for profil in profils
-        }
-
-        # 6. Comptes accessibles
-        comptes = CompteDepot.objects.filter(
-            client_id__in=client_ids,
-            client__bijouterie_id__in=bijouterie_ids,
-        ).only(
-            "client_id",
-            "numero_compte",
-            "solde",
+        serializer = CompteDepotSerializer(
+            page,
+            many=True,
         )
 
-        comptes_par_client = {
-            compte.client_id: compte
-            for compte in comptes
-        }
+        # ==========================================
+        # 7. RÉPONSE PAGINÉE
+        # ==========================================
 
-        # 7. Réponse
-        results = []
-
-        for client in clients_page:
-            profil = profils_par_client.get(client.pk)
-
-            profil_accessible = (
-                profil is not None
-                and profil.bijouterie_id in bijouterie_ids
-            )
-
-            if profil is not None and not profil_accessible:
-                profil_depot_existe = None
-                compte_existe = None
-                compte_data = None
-            else:
-                compte = comptes_par_client.get(client.pk)
-
-                profil_depot_existe = profil is not None
-                compte_existe = compte is not None
-
-                compte_data = (
-                    {
-                        "numero_compte": compte.numero_compte,
-                        "solde": str(compte.solde),
-                    }
-                    if compte is not None
-                    else None
-                )
-
-            results.append({
-                "client_existe": True,
-                "profil_depot_existe": profil_depot_existe,
-                "compte_existe": compte_existe,
-                "client": {
-                    "id": client.pk,
-                    "nom": client.nom,
-                    "prenom": client.prenom,
-                    "telephone": client.telephone,
-                },
-                "compte": compte_data,
-            })
-
-        return paginator.get_paginated_response(results)
-
+        return paginator.get_paginated_response(
+            serializer.data
+        )
+        
 # ============================================================
 # CRÉER OU ALIMENTER UN COMPTE DÉPÔT
 # ============================================================
@@ -1147,6 +1180,7 @@ class GetSoldeAPIView(APIView):
 # =========================================================
 # LISTE COMPTES AVEC FILTRE
 # =========================================================
+
 class ListerTousComptesAPIView(APIView):
 
     permission_classes = [
@@ -1164,9 +1198,11 @@ class ListerTousComptesAPIView(APIView):
         - Manager : uniquement ses bijouteries
         - Caissier : uniquement sa bijouterie
 
-        Pagination :
-        - 20 comptes par page par défaut
-        - Utiliser ?page=2 pour la page suivante
+        Fonctionnalités :
+        - Recherche facultative par téléphone
+        - Pagination de 20 comptes par défaut
+        - Maximum 100 comptes par page
+        - Affichage du solde via CompteDepotSerializer
         """,
         manual_parameters=[
             openapi.Parameter(
@@ -1183,6 +1219,13 @@ class ListerTousComptesAPIView(APIView):
                 type=openapi.TYPE_INTEGER,
                 required=False,
             ),
+            openapi.Parameter(
+                "page_size",
+                openapi.IN_QUERY,
+                description="Nombre de comptes par page (maximum 100)",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
         ],
         responses={
             200: openapi.Response(
@@ -1190,6 +1233,9 @@ class ListerTousComptesAPIView(APIView):
             ),
             403: openapi.Response(
                 description="Accès refusé"
+            ),
+            404: openapi.Response(
+                description="Page introuvable"
             ),
         },
         tags=["compte dépôt"],
@@ -1208,7 +1254,7 @@ class ListerTousComptesAPIView(APIView):
             ROLE_CASHIER,
         }:
             return Response(
-                {"message": "Accès refusé."},
+                {"detail": "Accès refusé."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -1248,12 +1294,11 @@ class ListerTousComptesAPIView(APIView):
         )
 
         # ==========================================
-        # 4. FILTRE TÉLÉPHONE
+        # 4. RECHERCHE PAR TÉLÉPHONE
         # ==========================================
 
-        telephone = request.query_params.get(
-            "telephone",
-            ""
+        telephone = (
+            request.query_params.get("telephone") or ""
         ).strip()
 
         if telephone:
@@ -1271,49 +1316,33 @@ class ListerTousComptesAPIView(APIView):
         )
 
         # ==========================================
-        # 6. PAGINATION GLOBALE DRF
+        # 6. PAGINATION
         # ==========================================
 
-        pagination_class = (
-            api_settings.DEFAULT_PAGINATION_CLASS
+        paginator = CompteDepotPagination()
+
+        page = paginator.paginate_queryset(
+            comptes,
+            request,
+            view=self,
         )
 
-        if pagination_class is not None:
-
-            paginator = pagination_class()
-
-            page = paginator.paginate_queryset(
-                comptes,
-                request,
-                view=self,
-            )
-
-            if page is not None:
-
-                serializer = CompteDepotSerializer(
-                    page,
-                    many=True,
-                )
-
-                return paginator.get_paginated_response(
-                    serializer.data
-                )
-
         # ==========================================
-        # 7. RÉPONSE SANS PAGINATION
+        # 7. SÉRIALISATION
         # ==========================================
 
         serializer = CompteDepotSerializer(
-            comptes,
+            page,
             many=True,
         )
 
-        return Response(
-            serializer.data,
-            status=status.HTTP_200_OK,
+        # ==========================================
+        # 8. RÉPONSE PAGINÉE
+        # ==========================================
+
+        return paginator.get_paginated_response(
+            serializer.data
         )
-        
-        
 
 # =========================================================
 # LISTE TRANSACTIONS

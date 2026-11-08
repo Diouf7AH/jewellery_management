@@ -218,7 +218,8 @@ urlpatterns = [
     path("solde", compte_depot_views.GetSoldeAPIView.as_view()),
     # comptes
     # path("comptes", compte_depot_views.ListCompteDepotView.as_view()),
-    path("comptes/search", compte_depot_views.ListerTousComptesAPIView.as_view()),
+    # path("comptes/search", compte_depot_views.ListerTousComptesAPIView.as_view()),
+    path("compte-depot/list/", compte_depot_views.ListerTousComptesAPIView.as_view(),name="compte_depot_list",),
     path("clients-compte-depot/recherche/",compte_depot_views.ClientRechercheDepotAPIView.as_view(),name="client_recherche_depot",),
     # transactions
     # path("transactions", compte_depot_views.ListerToutesCompteDepotTransactionsAPIView.as_view()),
