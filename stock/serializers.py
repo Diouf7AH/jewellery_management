@@ -7,6 +7,7 @@ from django.core.exceptions import ValidationError
 from rest_framework import serializers
 
 from stock.models import Stock, VendorStock
+from store.serializers import ProduitSerializer
 
 
 # ============================================================
@@ -502,93 +503,21 @@ class StockDisponiblePourVendeurSerializer(
     
     
 
-
 class VendorStockSerializer(serializers.ModelSerializer):
-    """
-    Détail d'une ligne de stock vendeur.
 
-    - Identification par produit_line_id ou QR.
-    - QR au format PL:<uuid ProduitLine>.
-    - Quantités disponibles chez le vendeur.
-    - Informations du produit et du lot.
-    """
+    # 1. Informations complètes du produit
+    produit = ProduitSerializer(
+        source="produit_line.produit",
+        read_only=True,
+    )
 
+    # 2. Traçabilité
     produit_line_id = serializers.IntegerField(
         source="produit_line.id",
         read_only=True,
     )
 
-    # QR Code de la ProduitLine
     qr = serializers.SerializerMethodField()
-
-    produit_id = serializers.IntegerField(
-        source="produit_line.produit.id",
-        read_only=True,
-    )
-
-    produit_nom = serializers.CharField(
-        source="produit_line.produit.nom",
-        read_only=True,
-        allow_null=True,
-    )
-
-    sku = serializers.CharField(
-        source="produit_line.produit.sku",
-        read_only=True,
-        allow_null=True,
-    )
-
-    image = serializers.ImageField(
-        source="produit_line.produit.image",
-        read_only=True,
-        allow_null=True,
-    )
-
-    categorie = serializers.CharField(
-        source="produit_line.produit.categorie.nom",
-        read_only=True,
-        allow_null=True,
-    )
-
-    marque_id = serializers.IntegerField(
-        source="produit_line.produit.marque.id",
-        read_only=True,
-        allow_null=True,
-    )
-
-    marque = serializers.CharField(
-        source="produit_line.produit.marque.marque",
-        read_only=True,
-        allow_null=True,
-    )
-
-    purete_id = serializers.IntegerField(
-        source="produit_line.produit.purete.id",
-        read_only=True,
-        allow_null=True,
-    )
-
-    purete = serializers.CharField(
-        source="produit_line.produit.purete.purete",
-        read_only=True,
-        allow_null=True,
-    )
-
-    modele = serializers.CharField(
-        source="produit_line.produit.modele.modele",
-        read_only=True,
-        allow_null=True,
-    )
-
-    poids_unitaire = serializers.DecimalField(
-        source="produit_line.produit.poids",
-        max_digits=12,
-        decimal_places=3,
-        read_only=True,
-        allow_null=True,
-    )
-
-    poids_disponible = serializers.SerializerMethodField()
 
     lot_id = serializers.IntegerField(
         source="produit_line.lot.id",
@@ -602,42 +531,24 @@ class VendorStockSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
 
+    # 3. Stock vendeur
     quantite_disponible = serializers.SerializerMethodField()
+    poids_disponible = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorStock
 
         fields = [
             "id",
-
+            "produit",
             "produit_line_id",
             "qr",
-
-            "produit_id",
-            "produit_nom",
-            "sku",
-            "image",
-
-            "categorie",
-
-            "marque_id",
-            "marque",
-
-            "purete_id",
-            "purete",
-
-            "modele",
-
-            "poids_unitaire",
-            "poids_disponible",
-
             "lot_id",
             "numero_lot",
-
             "quantite_allouee",
             "quantite_vendue",
             "quantite_disponible",
-
+            "poids_disponible",
             "created_at",
             "updated_at",
         ]
@@ -645,72 +556,35 @@ class VendorStockSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_qr(self, obj):
-        """
-        Retourne le QR de la ProduitLine.
+        produit_line = obj.produit_line
 
-        Exemple :
-        PL:550e8400-e29b-41d4-a716-446655440000
-        """
-
-        produit_line = getattr(
-            obj,
-            "produit_line",
-            None,
-        )
-
-        if produit_line is None:
+        if not produit_line or not produit_line.uuid:
             return None
 
-        uuid = getattr(
-            produit_line,
-            "uuid",
-            None,
-        )
-
-        if uuid is None:
-            return None
-
-        return f"PL:{uuid}"
+        return f"PL:{produit_line.uuid}"
 
     def get_quantite_disponible(self, obj):
-        """
-        Stock réellement disponible du vendeur.
-        """
-
-        quantite_allouee = obj.quantite_allouee or 0
-        quantite_vendue = obj.quantite_vendue or 0
-
         return max(
-            quantite_allouee - quantite_vendue,
+            (obj.quantite_allouee or 0)
+            - (obj.quantite_vendue or 0),
             0,
         )
 
     def get_poids_disponible(self, obj):
-        """
-        Poids unitaire × quantité disponible.
-        """
+        produit_line = obj.produit_line
 
-        produit_line = getattr(
-            obj,
-            "produit_line",
-            None,
-        )
-
-        produit = (
-            getattr(produit_line, "produit", None)
-            if produit_line
-            else None
-        )
-
-        if not produit or produit.poids is None:
+        if not produit_line or not produit_line.produit:
             return None
 
-        poids = Decimal(str(produit.poids))
+        produit = produit_line.produit
 
-        quantite = Decimal(
-            str(self.get_quantite_disponible(obj))
+        if produit.poids is None:
+            return None
+
+        return (
+            Decimal(str(produit.poids))
+            * Decimal(str(self.get_quantite_disponible(obj)))
         )
+        
+        
 
-        return poids * quantite
-    
-    

@@ -11,8 +11,9 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.paginator import EmptyPage, Paginator
-from django.db.models import (Avg, Count, DecimalField, ExpressionWrapper, F,
-                              IntegerField, OuterRef, Q, Subquery, Sum, Value)
+from django.db.models import (Avg, Case, Count, DecimalField,
+                              ExpressionWrapper, F, IntegerField, OuterRef, Q,
+                              Subquery, Sum, Value, When)
 from django.db.models.functions import (Coalesce, TruncDate, TruncDay,
                                         TruncMonth, TruncWeek)
 from django.utils import timezone
@@ -164,53 +165,31 @@ class VendorStockView(APIView):
     """
     Liste du stock disponible d'un vendeur.
 
-    Règles :
-    - vendeur :
-        voit uniquement son propre stock ;
-
-    - admin :
-        doit fournir vendor_email ;
-
-    - manager :
-        doit fournir vendor_email
-        et ne peut consulter qu'un vendeur
-        appartenant à son périmètre ;
-
-    - annee :
-        année courante par défaut ;
-
-    - pagination :
-        50 lignes par défaut,
-        maximum 100.
-
-    Important :
-    - les totaux sont calculés sur toute l'année filtrée ;
-    - results contient uniquement les lignes encore disponibles ;
-    - les lignes épuisées ne sont pas retournées.
+    - Vendeur : son propre stock.
+    - Admin : vendeur sélectionné par email.
+    - Manager : vendeur appartenant à son périmètre.
+    - Toutes les années sont incluses.
+    - Seules les lignes disponibles sont retournées.
+    - Totaux globaux avant pagination.
     """
 
     permission_classes = [IsAuthenticated]
-
-    http_method_names = [
-        "get",
-        "options",
-    ]
+    http_method_names = ["get", "options"]
 
     DEFAULT_PAGE_SIZE = 50
     MAX_PAGE_SIZE = 100
 
     @swagger_auto_schema(
-        operation_summary="Stock disponible d'un vendeur",
+        operation_summary="Stock disponible du vendeur",
         operation_description=(
-            "Retourne le stock disponible d'un vendeur.\n\n"
-            "### Vendeur connecté\n"
-            "Aucun vendor_email nécessaire.\n\n"
-            "### Admin / Manager\n"
-            "`vendor_email` est obligatoire.\n\n"
-            "### Filtres\n"
-            "- `annee` : année recherchée ; année courante par défaut.\n"
-            "- `page` : page courante ; 1 par défaut.\n"
-            "- `page_size` : nombre de lignes ; 50 par défaut, maximum 100."
+            "Retourne tous les produits disponibles "
+            "du vendeur, toutes années confondues.\n\n"
+            "Le vendeur connecté consulte son propre stock.\n"
+            "Admin et manager doivent fournir vendor_email.\n"
+            "Le manager est limité à ses bijouteries.\n\n"
+            "Les produits sont détaillés avec ProduitSerializer.\n"
+            "Les lignes épuisées ne sont pas retournées.\n"
+            "Les totaux concernent toutes les affectations."
         ),
         manual_parameters=[
             openapi.Parameter(
@@ -218,19 +197,9 @@ class VendorStockView(APIView):
                 openapi.IN_QUERY,
                 description=(
                     "Email du vendeur. "
-                    "Obligatoire pour admin/manager."
+                    "Obligatoire pour admin et manager."
                 ),
                 type=openapi.TYPE_STRING,
-                required=False,
-            ),
-            openapi.Parameter(
-                "annee",
-                openapi.IN_QUERY,
-                description=(
-                    "Année du stock. "
-                    "Année courante par défaut."
-                ),
-                type=openapi.TYPE_INTEGER,
                 required=False,
             ),
             openapi.Parameter(
@@ -244,8 +213,8 @@ class VendorStockView(APIView):
                 "page_size",
                 openapi.IN_QUERY,
                 description=(
-                    "Nombre de résultats par page. "
-                    "Défaut : 50. Maximum : 100."
+                    "Nombre de produits par page. "
+                    "Défaut : 50, maximum : 100."
                 ),
                 type=openapi.TYPE_INTEGER,
                 required=False,
@@ -253,137 +222,60 @@ class VendorStockView(APIView):
         ],
         responses={
             200: VendorStockResponseSerializer(),
-            400: openapi.Response(
-                description="Paramètres invalides.",
-            ),
-            403: openapi.Response(
-                description="Accès refusé.",
-            ),
-            404: openapi.Response(
-                description="Vendeur ou page introuvable.",
-            ),
+            400: "Paramètres invalides",
+            403: "Accès refusé",
+            404: "Vendeur ou page introuvable",
         },
         tags=["vendor"],
     )
     def get(self, request):
 
-        # ============================================================
-        # 1. RÔLE
-        # ============================================================
+        # ==========================================
+        # 1. RÔLE ET PARAMÈTRES
+        # ==========================================
 
         role = (
-            get_role_name(request.user)
-            or ""
+            get_role_name(request.user) or ""
         ).lower()
 
         vendor_email = (
-            request.query_params.get(
-                "vendor_email"
-            )
-            or ""
+            request.query_params.get("vendor_email") or ""
         ).strip().lower()
 
-        # ============================================================
-        # 2. ANNÉE
-        # ============================================================
-
-        current_year = timezone.localdate().year
-
-        annee_param = request.query_params.get(
-            "annee"
-        )
-
-        if annee_param in (None, ""):
-            annee = current_year
-
-        else:
-            try:
-                annee = int(annee_param)
-
-            except (TypeError, ValueError):
-                return Response(
-                    {
-                        "detail": (
-                            "annee doit être un entier valide."
-                        ),
-                        "code": "INVALID_YEAR",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            if annee < 2000 or annee > current_year:
-                return Response(
-                    {
-                        "detail": (
-                            f"annee doit être comprise "
-                            f"entre 2000 et {current_year}."
-                        ),
-                        "code": "INVALID_YEAR",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        # ============================================================
-        # 3. PAGINATION
-        # ============================================================
-
-        page_param = request.query_params.get(
-            "page",
-            "1",
-        )
-
-        page_size_param = request.query_params.get(
-            "page_size",
-            str(self.DEFAULT_PAGE_SIZE),
-        )
+        # ==========================================
+        # 2. PAGINATION
+        # ==========================================
 
         try:
-            page_number = int(page_param)
-
-        except (TypeError, ValueError):
-            return Response(
-                {
-                    "detail": "page doit être un entier valide.",
-                    "code": "INVALID_PAGE",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+            page_number = int(
+                request.query_params.get("page", 1)
             )
 
-        if page_number < 1:
-            return Response(
-                {
-                    "detail": (
-                        "page doit être supérieur "
-                        "ou égal à 1."
-                    ),
-                    "code": "INVALID_PAGE",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+            page_size = int(
+                request.query_params.get(
+                    "page_size",
+                    self.DEFAULT_PAGE_SIZE,
+                )
             )
-
-        try:
-            page_size = int(page_size_param)
 
         except (TypeError, ValueError):
             return Response(
                 {
                     "detail": (
-                        "page_size doit être "
-                        "un entier valide."
-                    ),
-                    "code": "INVALID_PAGE_SIZE",
+                        "page et page_size doivent "
+                        "être des entiers valides."
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if page_size < 1:
+        if page_number < 1 or page_size < 1:
             return Response(
                 {
                     "detail": (
-                        "page_size doit être supérieur "
-                        "ou égal à 1."
-                    ),
-                    "code": "INVALID_PAGE_SIZE",
+                        "page et page_size doivent "
+                        "être supérieurs ou égaux à 1."
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -393,37 +285,36 @@ class VendorStockView(APIView):
             self.MAX_PAGE_SIZE,
         )
 
-        # ============================================================
-        # 4. VENDEUR
-        # ============================================================
+        # ==========================================
+        # 3. IDENTIFICATION DU VENDEUR
+        # ==========================================
 
         if role == ROLE_VENDOR:
 
-            vendor = get_connected_vendor(request.user)
+            vendor = get_connected_vendor(
+                request.user
+            )
 
             if vendor is None:
                 return Response(
                     {
                         "detail": (
-                            "Profil vendeur introuvable ou désactivé."
-                        ),
-                        "code": "VENDOR_PROFILE_UNAVAILABLE",
+                            "Profil vendeur introuvable "
+                            "ou désactivé."
+                        )
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
-        elif role in {
-            ROLE_ADMIN,
-            ROLE_MANAGER,
-        }:
+
+        elif role in (ROLE_ADMIN, ROLE_MANAGER):
 
             if not vendor_email:
                 return Response(
                     {
                         "detail": (
                             "vendor_email est obligatoire "
-                            "pour admin/manager."
-                        ),
-                        "code": "VENDOR_EMAIL_REQUIRED",
+                            "pour admin et manager."
+                        )
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
@@ -435,23 +326,26 @@ class VendorStockView(APIView):
                     "bijouterie",
                 )
                 .filter(
-                    user__email__iexact=vendor_email
+                    user__email__iexact=vendor_email,
+                    verifie=True,
                 )
                 .first()
             )
 
-            if not vendor:
+            if vendor is None:
                 return Response(
                     {
-                        "detail": "Vendeur introuvable.",
-                        "code": "VENDOR_NOT_FOUND",
+                        "detail": (
+                            "Vendeur introuvable "
+                            "ou désactivé."
+                        )
                     },
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            # ========================================================
-            # MANAGER
-            # ========================================================
+            # ======================================
+            # CONTRÔLE DU MANAGER
+            # ======================================
 
             if role == ROLE_MANAGER:
 
@@ -461,46 +355,39 @@ class VendorStockView(APIView):
                     None,
                 )
 
-                if not manager:
+                if (
+                    manager is None
+                    or not manager.verifie
+                ):
                     return Response(
                         {
                             "detail": (
-                                "Profil manager introuvable."
-                            ),
-                            "code": (
-                                "MANAGER_PROFILE_NOT_FOUND"
-                            ),
+                                "Profil manager introuvable "
+                                "ou désactivé."
+                            )
                         },
-                        status=status.HTTP_400_BAD_REQUEST,
+                        status=status.HTTP_403_FORBIDDEN,
                     )
-
-                # Utilise le scope déjà présent dans ton projet.
-                #
-                # Si ton Manager possède directement une relation
-                # bijouteries, adapte uniquement ce bloc.
 
                 allowed = scope_bijouterie_q(
                     request.user,
                     prefix="bijouterie",
                 )
 
-                if not (
+                accessible = (
                     Vendor.objects
-                    .filter(
-                        pk=vendor.pk
-                    )
-                    .filter(
-                        allowed
-                    )
+                    .filter(pk=vendor.pk)
+                    .filter(allowed)
                     .exists()
-                ):
+                )
+
+                if not accessible:
                     return Response(
                         {
                             "detail": (
                                 "Ce vendeur n'appartient pas "
                                 "à votre périmètre."
-                            ),
-                            "code": "VENDOR_OUT_OF_SCOPE",
+                            )
                         },
                         status=status.HTTP_403_FORBIDDEN,
                     )
@@ -508,38 +395,87 @@ class VendorStockView(APIView):
         else:
             return Response(
                 {
-                    "detail": "Accès refusé.",
-                    "code": "ACCESS_DENIED",
+                    "detail": "Accès refusé."
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # ============================================================
-        # 5. BIJOUTERIE VENDEUR
-        # ============================================================
+        # ==========================================
+        # 4. VÉRIFICATION BIJOUTERIE
+        # ==========================================
 
-        if not getattr(
-            vendor,
-            "bijouterie_id",
-            None,
-        ):
+        if not vendor.bijouterie_id:
             return Response(
                 {
                     "detail": (
                         "Le vendeur n'est rattaché "
                         "à aucune bijouterie."
-                    ),
-                    "code": "VENDOR_WITHOUT_BIJOUTERIE",
+                    )
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ============================================================
-        # 6. QUERYSET ANNÉE
-        # ============================================================
+        # ==========================================
+        # 5. QUERYSET : TOUTES LES ANNÉES
+        # ==========================================
 
         stock_qs = (
             VendorStock.objects
+            .filter(
+                vendor=vendor,
+                bijouterie_id=vendor.bijouterie_id,
+            )
+        )
+
+        # Aucun filtre created_at__year.
+
+        # ==========================================
+        # 6. TOTAUX GLOBAUX
+        # ==========================================
+
+        # Calcul de la quantité disponible,
+        # sans autoriser un résultat négatif.
+
+        stock_qs = stock_qs.annotate(
+            disponible_calcule=Case(
+                When(
+                    quantite_allouee__gt=F(
+                        "quantite_vendue"
+                    ),
+                    then=(
+                        F("quantite_allouee")
+                        - F("quantite_vendue")
+                    ),
+                ),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        )
+
+        totaux = stock_qs.aggregate(
+            quantite_allouee=Coalesce(
+                Sum("quantite_allouee"),
+                0,
+            ),
+            quantite_vendue=Coalesce(
+                Sum("quantite_vendue"),
+                0,
+            ),
+            quantite_disponible=Coalesce(
+                Sum("disponible_calcule"),
+                0,
+            ),
+        )
+
+        # ==========================================
+        # 7. STOCK DISPONIBLE
+        # ==========================================
+
+        stock_disponible_qs = (
+            stock_qs
+            .filter(
+                disponible_calcule__gt=0
+            )
             .select_related(
                 "vendor",
                 "vendor__user",
@@ -554,147 +490,61 @@ class VendorStockView(APIView):
                 "produit_line__produit__purete",
                 "produit_line__produit__modele",
             )
-            .filter(
-                vendor=vendor,
-                bijouterie_id=vendor.bijouterie_id,
-
-                # Filtre année
-                created_at__year=annee,
-            )
             .order_by(
                 "-created_at",
                 "-id",
             )
         )
 
-        # ============================================================
-        # 7. TOTAUX + IDENTIFICATION DES LIGNES DISPONIBLES
-        # ============================================================
+        # ==========================================
+        # 8. POIDS DISPONIBLE GLOBAL
+        # ==========================================
 
-        total_allouee = 0
-        total_vendue = 0
-        total_disponible = 0
+        # Somme calculée sur toutes les lignes
+        # disponibles, avant pagination.
 
-        total_poids_disponible = Decimal(
-            "0.000"
-        )
+        total_poids_disponible = Decimal("0.000")
 
-        stock_ids_disponibles = []
+        for stock in stock_disponible_qs.iterator(
+            chunk_size=1000
+        ):
 
-        for stock in stock_qs:
-
-            quantite_allouee = int(
-                stock.quantite_allouee
-                or 0
-            )
-
-            quantite_vendue = int(
-                stock.quantite_vendue
-                or 0
-            )
-
-            quantite_disponible = max(
-                quantite_allouee
-                - quantite_vendue,
-                0,
-            )
-
-            # --------------------------------------------------------
-            # TOTAUX ANNUELS
-            # --------------------------------------------------------
-
-            total_allouee += quantite_allouee
-
-            total_vendue += quantite_vendue
-
-            total_disponible += quantite_disponible
-
-            # --------------------------------------------------------
-            # LIGNE ÉPUISÉE
-            # --------------------------------------------------------
-
-            if quantite_disponible <= 0:
-                continue
-
-            stock_ids_disponibles.append(
-                stock.id
-            )
-
-            # --------------------------------------------------------
-            # POIDS DISPONIBLE
-            # --------------------------------------------------------
-
-            produit_line = getattr(
-                stock,
-                "produit_line",
-                None,
-            )
-
-            produit = (
-                getattr(
-                    produit_line,
-                    "produit",
-                    None,
-                )
-                if produit_line
-                else None
-            )
+            produit = stock.produit_line.produit
 
             if (
-                produit
-                and produit.poids is not None
+                produit is None
+                or produit.poids is None
             ):
-                poids_unitaire = Decimal(
-                    str(produit.poids)
-                )
+                continue
 
-                total_poids_disponible += (
-                    poids_unitaire
-                    * Decimal(
-                        str(
-                            quantite_disponible
-                        )
-                    )
-                )
-
-        # ============================================================
-        # 8. STOCK RÉELLEMENT DISPONIBLE
-        # ============================================================
-
-        stock_disponible_qs = (
-            stock_qs
-            .filter(
-                id__in=stock_ids_disponibles
+            total_poids_disponible += (
+                Decimal(str(produit.poids))
+                * Decimal(str(stock.disponible_calcule))
             )
-        )
 
-        # ============================================================
+        # ==========================================
         # 9. PAGINATION
-        # ============================================================
+        # ==========================================
 
         paginator = Paginator(
             stock_disponible_qs,
             page_size,
         )
 
-        # Cas particulier :
-        # aucune donnée => page 1 vide autorisée
-
         if paginator.count == 0:
 
             if page_number != 1:
                 return Response(
                     {
-                        "detail": "Cette page n'existe pas.",
-                        "code": "PAGE_NOT_FOUND",
+                        "detail": (
+                            "Cette page n'existe pas."
+                        )
                     },
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
             page_results = []
-
             total_pages = 0
-
             has_next = False
             has_previous = False
 
@@ -708,109 +558,78 @@ class VendorStockView(APIView):
             except EmptyPage:
                 return Response(
                     {
-                        "detail": "Cette page n'existe pas.",
-                        "code": "PAGE_NOT_FOUND",
+                        "detail": (
+                            "Cette page n'existe pas."
+                        )
                     },
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            page_results = (
-                page_obj.object_list
-            )
+            page_results = page_obj.object_list
 
-            total_pages = (
-                paginator.num_pages
-            )
+            total_pages = paginator.num_pages
 
-            has_next = (
-                page_obj.has_next()
-            )
+            has_next = page_obj.has_next()
+            has_previous = page_obj.has_previous()
 
-            has_previous = (
-                page_obj.has_previous()
-            )
+        # ==========================================
+        # 10. SERIALIZATION
+        # ==========================================
 
-        # ============================================================
-        # 10. SERIALIZER VENDEUR
-        # ============================================================
-
-        vendor_data = (
-            VendorStockVendorSerializer(
-                vendor
-            ).data
-        )
-
-        # ============================================================
-        # 11. SERIALIZER STOCK
-        # ============================================================
+        vendor_data = VendorStockVendorSerializer(
+            vendor
+        ).data
 
         stock_data = VendorStockSerializer(
             page_results,
             many=True,
-            context={"request": request},
+            context={
+                "request": request,
+            },
         ).data
 
-        # ============================================================
-        # 12. RESPONSE
-        # ============================================================
+        # ==========================================
+        # 11. RÉPONSE FINALE
+        # ==========================================
 
         response_data = {
             "vendor": vendor_data,
 
             "filtre": {
-                "annee": annee,
+                "annee": None,
             },
 
             "totaux": {
-                "quantite_allouee":
-                    total_allouee,
-
-                "quantite_vendue":
-                    total_vendue,
-
-                "quantite_disponible":
-                    total_disponible,
-
-                "poids_disponible":
-                    total_poids_disponible,
+                "quantite_allouee": (
+                    totaux["quantite_allouee"]
+                ),
+                "quantite_vendue": (
+                    totaux["quantite_vendue"]
+                ),
+                "quantite_disponible": (
+                    totaux["quantite_disponible"]
+                ),
+                "poids_disponible": (
+                    total_poids_disponible
+                ),
             },
 
             "pagination": {
-                "page":
-                    page_number,
-
-                "page_size":
-                    page_size,
-
-                "total_pages":
-                    total_pages,
-
-                "total_results":
-                    paginator.count,
-
-                "has_next":
-                    has_next,
-
-                "has_previous":
-                    has_previous,
+                "page": page_number,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "total_results": paginator.count,
+                "has_next": has_next,
+                "has_previous": has_previous,
             },
 
-            # Nombre de lignes dans la page actuelle
-            "count":
-                len(stock_data),
+            "count": len(stock_data),
 
-            "produits":
-                stock_data,
+            "produits": stock_data,
         }
 
-        # ============================================================
-        # 13. VALIDATION DE LA RESPONSE
-        # ============================================================
-
-        response_serializer = (
-            VendorStockResponseSerializer(
-                data=response_data
-            )
+        response_serializer = VendorStockResponseSerializer(
+            data=response_data
         )
 
         response_serializer.is_valid(
@@ -821,6 +640,8 @@ class VendorStockView(APIView):
             response_serializer.validated_data,
             status=status.HTTP_200_OK,
         )
+
+
 
 
 class VendorScanQRCodeAPIView(APIView):

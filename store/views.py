@@ -32,6 +32,7 @@ from backend.roles import ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR, get_role_name
 from purchase.models import ProduitLine
 from store.models import (Bijouterie, Categorie, Gallery, Marque, MarquePurete,
                           MarquePuretePrixHistory, Modele, Produit, Purete)
+from store.pagination import ProduitPagination
 from store.serializers import (BijouterieSerializer, CategorieSerializer,
                                MarquePuretePrixEvolutionPointSerializer,
                                MarquePuretePrixHistory,
@@ -1795,46 +1796,85 @@ class ProduitRechercheView(APIView):
         )
 
 
-    
 class ProduitListAPIView(APIView):
     """
-    Liste des produits du catalogue.
+    Liste paginée des produits du catalogue.
 
-    Accessible aux utilisateurs autorisés à consulter
-    le catalogue produit.
+    Accessible uniquement aux administrateurs
+    et aux managers.
     """
 
     renderer_classes = [UserRenderer]
+
     permission_classes = [
         IsAuthenticated,
         IsAdminOrManager,
     ]
 
     @swagger_auto_schema(
-        operation_description=(
-            "Liste tous les produits disponibles. "
-            "Possibilité de rechercher par SKU."
-        ),
-        responses={
-            200: ProduitSerializer(many=True),
-            403: "Accès refusé",
-        },
+        operation_summary="Lister les produits",
+        operation_description="""
+        Liste paginée des produits du catalogue.
+
+        Fonctionnalités :
+        - Recherche facultative par SKU
+        - Recherche insensible à la casse
+        - 20 produits par page par défaut
+        - Maximum 100 produits par page
+
+        Permissions :
+        - Admin
+        - Manager
+        """,
         manual_parameters=[
             openapi.Parameter(
                 "search",
                 openapi.IN_QUERY,
-                description="Rechercher un produit par SKU",
+                description="Rechercher par SKU",
                 type=openapi.TYPE_STRING,
                 required=False,
             ),
+            openapi.Parameter(
+                "page",
+                openapi.IN_QUERY,
+                description="Numéro de page",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
+            openapi.Parameter(
+                "page_size",
+                openapi.IN_QUERY,
+                description="Nombre de produits par page (max 100)",
+                type=openapi.TYPE_INTEGER,
+                required=False,
+            ),
         ],
+        responses={
+            200: openapi.Response(
+                description="Liste paginée des produits"
+            ),
+            403: openapi.Response(
+                description="Accès refusé"
+            ),
+            404: openapi.Response(
+                description="Page introuvable"
+            ),
+        },
         tags=["Produit"],
     )
     def get(self, request):
-        search = request.query_params.get(
-            "search",
-            "",
+
+        # ==========================================
+        # 1. RECHERCHE PAR SKU
+        # ==========================================
+
+        search = (
+            request.query_params.get("search") or ""
         ).strip()
+
+        # ==========================================
+        # 2. QUERYSET OPTIMISÉ
+        # ==========================================
 
         queryset = (
             Produit.objects
@@ -1844,27 +1884,54 @@ class ProduitListAPIView(APIView):
                 "marque",
                 "modele",
             )
-            .all()
         )
+
+        # ==========================================
+        # 3. FILTRE SKU
+        # ==========================================
 
         if search:
             queryset = queryset.filter(
-                sku__icontains=search,
+                sku__icontains=search
             )
 
-        serializer = ProduitSerializer(
+        # ==========================================
+        # 4. TRI STABLE
+        # ==========================================
+
+        queryset = queryset.order_by("-pk")
+
+        # ==========================================
+        # 5. PAGINATION
+        # ==========================================
+
+        paginator = ProduitPagination()
+
+        page = paginator.paginate_queryset(
             queryset,
+            request,
+            view=self,
+        )
+
+        # ==========================================
+        # 6. SERIALIZER
+        # ==========================================
+
+        serializer = ProduitSerializer(
+            page,
             many=True,
             context={
                 "request": request,
             },
         )
 
-        return Response(
-            serializer.data,
-            status=status.HTTP_200_OK,
-        )
+        # ==========================================
+        # 7. RÉPONSE
+        # ==========================================
 
+        return paginator.get_paginated_response(
+            serializer.data
+        )
 
 class ProduitCreateAPIView(APIView):
     """

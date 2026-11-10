@@ -3,6 +3,7 @@
 # vendor/serializer.py
 from rest_framework import serializers
 
+from stock.serializers import VendorStockSerializer
 from vendor.models import Vendor
 
 
@@ -61,7 +62,11 @@ class VendorStockVendorSerializer(serializers.ModelSerializer):
 
 
 class VendorStockFiltreSerializer(serializers.Serializer):
-    annee = serializers.IntegerField()
+
+    annee = serializers.IntegerField(
+        allow_null=True,
+        required=False,
+    )
 
 
 class VendorStockTotauxSerializer(serializers.Serializer):
@@ -104,6 +109,8 @@ class VendorStockPaginationSerializer(serializers.Serializer):
 
     has_previous = serializers.BooleanField()
 
+
+# vendor/serializer.py
 class VendorStockResponseSerializer(serializers.Serializer):
 
     vendor = VendorStockVendorSerializer()
@@ -114,13 +121,13 @@ class VendorStockResponseSerializer(serializers.Serializer):
 
     pagination = VendorStockPaginationSerializer()
 
-    count = serializers.IntegerField(
-        min_value=0,
-    )
+    count = serializers.IntegerField(min_value=0)
 
     produits = serializers.ListField(
         child=serializers.DictField(),
     )
+    
+
 
 
 
