@@ -7,7 +7,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from sale.services.montant_service import calculer_solde_paiement
+from sale.models import Paiement, PaiementLigne, VenteAutre, VenteProduit
 
 ZERO = Decimal("0.00")
 TWOPLACES = Decimal("0.01")
@@ -15,7 +15,7 @@ HUNDRED = Decimal("100")
 
 
 # ============================================================
-# VALIDATION DES VALEURS
+# 1. VALIDATION FINANCIÈRE
 # ============================================================
 
 def validate_pdf_amount(
@@ -25,17 +25,21 @@ def validate_pdf_amount(
     allow_negative: bool = False,
 ) -> Decimal:
     """
-    Valide une valeur Decimal avant génération du PDF.
+    Valide un montant sans l'arrondir.
 
-    - Refuse None et les chaînes vides.
-    - Refuse les booléens.
-    - Refuse NaN et Infinity.
-    - Refuse les valeurs négatives par défaut.
-    - N'effectue aucun arrondi.
+    Refuse :
+        - None ;
+        - chaînes vides ;
+        - booléens ;
+        - NaN et Infinity ;
+        - valeurs négatives par défaut.
+
+    Retourne un Decimal.
     """
 
     if value is None or (
-        isinstance(value, str) and not value.strip()
+        isinstance(value, str)
+        and not value.strip()
     ):
         raise ValueError(
             f"La valeur '{field_name}' est manquante."
@@ -48,7 +52,12 @@ def validate_pdf_amount(
 
     try:
         montant = Decimal(str(value))
-    except (InvalidOperation, ValueError, TypeError) as exc:
+
+    except (
+        InvalidOperation,
+        ValueError,
+        TypeError,
+    ) as exc:
         raise ValueError(
             f"La valeur '{field_name}' est invalide."
         ) from exc
@@ -60,7 +69,8 @@ def validate_pdf_amount(
 
     if not allow_negative and montant < ZERO:
         raise ValueError(
-            f"La valeur '{field_name}' ne peut pas être négative."
+            f"La valeur '{field_name}' "
+            "ne peut pas être négative."
         )
 
     return montant
@@ -71,7 +81,7 @@ def validate_pdf_quantity(
     field_name: str,
 ) -> Decimal:
     """
-    Valide une quantité strictement positive.
+    Vérifie une quantité strictement positive.
     """
 
     quantite = validate_pdf_amount(
@@ -81,7 +91,8 @@ def validate_pdf_quantity(
 
     if quantite <= ZERO:
         raise ValueError(
-            f"La quantité '{field_name}' doit être positive."
+            f"La quantité '{field_name}' "
+            "doit être strictement positive."
         )
 
     return quantite
@@ -92,7 +103,7 @@ def validate_pdf_percentage(
     field_name: str,
 ) -> Decimal:
     """
-    Valide un pourcentage compris entre 0 et 100.
+    Vérifie un pourcentage entre 0 et 100.
     """
 
     pourcentage = validate_pdf_amount(
@@ -102,15 +113,18 @@ def validate_pdf_percentage(
 
     if pourcentage > HUNDRED:
         raise ValueError(
-            f"Le pourcentage '{field_name}' ne peut pas dépasser 100 %."
+            f"Le pourcentage '{field_name}' "
+            "dépasse 100 %."
         )
 
     return pourcentage
 
 
-def round_pdf_money(value: Decimal) -> Decimal:
+def round_pdf_money(
+    value: Decimal,
+) -> Decimal:
     """
-    Arrondit à deux décimales comme Facture.recalculer_totaux().
+    Arrondit un montant à deux décimales.
     """
 
     try:
@@ -118,6 +132,7 @@ def round_pdf_money(value: Decimal) -> Decimal:
             TWOPLACES,
             rounding=ROUND_HALF_UP,
         )
+
     except InvalidOperation as exc:
         raise ValueError(
             "Montant financier hors limites."
@@ -125,12 +140,410 @@ def round_pdf_money(value: Decimal) -> Decimal:
 
 
 # ============================================================
-# CONSTRUCTION DES DONNÉES DE FACTURE PDF
+# 2. HELPERS D'AFFICHAGE
 # ============================================================
 
-def build_facture_pdf_data(facture) -> dict:
+def _texte(value) -> str:
     """
-    Construit les données nécessaires au PDF de facture Rio-Gold.
+    Convertit une valeur facultative en texte.
+    """
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def _date_locale(value):
+    """
+    Convertit une date Django dans le fuseau local.
+    """
+
+    if value is None:
+        return None
+
+    if timezone.is_aware(value):
+        return timezone.localtime(value)
+
+    return value
+
+
+def _nom_client(client) -> str:
+    """
+    Retourne le nom du client.
+    """
+
+    if client is None:
+        return ""
+
+    prenom = _texte(
+        getattr(client, "prenom", "")
+    )
+
+    nom = _texte(
+        getattr(client, "nom", "")
+    )
+
+    return f"{prenom} {nom}".strip()
+
+
+def _nom_vendeur(vendor) -> str:
+    """
+    Retourne le nom du vendeur.
+    """
+
+    if vendor is None:
+        return ""
+
+    vendor_user = getattr(
+        vendor,
+        "user",
+        None,
+    )
+
+    if vendor_user is None:
+        return _texte(vendor)
+
+    full_name = ""
+
+    if hasattr(vendor_user, "get_full_name"):
+        full_name = _texte(
+            vendor_user.get_full_name()
+        )
+
+    return (
+        full_name
+        or _texte(
+            getattr(vendor_user, "email", "")
+        )
+        or _texte(vendor)
+    )
+
+
+def _chemin_qr(facture):
+    """
+    Retourne le chemin local du QR code
+    lorsque le stockage le permet.
+
+    Un stockage distant peut ne pas
+    fournir de chemin local.
+    """
+
+    qr_field = getattr(
+        facture,
+        "qr_code_image",
+        None,
+    )
+
+    if not qr_field:
+        return None
+
+    try:
+        return qr_field.path
+
+    except (
+        AttributeError,
+        ValueError,
+        NotImplementedError,
+        OSError,
+    ):
+        return None
+
+
+# ============================================================
+# 3. DONNÉES DES BIJOUX
+# ============================================================
+
+def _build_bijoux_lines(vente) -> list[dict]:
+    """
+    Prépare les lignes de bijoux.
+
+    Ne recalcule pas les prix de vente :
+    utilise les montants enregistrés.
+    """
+
+    lines = []
+
+    lignes_bijoux = (
+        VenteProduit.objects
+        .filter(vente_id=vente.pk)
+        .select_related(
+            "produit_line__produit",
+            "produit_line__produit__purete",
+        )
+        .order_by("pk")
+    )
+
+    for vp in lignes_bijoux:
+
+        produit_line = vp.produit_line
+
+        if produit_line is None:
+            raise ValueError(
+                f"Ligne bijou {vp.pk} : "
+                "ProduitLine manquante."
+            )
+
+        produit = produit_line.produit
+
+        if produit is None:
+            raise ValueError(
+                f"Ligne bijou {vp.pk} : "
+                "produit manquant."
+            )
+
+        produit_nom = (
+            getattr(produit, "nom", None)
+            or "Produit non renseigné"
+        )
+
+        poids_valeur = getattr(
+            produit,
+            "poids",
+            None,
+        )
+
+        poids = ""
+
+        if poids_valeur is not None:
+            poids = str(
+                validate_pdf_amount(
+                    poids_valeur,
+                    f"bijou {vp.pk}.poids",
+                )
+            )
+
+        purete_obj = getattr(
+            produit,
+            "purete",
+            None,
+        )
+
+        purete = ""
+
+        if purete_obj is not None:
+            purete = _texte(
+                getattr(
+                    purete_obj,
+                    "purete",
+                    None,
+                )
+                or getattr(
+                    purete_obj,
+                    "nom",
+                    None,
+                )
+                or purete_obj
+            )
+
+        if hasattr(
+            produit_line,
+            "get_etat_display",
+        ):
+            etat = _texte(
+                produit_line.get_etat_display()
+            )
+        else:
+            etat = _texte(
+                getattr(
+                    produit_line,
+                    "etat",
+                    "",
+                )
+            )
+
+        quantite = validate_pdf_quantity(
+            vp.quantite,
+            f"bijou {vp.pk}.quantite",
+        )
+
+        prix_gramme = validate_pdf_amount(
+            vp.prix_vente_grammes,
+            f"bijou {vp.pk}.prix_vente_grammes",
+        )
+
+        montant_ht_ligne = validate_pdf_amount(
+            vp.montant_ht,
+            f"bijou {vp.pk}.montant_ht",
+        )
+
+        montant_total_ligne = validate_pdf_amount(
+            vp.montant_total,
+            f"bijou {vp.pk}.montant_total",
+        )
+
+        pourcentage_occasion = (
+            validate_pdf_percentage(
+                vp.pourcentage_occasion,
+                f"bijou {vp.pk}.pourcentage_occasion",
+            )
+            if vp.pourcentage_occasion is not None
+            else ZERO
+        )
+
+        reduction_occasion = ZERO
+
+        if getattr(
+            produit_line,
+            "etat",
+            None,
+        ) == "O":
+
+            # Calcul sur le montant brut,
+            # avant la réduction occasion.
+            montant_brut = round_pdf_money(
+                prix_gramme
+                * validate_pdf_amount(
+                    produit.poids,
+                    f"bijou {vp.pk}.poids",
+                )
+                * quantite
+            )
+
+            reduction_occasion = round_pdf_money(
+                montant_brut
+                * pourcentage_occasion
+                / HUNDRED
+            )
+
+        lines.append({
+            "type_ligne": "bijou",
+            "label": _texte(produit_nom),
+            "poids": poids,
+            "qty": quantite,
+            "prix_gramme": prix_gramme,
+            "prix_unitaire": ZERO,
+            "total": montant_total_ligne,
+            "purete": purete,
+            "etat": etat,
+            "pourcentage_occasion": (
+                pourcentage_occasion
+            ),
+            "reduction_occasion": (
+                reduction_occasion
+            ),
+        })
+
+    return lines
+
+
+# ============================================================
+# 4. DONNÉES DES PRESTATIONS
+# ============================================================
+
+def _build_prestations_lines(
+    vente,
+) -> list[dict]:
+    """
+    Prépare les prestations d'une vente mixte.
+
+    Les ventes contenant uniquement
+    des prestations sont exclues
+    par build_facture_pdf_data().
+    """
+
+    lines = []
+
+    prestations = (
+        VenteAutre.objects
+        .filter(vente_id=vente.pk)
+        .order_by("pk")
+    )
+
+    for autre in prestations:
+
+        designation = _texte(
+            autre.get_type_autre_display()
+        )
+
+        quantite = validate_pdf_quantity(
+            autre.quantite,
+            f"prestation {autre.pk}.quantite",
+        )
+
+        prix_unitaire = validate_pdf_amount(
+            autre.prix_unitaire,
+            f"prestation {autre.pk}.prix_unitaire",
+        )
+
+        montant_total = validate_pdf_amount(
+            autre.montant_total,
+            f"prestation {autre.pk}.montant_total",
+        )
+
+        lines.append({
+            "type_ligne": "prestation",
+            "label": designation,
+            "poids": "",
+            "qty": quantite,
+            "prix_gramme": ZERO,
+            "prix_unitaire": prix_unitaire,
+            "total": montant_total,
+            "purete": "",
+            "etat": "",
+            "pourcentage_occasion": ZERO,
+            "reduction_occasion": ZERO,
+        })
+
+    return lines
+
+
+# ============================================================
+# 5. MODES DE PAIEMENT
+# ============================================================
+
+def _modes_paiement_facture(
+    facture,
+) -> str:
+    """
+    Retourne les modes de paiement utilisés
+    pour cette facture, sans doublons.
+    """
+
+    modes = []
+    modes_ids = set()
+
+    lignes_paiement = (
+        PaiementLigne.objects
+        .filter(
+            paiement__facture_id=facture.pk
+        )
+        .select_related("mode_paiement")
+        .order_by("pk")
+    )
+
+    for ligne in lignes_paiement:
+
+        mode = ligne.mode_paiement
+
+        if mode is None:
+            continue
+
+        if mode.pk in modes_ids:
+            continue
+
+        modes_ids.add(mode.pk)
+
+        nom = (
+            getattr(mode, "nom", None)
+            or getattr(mode, "code", None)
+            or str(mode)
+        )
+
+        modes.append(_texte(nom))
+
+    return ", ".join(modes)
+
+
+# ============================================================
+# 6. SERVICE PRINCIPAL
+# ============================================================
+
+def build_facture_pdf_data(
+    facture,
+) -> dict:
+    """
+    Prépare les données PDF d'une facture Rio-Gold.
 
     Ventes autorisées :
         - bijoux uniquement ;
@@ -139,13 +552,11 @@ def build_facture_pdf_data(facture) -> dict:
     Ventes interdites :
         - prestations uniquement.
 
-    Les ventes de prestations seules utilisent
-    le paiement direct et un reçu de paiement.
+    Types autorisés :
+        - proforma ;
+        - facture définitive.
 
-    Ce service ne modifie :
-        - ni la facture ;
-        - ni les paiements ;
-        - ni les stocks.
+    Aucune modification de la base de données.
     """
 
     # ========================================================
@@ -169,18 +580,22 @@ def build_facture_pdf_data(facture) -> dict:
             "aucune vente associée."
         )
 
-    if not vente.lignes.exists():
+    if not VenteProduit.objects.filter(
+        vente_id=vente.pk
+    ).exists():
         raise ValueError(
-            "Impossible de générer une facture : "
-            "la vente ne contient aucun bijou. "
-            "Les prestations seules nécessitent "
-            "un paiement direct avec reçu."
+            "Impossible de générer une facture "
+            "pour une vente contenant uniquement "
+            "des prestations."
         )
 
-    if facture.bijouterie_id != vente.bijouterie_id:
+    if (
+        facture.bijouterie_id
+        != vente.bijouterie_id
+    ):
         raise ValueError(
-            "La bijouterie de la facture "
-            "ne correspond pas à celle de la vente."
+            "La facture et la vente appartiennent "
+            "à des bijouteries différentes."
         )
 
     if facture.type_facture not in (
@@ -193,10 +608,15 @@ def build_facture_pdf_data(facture) -> dict:
         )
 
     bijouterie = facture.bijouterie
-    client = getattr(vente, "client", None)
+
+    client = getattr(
+        vente,
+        "client",
+        None,
+    )
 
     # ========================================================
-    # 2. VALIDATION DES MONTANTS
+    # 2. MONTANTS
     # ========================================================
 
     total_ht = validate_pdf_amount(
@@ -209,11 +629,9 @@ def build_facture_pdf_data(facture) -> dict:
         "facture.frais_transaction",
     )
 
-    appliquer_tva = facture.appliquer_tva
-
-    # --------------------------------------------------------
-    # TVA
-    # --------------------------------------------------------
+    appliquer_tva = bool(
+        facture.appliquer_tva
+    )
 
     if appliquer_tva:
 
@@ -228,50 +646,49 @@ def build_facture_pdf_data(facture) -> dict:
         )
 
         tva_attendue = round_pdf_money(
-            total_ht * taux_tva / HUNDRED
+            total_ht
+            * taux_tva
+            / HUNDRED
         )
 
         if montant_tva != tva_attendue:
             raise ValueError(
                 "Incohérence financière : "
-                "le montant TVA ne correspond pas "
-                "au montant HT et au taux de TVA."
+                "le montant TVA est incorrect."
             )
 
     else:
 
         taux_enregistre = validate_pdf_amount(
-            facture.taux_tva
-            if facture.taux_tva is not None
-            else ZERO,
+            (
+                facture.taux_tva
+                if facture.taux_tva is not None
+                else ZERO
+            ),
             "facture.taux_tva",
         )
 
         montant_enregistre = validate_pdf_amount(
-            facture.montant_tva
-            if facture.montant_tva is not None
-            else ZERO,
+            (
+                facture.montant_tva
+                if facture.montant_tva is not None
+                else ZERO
+            ),
             "facture.montant_tva",
         )
 
-        if taux_enregistre != ZERO:
+        if (
+            taux_enregistre != ZERO
+            or montant_enregistre != ZERO
+        ):
             raise ValueError(
-                "La TVA est désactivée, "
-                "mais un taux de TVA non nul est enregistré."
-            )
-
-        if montant_enregistre != ZERO:
-            raise ValueError(
-                "La TVA est désactivée, "
-                "mais un montant TVA non nul est enregistré."
+                "La TVA est désactivée mais "
+                "un taux ou montant TVA non nul "
+                "est enregistré."
             )
 
         taux_tva = ZERO
         montant_tva = ZERO
-    
-    # --------------------------------------------------------
-    # TOTAL TTC
-    # --------------------------------------------------------
 
     total_ttc = validate_pdf_amount(
         facture.montant_total,
@@ -280,23 +697,19 @@ def build_facture_pdf_data(facture) -> dict:
 
     total_attendu = round_pdf_money(
         total_ht
-        + (
-            montant_tva
-            if montant_tva is not None
-            else ZERO
-        )
+        + montant_tva
         + frais_transaction
     )
 
     if total_ttc != total_attendu:
         raise ValueError(
             "Incohérence financière : "
-            "montant HT + TVA + frais de transaction "
-            "ne correspond pas au montant total."
+            "HT + TVA + frais de transaction "
+            "ne correspond pas au TTC."
         )
 
     # ========================================================
-    # 3. VALIDATION DES PAIEMENTS
+    # 3. PAIEMENTS
     # ========================================================
 
     amount_paid = validate_pdf_amount(
@@ -304,263 +717,46 @@ def build_facture_pdf_data(facture) -> dict:
         "facture.total_paye",
     )
 
-    # Le service métier vérifie :
-    # - les montants négatifs ;
-    # - la précision de deux décimales ;
-    # - les trop-perçus ;
-    # - le solde exact.
-
-    try:
-
-        solde = calculer_solde_paiement(
-            montant_total=total_ttc,
-            montant_deja_paye=amount_paid,
-        )
-
-    except ValidationError as exc:
+    if amount_paid > total_ttc:
         raise ValueError(
-            "Impossible de générer la facture PDF : "
-            "les paiements enregistrés sont incohérents. "
-            f"{exc}"
-        ) from exc
-
-    remaining_amount = solde["reste_a_payer"]
-
-    # Aucune seconde formule de paiement :
-    # calculer_solde_paiement() est la source de vérité.
-
-    # ========================================================
-    # 4. LIGNES DE BIJOUX
-    # ========================================================
-
-    lines = []
-
-    lignes_bijoux = (
-        vente.lignes
-        .select_related(
-            "produit_line__produit",
+            "Le total payé dépasse "
+            "le montant de la facture."
         )
-        .all()
+
+    remaining_amount = round_pdf_money(
+        total_ttc - amount_paid
     )
 
-    for vp in lignes_bijoux:
-
-        produit_line = getattr(
-            vp,
-            "produit_line",
-            None,
-        )
-
-        if produit_line is None:
-            raise ValueError(
-                f"La ligne bijou {vp.pk} "
-                "ne possède pas de ProduitLine."
-            )
-
-        produit = getattr(
-            produit_line,
-            "produit",
-            None,
-        )
-
-        if produit is None:
-            raise ValueError(
-                f"La ligne bijou {vp.pk} "
-                "ne possède pas de produit."
-            )
-
-        produit_nom = (
-            getattr(produit, "nom", None)
-            or "Produit non renseigné"
-        )
-
-        # ----------------------------------------------------
-        # Poids
-        # ----------------------------------------------------
-
-        poids_valeur = getattr(
-            produit,
-            "poids",
-            None,
-        )
-
-        if poids_valeur is not None:
-
-            poids = str(
-                validate_pdf_amount(
-                    poids_valeur,
-                    f"bijou {vp.pk}.poids",
-                )
-            )
-
-        else:
-            poids = ""
-
-        # ----------------------------------------------------
-        # Pureté
-        # ----------------------------------------------------
-
-        purete = ""
-
-        purete_obj = getattr(
-            produit,
-            "purete",
-            None,
-        )
-
-        if purete_obj is not None:
-
-            purete = (
-                getattr(purete_obj, "purete", None)
-                or getattr(purete_obj, "nom", None)
-                or str(purete_obj)
-            )
-
-        # ----------------------------------------------------
-        # État du bijou
-        # ----------------------------------------------------
-
-        if hasattr(
-            produit,
-            "get_etat_display",
-        ):
-
-            etat = (
-                produit.get_etat_display()
-                or ""
-            )
-
-        else:
-
-            etat = (
-                getattr(produit, "etat", "")
-                or ""
-            )
-
-        # ----------------------------------------------------
-        # Montants de la ligne
-        # ----------------------------------------------------
-
-        quantite = validate_pdf_quantity(
-            vp.quantite,
-            f"bijou {vp.pk}.quantite",
-        )
-
-        prix_gramme = validate_pdf_amount(
-            vp.prix_vente_grammes,
-            f"bijou {vp.pk}.prix_vente_grammes",
-        )
-
-        montant_ht_ligne = validate_pdf_amount(
-            vp.montant_ht,
-            f"bijou {vp.pk}.montant_ht",
-        )
-
-        montant_total_ligne = validate_pdf_amount(
-            vp.montant_total,
-            f"bijou {vp.pk}.montant_total",
-        )
-
-        # ----------------------------------------------------
-        # Réduction occasion
-        # ----------------------------------------------------
-
-        if vp.pourcentage_occasion is None:
-
-            pourcentage_occasion = ZERO
-
-        else:
-
-            pourcentage_occasion = validate_pdf_percentage(
-                vp.pourcentage_occasion,
-                f"bijou {vp.pk}.pourcentage_occasion",
-            )
-
-        reduction_occasion = ZERO
-
-        if getattr(
-            produit,
-            "etat",
-            None,
-        ) == "O":
-
-            reduction_occasion = round_pdf_money(
-                montant_ht_ligne
-                * pourcentage_occasion
-                / HUNDRED
-            )
-
-        # ----------------------------------------------------
-        # Données PDF
-        # ----------------------------------------------------
-
-        lines.append({
-            "type_ligne": "bijou",
-            "label": produit_nom,
-            "poids": poids,
-            "qty": quantite,
-            "prix_gramme": prix_gramme,
-            "prix_unitaire": ZERO,
-            "total": montant_total_ligne,
-            "purete": purete,
-            "etat": etat,
-            "pourcentage_occasion": pourcentage_occasion,
-            "reduction_occasion": reduction_occasion,
-        })
-
     # ========================================================
-    # 5. PRESTATIONS
+    # 4. LIGNES DE VENTE
     # ========================================================
 
-    for autre in vente.autres.all():
+    bijoux_lines = _build_bijoux_lines(
+        vente
+    )
 
-        designation = (
-            autre.get_type_autre_display()
-        )
+    prestations_lines = _build_prestations_lines(
+        vente
+    )
 
-        quantite = validate_pdf_quantity(
-            autre.quantite,
-            f"prestation {autre.pk}.quantite",
-        )
-
-        prix_unitaire = validate_pdf_amount(
-            autre.prix_unitaire,
-            f"prestation {autre.pk}.prix_unitaire",
-        )
-
-        montant_total_ligne = validate_pdf_amount(
-            autre.montant_total,
-            f"prestation {autre.pk}.montant_total",
-        )
-
-        lines.append({
-            "type_ligne": "prestation",
-            "label": designation,
-            "poids": "",
-            "qty": quantite,
-            "prix_gramme": ZERO,
-            "prix_unitaire": prix_unitaire,
-            "total": montant_total_ligne,
-            "purete": "",
-            "etat": "",
-            "pourcentage_occasion": ZERO,
-            "reduction_occasion": ZERO,
-        })
+    lines = (
+        bijoux_lines
+        + prestations_lines
+    )
 
     # ========================================================
-    # 6. INFORMATIONS BIJOUTERIE
+    # 5. BIJOUTERIE
     # ========================================================
 
-    shop_name = (
+    shop_name = _texte(
         getattr(
             bijouterie,
             "nom",
-            None,
+            "",
         )
-        or "RIO GOLD"
-    )
+    ) or "RIO GOLD"
 
-    shop_phone = (
+    shop_phone = _texte(
         getattr(
             bijouterie,
             "telephone_portable_1",
@@ -576,10 +772,9 @@ def build_facture_pdf_data(facture) -> dict:
             "telephone_fix",
             None,
         )
-        or ""
     )
 
-    shop_ninea = (
+    shop_ninea = _texte(
         getattr(
             bijouterie,
             "ninea",
@@ -590,154 +785,67 @@ def build_facture_pdf_data(facture) -> dict:
             "ninenea",
             None,
         )
-        or ""
     )
 
-    shop_address = (
+    shop_address = _texte(
         getattr(
             bijouterie,
             "adresse",
             "",
         )
-        or ""
     )
 
     # ========================================================
-    # 7. INFORMATIONS CLIENT
+    # 6. CLIENT
     # ========================================================
 
-    client_name = ""
-    client_phone = ""
-    client_address = ""
-
-    if client:
-
-        client_name = (
-            f"{getattr(client, 'prenom', '') or ''} "
-            f"{getattr(client, 'nom', '') or ''}"
-        ).strip()
-
-        client_phone = (
-            getattr(
-                client,
-                "telephone",
-                "",
-            )
-            or ""
-        )
-
-        client_address = (
-            getattr(
-                client,
-                "adresse",
-                "",
-            )
-            or ""
-        )
-
-    # ========================================================
-    # 8. VENDEUR
-    # ========================================================
-
-    vendor_name = ""
-
-    vendor = getattr(
-        vente,
-        "vendor",
-        None,
+    client_name = _nom_client(
+        client
     )
 
-    if vendor:
+    client_phone = _texte(
+        getattr(
+            client,
+            "telephone",
+            "",
+        )
+    ) if client is not None else ""
 
-        vendor_user = getattr(
-            vendor,
-            "user",
+    client_address = _texte(
+        getattr(
+            client,
+            "adresse",
+            "",
+        )
+    ) if client is not None else ""
+
+    # ========================================================
+    # 7. VENDEUR
+    # ========================================================
+
+    vendor_name = _nom_vendeur(
+        getattr(
+            vente,
+            "vendor",
             None,
         )
-
-        if vendor_user:
-
-            full_name = ""
-
-            if hasattr(
-                vendor_user,
-                "get_full_name",
-            ):
-
-                full_name = (
-                    vendor_user.get_full_name()
-                    or ""
-                ).strip()
-
-            vendor_name = (
-                full_name
-                or getattr(
-                    vendor_user,
-                    "email",
-                    "",
-                )
-                or ""
-            )
-
-        if not vendor_name:
-            vendor_name = str(vendor)
-
-    # ========================================================
-    # 9. MODES DE PAIEMENT
-    # ========================================================
-
-    modes = []
-
-    for paiement in facture.paiements.all():
-
-        for ligne in paiement.lignes.all():
-
-            mode_obj = getattr(
-                ligne,
-                "mode_paiement",
-                None,
-            )
-
-            if mode_obj is None:
-                continue
-
-            mode_nom = (
-                getattr(
-                    mode_obj,
-                    "nom",
-                    None,
-                )
-                or getattr(
-                    mode_obj,
-                    "code",
-                    None,
-                )
-                or str(mode_obj)
-            )
-
-            if mode_nom and mode_nom not in modes:
-                modes.append(mode_nom)
-
-    payment_mode = ", ".join(modes)
-
-    # ========================================================
-    # 10. DATE DE FACTURE
-    # ========================================================
-
-    date_creation = getattr(
-        facture,
-        "date_creation",
-        None,
     )
 
-    if (
-        date_creation is not None
-        and timezone.is_aware(date_creation)
-    ):
+    # ========================================================
+    # 8. PAIEMENTS
+    # ========================================================
 
-        date_creation = timezone.localtime(
-            date_creation
-        )
+    payment_mode = _modes_paiement_facture(
+        facture
+    )
+
+    # ========================================================
+    # 9. DATE
+    # ========================================================
+
+    date_creation = _date_locale(
+        facture.date_creation
+    )
 
     date_txt = (
         date_creation.strftime(
@@ -748,51 +856,27 @@ def build_facture_pdf_data(facture) -> dict:
     )
 
     # ========================================================
-    # 11. QR CODE
+    # 10. QR CODE
     # ========================================================
 
-    qr_code_path = None
-
-    qr_field = getattr(
-        facture,
-        "qr_code_image",
-        None,
+    qr_code_path = _chemin_qr(
+        facture
     )
 
-    if qr_field:
-
-        try:
-            qr_code_path = qr_field.path
-
-        except (
-            AttributeError,
-            ValueError,
-            NotImplementedError,
-        ):
-            qr_code_path = None
-
     # ========================================================
-    # 12. DONNÉES FINALES
+    # 11. RÉSULTAT
     # ========================================================
 
     return {
-
-        # ----------------------------------------------------
-        # Bijouterie
-        # ----------------------------------------------------
-
         "shop_name": shop_name,
         "shop_phone": shop_phone,
         "shop_ninea": shop_ninea,
         "shop_address": shop_address,
 
-        # ----------------------------------------------------
-        # Facture
-        # ----------------------------------------------------
-
         "title": (
             "FACTURE PROFORMA"
-            if facture.type_facture == facture.TYPE_PROFORMA
+            if facture.type_facture
+            == facture.TYPE_PROFORMA
             else "FACTURE"
         ),
 
@@ -802,37 +886,16 @@ def build_facture_pdf_data(facture) -> dict:
         "date": date_txt,
         "qr_code_path": qr_code_path,
 
-        # ----------------------------------------------------
-        # Client
-        # ----------------------------------------------------
-
         "client_name": client_name,
         "client_phone": client_phone,
         "client_address": client_address,
-
-        # ----------------------------------------------------
-        # Vente / vendeur
-        # ----------------------------------------------------
 
         "vendor": vendor_name,
         "cashier": "",
         "sale_no": vente.numero_vente,
 
-        # ----------------------------------------------------
-        # Paiement
-        # ----------------------------------------------------
-
         "payment_mode": payment_mode,
-
-        # ----------------------------------------------------
-        # Lignes
-        # ----------------------------------------------------
-
         "lines": lines,
-
-        # ----------------------------------------------------
-        # Totaux validés
-        # ----------------------------------------------------
 
         "total_ht": total_ht,
         "appliquer_tva": appliquer_tva,
@@ -844,15 +907,11 @@ def build_facture_pdf_data(facture) -> dict:
         "remaining_amount": remaining_amount,
         "deposit_amount": ZERO,
 
-        # ----------------------------------------------------
-        # Pied de facture
-        # ----------------------------------------------------
-
         "thanks": "Merci pour votre confiance.",
-
         "footer_note": (
-            "Bijouterie Rio-Gold - L'excellence en or."
+            "Bijouterie Rio-Gold - "
+            "L'excellence en or."
         ),
     }
-    
+
 

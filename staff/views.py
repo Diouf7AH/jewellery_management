@@ -17,7 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.permissions import IsAdmin, IsAdminOrManager
+from backend.permissions import IsAdminOrManager
 from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
                            ROLE_VENDOR, get_role_name)
 from purchase.models import Achat, Lot
@@ -26,8 +26,7 @@ from staff.models import Buyer, Cashier, Manager
 from staff.serializers import (CreateStaffSerializer,
                                StaffDashboardResponseSerializer,
                                UpdateStaffSerializer)
-from staff.services import (create_staff_member, promote_user_to_admin,
-                            update_staff_member)
+from staff.services import create_staff_member, update_staff_member
 from stock.models import Stock, VendorStock
 from vendor.models import Vendor
 
@@ -249,175 +248,6 @@ class CreateStaffView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
-
-class CreateAdminView(APIView):
-    """
-    Attribue le rôle administrateur à un utilisateur existant.
-
-    Règles :
-    - Seul un admin peut créer un autre admin.
-    - L'utilisateur doit déjà avoir un compte.
-    - Le compte doit être actif.
-    - L'email doit être confirmé.
-    - L'utilisateur ne doit pas déjà avoir un profil staff.
-    - Le nouvel admin devient également super-utilisateur Django.
-    """
-
-    permission_classes = [IsAdmin]
-
-    @swagger_auto_schema(
-        operation_id="createAdmin",
-        operation_summary="Créer un administrateur",
-        operation_description=(
-            "Attribue le rôle `admin` à un utilisateur existant.\n\n"
-            "### Règles\n"
-            "- L'utilisateur doit déjà avoir créé son compte.\n"
-            "- Le compte utilisateur doit être actif.\n"
-            "- L'adresse email doit être confirmée.\n"
-            "- L'utilisateur ne doit pas déjà posséder un profil "
-            "`manager`, `vendor`, `cashier` ou `buyer`.\n"
-            "- Seul un administrateur peut créer un autre administrateur.\n\n"
-
-            "### Droits attribués\n"
-            "- `user_role = admin`\n"
-            "- `is_staff = true`\n"
-            "- `is_superuser = true`\n"
-            "- `is_active = true`\n\n"
-
-            "### Important\n"
-            "Aucun profil `Manager`, `Vendor`, `Cashier` ou `Buyer` "
-            "n'est créé."
-        ),
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["email"],
-            properties={
-                "email": openapi.Schema(
-                    type=openapi.TYPE_STRING,
-                    format=openapi.FORMAT_EMAIL,
-                    description=(
-                        "Adresse email de l'utilisateur "
-                        "à transformer en administrateur."
-                    ),
-                    example="admin@example.com",
-                ),
-            },
-        ),
-        responses={
-            200: openapi.Response(
-                description="Administrateur créé avec succès",
-                examples={
-                    "application/json": {
-                        "message": "Administrateur créé avec succès.",
-                        "user": {
-                            "id": 12,
-                            "email": "admin@example.com",
-                            "role": "admin",
-                            "is_staff": True,
-                            "is_superuser": True,
-                            "is_active": True,
-                        },
-                    }
-                },
-            ),
-            400: openapi.Response(
-                description="Erreur de validation",
-                examples={
-                    "application/json": {
-                        "detail": "Utilisateur introuvable."
-                    }
-                },
-            ),
-            403: openapi.Response(
-                description="Accès refusé",
-                examples={
-                    "application/json": {
-                        "detail": (
-                            "Seul un administrateur peut créer "
-                            "un autre administrateur."
-                        )
-                    }
-                },
-            ),
-            409: openapi.Response(
-                description="Conflit métier",
-                examples={
-                    "application/json": {
-                        "detail": (
-                            "Cet utilisateur possède déjà "
-                            "un profil staff."
-                        )
-                    }
-                },
-            ),
-        },
-        tags=["Staff"],
-    )
-    def post(self, request):
-        email = (
-            request.data.get("email") or ""
-        ).strip().lower()
-
-        if not email:
-            return Response(
-                {
-                    "detail": (
-                        "L'adresse email est obligatoire."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            user = promote_user_to_admin(
-                caller_user=request.user,
-                email=email,
-            )
-
-        except PermissionError as exc:
-            return Response(
-                {
-                    "detail": str(exc),
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        except ValueError as exc:
-            message = str(exc)
-
-            if "profil staff" in message.lower():
-                response_status = (
-                    status.HTTP_409_CONFLICT
-                )
-            else:
-                response_status = (
-                    status.HTTP_400_BAD_REQUEST
-                )
-
-            return Response(
-                {
-                    "detail": message,
-                },
-                status=response_status,
-            )
-
-        return Response(
-            {
-                "message": (
-                    "Administrateur créé avec succès."
-                ),
-                "user": {
-                    "id": user.id,
-                    "email": user.email,
-                    "role": ROLE_ADMIN,
-                    "is_staff": user.is_staff,
-                    "is_superuser": user.is_superuser,
-                    "is_active": user.is_active,
-                },
-            },
-            status=status.HTTP_200_OK,
-        )
-        
 
 class UpdateStaffView(APIView):
     """

@@ -463,25 +463,3 @@ def update_staff_member(
         user=user,
     )
 
-@transaction.atomic
-def promote_user_to_admin(*, caller_user, email: str):
-    """Seul un administrateur peut promouvoir un compte vérifié sans profil staff."""
-    if not getattr(caller_user, "is_authenticated", False):
-        raise PermissionError("Authentification requise.")
-    if not getattr(caller_user, "is_active", False):
-        raise PermissionError("Votre compte utilisateur est désactivé.")
-    if _normalize_role(get_role_name(caller_user)) != ROLE_ADMIN:
-        raise PermissionError("Seul un administrateur peut créer un autre administrateur.")
-
-    email = _normalize_email(email)
-    if not email:
-        raise ValueError("Email requis.")
-    user = User.objects.select_for_update().filter(email__iexact=email).first()
-    _validate_target_user(user)
-    if any(_get_existing_staff_flags(user).values()):
-        raise ValueError("Cet utilisateur possède déjà un profil staff.")
-    role_obj, _ = Role.objects.get_or_create(role=ROLE_ADMIN)
-    user.user_role = role_obj
-    user.save(update_fields=["user_role"])
-    return user
-

@@ -1,16 +1,114 @@
-from decimal import Decimal, InvalidOperation
+# sale/services/paiement_direct_prestation_service.py
+
+from __future__ import annotations
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Sum
 from rest_framework.exceptions import ValidationError
 
+from compte_depot.models import CompteDepot
+from compte_depot.services.depot_retrait_services import effectuer_retrait
 from sale.models import (Facture, ModePaiement, Paiement, PaiementLigne, Vente,
                          VenteAutre, VenteProduit)
+from sale.services.montant_service import ZERO, money
+from sale.services.permissions_service import verifier_permission_encaissement
 
-ZERO = Decimal("0.00")
-TWOPLACES = Decimal("0.01")
+# ============================================================
+# 1. HELPERS
+# ============================================================
 
+def _convertir_erreur_django(exc):
+    """
+    Convertit une ValidationError Django
+    en ValidationError DRF.
+    """
+
+    return ValidationError(
+        getattr(exc, "message_dict", None)
+        or exc.messages
+    )
+
+
+def _valider_mode_id(value):
+    """
+    Valide un identifiant entier positif.
+    """
+
+    if isinstance(value, bool):
+        raise ValidationError({
+            "mode_paiement_id": "Identifiant invalide."
+        })
+
+    if isinstance(value, int):
+        mode_id = value
+
+    elif (
+        isinstance(value, str)
+        and value.strip().isascii()
+        and value.strip().isdecimal()
+    ):
+        mode_id = int(value.strip())
+
+    else:
+        raise ValidationError({
+            "mode_paiement_id": "Identifiant invalide."
+        })
+
+    if mode_id <= 0:
+        raise ValidationError({
+            "mode_paiement_id": (
+                "L'identifiant doit être supérieur à zéro."
+            )
+        })
+
+    return mode_id
+
+
+def _texte_optionnel(value, field):
+    """
+    Normalise une chaîne facultative.
+    """
+
+    if value is None:
+        return ""
+
+    if not isinstance(value, str):
+        raise ValidationError({
+            field: (
+                "Une chaîne de caractères est attendue."
+            )
+        })
+
+    return value.strip()
+
+
+def _montant_strict(value, field):
+    """
+    Convertit un montant en Decimal.
+
+    Refuse une valeur absente ou vide.
+    """
+
+    if value is None or value == "":
+        raise ValidationError({
+            field: "Montant obligatoire."
+        })
+
+    try:
+        montant = money(
+            value,
+            field=field,
+        )
+    except DjangoValidationError as exc:
+        raise _convertir_erreur_django(exc) from exc
+
+    return montant
+
+
+# ============================================================
+# 2. SERVICE PRINCIPAL
+# ============================================================
 
 @transaction.atomic
 def enregistrer_paiement_direct_prestation(
@@ -20,30 +118,141 @@ def enregistrer_paiement_direct_prestation(
     utilisateur,
 ):
     """
-    Paiement direct d'une vente contenant
-    uniquement des prestations.
+    Enregistre un paiement direct d'une vente
+    contenant uniquement des prestations.
 
     Règles :
-    - Aucune facture ni proforma.
-    - Un seul mode par opération.
-    - Paiement partiel ou total.
-    - Plusieurs paiements successifs possibles.
-    - Vérification du reste à payer.
-    - Validation du mode et de la référence.
-    - Dépôt client refusé tant que son débit
-      transactionnel n'est pas intégré.
-    - Aucun mouvement de stock.
+        - aucune facture ;
+        - aucune proforma ;
+        - exactement une ligne de paiement ;
+        - paiements partiels autorisés ;
+        - paiements successifs autorisés ;
+        - aucun dépassement du solde ;
+        - débit atomique du compte dépôt ;
+        - aucun mouvement de stock.
 
-    Retourne le Paiement créé.
+    Retour :
+        instance Paiement.
+
+    Important :
+        l'encaissement externe éventuel
+        doit être confirmé avant cet appel.
     """
 
-    # ====================================================
-    # 1. VERROUILLAGE DE LA VENTE
-    # ====================================================
+    # ========================================================
+    # 1. VALIDATION DE LA VENTE
+    # ========================================================
+
+    if (
+        vente is None
+        or getattr(vente, "pk", None) is None
+    ):
+        raise ValidationError({
+            "vente": (
+                "Une vente enregistrée est obligatoire."
+            )
+        })
+
+    # ========================================================
+    # 2. VALIDATION DE L'UTILISATEUR
+    # ========================================================
+
+    if (
+        utilisateur is None
+        or not getattr(
+            utilisateur,
+            "is_authenticated",
+            False,
+        )
+        or not getattr(
+            utilisateur,
+            "is_active",
+            False,
+        )
+    ):
+        raise ValidationError({
+            "utilisateur": (
+                "Un utilisateur actif et authentifié "
+                "est obligatoire."
+            )
+        })
+
+    # ========================================================
+    # 3. UNE SEULE LIGNE
+    # ========================================================
+
+    if (
+        not isinstance(lignes, (list, tuple))
+        or len(lignes) != 1
+    ):
+        raise ValidationError({
+            "lignes": (
+                "Le paiement d'une prestation doit "
+                "contenir exactement une ligne."
+            )
+        })
+
+    ligne = lignes[0]
+
+    if not isinstance(ligne, dict):
+        raise ValidationError({
+            "lignes": (
+                "Format de paiement invalide."
+            )
+        })
+
+    if "mode_paiement_id" not in ligne:
+        raise ValidationError({
+            "mode_paiement_id": (
+                "Ce champ est obligatoire."
+            )
+        })
+
+    if "montant_paye" not in ligne:
+        raise ValidationError({
+            "montant_paye": (
+                "Ce champ est obligatoire."
+            )
+        })
+
+    # ========================================================
+    # 4. VALIDATION DES CHAMPS
+    # ========================================================
+
+    mode_id = _valider_mode_id(
+        ligne["mode_paiement_id"]
+    )
+
+    montant = _montant_strict(
+        ligne["montant_paye"],
+        "montant_paye",
+    )
+
+    if montant <= ZERO:
+        raise ValidationError({
+            "montant_paye": (
+                "Le montant doit être strictement positif."
+            )
+        })
+
+    reference = _texte_optionnel(
+        ligne.get("reference"),
+        "reference",
+    )
+
+    numero_compte_depot = _texte_optionnel(
+        ligne.get("numero_compte_depot"),
+        "numero_compte_depot",
+    )
+
+    # ========================================================
+    # 5. VERROUILLAGE DE LA VENTE
+    # ========================================================
 
     vente = (
         Vente.objects
         .select_for_update()
+        .select_related("bijouterie")
         .filter(pk=vente.pk)
         .first()
     )
@@ -55,12 +264,23 @@ def enregistrer_paiement_direct_prestation(
 
     if vente.is_cancelled:
         raise ValidationError({
-            "vente": "Cette vente est annulée."
+            "vente": (
+                "Cette vente est annulée."
+            )
         })
 
-    # ====================================================
-    # 2. VÉRIFICATION DU TYPE DE VENTE
-    # ====================================================
+    # ========================================================
+    # 6. PERMISSIONS D'ENCAISSEMENT
+    # ========================================================
+
+    cashier = verifier_permission_encaissement(
+        utilisateur,
+        vente.bijouterie_id,
+    )
+
+    # ========================================================
+    # 7. VENTE PRESTATIONS UNIQUEMENT
+    # ========================================================
 
     if not VenteAutre.objects.filter(
         vente_id=vente.pk
@@ -78,8 +298,7 @@ def enregistrer_paiement_direct_prestation(
         raise ValidationError({
             "vente": (
                 "Cette vente contient des bijoux. "
-                "Le paiement doit passer "
-                "par une facture."
+                "Utilisez le paiement par facture."
             )
         })
 
@@ -88,101 +307,31 @@ def enregistrer_paiement_direct_prestation(
     ).exists():
         raise ValidationError({
             "vente": (
-                "Une facture existe déjà pour "
-                "cette vente. Le paiement direct "
-                "est interdit."
+                "Une facture existe pour cette vente. "
+                "Paiement direct interdit."
             )
         })
 
-    # ====================================================
-    # 3. UNE SEULE LIGNE DE PAIEMENT
-    # ====================================================
+    # ========================================================
+    # 8. MONTANT TOTAL
+    # ========================================================
 
-    if not isinstance(lignes, (list, tuple)) or len(lignes) != 1:
-        raise ValidationError({
-            "lignes": (
-                "Le paiement d'une prestation "
-                "doit contenir exactement "
-                "un seul mode de paiement."
-            )
-        })
-
-    ligne = lignes[0]
-
-    try:
-        mode_id = int(
-            ligne["mode_paiement_id"]
-        )
-
-        montant = Decimal(
-            str(ligne["montant_paye"])
-        )
-
-        if not montant.is_finite():
-            raise ValueError("Montant non fini.")
-
-        if montant != montant.quantize(TWOPLACES):
-            raise ValueError(
-                "Le montant doit avoir "
-                "au maximum deux décimales."
-            )
-
-        montant = montant.quantize(TWOPLACES)
-
-    except (
-        KeyError,
-        TypeError,
-        ValueError,
-        InvalidOperation,
-    ):
-        raise ValidationError({
-            "lignes": (
-                "Données de paiement invalides."
-            )
-        })
-
-    if mode_id <= 0:
-        raise ValidationError({
-            "mode_paiement": (
-                "Identifiant du mode invalide."
-            )
-        })
-
-    if montant <= ZERO:
-        raise ValidationError({
-            "montant_paye": (
-                "Le montant doit être "
-                "strictement positif."
-            )
-        })
-
-    reference = (
-        ligne.get("reference") or ""
-    ).strip()
-
-    numero_compte_depot = (
-        ligne.get("numero_compte_depot") or ""
-    ).strip()
-
-    # ====================================================
-    # 4. VÉRIFICATION DU MONTANT DE LA PRESTATION
-    # ====================================================
-
-    montant_total = (
-        vente.montant_total or ZERO
+    montant_total = _montant_strict(
+        vente.montant_total,
+        "montant_total",
     )
 
     if montant_total <= ZERO:
         raise ValidationError({
-            "vente": (
-                "Le montant total de la prestation "
-                "doit être supérieur à zéro."
+            "montant_total": (
+                "Le montant total doit être "
+                "strictement positif."
             )
         })
 
-    # ====================================================
-    # 5. CALCUL DU TOTAL DÉJÀ PAYÉ
-    # ====================================================
+    # ========================================================
+    # 9. PAIEMENTS EXISTANTS
+    # ========================================================
 
     total_deja_paye = (
         PaiementLigne.objects
@@ -196,7 +345,15 @@ def enregistrer_paiement_direct_prestation(
         or ZERO
     )
 
-    reste_avant = montant_total - total_deja_paye
+    total_deja_paye = _montant_strict(
+        total_deja_paye,
+        "total_deja_paye",
+    )
+
+    reste_avant = _montant_strict(
+        montant_total - total_deja_paye,
+        "reste_a_payer",
+    )
 
     if reste_avant <= ZERO:
         raise ValidationError({
@@ -214,14 +371,18 @@ def enregistrer_paiement_direct_prestation(
             )
         })
 
-    # ====================================================
-    # 6. RÉCUPÉRATION DU MODE DE PAIEMENT
-    # ====================================================
+    # ========================================================
+    # 10. MODE DE PAIEMENT
+    # ========================================================
 
-    mode = ModePaiement.objects.filter(
-        pk=mode_id,
-        active=True,
-    ).first()
+    mode = (
+        ModePaiement.objects
+        .filter(
+            pk=mode_id,
+            active=True,
+        )
+        .first()
+    )
 
     if mode is None:
         raise ValidationError({
@@ -231,10 +392,6 @@ def enregistrer_paiement_direct_prestation(
             )
         })
 
-    # ====================================================
-    # 7. VALIDATION DE LA RÉFÉRENCE
-    # ====================================================
-
     if mode.necessite_reference and not reference:
         raise ValidationError({
             "reference": (
@@ -243,9 +400,11 @@ def enregistrer_paiement_direct_prestation(
             )
         })
 
-    # ====================================================
-    # 8. VALIDATION DU COMPTE DÉPÔT
-    # ====================================================
+    # ========================================================
+    # 11. COMPTE DÉPÔT
+    # ========================================================
+
+    compte = None
 
     if mode.est_mode_depot:
 
@@ -257,79 +416,177 @@ def enregistrer_paiement_direct_prestation(
                 )
             })
 
-        # Sécurité :
-        # Ne jamais enregistrer un paiement par dépôt
-        # sans débiter réellement le compte client.
-        #
-        # Il reste à raccorder ici le service de débit
-        # existant, avec :
-        # - recherche du compte par numéro
-        # - vérification du propriétaire
-        # - verrouillage du compte
-        # - contrôle du solde
-        # - création du retrait
-        # - récupération de la transaction
+        if not vente.client_id:
+            raise ValidationError({
+                "client": (
+                    "Un client doit être identifié "
+                    "avant de payer par compte dépôt."
+                )
+            })
 
+        compte = (
+            CompteDepot.objects
+            .select_for_update()
+            .select_related("client")
+            .filter(
+                numero_compte=numero_compte_depot
+            )
+            .first()
+        )
+
+        if compte is None:
+            raise ValidationError({
+                "numero_compte_depot": (
+                    "Compte dépôt introuvable."
+                )
+            })
+
+        if compte.client_id != vente.client_id:
+            raise ValidationError({
+                "numero_compte_depot": (
+                    "Ce compte dépôt n'appartient pas "
+                    "au client de la vente."
+                )
+            })
+
+        if (
+            compte.client.bijouterie_id
+            != vente.bijouterie_id
+        ):
+            raise ValidationError({
+                "numero_compte_depot": (
+                    "Ce compte dépôt appartient "
+                    "à une autre bijouterie."
+                )
+            })
+
+        solde_disponible = _montant_strict(
+            compte.solde,
+            "solde",
+        )
+
+        if solde_disponible < montant:
+            raise ValidationError({
+                "compte_depot": (
+                    "Solde insuffisant. "
+                    f"Disponible : {solde_disponible:.2f} FCFA. "
+                    f"Demandé : {montant:.2f} FCFA."
+                )
+            })
+
+    elif numero_compte_depot:
         raise ValidationError({
             "numero_compte_depot": (
-                "Le paiement par dépôt client "
-                "n'est pas encore raccordé "
-                "au service de débit du compte."
+                "Ce champ est réservé "
+                "au paiement par compte dépôt."
             )
         })
 
-    if numero_compte_depot:
-        raise ValidationError({
-            "numero_compte_depot": (
-                "Ce champ est réservé au "
-                "paiement par dépôt client."
-            )
-        })
-
-    # ====================================================
-    # 9. CRÉATION DU PAIEMENT
-    # ====================================================
+    # ========================================================
+    # 12. CRÉATION DU PAIEMENT
+    # ========================================================
 
     try:
-        paiement = Paiement.objects.create(
+        paiement = Paiement(
             vente=vente,
             facture=None,
             created_by=utilisateur,
+            cashier=cashier,
         )
+
+        paiement.full_clean()
+        paiement.save()
 
     except DjangoValidationError as exc:
-        raise ValidationError(
-            getattr(exc, "message_dict", None)
-            or exc.messages
-        )
+        raise _convertir_erreur_django(exc) from exc
 
-    # ====================================================
-    # 10. CRÉATION DE L'UNIQUE LIGNE
-    # ====================================================
+    # ========================================================
+    # 13. DÉBIT DU COMPTE DÉPÔT
+    # ========================================================
 
-    objet_ligne = PaiementLigne(
-        paiement=paiement,
-        mode_paiement=mode,
-        montant_paye=montant,
-        reference=reference,
-        compte_depot=None,
-        transaction_depot=None,
-    )
+    transaction_depot = None
+
+    if compte is not None:
+        try:
+            transaction_depot = effectuer_retrait(
+                compte_id=compte.pk,
+                montant=montant,
+                user=utilisateur,
+                reference=(
+                    f"PAIEMENT-PREST-{paiement.pk}"
+                ),
+                commentaire=(
+                    "Paiement direct prestation "
+                    f"{vente.numero_vente}"
+                ),
+            )
+
+        except DjangoValidationError as exc:
+            raise _convertir_erreur_django(exc) from exc
+
+    # ========================================================
+    # 14. CRÉATION DE LA LIGNE
+    # ========================================================
 
     try:
-        # save() déclenche les validations
-        # définies dans le modèle.
+        objet_ligne = PaiementLigne(
+            paiement=paiement,
+            mode_paiement=mode,
+            montant_paye=montant,
+            reference=(
+                f"COMPTE_DEPOT-{compte.numero_compte}"
+                if compte is not None
+                else reference
+            ),
+            compte_depot=compte,
+            transaction_depot=transaction_depot,
+        )
+
+        objet_ligne.full_clean()
         objet_ligne.save()
 
     except DjangoValidationError as exc:
-        raise ValidationError(
-            getattr(exc, "message_dict", None)
-            or exc.messages
-        )
+        raise _convertir_erreur_django(exc) from exc
 
-    # ====================================================
-    # 11. RETOUR
-    # ====================================================
+    # ========================================================
+    # 15. VÉRIFICATION DU SOLDE APRÈS PAIEMENT
+    # ========================================================
+
+    total_apres = (
+        PaiementLigne.objects
+        .filter(
+            paiement__vente_id=vente.pk,
+            paiement__facture__isnull=True,
+        )
+        .aggregate(
+            total=Sum("montant_paye")
+        )["total"]
+        or ZERO
+    )
+
+    total_apres = _montant_strict(
+        total_apres,
+        "total_apres",
+    )
+
+    if total_apres != total_deja_paye + montant:
+        raise ValidationError({
+            "paiement": (
+                "Incohérence du montant encaissé."
+            )
+        })
+
+    if total_apres > montant_total:
+        raise ValidationError({
+            "paiement": (
+                "Le total encaissé dépasse "
+                "le montant de la prestation."
+            )
+        })
+
+    # ========================================================
+    # 16. RETOUR
+    # ========================================================
 
     return paiement
 

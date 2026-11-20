@@ -65,6 +65,8 @@ INSTALLED_APPS = [
     'compte_depot',
     'order',
     'stock_matiere_premiere',
+    'reparation',
+    'administration',
     
     #depense
     "finance",

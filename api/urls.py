@@ -1,6 +1,7 @@
 # backend/api/urls.py
 from django.urls import include, path
 
+from administration import views as admin_views
 from api import views as api_views
 from compte_depot import views as compte_depot_views
 from e_commerce import views as e_commerce_views
@@ -8,6 +9,7 @@ from finance import views as finance_views
 from inventory import views as inv_views
 from order import views as order_views
 from purchase import views as achat_views
+from reparation import views as reparation_views
 # Vente, achat, stock
 from sale import views as sale_views
 from staff import views as staff_views
@@ -24,6 +26,13 @@ urlpatterns = [
     # Store API Endpoints
     # path('', userauths_views.getRoutes),
     
+    path("administration/create",admin_views.CreateAdminView.as_view(),name="administration_create",),
+    path("administration/list",admin_views.ListAdminView.as_view(),name="administration_list",),
+    path("administration/<int:admin_id>",admin_views.AdminDetailView.as_view(),name="administration_detail",),
+    path("administration/update/<int:admin_id>",admin_views.UpdateAdminView.as_view(),name="administration_update",),
+
+    path("administration/deactivate/<int:admin_id>",admin_views.DeactivateAdminView.as_view(),name="administration_deactivate",),
+    path("administration/reactivate/<int:admin_id>",admin_views.ReactivateAdminView.as_view(),name="administration_reactivate",),
 
     # path('register', userauths_views.UserRegistrationView.as_view(), name='register'),
     path('login', userauths_views.UserLoginView.as_view(), name='login'),
@@ -163,7 +172,6 @@ urlpatterns = [
     # path('staff/add-staff', staff_views.CreateStaffMemberView.as_view(), name='add_staff'),
     # path("staff/<int:staff_id>/update", staff_views.UpdateStaffView.as_view(), name="staff-update"),
     path("staff/create", staff_views.CreateStaffView.as_view(), name="staff-c"),
-    path("staff/creer-admin",staff_views.CreateAdminView.as_view(),name="create-admin",),
     path("staff/<int:staff_id>/update", staff_views.UpdateStaffView.as_view(), name="staff-u"),
     path("staff/list", staff_views.ListStaffView.as_view(), name="staff"),
     path("staff/<str:role>/<int:staff_id>", staff_views.StaffDetailView.as_view(), name="staff-d"),
@@ -284,6 +292,12 @@ urlpatterns = [
     path("depenses/dashboard/", finance_views.DepenseDashboardView.as_view()),
     path("depenses/export-excel/", finance_views.ExportDepensesExcelView.as_view()),
     
+    #reparation
+    path("reparation/list/",reparation_views.ReparationListAPIView.as_view(),name="reparation-list",),
+    path("reparation/create/", reparation_views.ReparationCreateAPIView.as_view(),name="reparation_create",),
+    path("reparation/<int:pk>/ticket-depot/", reparation_views.TicketDepotReparationAPIView.as_view(),name="reparation_ticket_depot",),
+    path("reparation/<int:pk>/paiement/", reparation_views.PaiementReparationAPIView.as_view(),name="reparation_paiement",),
+    path("reparation/<int:pk>/recu-paiement/",reparation_views.RecuPaiementReparationAPIView.as_view(),name="reparation_recu_paiement",),
     # e-cmmerce
     path("ecommerce/home/",e_commerce_views.EcommerceHomeView.as_view(),name="ecommerce-home",),
     path("ecommerce/banner/manage/<int:pk>/",e_commerce_views.EcommerceBannerManageView.as_view(),name="ecommerce-banner-manage",),

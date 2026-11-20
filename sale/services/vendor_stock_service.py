@@ -10,10 +10,64 @@ from django.db.models import F
 
 from stock.models import VendorStock
 
-# =============================================================
-# HELPERS
-# =============================================================
+# ============================================================
+# 1. VALIDATION DES QUANTITÉS
+# ============================================================
 
+def _positive_quantity(value) -> int:
+    """
+    Accepte :
+        - entier Python strictement positif ;
+        - chaîne contenant un entier positif.
+
+    Refuse :
+        - booléens ;
+        - flottants ;
+        - fractions ;
+        - zéro ;
+        - nombres négatifs.
+    """
+
+    if isinstance(value, bool):
+        raise ValidationError({
+            "quantite": (
+                "Un entier strictement positif "
+                "est obligatoire."
+            )
+        })
+
+    if isinstance(value, int):
+        q = value
+
+    elif (
+        isinstance(value, str)
+        and value.strip().isascii()
+        and value.strip().isdecimal()
+    ):
+        q = int(value.strip())
+
+    else:
+        raise ValidationError({
+            "quantite": (
+                "Un entier strictement positif "
+                "est obligatoire."
+            )
+        })
+
+    if q <= 0:
+        raise ValidationError({
+            "quantite": (
+                "La quantité doit être "
+                "supérieure ou égale à 1."
+            )
+        })
+
+    return q
+
+
+# ============================================================
+# 2. VALIDATION DES DONNÉES COMMUNES
+# ============================================================
 
 def _validate_common(
     *,
@@ -23,82 +77,122 @@ def _validate_common(
     quantite: int,
 ) -> int:
     """
-    Validations communes pour les opérations
-    sur le stock vendeur d'une ProduitLine précise.
+    Vérifie :
+        - quantité positive ;
+        - vendeur existant ;
+        - vendeur vérifié ;
+        - compte vendeur actif ;
+        - bijouterie existante ;
+        - vendeur rattaché à la bijouterie ;
+        - ProduitLine existante ;
+        - produit et lot renseignés ;
+        - lot appartenant à la bijouterie.
+
+    Ne modifie aucune donnée.
     """
 
-    try:
-        q = int(quantite)
+    q = _positive_quantity(quantite)
 
-    except (TypeError, ValueError):
+    # --------------------------------------------------------
+    # VENDEUR
+    # --------------------------------------------------------
+
+    if (
+        vendor is None
+        or getattr(vendor, "pk", None) is None
+    ):
         raise ValidationError({
-            "quantite": (
-                "La quantité doit être un entier valide."
-            )
+            "vendor": "Le vendeur est obligatoire."
         })
 
-    if q <= 0:
-        raise ValidationError({
-            "quantite": (
-                "La quantité doit être supérieure "
-                "ou égale à 1."
-            )
-        })
-
-    if not vendor:
+    if not getattr(vendor, "verifie", False):
         raise ValidationError({
             "vendor": (
-                "Le vendeur est obligatoire."
+                "Le vendeur est désactivé "
+                "ou non vérifié."
             )
         })
 
-    if not bijouterie:
+    if not getattr(
+        getattr(vendor, "user", None),
+        "is_active",
+        False,
+    ):
+        raise ValidationError({
+            "vendor": (
+                "Le compte utilisateur "
+                "du vendeur est inactif."
+            )
+        })
+
+    # --------------------------------------------------------
+    # BIJOUTERIE
+    # --------------------------------------------------------
+
+    if (
+        bijouterie is None
+        or getattr(bijouterie, "pk", None) is None
+    ):
         raise ValidationError({
             "bijouterie": (
                 "La bijouterie est obligatoire."
             )
         })
 
-    if not produit_line:
+    if vendor.bijouterie_id != bijouterie.pk:
+        raise ValidationError({
+            "vendor": (
+                "Le vendeur n'appartient pas "
+                "à cette bijouterie."
+            )
+        })
+
+    # --------------------------------------------------------
+    # PRODUITLINE
+    # --------------------------------------------------------
+
+    if (
+        produit_line is None
+        or getattr(produit_line, "pk", None) is None
+    ):
         raise ValidationError({
             "produit_line": (
                 "La ProduitLine est obligatoire."
             )
         })
 
-    # =========================================================
-    # VENDEUR ↔ BIJOUTERIE
-    # =========================================================
-
-    if vendor.bijouterie_id != bijouterie.id:
+    if (
+        not produit_line.produit_id
+        or not produit_line.lot_id
+    ):
         raise ValidationError({
-            "vendor": (
-                "Le vendeur n'appartient pas "
-                "à la bijouterie sélectionnée."
+            "produit_line": (
+                "La ProduitLine doit être liée "
+                "à un produit et à un lot."
             )
         })
 
-    # =========================================================
-    # PRODUIT_LINE
-    # =========================================================
+    # --------------------------------------------------------
+    # CONTRÔLE DE LA BIJOUTERIE DU LOT
+    # --------------------------------------------------------
 
-    if produit_line.produit_id is None:
+    if (
+        produit_line.lot.achat.bijouterie_id
+        != bijouterie.pk
+    ):
         raise ValidationError({
             "produit_line": (
-                "La ProduitLine n'est associée "
-                "à aucun produit."
-            )
-        })
-
-    if produit_line.lot_id is None:
-        raise ValidationError({
-            "produit_line": (
-                "La ProduitLine n'est associée "
-                "à aucun lot."
+                "Cette ligne de produit appartient "
+                "à une autre bijouterie."
             )
         })
 
     return q
+
+
+# ============================================================
+# 3. RÉCUPÉRATION DU STOCK VENDEUR
+# ============================================================
 
 def _get_vendor_stock(
     *,
@@ -108,36 +202,32 @@ def _get_vendor_stock(
     lock: bool = False,
 ) -> VendorStock:
     """
-    Retourne le VendorStock exact correspondant à :
+    Récupère le VendorStock exact.
 
-        vendeur + bijouterie + ProduitLine
+    lock=True :
+        verrouille la ligne en base.
 
-    Règles :
-    - Aucun FIFO.
-    - Aucun fallback vers une autre ProduitLine.
-    - Refuse un stock introuvable.
-    - Refuse plusieurs stocks correspondants.
-    - Verrouille la ligne lorsque lock=True.
-
-    IMPORTANT :
-    lock=True nécessite une transaction.atomic().
+    Refuse :
+        - stock absent ;
+        - plusieurs stocks correspondant
+          à la même combinaison.
     """
 
-    if lock and not transaction.get_connection().in_atomic_block:
+    if (
+        lock
+        and not transaction.get_connection().in_atomic_block
+    ):
         raise ValidationError({
             "stock": (
-                "Le verrouillage du stock vendeur "
-                "nécessite une transaction atomique."
+                "Le verrouillage nécessite "
+                "une transaction atomique."
             )
         })
 
-    qs = (
-        VendorStock.objects
-        .filter(
-            vendor=vendor,
-            bijouterie=bijouterie,
-            produit_line=produit_line,
-        )
+    qs = VendorStock.objects.filter(
+        vendor=vendor,
+        bijouterie=bijouterie,
+        produit_line=produit_line,
     )
 
     if lock:
@@ -146,141 +236,67 @@ def _get_vendor_stock(
     try:
         return qs.get()
 
-    except VendorStock.DoesNotExist:
-        identifiant = (
-            getattr(produit_line, "uuid", None)
-            or produit_line.pk
-        )
-
+    except VendorStock.DoesNotExist as exc:
         raise ValidationError({
             "stock": (
-                "Aucun stock vendeur ne correspond "
-                f"à la ProduitLine {identifiant}."
+                "Aucun stock vendeur pour "
+                f"la ProduitLine {produit_line.pk}."
             )
-        })
+        }) from exc
 
-    except VendorStock.MultipleObjectsReturned:
+    except VendorStock.MultipleObjectsReturned as exc:
         raise ValidationError({
             "stock": (
-                "Plusieurs stocks vendeur correspondent "
-                "à la même combinaison vendeur, "
-                "bijouterie et ProduitLine. "
-                "Une correction des données est nécessaire."
+                "Plusieurs VendorStock existent "
+                "pour ce vendeur, cette bijouterie "
+                "et cette ProduitLine. "
+                "Corrigez les doublons."
             )
-        })
+        }) from exc
 
+
+# ============================================================
+# 4. CALCUL DU STOCK DISPONIBLE
+# ============================================================
 
 def _available_quantity(
-    vendor_stock,
+    vendor_stock: VendorStock,
 ) -> int:
     """
-    Quantité encore disponible chez le vendeur.
+    Stock disponible vendeur :
 
-    disponible =
-        quantite_allouee
-        - quantite_vendue
+        quantite_allouee - quantite_vendue
+
+    Vérifie la cohérence des quantités.
     """
 
     allouee = int(
-        vendor_stock.quantite_allouee
-        or 0
+        vendor_stock.quantite_allouee or 0
     )
 
     vendue = int(
-        vendor_stock.quantite_vendue
-        or 0
+        vendor_stock.quantite_vendue or 0
     )
 
-    disponible = allouee - vendue
+    if (
+        allouee < 0
+        or vendue < 0
+        or vendue > allouee
+    ):
+        raise ValidationError({
+            "stock": (
+                "Quantités vendeur incohérentes : "
+                "vérifiez l'allocation "
+                "et les ventes."
+            )
+        })
 
-    return max(
-        disponible,
-        0,
-    )
+    return allouee - vendue
 
 
-# =============================================================
-# VÉRIFICATION DISPONIBILITÉ
-# =============================================================
-
-
-# def ensure_vendor_stock_available(
-#     *,
-#     vendor,
-#     bijouterie,
-#     produit_line,
-#     quantite: int,
-# ) -> int:
-#     """
-#     Vérifie que le vendeur possède suffisamment de stock
-#     pour une ProduitLine précise.
-
-#     IMPORTANT :
-#     ---------------------------------------------------------
-#     Cette fonction NE CONSOMME PAS le stock.
-
-#     Elle est utilisée lors de la création de la vente /
-#     PROFORMA.
-
-#     Aucun FIFO.
-#     Aucun changement de ProduitLine.
-#     Aucun UPDATE VendorStock.
-
-#     Retour :
-#         quantité actuellement disponible.
-#     """
-
-#     q = _validate_common(
-#         vendor=vendor,
-#         bijouterie=bijouterie,
-#         produit_line=produit_line,
-#         quantite=quantite,
-#     )
-
-#     vendor_stock = _get_vendor_stock(
-#         vendor=vendor,
-#         bijouterie=bijouterie,
-#         produit_line=produit_line,
-#         lock=False,
-#     )
-
-#     disponible = _available_quantity(
-#         vendor_stock
-#     )
-
-#     if disponible < q:
-
-#         identifiant = (
-#             getattr(
-#                 produit_line,
-#                 "uuid",
-#                 None,
-#             )
-#             or produit_line.pk
-#         )
-
-#         produit = produit_line.produit
-
-#         produit_nom = (
-#             getattr(
-#                 produit,
-#                 "nom",
-#                 None,
-#             )
-#             or f"Produit #{produit.pk}"
-#         )
-
-#         raise ValidationError({
-#             "stock": (
-#                 f"Stock vendeur insuffisant pour "
-#                 f"'{produit_nom}' "
-#                 f"(ProduitLine {identifiant}). "
-#                 f"Disponible : {disponible}, "
-#                 f"demandé : {q}."
-#             )
-#         })
-
-#     return disponible
+# ============================================================
+# 5. VÉRIFIER LA DISPONIBILITÉ
+# ============================================================
 
 def ensure_vendor_stock_available(
     *,
@@ -290,249 +306,52 @@ def ensure_vendor_stock_available(
     quantite: int,
 ) -> int:
     """
-    Vérifie que le vendeur possède suffisamment de stock
-    disponible pour une ProduitLine exacte.
+    Vérifie la disponibilité du stock vendeur.
 
-    Cette fonction :
-    - ne modifie pas VendorStock ;
-    - ne crée aucun InventoryMovement ;
-    - ne consomme aucun stock ;
-    - ne fait aucun FIFO ;
-    - contrôle uniquement la disponibilité.
+    Ne modifie aucune quantité.
+
+    Ne réserve pas le stock.
 
     Retourne :
-        quantité actuellement disponible.
+        quantité disponible au moment
+        de la vérification.
 
-    Lève :
-        ValidationError si le stock est insuffisant
-        ou si les données sont incohérentes.
+    La disponibilité doit être vérifiée
+    à nouveau sous verrou lors
+    de la consommation réelle.
     """
 
-    # =========================================================
-    # 1. QUANTITÉ
-    # =========================================================
-
-    try:
-        q = int(quantite)
-
-    except (TypeError, ValueError):
-        raise ValidationError(
-            {
-                "quantite": (
-                    "La quantité doit être "
-                    "un entier valide."
-                )
-            }
-        )
-
-    if q <= 0:
-        raise ValidationError(
-            {
-                "quantite": (
-                    "La quantité doit être "
-                    "supérieure ou égale à 1."
-                )
-            }
-        )
-
-    # =========================================================
-    # 2. VENDEUR
-    # =========================================================
-
-    if not vendor:
-        raise ValidationError(
-            {
-                "vendor": (
-                    "Le vendeur est obligatoire."
-                )
-            }
-        )
-
-    if not getattr(
-        vendor,
-        "verifie",
-        False,
-    ):
-        raise ValidationError(
-            {
-                "vendor": (
-                    "Le vendeur est désactivé "
-                    "ou non vérifié."
-                )
-            }
-        )
-
-    # =========================================================
-    # 3. BIJOUTERIE
-    # =========================================================
-
-    if not bijouterie:
-        raise ValidationError(
-            {
-                "bijouterie": (
-                    "La bijouterie est obligatoire."
-                )
-            }
-        )
-
-    if (
-        vendor.bijouterie_id
-        != bijouterie.id
-    ):
-        raise ValidationError(
-            {
-                "vendor": (
-                    "Le vendeur n'appartient pas "
-                    "à la bijouterie sélectionnée."
-                )
-            }
-        )
-
-    # =========================================================
-    # 4. PRODUIT LINE
-    # =========================================================
-
-    if not produit_line:
-        raise ValidationError(
-            {
-                "produit_line": (
-                    "La ProduitLine est obligatoire."
-                )
-            }
-        )
-
-    if not produit_line.produit_id:
-        raise ValidationError(
-            {
-                "produit_line": (
-                    "La ProduitLine n'est associée "
-                    "à aucun produit."
-                )
-            }
-        )
-
-    if not produit_line.lot_id:
-        raise ValidationError(
-            {
-                "produit_line": (
-                    "La ProduitLine n'est associée "
-                    "à aucun lot."
-                )
-            }
-        )
-
-    # =========================================================
-    # 5. STOCK VENDEUR EXACT
-    # =========================================================
-    #
-    # IMPORTANT :
-    #
-    # On ne fait PAS :
-    #
-    # produit_line__produit=produit
-    #
-    # On recherche exactement :
-    #
-    # vendor + bijouterie + produit_line
-    #
-    # =========================================================
-
-    vendor_stock = (
-        VendorStock.objects
-        .select_related(
-            "vendor",
-            "bijouterie",
-            "produit_line",
-            "produit_line__produit",
-            "produit_line__lot",
-        )
-        .filter(
-            vendor=vendor,
-            bijouterie=bijouterie,
-            produit_line=produit_line,
-        )
-        .first()
+    q = _validate_common(
+        vendor=vendor,
+        bijouterie=bijouterie,
+        produit_line=produit_line,
+        quantite=quantite,
     )
 
-    if not vendor_stock:
-        produit = produit_line.produit
-
-        produit_nom = (
-            getattr(
-                produit,
-                "nom",
-                None,
-            )
-            or f"Produit #{produit.pk}"
-        )
-
-        raise ValidationError(
-            {
-                "stock": (
-                    f"Aucun stock vendeur disponible "
-                    f"pour '{produit_nom}' "
-                    f"(ProduitLine #{produit_line.pk})."
-                )
-            }
-        )
-
-    # =========================================================
-    # 6. QUANTITÉ DISPONIBLE
-    # =========================================================
-
-    quantite_allouee = int(
-        vendor_stock.quantite_allouee
-        or 0
+    stock = _get_vendor_stock(
+        vendor=vendor,
+        bijouterie=bijouterie,
+        produit_line=produit_line,
     )
 
-    quantite_vendue = int(
-        vendor_stock.quantite_vendue
-        or 0
-    )
-
-    disponible = max(
-        quantite_allouee
-        - quantite_vendue,
-        0,
-    )
-
-    # =========================================================
-    # 7. CONTRÔLE
-    # =========================================================
+    disponible = _available_quantity(stock)
 
     if disponible < q:
-        produit = produit_line.produit
-
-        produit_nom = (
-            getattr(
-                produit,
-                "nom",
-                None,
+        raise ValidationError({
+            "stock": (
+                "Stock vendeur insuffisant "
+                f"pour la ProduitLine {produit_line.pk}. "
+                f"Disponible : {disponible}, "
+                f"demandé : {q}."
             )
-            or f"Produit #{produit.pk}"
-        )
-
-        raise ValidationError(
-            {
-                "stock": (
-                    f"Stock vendeur insuffisant pour "
-                    f"'{produit_nom}' "
-                    f"(ProduitLine #{produit_line.pk}). "
-                    f"Disponible : {disponible}, "
-                    f"demandé : {q}."
-                )
-            }
-        )
-
-    # =========================================================
-    # 8. RETOUR
-    # =========================================================
+        })
 
     return disponible
 
-# =============================================================
-# CONSOMMATION STOCK VENDEUR
-# =============================================================
+
+# ============================================================
+# 6. CONSOMMER LE STOCK VENDEUR
+# ============================================================
 
 @transaction.atomic
 def consume_vendor_stock(
@@ -543,44 +362,31 @@ def consume_vendor_stock(
     quantite: int,
 ) -> List[Dict[str, int]]:
     """
-    Consomme le stock vendeur correspondant exactement
-    à la ProduitLine vendue.
+    Consomme le stock vendeur à la création
+    de la vente.
 
-    Cette fonction est appelée lors de la confirmation
-    définitive de la vente après paiement.
+    Fonctionnement :
+        1. Valide les données.
+        2. Verrouille le VendorStock.
+        3. Vérifie la disponibilité.
+        4. Incrémente quantite_vendue.
+        5. Retourne les informations consommées.
 
-    Effet :
+    Important :
+        - Ne modifie pas Stock magasin.
+        - Ne modifie pas ProduitLine.quantite.
+        - Ne crée pas InventoryMovement.
+        - Ne doit pas être appelée au scan QR.
+        - Ne doit pas être appelée au paiement.
 
-        VendorStock.quantite_vendue += quantite
-
-    IMPORTANT :
-    ---------------------------------------------------------
-    - ProduitLine exacte.
-    - Aucun FIFO.
-    - Aucun changement de lot.
-    - Aucun fallback vers une autre ProduitLine.
-    - La fonction doit être appelée depuis
-      transaction.atomic().
-    - select_for_update() protège contre les ventes
-      concurrentes.
-
-    Retour :
-
-        [
-            {
-                "produit_line_id": 12,
-                "qty": 1,
-            }
-        ]
-
-    Le retour client ne doit jamais annuler cette
-    consommation.
-
-    Un retour utilise :
-
-        RETURN_IN
-        EXTERNAL -> BIJOUTERIE
+    À utiliser dans la transaction globale
+    de création de vente avec le mouvement
+    InventoryMovement.SALE_OUT.
     """
+
+    # --------------------------------------------------------
+    # 1. VALIDATION
+    # --------------------------------------------------------
 
     q = _validate_common(
         vendor=vendor,
@@ -589,61 +395,41 @@ def consume_vendor_stock(
         quantite=quantite,
     )
 
-    # =========================================================
-    # LOCK VendorStock exact
-    # =========================================================
+    # --------------------------------------------------------
+    # 2. VERROUILLAGE DU STOCK
+    # --------------------------------------------------------
 
-    vendor_stock = _get_vendor_stock(
+    stock = _get_vendor_stock(
         vendor=vendor,
         bijouterie=bijouterie,
         produit_line=produit_line,
         lock=True,
     )
 
-    # =========================================================
-    # DISPONIBILITÉ
-    # =========================================================
+    # --------------------------------------------------------
+    # 3. QUANTITÉ DISPONIBLE
+    # --------------------------------------------------------
 
-    disponible = _available_quantity(
-        vendor_stock
-    )
+    disponible = _available_quantity(stock)
 
     if disponible < q:
-
-        identifiant = (
-            getattr(
-                produit_line,
-                "uuid",
-                None,
-            )
-            or produit_line.pk
-        )
-
         raise ValidationError({
             "stock": (
-                "Stock vendeur insuffisant pour "
-                f"la ProduitLine {identifiant}. "
+                "Stock vendeur insuffisant "
+                f"pour la ProduitLine {produit_line.pk}. "
                 f"Disponible : {disponible}, "
                 f"demandé : {q}."
             )
         })
 
-    # =========================================================
-    # UPDATE ATOMIQUE
-    # =========================================================
-    #
-    # La condition :
-    #
-    # quantite_vendue <= quantite_allouee - q
-    #
-    # garantit qu'on ne peut jamais dépasser
-    # la quantité allouée.
-    # =========================================================
+    # --------------------------------------------------------
+    # 4. MISE À JOUR ATOMIQUE
+    # --------------------------------------------------------
 
     updated = (
         VendorStock.objects
         .filter(
-            pk=vendor_stock.pk,
+            pk=stock.pk,
             quantite_vendue__lte=(
                 F("quantite_allouee") - q
             ),
@@ -658,15 +444,14 @@ def consume_vendor_stock(
     if updated != 1:
         raise ValidationError({
             "stock": (
-                "Conflit lors de la consommation "
-                "du stock vendeur. "
+                "Conflit de stock vendeur. "
                 "Veuillez réessayer."
             )
         })
 
-    # =========================================================
-    # RÉSULTAT
-    # =========================================================
+    # --------------------------------------------------------
+    # 5. RÉSULTAT
+    # --------------------------------------------------------
 
     return [
         {
@@ -676,5 +461,4 @@ def consume_vendor_stock(
             "qty": q,
         }
     ]
-    
-    
+

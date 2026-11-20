@@ -1,3 +1,5 @@
+# sale/services/payment_service.py
+
 from __future__ import annotations
 
 import hashlib
@@ -5,54 +7,157 @@ import json
 import logging
 import uuid
 from collections import defaultdict
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import connection, transaction
-from django.db.models import Sum
+from django.db.models import F, Sum
 
-from backend.roles import ROLE_CASHIER, ROLE_MANAGER, get_role_name
+from backend.roles import ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER, get_role_name
 from backend.utils.helpers import user_can_access_bijouterie
 from compte_depot.models import CompteDepot
 from compte_depot.services.depot_retrait_services import effectuer_retrait
 from sale.models import (Facture, ModePaiement, Paiement, PaiementLigne, Vente,
                          VenteAutre, VenteProduit)
-from sale.services.confirm_service import confirm_sale_out_from_vendor
 from sale.services.facture_hash_service import generate_facture_hash
 from sale.services.facture_pdf_service import generate_facture_pdf
 from sale.services.facture_qr_service import generate_facture_qr
-from sale.services.montant_service import (ZERO, calculer_solde_paiement,
-                                           money_strict)
+from sale.services.montant_service import ZERO, money
 from sale.services.sale_service import (upsert_client_for_payment,
                                         validate_facture_payable)
 from staff.models import Cashier
 
 logger = logging.getLogger(__name__)
-_money = money_strict
+
+ROLES_ENCAISSEMENT = frozenset({
+    ROLE_ADMIN,
+    ROLE_MANAGER,
+    ROLE_CASHIER,
+})
+
+
 # ============================================================
-# 2. HELPERS : AUTORISATIONS
+# 1. HELPERS MONÉTAIRES
 # ============================================================
-def _validate_user_and_cashier(user, bijouterie):
+
+def _money(value, field="montant") -> Decimal:
     """
-    Vérifie :
-    - authentification ;
-    - rôle manager ou caissier ;
-    - accès à la bijouterie ;
-    - profil caissier actif et vérifié.
-    Retourne le profil Cashier ou None pour le manager.
+    Convertit et arrondit un montant.
+
+    Refuse les valeurs absentes, vides,
+    non numériques ou non finies.
     """
-    if not user or not user.is_authenticated:
+
+    if value is None or value == "":
         raise ValidationError({
-            "user": "Authentification obligatoire."
+            field: "Montant obligatoire."
         })
-    role = get_role_name(user)
-    if role not in (ROLE_MANAGER, ROLE_CASHIER):
+
+    return money(value, field=field)
+
+
+def _calculer_solde(
+    *,
+    montant_total,
+    montant_deja_paye=ZERO,
+    nouveau_paiement=ZERO,
+):
+    total = _money(
+        montant_total,
+        "montant_total",
+    )
+    deja_paye = _money(
+        montant_deja_paye,
+        "montant_deja_paye",
+    )
+    nouveau = _money(
+        nouveau_paiement,
+        "nouveau_paiement",
+    )
+
+    if (
+        total < ZERO
+        or deja_paye < ZERO
+        or nouveau < ZERO
+    ):
         raise ValidationError({
-            "permission": (
-                "Seuls le manager et le caissier "
-                "peuvent encaisser une vente."
+            "paiement": "Montants négatifs interdits."
+        })
+
+    total_paye = _money(
+        deja_paye + nouveau,
+        "total_paye",
+    )
+
+    if total_paye > total:
+        raise ValidationError({
+            "paiement": (
+                "Le paiement dépasse le montant dû."
             )
         })
+
+    return {
+        "montant_total": total,
+        "total_paye": total_paye,
+        "reste_a_payer": _money(
+            total - total_paye,
+            "reste_a_payer",
+        ),
+    }
+
+
+# ============================================================
+# 2. AUTORISATIONS
+# ============================================================
+
+def _validate_user_and_cashier(
+    user,
+    bijouterie,
+):
+    """
+    Vérifie les droits d'encaissement.
+
+    Admin :
+        toutes les bijouteries autorisées.
+
+    Manager :
+        ses bijouteries, profil vérifié.
+
+    Cashier :
+        sa bijouterie, profil vérifié.
+
+    Retourne le profil caissier ou None.
+    """
+
+    if (
+        user is None
+        or not getattr(
+            user,
+            "is_authenticated",
+            False,
+        )
+        or not getattr(
+            user,
+            "is_active",
+            False,
+        )
+    ):
+        raise ValidationError({
+            "user": (
+                "Utilisateur non authentifié ou inactif."
+            )
+        })
+
+    role = get_role_name(user)
+
+    if role not in ROLES_ENCAISSEMENT:
+        raise ValidationError({
+            "permission": (
+                "Vous n'êtes pas autorisé à encaisser."
+            )
+        })
+
     if not user_can_access_bijouterie(
         user,
         bijouterie,
@@ -62,57 +167,98 @@ def _validate_user_and_cashier(user, bijouterie):
                 "Vous n'avez pas accès à cette bijouterie."
             )
         })
-    cashier = None
-    if role == ROLE_CASHIER:
-        cashier = (
-            Cashier.objects
-            .select_for_update()
-            .filter(user=user)
-            .first()
+
+    if role == ROLE_ADMIN:
+        return None
+
+    if role == ROLE_MANAGER:
+        manager = getattr(
+            user,
+            "staff_manager_profile",
+            None,
         )
-        if cashier is None:
+
+        if (
+            manager is None
+            or not manager.verifie
+        ):
             raise ValidationError({
-                "cashier": "Profil caissier introuvable."
-            })
-        if not cashier.verifie:
-            raise ValidationError({
-                "cashier": "Profil caissier non vérifié."
-            })
-        if not cashier.is_active_staff:
-            raise ValidationError({
-                "cashier": "Profil caissier désactivé."
-            })
-        if cashier.bijouterie_id != bijouterie.pk:
-            raise ValidationError({
-                "cashier": (
-                    "Le caissier n'appartient pas "
-                    "à cette bijouterie."
+                "manager": (
+                    "Profil manager introuvable "
+                    "ou désactivé."
                 )
             })
+
+        if not manager.bijouteries.filter(
+            pk=bijouterie.pk
+        ).exists():
+            raise ValidationError({
+                "manager": (
+                    "Bijouterie non autorisée."
+                )
+            })
+
+        return None
+
+    cashier = (
+        Cashier.objects
+        .select_for_update()
+        .filter(user=user)
+        .first()
+    )
+
+    if cashier is None:
+        raise ValidationError({
+            "cashier": "Profil caissier introuvable."
+        })
+
+    if not cashier.verifie:
+        raise ValidationError({
+            "cashier": (
+                "Profil caissier non vérifié "
+                "ou désactivé."
+            )
+        })
+
+    if cashier.bijouterie_id != bijouterie.pk:
+        raise ValidationError({
+            "cashier": (
+                "Le caissier n'appartient pas "
+                "à cette bijouterie."
+            )
+        })
+
     return cashier
+
+
 # ============================================================
-# 3. HELPERS : IDENTIFICATION DE LA VENTE
+# 3. IDENTIFICATION DE LA VENTE
 # ============================================================
+
 def _resolve_sale(
     *,
     numero_facture=None,
     numero_vente=None,
 ):
     """
-    Identifie et verrouille la vente.
-    Bijoux / mixte :
+    Bijoux ou mixte :
         numero_facture obligatoire.
-    Prestations seules :
+
+    Prestations uniquement :
         numero_vente obligatoire.
+
     Retourne :
         (vente, facture)
     """
+
     numero_facture = str(
         numero_facture or ""
     ).strip()
+
     numero_vente = str(
         numero_vente or ""
     ).strip()
+
     if bool(numero_facture) == bool(numero_vente):
         raise ValidationError({
             "paiement": (
@@ -120,141 +266,142 @@ def _resolve_sale(
                 "ou numero_vente."
             )
         })
-    facture = None
-    # --------------------------------------------------------
-    # CAS 1 : BIJOUX OU VENTE MIXTE
-    # --------------------------------------------------------
+
     if numero_facture:
         try:
-            facture = (
+            facture_initiale = (
                 Facture.objects
-                .select_related(
-                    "vente",
-                    "bijouterie",
-                )
                 .get(
                     numero_facture__iexact=numero_facture
                 )
             )
-        except Facture.DoesNotExist:
+        except Facture.DoesNotExist as exc:
             raise ValidationError({
                 "numero_facture": "Facture introuvable."
-            })
-        except Facture.MultipleObjectsReturned:
+            }) from exc
+
+        except Facture.MultipleObjectsReturned as exc:
             raise ValidationError({
                 "numero_facture": (
-                    "Plusieurs factures portent ce numéro."
+                    "Numéro de facture non unique."
                 )
-            })
-        if not facture.vente_id:
+            }) from exc
+
+        if not facture_initiale.vente_id:
             raise ValidationError({
                 "facture": (
-                    "Cette facture n'est associée "
-                    "à aucune vente."
+                    "Cette facture ne possède pas de vente."
                 )
             })
+
+        # Ordre de verrouillage : Vente puis Facture.
         vente = (
             Vente.objects
             .select_for_update()
             .select_related("bijouterie")
-            .get(pk=facture.vente_id)
+            .get(pk=facture_initiale.vente_id)
         )
-        # Verrouillage cohérent : Vente d'abord, Facture ensuite.
+
         facture = (
             Facture.objects
             .select_for_update()
-            .get(pk=facture.pk)
+            .get(pk=facture_initiale.pk)
         )
+
         if facture.vente_id != vente.pk:
-            raise ValidationError({"facture": "La facture a changé de vente."})
+            raise ValidationError({
+                "facture": "Association facture/vente invalide."
+            })
+
+        if facture.bijouterie_id != vente.bijouterie_id:
+            raise ValidationError({
+                "facture": (
+                    "Bijouteries de la vente "
+                    "et de la facture différentes."
+                )
+            })
 
         if not VenteProduit.objects.filter(
             vente_id=vente.pk
         ).exists():
             raise ValidationError({
                 "facture": (
-                    "Le paiement par facture est réservé "
-                    "aux ventes de bijoux ou mixtes."
+                    "Une facture doit correspondre "
+                    "à une vente de bijoux ou mixte."
                 )
             })
-        if facture.bijouterie_id != vente.bijouterie_id:
-            raise ValidationError({
-                "facture": (
-                    "Incohérence entre la bijouterie "
-                    "de la facture et celle de la vente."
-                )
-            })
-    # --------------------------------------------------------
-    # CAS 2 : PRESTATIONS UNIQUEMENT
-    # --------------------------------------------------------
-    else:
-        try:
-            vente = (
-                Vente.objects
-                .select_for_update()
-                .select_related("bijouterie")
-                .get(
-                    numero_vente__iexact=numero_vente
-                )
+
+        return vente, facture
+
+    try:
+        vente = (
+            Vente.objects
+            .select_for_update()
+            .select_related("bijouterie")
+            .get(
+                numero_vente__iexact=numero_vente
             )
-        except Vente.DoesNotExist:
-            raise ValidationError({
-                "numero_vente": "Vente introuvable."
-            })
-        except Vente.MultipleObjectsReturned:
-            raise ValidationError({
-                "numero_vente": (
-                    "Plusieurs ventes portent ce numéro."
-                )
-            })
-        if VenteProduit.objects.filter(
-            vente_id=vente.pk
-        ).exists():
-            raise ValidationError({
-                "numero_vente": (
-                    "Cette vente contient des bijoux. "
-                    "Utilisez numero_facture."
-                )
-            })
-        if not VenteAutre.objects.filter(
-            vente_id=vente.pk
-        ).exists():
-            raise ValidationError({
-                "numero_vente": (
-                    "Cette vente ne contient "
-                    "aucune prestation."
-                )
-            })
-        if Facture.objects.filter(
-            vente_id=vente.pk
-        ).exists():
-            raise ValidationError({
-                "numero_vente": (
-                    "Cette vente possède une facture. "
-                    "Utilisez numero_facture."
-                )
-            })
-    return vente, facture
+        )
+    except Vente.DoesNotExist as exc:
+        raise ValidationError({
+            "numero_vente": "Vente introuvable."
+        }) from exc
+
+    except Vente.MultipleObjectsReturned as exc:
+        raise ValidationError({
+            "numero_vente": "Numéro de vente non unique."
+        }) from exc
+
+    if VenteProduit.objects.filter(
+        vente_id=vente.pk
+    ).exists():
+        raise ValidationError({
+            "numero_vente": (
+                "Cette vente contient des bijoux. "
+                "Utilisez numero_facture."
+            )
+        })
+
+    if not VenteAutre.objects.filter(
+        vente_id=vente.pk
+    ).exists():
+        raise ValidationError({
+            "numero_vente": (
+                "Cette vente ne contient aucune prestation."
+            )
+        })
+
+    if Facture.objects.filter(
+        vente_id=vente.pk
+    ).exists():
+        raise ValidationError({
+            "numero_vente": (
+                "Cette vente possède une facture."
+            )
+        })
+
+    return vente, None
+
+
 # ============================================================
-# 4. HELPERS : RESTE À PAYER
+# 4. RESTE À PAYER
 # ============================================================
-def _reste_a_payer(vente, facture):
-    """
-    Calcule le reste à payer.
-    Bijoux / mixte :
-        utilise facture.reste_a_payer.
-    Prestations :
-        montant vente - paiements directs.
-    """
+
+def _reste_a_payer(
+    vente,
+    facture,
+):
     if facture is not None:
         return _money(
             facture.reste_a_payer,
             "reste_a_payer",
         )
+
     total_vente = _money(
         vente.montant_total,
         "montant_total",
     )
+
     total_paye = (
         PaiementLigne.objects
         .filter(
@@ -265,29 +412,33 @@ def _reste_a_payer(vente, facture):
             total=Sum("montant_paye")
         )["total"]
     ) or ZERO
-    total_paye = _money(
-        total_paye,
-        "total_paye",
-    )
-    solde = calculer_solde_paiement(
+
+    return _calculer_solde(
         montant_total=total_vente,
         montant_deja_paye=total_paye,
-    )
-    return solde["reste_a_payer"]
+    )["reste_a_payer"]
+
+
 # ============================================================
-# 5. HELPERS : VALIDATION DES MODES
+# 5. VALIDATION DES MODES DE PAIEMENT
 # ============================================================
-def _prepare_lines(lignes_data):
+
+def _prepare_lines(
+    lignes_data,
+    *,
+    prestation_uniquement=False,
+):
     """
-    Valide toutes les lignes avant création du paiement.
-    Règles :
-    - liste non vide ;
-    - mode actif ;
-    - mode unique par paiement ;
-    - montant positif ;
-    - référence si nécessaire ;
-    - numéro de compte pour dépôt.
+    Prestations :
+        exactement un mode par opération.
+
+    Factures :
+        plusieurs modes possibles.
+
+    Un mode ne peut pas être répété
+    dans une même opération.
     """
+
     if (
         not isinstance(lignes_data, list)
         or not lignes_data
@@ -298,9 +449,22 @@ def _prepare_lines(lignes_data):
                 "est obligatoire."
             )
         })
+
+    if (
+        prestation_uniquement
+        and len(lignes_data) != 1
+    ):
+        raise ValidationError({
+            "lignes": (
+                "Une prestation accepte exactement "
+                "un mode de paiement par opération."
+            )
+        })
+
     prepared = []
     modes_utilises = set()
     total = ZERO
+
     for index, item in enumerate(
         lignes_data,
         start=1,
@@ -311,55 +475,73 @@ def _prepare_lines(lignes_data):
                     f"Ligne {index} invalide."
                 )
             })
+
         code = str(
-            item.get("mode") or ""
+            item.get("mode_paiement")
+            or item.get("mode")
+            or ""
         ).strip().lower()
+
         if not code:
             raise ValidationError({
                 "lignes": (
                     f"Ligne {index} : mode obligatoire."
                 )
             })
+
         try:
             mode = ModePaiement.objects.get(
                 code=code,
                 active=True,
             )
-        except ModePaiement.DoesNotExist:
+        except ModePaiement.DoesNotExist as exc:
             raise ValidationError({
                 "lignes": (
                     f"Ligne {index} : "
                     f"mode '{code}' introuvable ou inactif."
                 )
-            })
+            }) from exc
+
         if mode.pk in modes_utilises:
             raise ValidationError({
                 "lignes": (
-                    "Un mode de paiement ne peut pas "
-                    "être répété dans le même paiement."
+                    "Un mode ne peut pas être répété "
+                    "dans le même paiement."
                 )
             })
+
         modes_utilises.add(mode.pk)
+
         montant = _money(
-            item.get("montant"),
-            f"lignes[{index}].montant",
+            item.get(
+                "montant_paye",
+                item.get("montant"),
+            ),
+            f"lignes[{index}].montant_paye",
         )
+
         if montant <= ZERO:
             raise ValidationError({
                 "lignes": (
                     f"Ligne {index} : "
-                    "le montant doit être positif."
+                    "montant strictement positif obligatoire."
                 )
             })
+
         reference = str(
             item.get("reference") or ""
         ).strip()
+
         provider_reference = str(
             item.get("provider_reference") or ""
         ).strip()
+
         numero_compte = str(
-            item.get("numero_compte") or ""
+            item.get("numero_compte_depot")
+            or item.get("numero_compte")
+            or ""
         ).strip()
+
         if (
             mode.necessite_reference
             and not reference
@@ -367,26 +549,26 @@ def _prepare_lines(lignes_data):
         ):
             raise ValidationError({
                 "lignes": (
-                    f"Ligne {index} : "
-                    "référence obligatoire."
+                    f"Ligne {index} : référence obligatoire."
                 )
             })
-        if mode.est_mode_depot and not numero_compte:
+
+        if mode.est_mode_depot:
+            if not numero_compte:
+                raise ValidationError({
+                    "lignes": (
+                        f"Ligne {index} : "
+                        "numero_compte_depot obligatoire."
+                    )
+                })
+        elif numero_compte:
             raise ValidationError({
                 "lignes": (
-                    f"Ligne {index} : "
-                    "numero_compte obligatoire "
-                    "pour un paiement par dépôt."
-                )
-            })
-        if not mode.est_mode_depot and numero_compte:
-            raise ValidationError({
-                "lignes": (
-                    f"Ligne {index} : "
-                    "numero_compte est réservé "
+                    "Le numéro de compte dépôt est réservé "
                     "au paiement par dépôt."
                 )
             })
+
         prepared.append({
             "mode": mode,
             "montant": montant,
@@ -394,40 +576,43 @@ def _prepare_lines(lignes_data):
             "provider_reference": provider_reference,
             "numero_compte": numero_compte,
         })
+
         total += montant
-    return prepared, total
+
+    return prepared, _money(
+        total,
+        "total_paiement",
+    )
+
+
 # ============================================================
-# 6. HELPERS : COMPTES DÉPÔTS
+# 6. VÉRIFICATION DES COMPTES DÉPÔTS
 # ============================================================
+
 def _prepare_deposit_accounts(
     *,
     prepared,
     vente,
 ):
-    """
-    Verrouille les comptes dépôts.
-    Vérifie :
-    - existence ;
-    - appartenance au client ;
-    - appartenance à la bijouterie si le champ existe ;
-    - solde suffisant.
-    Les comptes sont verrouillés dans un ordre stable.
-    """
     numeros = sorted({
         item["numero_compte"]
         for item in prepared
         if item["mode"].est_mode_depot
     })
+
     if not numeros:
         return {}
+
     if not vente.client_id:
         raise ValidationError({
             "client": (
                 "Un client est obligatoire "
-                "pour payer par compte dépôt."
+                "pour utiliser un compte dépôt."
             )
         })
+
     comptes = {}
+
     for numero in numeros:
         try:
             compte = (
@@ -436,22 +621,26 @@ def _prepare_deposit_accounts(
                 .select_related("client")
                 .get(numero_compte=numero)
             )
-        except CompteDepot.DoesNotExist:
+        except CompteDepot.DoesNotExist as exc:
             raise ValidationError({
                 "numero_compte": (
                     f"Compte dépôt '{numero}' introuvable."
                 )
-            })
+            }) from exc
+
         if compte.client_id != vente.client_id:
             raise ValidationError({
                 "numero_compte": (
-                    "Ce compte dépôt n'appartient pas "
+                    "Le compte dépôt n'appartient pas "
                     "au client de la vente."
                 )
             })
+
+        # Dans le modèle actuel, le rattachement
+        # du compte passe par ClientDepot.bijouterie.
         if (
-            compte.client is None
-            or compte.client.bijouterie_id != vente.bijouterie_id
+            compte.client.bijouterie_id
+            != vente.bijouterie_id
         ):
             raise ValidationError({
                 "numero_compte": (
@@ -459,47 +648,41 @@ def _prepare_deposit_accounts(
                     "à une autre bijouterie."
                 )
             })
-        comptes[numero] = compte
-    _verifier_soldes_comptes(prepared, comptes)
 
-    return comptes
-def _verifier_soldes_comptes(
-    prepared,
-    comptes,
-):
-    """
-    Vérifie le solde total demandé pour chaque compte.
-    Les comptes doivent déjà être verrouillés avec
-    select_for_update() dans la transaction courante.
-    """
+        comptes[numero] = compte
+
     montants_par_compte = defaultdict(
         lambda: ZERO
     )
+
     for item in prepared:
-        # Adapter cette condition à la structure réelle
-        # de _prepare_lines() si nécessaire.
-        if not item["mode"].est_mode_depot:
-            continue
-        numero = item["numero_compte"]
-        montants_par_compte[numero] += item["montant"]
-    for numero, montant_total in montants_par_compte.items():
-        compte = comptes[numero]
-        solde_disponible = _money(
-            compte.solde,
+        if item["mode"].est_mode_depot:
+            montants_par_compte[
+                item["numero_compte"]
+            ] += item["montant"]
+
+    for numero, montant in montants_par_compte.items():
+        disponible = _money(
+            comptes[numero].solde,
             "solde",
         )
-        if solde_disponible < montant_total:
+
+        if disponible < montant:
             raise ValidationError({
                 "compte_depot": (
-                    f"Solde insuffisant pour le compte "
-                    f"{numero}. "
-                    f"Disponible : {solde_disponible} FCFA. "
-                    f"Demandé : {montant_total} FCFA."
+                    f"Solde insuffisant pour {numero}. "
+                    f"Disponible : {disponible} FCFA. "
+                    f"Demandé : {montant} FCFA."
                 )
             })
+
+    return comptes
+
+
 # ============================================================
-# 7. HELPERS : CRÉATION DES LIGNES
+# 7. CRÉATION DES LIGNES DE PAIEMENT
 # ============================================================
+
 def _create_payment_lines(
     *,
     paiement,
@@ -509,24 +692,21 @@ def _create_payment_lines(
     facture,
     user,
 ):
-    """
-    Crée les PaiementLigne.
-    Pour le dépôt :
-    - débite le compte avec effectuer_retrait() ;
-    - associe la transaction au paiement.
-    Toute erreur provoque le rollback.
-    """
     lignes_creees = []
     depot_transactions = []
+
     for item in prepared:
         mode = item["mode"]
+
         if mode.est_mode_depot:
             compte = comptes[item["numero_compte"]]
+
             reference_operation = (
                 f"FACTURE-{facture.numero_facture}"
                 if facture is not None
                 else f"VENTE-{vente.numero_vente}"
             )
+
             tx = effectuer_retrait(
                 compte_id=compte.pk,
                 montant=item["montant"],
@@ -536,6 +716,7 @@ def _create_payment_lines(
                     f"Paiement vente {vente.numero_vente}"
                 ),
             )
+
             ligne = PaiementLigne.objects.create(
                 paiement=paiement,
                 mode_paiement=mode,
@@ -546,7 +727,9 @@ def _create_payment_lines(
                 compte_depot=compte,
                 transaction_depot=tx,
             )
+
             depot_transactions.append(tx.pk)
+
         else:
             ligne = PaiementLigne.objects.create(
                 paiement=paiement,
@@ -557,20 +740,25 @@ def _create_payment_lines(
                     item["provider_reference"]
                 ),
             )
+
         lignes_creees.append(ligne)
+
     return lignes_creees, depot_transactions
+
+
 # ============================================================
-# 8. HELPERS : DOCUMENTS DE FACTURE
+# 8. DOCUMENTS DE FACTURE
 # ============================================================
-def _generate_final_invoice(facture_id):
+
+def _generate_final_invoice(
+    facture_id,
+):
     """
-    Génère les documents de la facture après commit.
-    Ordre :
-    1. Hash ;
-    2. QR code ;
-    3. PDF.
+    Génère les documents après commit.
+
     Les erreurs sont journalisées.
     """
+
     try:
         facture = (
             Facture.objects
@@ -580,55 +768,107 @@ def _generate_final_invoice(facture_id):
             )
             .get(pk=facture_id)
         )
+
         if facture.status != Facture.STAT_PAYE:
             return
+
         if facture.type_facture != Facture.TYPE_FACTURE:
             return
+
         if not facture.integrity_hash:
             generate_facture_hash(facture)
+
         if not facture.qr_code_image:
             generate_facture_qr(facture)
+
         if not facture.facture_pdf:
             generate_facture_pdf(facture)
+
     except Exception:
         logger.exception(
-            "Échec génération documents facture %s",
+            "Échec génération facture %s",
             facture_id,
         )
+
+
 # ============================================================
-# 9. SERVICE PRINCIPAL D'ENCAISSEMENT
+# 9. IDEMPOTENCE
 # ============================================================
+
 def _normaliser_cle_idempotence(value):
     if value is None or not str(value).strip():
-        raise ValidationError({"idempotency_key": "Clé UUID obligatoire."})
+        raise ValidationError({
+            "idempotency_key": (
+                "Clé UUID obligatoire."
+            )
+        })
+
     try:
         return uuid.UUID(str(value))
-    except (TypeError, ValueError, AttributeError) as exc:
-        raise ValidationError({"idempotency_key": "UUID invalide."}) from exc
+    except (
+        TypeError,
+        ValueError,
+        AttributeError,
+    ) as exc:
+        raise ValidationError({
+            "idempotency_key": "UUID invalide."
+        }) from exc
 
 
-def _empreinte_paiement(*, vente, facture, prepared, client_data):
-    """Empreinte stable de la demande, indépendante de l'ordre des lignes."""
-    lignes = sorted((
-        {
-            "mode": item["mode"].code,
-            "montant": str(item["montant"]),
-            "reference": item["reference"],
-            "provider_reference": item["provider_reference"],
-            "numero_compte": item["numero_compte"],
-        }
-        for item in prepared
-    ), key=lambda x: (x["mode"], x["numero_compte"], x["montant"]))
+def _empreinte_paiement(
+    *,
+    vente,
+    facture,
+    prepared,
+    client_data,
+):
+    lignes = sorted(
+        (
+            {
+                "mode": item["mode"].code,
+                "montant": str(item["montant"]),
+                "reference": item["reference"],
+                "provider_reference": (
+                    item["provider_reference"]
+                ),
+                "numero_compte": item["numero_compte"],
+            }
+            for item in prepared
+        ),
+        key=lambda x: (
+            x["mode"],
+            x["numero_compte"],
+            x["montant"],
+            x["reference"],
+            x["provider_reference"],
+        ),
+    )
+
     contenu = {
         "vente_id": vente.pk,
-        "facture_id": facture.pk if facture else None,
+        "facture_id": (
+            facture.pk if facture else None
+        ),
         "lignes": lignes,
         "client_data": client_data,
     }
-    payload = json.dumps(contenu, sort_keys=True, separators=(",", ":"),
-                         ensure_ascii=False, cls=DjangoJSONEncoder)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    payload = json.dumps(
+        contenu,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        cls=DjangoJSONEncoder,
+    )
+
+    return hashlib.sha256(
+        payload.encode("utf-8")
+    ).hexdigest()
+
+
+# ============================================================
+# 10. SERVICE PRINCIPAL
+# ============================================================
 
 @transaction.atomic
 def effectuer_paiement_vente(
@@ -641,88 +881,174 @@ def effectuer_paiement_vente(
     idempotency_key=None,
 ):
     """
-    Encaisse une vente.
-    BIJOUX :
-        numero_facture obligatoire.
-    PRESTATIONS :
-        numero_vente obligatoire.
-    MIXTE :
-        numero_facture obligatoire.
-    Supporte :
-    - paiements partiels ;
-    - paiements multimodes ;
-    - comptes dépôts ;
-    - consommation exacte du stock bijoux ;
-    - génération différée de la facture finale.
-    Retourne un dictionnaire exploitable par l'API.
+    Encaisse une vente Rio-Gold.
+
+    Bijoux / mixte :
+        facture obligatoire ;
+        paiement multimode autorisé.
+
+    Prestations :
+        paiement direct ;
+        exactement un mode par opération ;
+        aucune facture créée.
+
+    Stock bijoux :
+        déjà consommé à la création de vente.
+
+    Idempotence :
+        une même clé et une même demande
+        ne produisent qu'un seul paiement.
     """
-    # ========================================================
-    # 1. IDENTIFIER LA VENTE ET LA FACTURE
-    # ========================================================
-    # Sérialise les demandes partageant une clé, même sur deux ventes.
-    # PostgreSQL : verrou transactionnel, libéré automatiquement au commit.
-    cle = _normaliser_cle_idempotence(idempotency_key)
+
+    # --------------------------------------------------------
+    # 1. CLÉ D'IDEMPOTENCE
+    # --------------------------------------------------------
+
+    cle = _normaliser_cle_idempotence(
+        idempotency_key
+    )
+
     if connection.vendor != "postgresql":
         raise ValidationError({
-            "database": "Encaissement idempotent : PostgreSQL requis."
-        })
-    if connection.vendor == "postgresql":
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                [str(cle)],
+            "database": (
+                "Le service d'encaissement exige "
+                "PostgreSQL pour ses verrous."
             )
+        })
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT pg_advisory_xact_lock(
+                hashtextextended(%s, 0)
+            )
+            """,
+            [str(cle)],
+        )
+
+    # --------------------------------------------------------
+    # 2. VENTE / FACTURE
+    # --------------------------------------------------------
+
     vente, facture = _resolve_sale(
         numero_facture=numero_facture,
         numero_vente=numero_vente,
     )
+
     if vente.is_cancelled:
-        raise ValidationError({"vente": "Vente annulée : encaissement interdit."})
-    # ========================================================
-    # 2. VÉRIFIER LES DROITS
-    # ========================================================
+        raise ValidationError({
+            "vente": (
+                "Vente annulée : encaissement interdit."
+            )
+        })
+
+    # --------------------------------------------------------
+    # 3. PERMISSIONS
+    # --------------------------------------------------------
+
     cashier = _validate_user_and_cashier(
         user,
         vente.bijouterie,
     )
-    # Le verrou de Vente est déjà détenu par _resolve_sale.
-    # On vérifie le rejeu AVANT toute modification du client ou du dépôt.
-    prepared, total_paiement = _prepare_lines(lignes_data)
+
+    # --------------------------------------------------------
+    # 4. VALIDATION DES LIGNES
+    # --------------------------------------------------------
+
+    prepared, total_paiement = _prepare_lines(
+        lignes_data,
+        prestation_uniquement=(facture is None),
+    )
+
+    # --------------------------------------------------------
+    # 5. EMPREINTE ET REJEU
+    # --------------------------------------------------------
+
     empreinte = _empreinte_paiement(
-        vente=vente, facture=facture, prepared=prepared,
+        vente=vente,
+        facture=facture,
+        prepared=prepared,
         client_data=client_data,
     )
-    existant = Paiement.objects.filter(idempotency_key=cle).first()
+
+    existant = (
+        Paiement.objects
+        .filter(idempotency_key=cle)
+        .first()
+    )
+
     if existant is not None:
-        if (existant.created_by_id != user.pk
-                or existant.vente_id != vente.pk
-                or existant.facture_id != (facture.pk if facture else None)
-                or existant.request_fingerprint != empreinte):
+        if (
+            existant.created_by_id != user.pk
+            or existant.vente_id != vente.pk
+            or existant.facture_id != (
+                facture.pk if facture else None
+            )
+            or existant.request_fingerprint != empreinte
+        ):
             raise ValidationError({
-                "idempotency_key": "Clé déjà utilisée pour une autre demande."
+                "idempotency_key": (
+                    "Clé déjà utilisée pour "
+                    "une autre demande."
+                )
             })
+
         if existant.response_snapshot is None:
             raise ValidationError({
-                "idempotency_key": "Paiement existant sans résultat enregistré."
+                "idempotency_key": (
+                    "Paiement existant sans "
+                    "résultat enregistré."
+                )
             })
+
         return dict(existant.response_snapshot)
 
-    # Contrôler l'état payable uniquement pour une NOUVELLE demande.
-    # Un rejeu valide reste possible après paiement intégral.
+    # --------------------------------------------------------
+    # 6. VALIDATION DE LA FACTURE
+    # --------------------------------------------------------
+
     if facture is not None:
         validate_facture_payable(facture)
 
+        # Le stock doit déjà être consommé
+        # lors de la création de vente.
+        if not facture.stock_consumed:
+            raise ValidationError({
+                "stock": (
+                    "La consommation du stock "
+                    "de cette vente n'est pas confirmée."
+                )
+            })
+
+    # --------------------------------------------------------
+    # 7. CLIENT
+    # --------------------------------------------------------
+
     if client_data is not None:
         upsert_client_for_payment(
-            vente=vente, facture=facture, client_data=client_data,
+            vente=vente,
+            facture=facture,
+            client_data=client_data,
         )
+
         vente.refresh_from_db()
 
-    reste_avant = _reste_a_payer(vente, facture)
+    # --------------------------------------------------------
+    # 8. SOLDE AVANT PAIEMENT
+    # --------------------------------------------------------
+
+    reste_avant = _reste_a_payer(
+        vente,
+        facture,
+    )
+
     if reste_avant <= ZERO:
         raise ValidationError({
-            "paiement": "Cette vente est déjà entièrement payée."
+            "paiement": (
+                "Cette vente est déjà entièrement payée."
+            )
         })
+
     if total_paiement > reste_avant:
         raise ValidationError({
             "paiement": (
@@ -732,23 +1058,27 @@ def effectuer_paiement_vente(
             "reste_a_payer": str(reste_avant),
             "montant_demande": str(total_paiement),
         })
-    solde = calculer_solde_paiement(
+
+    solde = _calculer_solde(
         montant_total=reste_avant,
-        montant_deja_paye=ZERO,
         nouveau_paiement=total_paiement,
     )
+
     reste_apres = solde["reste_a_payer"]
-    # ========================================================
-    # 6. VÉRIFIER LES COMPTES DÉPÔTS
-    # ========================================================
+
+    # --------------------------------------------------------
+    # 9. COMPTES DÉPÔTS
+    # --------------------------------------------------------
+
     comptes = _prepare_deposit_accounts(
         prepared=prepared,
         vente=vente,
     )
-    # Les soldes cumulés sont vérifiés dans _prepare_deposit_accounts.
-    # ========================================================
-    # 7. CRÉER LE PAIEMENT
-    # ========================================================
+
+    # --------------------------------------------------------
+    # 10. CRÉATION DU PAIEMENT
+    # --------------------------------------------------------
+
     paiement = Paiement.objects.create(
         vente=vente,
         facture=facture,
@@ -757,9 +1087,11 @@ def effectuer_paiement_vente(
         idempotency_key=cle,
         request_fingerprint=empreinte,
     )
-    # ========================================================
-    # 8. CRÉER LES LIGNES ET DÉBITER LES DÉPÔTS
-    # ========================================================
+
+    # --------------------------------------------------------
+    # 11. LIGNES ET DÉBITS
+    # --------------------------------------------------------
+
     lignes, depot_transactions = (
         _create_payment_lines(
             paiement=paiement,
@@ -770,45 +1102,57 @@ def effectuer_paiement_vente(
             user=user,
         )
     )
-    # ========================================================
-    # 9. METTRE À JOUR FACTURE ET STOCK
-    # ========================================================
-    stock_result = None
+
+    # --------------------------------------------------------
+    # 12. RECONTRÔLE DU SOLDE
+    # --------------------------------------------------------
+
     facture_payee = False
-    # Le solde attendu a déjà été calculé par montant_service.
-    # Pour les prestations, _reste_a_payer lit les lignes enregistrées.
+
     if facture is None:
-        reste_recalcule = _reste_a_payer(vente, facture)
+        reste_recalcule = _reste_a_payer(
+            vente,
+            None,
+        )
+
         if reste_recalcule != reste_apres:
-            raise ValidationError({"paiement": "Incohérence du solde après encaissement."})
-    if facture is not None:
-        Facture.recompute_facture_status(facture)
+            raise ValidationError({
+                "paiement": (
+                    "Incohérence du solde "
+                    "après encaissement."
+                )
+            })
+
+    else:
+        Facture.recompute_facture_status(
+            facture
+        )
+
         facture.refresh_from_db()
-        reste_recalcule = _reste_a_payer(vente, facture)
+
+        reste_recalcule = _reste_a_payer(
+            vente,
+            facture,
+        )
+
         if reste_recalcule != reste_apres:
-            raise ValidationError({"paiement": "Incohérence du solde de facture après encaissement."})
+            raise ValidationError({
+                "paiement": (
+                    "Incohérence du solde de facture."
+                )
+            })
+
         if facture.status == Facture.STAT_PAYE:
             if reste_apres != ZERO:
                 raise ValidationError({
                     "facture": (
-                        "Incohérence entre le statut "
-                        "et le solde restant."
+                        "Facture marquée payée "
+                        "avec un solde non nul."
                     )
                 })
+
             facture_payee = True
-            # -----------------------------------------------
-            # STOCK BIJOUX
-            # -----------------------------------------------
-            if not facture.stock_consumed:
-                stock_result = (
-                    confirm_sale_out_from_vendor(
-                        facture=facture,
-                        by_user=user,
-                    )
-                )
-            # -----------------------------------------------
-            # PROFORMA -> FACTURE DÉFINITIVE
-            # -----------------------------------------------
+
             if (
                 facture.type_facture
                 == Facture.TYPE_PROFORMA
@@ -816,38 +1160,47 @@ def effectuer_paiement_vente(
                 facture.type_facture = (
                     Facture.TYPE_FACTURE
                 )
+
                 facture.save(
                     update_fields=["type_facture"]
                 )
-            facture.refresh_from_db()
-            # -----------------------------------------------
-            # HASH / QR / PDF APRÈS COMMIT
-            # -----------------------------------------------
+
             facture_pk = facture.pk
+
             transaction.on_commit(
                 lambda pk=facture_pk: (
                     _generate_final_invoice(pk)
                 ),
                 robust=True,
             )
+
         elif reste_apres == ZERO:
             raise ValidationError({
-                "facture": "Solde nul mais facture non marquée payée."
+                "facture": (
+                    "Solde nul mais facture "
+                    "non marquée payée."
+                )
             })
-    # ========================================================
-    # 10. TYPE DE VENTE
-    # ========================================================
+
+    # --------------------------------------------------------
+    # 13. TYPE DE VENTE
+    # --------------------------------------------------------
+
     if facture is None:
         type_vente = "prestation"
+
     elif VenteAutre.objects.filter(
         vente_id=vente.pk
     ).exists():
         type_vente = "mixte"
+
     else:
         type_vente = "bijoux"
-    # ========================================================
-    # 11. RÉSULTAT
-    # ========================================================
+
+    # --------------------------------------------------------
+    # 14. RÉSULTAT
+    # --------------------------------------------------------
+
     resultat = {
         "success": True,
         "paiement_id": paiement.pk,
@@ -861,27 +1214,43 @@ def effectuer_paiement_vente(
         "montant_paiement": str(total_paiement),
         "reste_avant": str(reste_avant),
         "reste_apres": str(reste_apres),
-        "paiement_complet": reste_apres == ZERO,
+        "paiement_complet": (
+            reste_apres == ZERO
+        ),
         "facture_payee": facture_payee,
-        "stock_result": stock_result,
-        "depot_transaction_ids": depot_transactions,
+        "stock_result": None,
+        "depot_transaction_ids": (
+            depot_transactions
+        ),
         "lignes": [
             {
                 "id": ligne.pk,
                 "mode": ligne.mode_paiement.code,
-                "montant": str(ligne.montant_paye),
+                "montant": str(
+                    ligne.montant_paye
+                ),
             }
             for ligne in lignes
         ],
-        # À raccorder au futur service de reçu.
         "recu_paiement_id": None,
-        # Le PDF est généré après commit.
         "facture_pdf_url": None,
     }
 
-    # Snapshot atomique : un rejeu rend la même réponse sans ré-encaisser.
-    paiement.response_snapshot = json.loads(json.dumps(
-        resultat, cls=DjangoJSONEncoder, ensure_ascii=False
-    ))
-    paiement.save(update_fields=["response_snapshot"])
+    # --------------------------------------------------------
+    # 15. SNAPSHOT IDEMPOTENT
+    # --------------------------------------------------------
+
+    paiement.response_snapshot = json.loads(
+        json.dumps(
+            resultat,
+            cls=DjangoJSONEncoder,
+            ensure_ascii=False,
+        )
+    )
+
+    paiement.save(
+        update_fields=["response_snapshot"]
+    )
+
     return paiement.response_snapshot
+

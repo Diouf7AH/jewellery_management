@@ -1104,7 +1104,6 @@ class VenteAutre(models.Model):
     - autre
     """
 
-    TYPE_REPARATION = "REPARATION"
     TYPE_POUDRE_OR_ARGENT = "POUDRE_OR_ARGENT"
     TYPE_NETTOYAGE = "NETTOYAGE"
     TYPE_DECORATION = "DECORATION"
@@ -1112,10 +1111,6 @@ class VenteAutre(models.Model):
     TYPE_AUTRE = "AUTRE"
 
     TYPE_CHOICES = [
-        (
-            TYPE_REPARATION,
-            "Réparation",
-        ),
         (
             TYPE_POUDRE_OR_ARGENT,
             "Poudre or / argent",
@@ -1199,6 +1194,8 @@ class VenteAutre(models.Model):
 
         return result
         
+
+
 
 class Facture(models.Model):
     """
