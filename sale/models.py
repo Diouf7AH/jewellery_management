@@ -1756,41 +1756,48 @@ class Facture(models.Model):
     # =========================================================
 
     @property
-    def total_paye(self):
+    def total_paye(self) -> Decimal:
         """
-        Somme des paiements réellement enregistrés.
+        Somme des paiements réellement enregistrés
+        pour cette facture.
         """
+
         if not self.pk:
             return ZERO
 
-        PaiementLigne = apps.get_model(
-            "sale",
-            "PaiementLigne",
-        )
-
         total = (
             PaiementLigne.objects
-            .filter(paiement__facture_id=self.pk)
-            .aggregate(total=Sum("montant_paye"))
-            ["total"]
+            .filter(
+                paiement__facture_id=self.pk
+            )
+            .aggregate(
+                total=Sum("montant_paye")
+            )["total"]
         )
 
         return money_strict(
             total if total is not None else ZERO,
-            "total_paye",
+            field="total_paye",
         )
+
+
+    # =========================================================
+    # RESTE À PAYER
+    # =========================================================
 
     @property
-    def reste_a_payer(self):
+    def reste_a_payer(self) -> Decimal:
         """
-        Calcule le solde sans masquer un trop-perçu.
-        """
-        solde = calculer_solde_paiement(
-            montant_total=self.montant_total,
-            montant_deja_paye=self.total_paye,
-        )
+        Calcule le montant restant à payer.
 
-        return solde["reste_a_payer"]
+        Utilise le service financier centralisé.
+        Ne modifie aucune donnée.
+        """
+
+        return calculer_solde_paiement(
+            montant_total=self.montant_total,
+            total_paye=self.total_paye,
+        )
 
     @staticmethod
     def recompute_facture_status(facture):
