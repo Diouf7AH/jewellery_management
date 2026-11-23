@@ -370,3 +370,319 @@ class StaffDashboardResponseSerializer(
     )
     
     
+
+# ============================================================
+# 1. INFORMATIONS DU MANAGER
+# ============================================================
+
+class ManagerInfoSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    email = serializers.EmailField()
+    first_name = serializers.CharField(allow_blank=True)
+    last_name = serializers.CharField(allow_blank=True)
+
+
+# ============================================================
+# 2. RÉSUMÉ GÉNÉRAL
+# ============================================================
+
+class ManagerResumeSerializer(serializers.Serializer):
+    chiffre_affaires_semaine = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+    chiffre_affaires_mois = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+    chiffre_affaires_annee = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+    ventes_semaine = serializers.IntegerField()
+    ventes_mois = serializers.IntegerField()
+    ventes_annee = serializers.IntegerField()
+
+    nombre_bijouteries = serializers.IntegerField()
+
+
+# ============================================================
+# 3. STATISTIQUES DES VENTES
+# ============================================================
+
+class ManagerVentesSerializer(serializers.Serializer):
+    aujourd_hui = serializers.IntegerField()
+    semaine = serializers.IntegerField()
+    mois = serializers.IntegerField()
+    annee = serializers.IntegerField()
+
+
+# ============================================================
+# 4. PRODUITS EN STOCK FAIBLE
+# ============================================================
+
+class ManagerStockFaibleSerializer(serializers.Serializer):
+    stock_id = serializers.IntegerField()
+    produit_line_id = serializers.IntegerField()
+    produit_id = serializers.IntegerField()
+
+    produit = serializers.CharField()
+    sku = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )
+
+    poids = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+    )
+
+    bijouterie_id = serializers.IntegerField()
+    bijouterie = serializers.CharField()
+
+    quantite = serializers.IntegerField()
+
+
+# ============================================================
+# 5. STATISTIQUES DES STOCKS
+# ============================================================
+
+class ManagerStockSerializer(serializers.Serializer):
+    stock_magasin = serializers.IntegerField()
+    stock_vendeurs = serializers.IntegerField()
+    quantite_totale = serializers.IntegerField()
+
+    poids_magasin = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+    poids_vendeurs = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+    poids_total = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+    produits_stock_faible = ManagerStockFaibleSerializer(
+        many=True,
+    )
+
+
+# ============================================================
+# 6. PERFORMANCE DES VENDEURS
+# ============================================================
+
+class ManagerPerformanceVendeurSerializer(serializers.Serializer):
+    vendor_id = serializers.IntegerField()
+
+    vendor = serializers.CharField(
+        allow_blank=True,
+    )
+
+    email = serializers.EmailField(
+        allow_blank=True,
+    )
+
+    bijouterie = serializers.CharField()
+
+    chiffre_affaires = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+    nombre_ventes = serializers.IntegerField()
+    quantite_vendue = serializers.IntegerField()
+
+
+class ManagerVendeursSerializer(serializers.Serializer):
+    nombre_vendeurs = serializers.IntegerField()
+    vendeurs_actifs = serializers.IntegerField()
+
+    performance_vendeurs = ManagerPerformanceVendeurSerializer(
+        many=True,
+    )
+
+
+# ============================================================
+# 7. TOP 10 DES PRODUITS VENDUS
+# ============================================================
+
+class ManagerTopProduitSerializer(serializers.Serializer):
+    produit_id = serializers.IntegerField()
+    produit = serializers.CharField()
+
+    sku = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )
+
+    quantite_vendue = serializers.IntegerField()
+
+    chiffre_affaires = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+
+# ============================================================
+# 8. DERNIERS ARRIVAGES
+# ============================================================
+
+class ManagerDernierArrivageSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+
+    numero_lot = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )
+
+    numero_achat = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )
+
+    reference_commande = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )
+
+    bijouterie_id = serializers.IntegerField()
+    bijouterie = serializers.CharField()
+
+    fournisseur = serializers.CharField(
+        allow_blank=True,
+        allow_null=True,
+    )
+
+    date_arrivage = serializers.DateTimeField(
+        allow_null=True,
+    )
+
+    montant_achat = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+
+# ============================================================
+# 9. STATISTIQUES DES ACHATS
+# ============================================================
+
+class ManagerAchatsSerializer(serializers.Serializer):
+    achats_mois = serializers.IntegerField()
+
+    montant_achats_mois = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+    derniers_arrivages = ManagerDernierArrivageSerializer(
+        many=True,
+    )
+
+
+# ============================================================
+# 10. STATISTIQUES DES FACTURES
+# ============================================================
+
+class ManagerFacturesSerializer(serializers.Serializer):
+    non_payees = serializers.IntegerField()
+    partielles = serializers.IntegerField()
+    payees = serializers.IntegerField()
+
+    reste_a_encaisser = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+
+# ============================================================
+# 11. STATISTIQUES PAR BIJOUTERIE
+# ============================================================
+
+class ManagerParBijouterieSerializer(serializers.Serializer):
+    bijouterie_id = serializers.IntegerField()
+    bijouterie = serializers.CharField()
+
+    chiffre_affaires = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+    ventes = serializers.IntegerField()
+
+    stock_magasin = serializers.IntegerField()
+    stock_vendeur = serializers.IntegerField()
+    stock_total = serializers.IntegerField()
+
+
+# ============================================================
+# 12. HISTORIQUE MENSUEL
+# ============================================================
+
+class ManagerHistoriqueMoisSerializer(serializers.Serializer):
+    numero = serializers.IntegerField()
+    mois = serializers.CharField()
+
+    chiffre_affaires = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+    nombre_ventes = serializers.IntegerField()
+
+
+# ============================================================
+# 13. HISTORIQUE ANNUEL
+# ============================================================
+
+class ManagerHistoriqueAnneeSerializer(serializers.Serializer):
+    annee = serializers.IntegerField()
+
+    chiffre_affaires = serializers.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+    )
+
+    nombre_ventes = serializers.IntegerField()
+
+    mois = ManagerHistoriqueMoisSerializer(
+        many=True,
+    )
+
+
+# ============================================================
+# 14. SERIALIZER PRINCIPAL DU DASHBOARD
+# ============================================================
+
+class ManagerDashboardSerializer(serializers.Serializer):
+    manager = ManagerInfoSerializer()
+
+    resume = ManagerResumeSerializer()
+
+    ventes = ManagerVentesSerializer()
+
+    stock = ManagerStockSerializer()
+
+    vendeurs = ManagerVendeursSerializer()
+
+    top_produits = ManagerTopProduitSerializer(
+        many=True,
+    )
+
+    achats = ManagerAchatsSerializer()
+
+    factures = ManagerFacturesSerializer()
+
+    par_bijouterie = ManagerParBijouterieSerializer(
+        many=True,
+    )
+
+    historique = ManagerHistoriqueAnneeSerializer(
+        many=True,
+    )
+
+

@@ -24,6 +24,7 @@ from purchase.models import Achat, Lot
 from sale.models import Facture, Vente, VenteProduit
 from staff.models import Buyer, Cashier, Manager
 from staff.serializers import (CreateStaffSerializer,
+                               ManagerDashboardSerializer,
                                StaffDashboardResponseSerializer,
                                UpdateStaffSerializer)
 from staff.services import create_staff_member, update_staff_member
@@ -1474,29 +1475,38 @@ class ManagerDashboardView(APIView):
     """
     Dashboard du manager connecté.
 
-    Règles :
-    - manager actif uniquement ;
-    - uniquement ses bijouteries ;
-    - ventes annulées exclues ;
-    - achats annulés exclus ;
-    - stock magasin + stock vendeurs ;
-    - historique complet.
+    - Accès réservé aux managers actifs.
+    - Statistiques limitées à leurs bijouteries.
+    - Ventes annulées exclues.
+    - Achats annulés exclus.
+    - Stock magasin et vendeurs.
+    - Historique mensuel et annuel.
     """
 
     permission_classes = [IsAuthenticated]
     http_method_names = ["get", "options"]
 
-    # ============================================================
-    # Helpers
-    # ============================================================
+    ZERO = Decimal("0.00")
+    MONEY = DecimalField(max_digits=20, decimal_places=2)
+    WEIGHT = DecimalField(max_digits=20, decimal_places=2)
 
     @staticmethod
     def _decimal(value):
-        return value or Decimal("0.00")
+        return value if value is not None else Decimal("0.00")
 
     @staticmethod
     def _int(value):
         return int(value or 0)
+
+    def _sum(self, queryset, field):
+        result = queryset.aggregate(
+            total=Coalesce(
+                Sum(field),
+                Value(self.ZERO, output_field=self.MONEY),
+                output_field=self.MONEY,
+            )
+        )
+        return self._decimal(result["total"])
 
     def _get_manager(self, user):
         if get_role_name(user) != ROLE_MANAGER:
@@ -1504,610 +1514,93 @@ class ManagerDashboardView(APIView):
 
         return (
             Manager.objects
+            .filter(user=user, verifie=True)
             .prefetch_related("bijouteries")
-            .filter(
-                user=user,
-                verifie=True,
-            )
             .first()
         )
-
-    # ============================================================
-    # Swagger
-    # ============================================================
 
     @swagger_auto_schema(
         operation_id="managerDashboard",
         operation_summary="Dashboard du manager connecté",
-        operation_description=(
-            "Retourne le tableau de bord du manager connecté.\n\n"
-            "### Règles\n"
-            "- Accessible uniquement à un manager actif.\n"
-            "- Le manager voit uniquement les données de ses bijouteries.\n"
-            "- Les ventes annulées sont exclues.\n"
-            "- Les achats annulés sont exclus.\n\n"
-            "### Contenu\n"
-            "- résumé CA semaine / mois / année\n"
-            "- nombre de ventes par période\n"
-            "- stock magasin\n"
-            "- stock vendeurs\n"
-            "- poids restant\n"
-            "- produits en stock faible\n"
-            "- performances vendeurs\n"
-            "- top produits vendus\n"
-            "- achats du mois\n"
-            "- derniers arrivages\n"
-            "- état des factures\n"
-            "- statistiques par bijouterie\n"
-            "- historique annuel et mensuel"
-        ),
         responses={
-            200: openapi.Response(
-                description="Dashboard manager retourné avec succès.",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-
-                        "manager": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "id": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=3,
-                                ),
-                                "email": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    example="manager@rio-gold.com",
-                                ),
-                                "first_name": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    example="Aliou",
-                                ),
-                                "last_name": openapi.Schema(
-                                    type=openapi.TYPE_STRING,
-                                    example="Diouf",
-                                ),
-                            },
-                        ),
-
-                        "resume": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "chiffre_affaires_semaine": openapi.Schema(
-                                    type=openapi.TYPE_NUMBER,
-                                    format="decimal",
-                                    example="4250000.00",
-                                ),
-                                "chiffre_affaires_mois": openapi.Schema(
-                                    type=openapi.TYPE_NUMBER,
-                                    format="decimal",
-                                    example="18250000.00",
-                                ),
-                                "chiffre_affaires_annee": openapi.Schema(
-                                    type=openapi.TYPE_NUMBER,
-                                    format="decimal",
-                                    example="154800000.00",
-                                ),
-                                "ventes_semaine": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=18,
-                                ),
-                                "ventes_mois": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=76,
-                                ),
-                                "ventes_annee": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=641,
-                                ),
-                                "nombre_bijouteries": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=2,
-                                ),
-                            },
-                        ),
-
-                        "ventes": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "aujourd_hui": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=5,
-                                ),
-                                "semaine": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=18,
-                                ),
-                                "mois": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=76,
-                                ),
-                                "annee": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=641,
-                                ),
-                            },
-                        ),
-
-                        "stock": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "stock_magasin": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=327,
-                                ),
-                                "stock_vendeurs": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=81,
-                                ),
-                                "quantite_totale": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=408,
-                                ),
-                                "poids_magasin": openapi.Schema(
-                                    type=openapi.TYPE_NUMBER,
-                                    format="decimal",
-                                    example="2210.50",
-                                ),
-                                "poids_vendeurs": openapi.Schema(
-                                    type=openapi.TYPE_NUMBER,
-                                    format="decimal",
-                                    example="735.10",
-                                ),
-                                "poids_total": openapi.Schema(
-                                    type=openapi.TYPE_NUMBER,
-                                    format="decimal",
-                                    example="2945.60",
-                                ),
-                                "produits_stock_faible": openapi.Schema(
-                                    type=openapi.TYPE_ARRAY,
-                                    items=openapi.Schema(
-                                        type=openapi.TYPE_OBJECT,
-                                        properties={
-                                            "stock_id": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=12,
-                                            ),
-                                            "produit_line_id": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=42,
-                                            ),
-                                            "produit_id": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=25,
-                                            ),
-                                            "produit": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="Bague Or 18K",
-                                            ),
-                                            "sku": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="BAG-BAG-N-18-RIO-P5-50",
-                                            ),
-                                            "poids": openapi.Schema(
-                                                type=openapi.TYPE_NUMBER,
-                                                format="decimal",
-                                                example="5.50",
-                                            ),
-                                            "bijouterie_id": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=1,
-                                            ),
-                                            "bijouterie": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="Rio Gold Dakar",
-                                            ),
-                                            "quantite": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=2,
-                                            ),
-                                        },
-                                    ),
-                                ),
-                            },
-                        ),
-
-                        "vendeurs": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "nombre_vendeurs": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=8,
-                                ),
-                                "vendeurs_actifs": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=7,
-                                ),
-                                "performance_vendeurs": openapi.Schema(
-                                    type=openapi.TYPE_ARRAY,
-                                    items=openapi.Schema(
-                                        type=openapi.TYPE_OBJECT,
-                                        properties={
-                                            "vendor_id": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=5,
-                                            ),
-                                            "vendor": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="Moussa Diop",
-                                            ),
-                                            "email": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="moussa@example.com",
-                                            ),
-                                            "bijouterie": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="Rio Gold Dakar",
-                                            ),
-                                            "chiffre_affaires": openapi.Schema(
-                                                type=openapi.TYPE_NUMBER,
-                                                format="decimal",
-                                                example="6525000.00",
-                                            ),
-                                            "nombre_ventes": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=27,
-                                            ),
-                                            "quantite_vendue": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=31,
-                                            ),
-                                        },
-                                    ),
-                                ),
-                            },
-                        ),
-
-                        "top_produits": openapi.Schema(
-                            type=openapi.TYPE_ARRAY,
-                            items=openapi.Schema(
-                                type=openapi.TYPE_OBJECT,
-                                properties={
-                                    "produit_id": openapi.Schema(
-                                        type=openapi.TYPE_INTEGER,
-                                        example=25,
-                                    ),
-                                    "produit": openapi.Schema(
-                                        type=openapi.TYPE_STRING,
-                                        example="Bague Or 18K",
-                                    ),
-                                    "sku": openapi.Schema(
-                                        type=openapi.TYPE_STRING,
-                                        example="BAG-BAG-N-18-RIO-P5-50",
-                                    ),
-                                    "quantite_vendue": openapi.Schema(
-                                        type=openapi.TYPE_INTEGER,
-                                        example=15,
-                                    ),
-                                    "chiffre_affaires": openapi.Schema(
-                                        type=openapi.TYPE_NUMBER,
-                                        format="decimal",
-                                        example="3750000.00",
-                                    ),
-                                },
-                            ),
-                        ),
-
-                        "achats": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "achats_mois": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=4,
-                                ),
-                                "montant_achats_mois": openapi.Schema(
-                                    type=openapi.TYPE_NUMBER,
-                                    format="decimal",
-                                    example="12500000.00",
-                                ),
-                                "derniers_arrivages": openapi.Schema(
-                                    type=openapi.TYPE_ARRAY,
-                                    items=openapi.Schema(
-                                        type=openapi.TYPE_OBJECT,
-                                        properties={
-                                            "id": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=5,
-                                            ),
-                                            "numero_lot": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="LOT-20260822-0001",
-                                            ),
-                                            "numero_achat": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="ACH-20260822-1234",
-                                            ),
-                                            "reference_commande": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="CMD-2026-0010",
-                                            ),
-                                            "bijouterie_id": openapi.Schema(
-                                                type=openapi.TYPE_INTEGER,
-                                                example=1,
-                                            ),
-                                            "bijouterie": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="Rio Gold Dakar",
-                                            ),
-                                            "fournisseur": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                example="Fournisseur Gold",
-                                            ),
-                                            "date_arrivage": openapi.Schema(
-                                                type=openapi.TYPE_STRING,
-                                                format=openapi.FORMAT_DATETIME,
-                                            ),
-                                            "montant_achat": openapi.Schema(
-                                                type=openapi.TYPE_NUMBER,
-                                                format="decimal",
-                                                example="6250000.00",
-                                            ),
-                                        },
-                                    ),
-                                ),
-                            },
-                        ),
-
-                        "factures": openapi.Schema(
-                            type=openapi.TYPE_OBJECT,
-                            properties={
-                                "non_payees": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=5,
-                                ),
-                                "partielles": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=2,
-                                ),
-                                "payees": openapi.Schema(
-                                    type=openapi.TYPE_INTEGER,
-                                    example=68,
-                                ),
-                                "reste_a_encaisser": openapi.Schema(
-                                    type=openapi.TYPE_NUMBER,
-                                    format="decimal",
-                                    example="2150000.00",
-                                ),
-                            },
-                        ),
-
-                        "par_bijouterie": openapi.Schema(
-                            type=openapi.TYPE_ARRAY,
-                            items=openapi.Schema(
-                                type=openapi.TYPE_OBJECT,
-                                properties={
-                                    "bijouterie_id": openapi.Schema(
-                                        type=openapi.TYPE_INTEGER,
-                                        example=1,
-                                    ),
-                                    "bijouterie": openapi.Schema(
-                                        type=openapi.TYPE_STRING,
-                                        example="Rio Gold Dakar",
-                                    ),
-                                    "chiffre_affaires": openapi.Schema(
-                                        type=openapi.TYPE_NUMBER,
-                                        format="decimal",
-                                        example="96500000.00",
-                                    ),
-                                    "ventes": openapi.Schema(
-                                        type=openapi.TYPE_INTEGER,
-                                        example=401,
-                                    ),
-                                    "stock_magasin": openapi.Schema(
-                                        type=openapi.TYPE_INTEGER,
-                                        example=210,
-                                    ),
-                                    "stock_vendeur": openapi.Schema(
-                                        type=openapi.TYPE_INTEGER,
-                                        example=55,
-                                    ),
-                                    "stock_total": openapi.Schema(
-                                        type=openapi.TYPE_INTEGER,
-                                        example=265,
-                                    ),
-                                },
-                            ),
-                        ),
-
-                        "historique": openapi.Schema(
-                            type=openapi.TYPE_ARRAY,
-                            items=openapi.Schema(
-                                type=openapi.TYPE_OBJECT,
-                                properties={
-                                    "annee": openapi.Schema(
-                                        type=openapi.TYPE_INTEGER,
-                                        example=2026,
-                                    ),
-                                    "chiffre_affaires": openapi.Schema(
-                                        type=openapi.TYPE_NUMBER,
-                                        format="decimal",
-                                        example="154800000.00",
-                                    ),
-                                    "nombre_ventes": openapi.Schema(
-                                        type=openapi.TYPE_INTEGER,
-                                        example=641,
-                                    ),
-                                    "mois": openapi.Schema(
-                                        type=openapi.TYPE_ARRAY,
-                                        items=openapi.Schema(
-                                            type=openapi.TYPE_OBJECT,
-                                            properties={
-                                                "numero": openapi.Schema(
-                                                    type=openapi.TYPE_INTEGER,
-                                                    example=8,
-                                                ),
-                                                "mois": openapi.Schema(
-                                                    type=openapi.TYPE_STRING,
-                                                    example="août",
-                                                ),
-                                                "chiffre_affaires": openapi.Schema(
-                                                    type=openapi.TYPE_NUMBER,
-                                                    format="decimal",
-                                                    example="18250000.00",
-                                                ),
-                                                "nombre_ventes": openapi.Schema(
-                                                    type=openapi.TYPE_INTEGER,
-                                                    example=76,
-                                                ),
-                                            },
-                                        ),
-                                    ),
-                                },
-                            ),
-                        ),
-                    },
-                ),
-            ),
-
-            403: openapi.Response(
-                description="Utilisateur non manager, manager désactivé ou sans bijouterie.",
-                schema=openapi.Schema(
-                    type=openapi.TYPE_OBJECT,
-                    properties={
-                        "detail": openapi.Schema(
-                            type=openapi.TYPE_STRING,
-                            example="Accès réservé à un manager actif.",
-                        ),
-                    },
-                ),
-            ),
-
-            401: openapi.Response(
-                description="Token JWT absent, invalide ou expiré."
-            ),
+            200: ManagerDashboardSerializer(),
+            403: "Accès refusé",
         },
         tags=["Dashboard Manager"],
     )
     def get(self, request):
-
-        # ========================================================
-        # Manager
-        # ========================================================
+        # ====================================================
+        # 1. MANAGER ET AUTORISATIONS
+        # ====================================================
 
         manager = self._get_manager(request.user)
 
-        if not manager:
+        if manager is None:
             return Response(
-                {
-                    "detail": "Accès réservé à un manager actif."
-                },
+                {"detail": "Accès réservé à un manager actif."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        bijouteries = manager.bijouteries.all()
-
-        bijouterie_ids = list(
-            bijouteries.values_list(
-                "id",
-                flat=True,
-            )
-        )
+        bijouteries = list(manager.bijouteries.all())
+        bijouterie_ids = [b.id for b in bijouteries]
 
         if not bijouterie_ids:
             return Response(
-                {
-                    "detail": (
-                        "Aucune bijouterie n'est attribuée "
-                        "à ce manager."
-                    )
-                },
+                {"detail": "Aucune bijouterie attribuée au manager."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # ========================================================
-        # Dates
-        # ========================================================
+        # ====================================================
+        # 2. PÉRIODES
+        # ====================================================
 
         now = timezone.localtime()
         today = now.date()
 
-        start_week = (
-            today
-            - timezone.timedelta(
-                days=today.weekday(),
-            )
+        start_week = today - timedelta(days=today.weekday())
+        start_month = today.replace(day=1)
+        start_year = today.replace(month=1, day=1)
+
+        # ====================================================
+        # 3. QUERYSETS AUTORISÉS
+        # ====================================================
+
+        ventes = Vente.objects.filter(
+            bijouterie_id__in=bijouterie_ids,
+            is_cancelled=False,
         )
 
-        start_month = today.replace(
-            day=1,
+        ventes_produits = VenteProduit.objects.filter(
+            vente__bijouterie_id__in=bijouterie_ids,
+            vente__is_cancelled=False,
         )
 
-        start_year = today.replace(
-            month=1,
-            day=1,
+        stocks = Stock.objects.filter(
+            bijouterie_id__in=bijouterie_ids,
         )
 
-        # ========================================================
-        # Querysets de base
-        # ========================================================
-
-        ventes = (
-            Vente.objects
-            .filter(
-                bijouterie_id__in=bijouterie_ids,
-                is_cancelled=False,
-            )
+        vendor_stocks = VendorStock.objects.filter(
+            bijouterie_id__in=bijouterie_ids,
         )
 
-        ventes_produits = (
-            VenteProduit.objects
-            .filter(
-                vente__bijouterie_id__in=bijouterie_ids,
-                vente__is_cancelled=False,
-            )
-        )
-
-        stocks = (
-            Stock.objects
-            .filter(
-                bijouterie_id__in=bijouterie_ids,
-            )
-        )
-
-        vendor_stocks = (
-            VendorStock.objects
-            .filter(
-                bijouterie_id__in=bijouterie_ids,
-            )
-        )
-
-        vendors = (
-            Vendor.objects
-            .filter(
-                bijouterie_id__in=bijouterie_ids,
-            )
-            .select_related(
-                "user",
-                "bijouterie",
-            )
+        vendors = Vendor.objects.filter(
+            bijouterie_id__in=bijouterie_ids,
         )
 
         factures = (
             Facture.objects
-            .filter(
-                bijouterie_id__in=bijouterie_ids,
-            )
+            .filter(bijouterie_id__in=bijouterie_ids)
+            .exclude(vente__is_cancelled=True)
         )
 
-        achats = (
-            Achat.objects
-            .filter(
-                bijouterie_id__in=bijouterie_ids,
-                status=Achat.STATUS_CONFIRMED,
-            )
+        achats = Achat.objects.filter(
+            bijouterie_id__in=bijouterie_ids,
+            status=Achat.STATUS_CONFIRMED,
         )
 
-        lots = (
-            Lot.objects
-            .filter(
-                achat__bijouterie_id__in=bijouterie_ids,
-                achat__status=Achat.STATUS_CONFIRMED,
-            )
-        )
-
-        # ========================================================
-        # Ventes périodes
-        # ========================================================
+        # ====================================================
+        # 4. VENTES ET CHIFFRE D'AFFAIRES
+        # ====================================================
 
         ventes_today = ventes.filter(
             created_at__date=today,
@@ -2128,244 +1621,125 @@ class ManagerDashboardView(APIView):
             created_at__date__lte=today,
         )
 
-        # ========================================================
-        # CA
-        # ========================================================
+        ca_week = self._sum(ventes_week, "montant_total")
+        ca_month = self._sum(ventes_month, "montant_total")
+        ca_year = self._sum(ventes_year, "montant_total")
 
-        money_output = DecimalField(
-            max_digits=20,
-            decimal_places=2,
-        )
+        count_today = ventes_today.count()
+        count_week = ventes_week.count()
+        count_month = ventes_month.count()
+        count_year = ventes_year.count()
 
-        ca_week = self._decimal(
-            ventes_week.aggregate(
-                total=Coalesce(
-                    Sum("montant_total"),
-                    Value(
-                        Decimal("0.00"),
-                        output_field=money_output,
-                    ),
-                )
-            )["total"]
-        )
-
-        ca_month = self._decimal(
-            ventes_month.aggregate(
-                total=Coalesce(
-                    Sum("montant_total"),
-                    Value(
-                        Decimal("0.00"),
-                        output_field=money_output,
-                    ),
-                )
-            )["total"]
-        )
-
-        ca_year = self._decimal(
-            ventes_year.aggregate(
-                total=Coalesce(
-                    Sum("montant_total"),
-                    Value(
-                        Decimal("0.00"),
-                        output_field=money_output,
-                    ),
-                )
-            )["total"]
-        )
-
-        # ========================================================
-        # Stock magasin
-        # ========================================================
+        # ====================================================
+        # 5. STOCK MAGASIN
+        # ====================================================
 
         stock_magasin = self._int(
             stocks.aggregate(
-                total=Coalesce(
-                    Sum("en_stock"),
-                    Value(0),
-                )
+                total=Coalesce(Sum("en_stock"), Value(0))
             )["total"]
         )
 
-        # ========================================================
-        # Stock vendeurs
-        # ========================================================
+        # ====================================================
+        # 6. STOCK VENDEURS
+        # ====================================================
 
         vendor_stock_data = vendor_stocks.aggregate(
-            allouee=Coalesce(
-                Sum("quantite_allouee"),
-                Value(0),
-            ),
-            vendue=Coalesce(
-                Sum("quantite_vendue"),
-                Value(0),
-            ),
+            allouee=Coalesce(Sum("quantite_allouee"), Value(0)),
+            vendue=Coalesce(Sum("quantite_vendue"), Value(0)),
         )
 
         stock_vendeurs = (
-            self._int(
-                vendor_stock_data["allouee"]
-            )
-            - self._int(
-                vendor_stock_data["vendue"]
-            )
+            self._int(vendor_stock_data["allouee"])
+            - self._int(vendor_stock_data["vendue"])
         )
 
-        quantite_totale = (
-            stock_magasin
-            + stock_vendeurs
+        quantite_totale = stock_magasin + stock_vendeurs
+
+        # ====================================================
+        # 7. POIDS DES STOCKS
+        # ====================================================
+
+        poids_magasin_expr = ExpressionWrapper(
+            F("en_stock") * F("produit_line__poids_unitaire_achat"),
+            output_field=self.WEIGHT,
         )
 
-        # ========================================================
-        # Poids magasin
-        #
-        # Stock -> ProduitLine -> Produit -> poids
-        # ========================================================
-
-        weight_output = DecimalField(
-            max_digits=20,
-            decimal_places=3,
+        poids_vendeurs_expr = ExpressionWrapper(
+            (
+                F("quantite_allouee") - F("quantite_vendue")
+            ) * F("produit_line__poids_unitaire_achat"),
+            output_field=self.WEIGHT,
         )
 
         poids_magasin = self._decimal(
             stocks.aggregate(
                 total=Coalesce(
-                    Sum(
-                        ExpressionWrapper(
-                            F("en_stock")
-                            * F(
-                                "produit_line__produit__poids"
-                            ),
-                            output_field=weight_output,
-                        )
-                    ),
-                    Value(
-                        Decimal("0.000"),
-                        output_field=weight_output,
-                    ),
+                    Sum(poids_magasin_expr),
+                    Value(self.ZERO, output_field=self.WEIGHT),
+                    output_field=self.WEIGHT,
                 )
             )["total"]
         )
-
-        # ========================================================
-        # Poids vendeurs
-        # ========================================================
 
         poids_vendeurs = self._decimal(
             vendor_stocks.aggregate(
                 total=Coalesce(
-                    Sum(
-                        ExpressionWrapper(
-                            (
-                                F("quantite_allouee")
-                                - F("quantite_vendue")
-                            )
-                            * F(
-                                "produit_line__produit__poids"
-                            ),
-                            output_field=weight_output,
-                        )
-                    ),
-                    Value(
-                        Decimal("0.000"),
-                        output_field=weight_output,
-                    ),
+                    Sum(poids_vendeurs_expr),
+                    Value(self.ZERO, output_field=self.WEIGHT),
+                    output_field=self.WEIGHT,
                 )
             )["total"]
         )
 
-        poids_total = (
-            poids_magasin
-            + poids_vendeurs
-        )
+        poids_total = poids_magasin + poids_vendeurs
 
-        # ========================================================
-        # Stock faible
-        # ========================================================
-
-        produits_stock_faible = []
+        # ====================================================
+        # 8. PRODUITS EN STOCK FAIBLE
+        # ====================================================
 
         low_stocks = (
             stocks
-            .filter(
-                en_stock__gt=0,
-                en_stock__lte=2,
-            )
+            .filter(en_stock__gt=0, en_stock__lte=2)
             .select_related(
                 "bijouterie",
                 "produit_line",
                 "produit_line__produit",
             )
-            .order_by(
-                "en_stock",
-                "id",
-            )[:10]
+            .order_by("en_stock", "id")[:10]
         )
 
+        produits_stock_faible = []
+
         for stock_item in low_stocks:
+            produit = stock_item.produit_line.produit
 
-            produit = (
-                stock_item
-                .produit_line
-                .produit
-            )
+            produits_stock_faible.append({
+                "stock_id": stock_item.id,
+                "produit_line_id": stock_item.produit_line_id,
+                "produit_id": produit.id,
+                "produit": produit.nom,
+                "sku": produit.sku,
+                "poids": produit.poids,
+                "bijouterie_id": stock_item.bijouterie_id,
+                "bijouterie": stock_item.bijouterie.nom,
+                "quantite": stock_item.en_stock,
+            })
 
-            produits_stock_faible.append(
-                {
-                    "stock_id": stock_item.id,
-
-                    "produit_line_id": (
-                        stock_item.produit_line_id
-                    ),
-
-                    "produit_id": produit.id,
-
-                    "produit": produit.nom,
-
-                    "sku": produit.sku,
-
-                    "poids": produit.poids,
-
-                    "bijouterie_id": (
-                        stock_item.bijouterie_id
-                    ),
-
-                    "bijouterie": (
-                        stock_item.bijouterie.nom
-                    ),
-
-                    "quantite": (
-                        stock_item.en_stock
-                    ),
-                }
-            )
-
-        # ========================================================
-        # Vendeurs
-        # ========================================================
+        # ====================================================
+        # 9. STATISTIQUES DES VENDEURS
+        # ====================================================
 
         nombre_vendeurs = vendors.count()
 
-        vendeurs_actifs = (
-            vendors
-            .filter(
-                verifie=True,
-            )
-            .count()
-        )
+        vendeurs_actifs = vendors.filter(
+            verifie=True,
+            user__is_active=True,
+        ).count()
 
-        # ========================================================
-        # Performance vendeurs
-        #
-        # Mois courant
-        # ========================================================
-
+        # Performances du mois courant
         vendor_stats = (
-            ventes
-            .filter(
-                vendor__isnull=False,
-                created_at__date__gte=start_month,
-                created_at__date__lte=today,
-            )
+            ventes_month
             .values(
                 "vendor_id",
                 "vendor__user__first_name",
@@ -2376,121 +1750,55 @@ class ManagerDashboardView(APIView):
             .annotate(
                 chiffre_affaires=Coalesce(
                     Sum("montant_total"),
-                    Value(
-                        Decimal("0.00"),
-                        output_field=money_output,
-                    ),
+                    Value(self.ZERO, output_field=self.MONEY),
+                    output_field=self.MONEY,
                 ),
-
-                nombre_ventes=Count(
-                    "id",
-                    distinct=True,
-                ),
+                nombre_ventes=Count("id"),
             )
-            .order_by(
-                "-chiffre_affaires",
-            )
+            .order_by("-chiffre_affaires")
         )
 
-        vendor_quantities_qs = (
+        vendor_quantities = (
             ventes_produits
             .filter(
-                vendor__isnull=False,
                 vente__created_at__date__gte=start_month,
                 vente__created_at__date__lte=today,
             )
-            .values(
-                "vendor_id",
-            )
+            .values("vente__vendor_id")
             .annotate(
-                quantite=Coalesce(
-                    Sum("quantite"),
-                    Value(0),
-                )
+                quantite=Coalesce(Sum("quantite"), Value(0))
             )
         )
 
         quantites_vendor = {
-            row["vendor_id"]: self._int(
-                row["quantite"]
-            )
-            for row in vendor_quantities_qs
+            item["vente__vendor_id"]: self._int(item["quantite"])
+            for item in vendor_quantities
         }
 
         performance_vendeurs = []
 
         for item in vendor_stats:
+            first_name = item["vendor__user__first_name"] or ""
+            last_name = item["vendor__user__last_name"] or ""
+            email = item["vendor__user__email"] or ""
 
-            first_name = (
-                item[
-                    "vendor__user__first_name"
-                ]
-                or ""
-            )
+            full_name = f"{first_name} {last_name}".strip()
 
-            last_name = (
-                item[
-                    "vendor__user__last_name"
-                ]
-                or ""
-            )
+            performance_vendeurs.append({
+                "vendor_id": item["vendor_id"],
+                "vendor": full_name or email,
+                "email": email,
+                "bijouterie": item["vendor__bijouterie__nom"],
+                "chiffre_affaires": item["chiffre_affaires"],
+                "nombre_ventes": item["nombre_ventes"],
+                "quantite_vendue": quantites_vendor.get(
+                    item["vendor_id"], 0
+                ),
+            })
 
-            email = (
-                item[
-                    "vendor__user__email"
-                ]
-                or ""
-            )
-
-            full_name = (
-                f"{first_name} {last_name}"
-            ).strip()
-
-            performance_vendeurs.append(
-                {
-                    "vendor_id": (
-                        item["vendor_id"]
-                    ),
-
-                    "vendor": (
-                        full_name
-                        or email
-                    ),
-
-                    "email": email,
-
-                    "bijouterie": (
-                        item[
-                            "vendor__bijouterie__nom"
-                        ]
-                    ),
-
-                    "chiffre_affaires": (
-                        item[
-                            "chiffre_affaires"
-                        ]
-                    ),
-
-                    "nombre_ventes": (
-                        item[
-                            "nombre_ventes"
-                        ]
-                    ),
-
-                    "quantite_vendue": (
-                        quantites_vendor.get(
-                            item["vendor_id"],
-                            0,
-                        )
-                    ),
-                }
-            )
-
-        # ========================================================
-        # Top produits
-        #
-        # VenteProduit.montant_total
-        # ========================================================
+        # ====================================================
+        # 10. TOP 10 DES PRODUITS VENDUS
+        # ====================================================
 
         top_produits_qs = (
             ventes_produits
@@ -2499,22 +1807,19 @@ class ManagerDashboardView(APIView):
                 vente__created_at__date__lte=today,
             )
             .values(
-                "produit_id",
-                "produit__nom",
-                "produit__sku",
+                "produit_line__produit_id",
+                "produit_line__produit__nom",
+                "produit_line__produit__sku",
             )
             .annotate(
                 quantite_vendue=Coalesce(
                     Sum("quantite"),
                     Value(0),
                 ),
-
                 chiffre_affaires=Coalesce(
                     Sum("montant_total"),
-                    Value(
-                        Decimal("0.00"),
-                        output_field=money_output,
-                    ),
+                    Value(self.ZERO, output_field=self.MONEY),
+                    output_field=self.MONEY,
                 ),
             )
             .order_by(
@@ -2526,319 +1831,212 @@ class ManagerDashboardView(APIView):
         top_produits = []
 
         for item in top_produits_qs:
+            top_produits.append({
+                "produit_id": item["produit_line__produit_id"],
+                "produit": item["produit_line__produit__nom"],
+                "sku": item["produit_line__produit__sku"],
+                "quantite_vendue": self._int(
+                    item["quantite_vendue"]
+                ),
+                "chiffre_affaires": item["chiffre_affaires"],
+            })
 
-            top_produits.append(
-                {
-                    "produit_id": (
-                        item["produit_id"]
-                    ),
+        # ====================================================
+        # 11. ACHATS DU MOIS
+        # ====================================================
 
-                    "produit": (
-                        item["produit__nom"]
-                    ),
+        achats_month = achats.filter(
+            created_at__date__gte=start_month,
+            created_at__date__lte=today,
+        )
 
-                    "sku": (
-                        item["produit__sku"]
-                    ),
+        achats_mois = achats_month.count()
 
-                    "quantite_vendue": (
-                        self._int(
-                            item[
-                                "quantite_vendue"
-                            ]
-                        )
-                    ),
+        montant_achats_mois = self._sum(
+            achats_month,
+            "montant_total_ttc",
+        )
 
-                    "chiffre_affaires": (
-                        item[
-                            "chiffre_affaires"
-                        ]
-                    ),
-                }
-            )
+        # ====================================================
+        # 12. DERNIERS ARRIVAGES
+        # ====================================================
 
-        # ========================================================
-        # Achats du mois
-        # ========================================================
-
-        achats_month = (
-            achats
+        lots = (
+            Lot.objects
             .filter(
-                created_at__date__gte=start_month,
-                created_at__date__lte=today,
+                achat__bijouterie_id__in=bijouterie_ids,
+                achat__status=Achat.STATUS_CONFIRMED,
             )
-        )
-
-        montant_achats_mois = self._decimal(
-            achats_month.aggregate(
-                total=Coalesce(
-                    Sum("montant_total_ttc"),
-                    Value(
-                        Decimal("0.00"),
-                        output_field=money_output,
-                    ),
-                )
-            )["total"]
-        )
-
-        # ========================================================
-        # Derniers arrivages
-        # ========================================================
-
-        lots_qs = (
-            lots
             .select_related(
                 "achat",
-                "achat__fournisseur",
                 "achat__bijouterie",
+                "achat__fournisseur",
             )
-            .order_by(
-                "-received_at",
-                "-id",
-            )[:10]
+            .order_by("-received_at", "-id")[:10]
         )
 
         derniers_arrivages = []
 
-        for lot in lots_qs:
-
+        for lot in lots:
             achat = lot.achat
 
-            derniers_arrivages.append(
-                {
-                    "id": lot.id,
+            derniers_arrivages.append({
+                "id": lot.id,
+                "numero_lot": lot.numero_lot,
+                "numero_achat": achat.numero_achat,
+                "reference_commande": achat.reference_commande,
+                "bijouterie_id": achat.bijouterie_id,
+                "bijouterie": achat.bijouterie.nom,
+                "fournisseur": str(achat.fournisseur),
+                "date_arrivage": lot.received_at,
+                "montant_achat": achat.montant_total_ttc,
+            })
 
-                    "numero_lot": (
-                        lot.numero_lot
-                    ),
+        # ====================================================
+        # 13. STATISTIQUES DES FACTURES
+        # ====================================================
 
-                    "numero_achat": (
-                        achat.numero_achat
-                    ),
+        factures_non_payees = factures.filter(
+            status=Facture.STAT_NON_PAYE,
+        ).count()
 
-                    "reference_commande": (
-                        achat.reference_commande
-                    ),
+        factures_partielles = factures.filter(
+            status=Facture.STAT_PARTIEL,
+        ).count()
 
-                    "bijouterie_id": (
-                        achat.bijouterie_id
-                    ),
+        factures_payees = factures.filter(
+            status=Facture.STAT_PAYE,
+        ).count()
 
-                    "bijouterie": (
-                        achat.bijouterie.nom
-                    ),
+        # Facture.reste_a_payer est une propriété Python.
+        # On agrège les paiements pour éviter les requêtes N+1.
 
-                    "fournisseur": (
-                        str(achat.fournisseur)
-                        if achat.fournisseur
-                        else None
-                    ),
-
-                    "date_arrivage": (
-                        lot.received_at
-                    ),
-
-                    "montant_achat": (
-                        achat.montant_total_ttc
-                    ),
-                }
+        paiements_par_facture = {
+            item["paiement__facture_id"]: self._decimal(
+                item["total"]
             )
-
-        # ========================================================
-        # Factures
-        # ========================================================
-
-        factures_non_payees = (
-            factures
-            .filter(
-                status=Facture.STAT_NON_PAYE,
-            )
-            .count()
-        )
-
-        factures_partielles = (
-            factures
-            .filter(
-                status=Facture.STAT_PARTIEL,
-            )
-            .count()
-        )
-
-        factures_payees = (
-            factures
-            .filter(
-                status=Facture.STAT_PAYE,
-            )
-            .count()
-        )
-
-        # reste_a_payer est une @property Python.
-        # Donc pas de Sum("reste_a_payer").
-        reste_a_encaisser = sum(
-            (
-                facture.reste_a_payer
-                for facture in factures.exclude(
-                    status=Facture.STAT_PAYE,
+            for item in (
+                PaiementLigne.objects
+                .filter(
+                    paiement__facture_id__in=factures.values("id"),
                 )
-            ),
-            Decimal("0.00"),
-        )
+                .values("paiement__facture_id")
+                .annotate(total=Sum("montant_paye"))
+            )
+        }
 
-        # ========================================================
-        # Par bijouterie
-        # ========================================================
+        reste_a_encaisser = self.ZERO
+
+        for facture in factures:
+            total_paye = paiements_par_facture.get(
+                facture.id,
+                self.ZERO,
+            )
+
+            reste = facture.montant_total - total_paye
+
+            if reste > self.ZERO:
+                reste_a_encaisser += reste
+
+        # ====================================================
+        # 14. STATISTIQUES PAR BIJOUTERIE
+        # ====================================================
+
+        ventes_par_bijouterie = {
+            item["bijouterie_id"]: item
+            for item in (
+                ventes_year
+                .values("bijouterie_id")
+                .annotate(
+                    chiffre_affaires=Coalesce(
+                        Sum("montant_total"),
+                        Value(self.ZERO, output_field=self.MONEY),
+                        output_field=self.MONEY,
+                    ),
+                    ventes=Count("id"),
+                )
+            )
+        }
+
+        stocks_par_bijouterie = {
+            item["bijouterie_id"]: self._int(item["total"])
+            for item in (
+                stocks
+                .values("bijouterie_id")
+                .annotate(
+                    total=Coalesce(Sum("en_stock"), Value(0))
+                )
+            )
+        }
+
+        vendor_stocks_par_bijouterie = {
+            item["bijouterie_id"]: (
+                self._int(item["allouee"])
+                - self._int(item["vendue"])
+            )
+            for item in (
+                vendor_stocks
+                .values("bijouterie_id")
+                .annotate(
+                    allouee=Coalesce(
+                        Sum("quantite_allouee"),
+                        Value(0),
+                    ),
+                    vendue=Coalesce(
+                        Sum("quantite_vendue"),
+                        Value(0),
+                    ),
+                )
+            )
+        }
 
         par_bijouterie = []
 
         for bijouterie in bijouteries:
-
-            # ----------------------------------------------------
-            # Ventes année
-            # ----------------------------------------------------
-
-            ventes_bijouterie = (
-                ventes_year
-                .filter(
-                    bijouterie_id=bijouterie.id,
-                )
+            vente_data = ventes_par_bijouterie.get(
+                bijouterie.id, {}
             )
 
-            ca_bijouterie = self._decimal(
-                ventes_bijouterie.aggregate(
-                    total=Coalesce(
-                        Sum("montant_total"),
-                        Value(
-                            Decimal("0.00"),
-                            output_field=money_output,
-                        ),
-                    )
-                )["total"]
+            stock_mag = stocks_par_bijouterie.get(
+                bijouterie.id, 0
             )
 
-            # ----------------------------------------------------
-            # Stock magasin
-            # ----------------------------------------------------
-
-            stock_bijouterie = self._int(
-                stocks
-                .filter(
-                    bijouterie_id=bijouterie.id,
-                )
-                .aggregate(
-                    total=Coalesce(
-                        Sum("en_stock"),
-                        Value(0),
-                    )
-                )["total"]
+            stock_vendor = vendor_stocks_par_bijouterie.get(
+                bijouterie.id, 0
             )
 
-            # ----------------------------------------------------
-            # Stock vendeurs
-            # ----------------------------------------------------
+            par_bijouterie.append({
+                "bijouterie_id": bijouterie.id,
+                "bijouterie": bijouterie.nom,
+                "chiffre_affaires": vente_data.get(
+                    "chiffre_affaires", self.ZERO
+                ),
+                "ventes": vente_data.get("ventes", 0),
+                "stock_magasin": stock_mag,
+                "stock_vendeur": stock_vendor,
+                "stock_total": stock_mag + stock_vendor,
+            })
 
-            vendor_stock_bijouterie = (
-                vendor_stocks
-                .filter(
-                    bijouterie_id=bijouterie.id,
-                )
-                .aggregate(
-                    allouee=Coalesce(
-                        Sum(
-                            "quantite_allouee"
-                        ),
-                        Value(0),
-                    ),
-
-                    vendue=Coalesce(
-                        Sum(
-                            "quantite_vendue"
-                        ),
-                        Value(0),
-                    ),
-                )
-            )
-
-            stock_vendor_bijouterie = (
-                self._int(
-                    vendor_stock_bijouterie[
-                        "allouee"
-                    ]
-                )
-                - self._int(
-                    vendor_stock_bijouterie[
-                        "vendue"
-                    ]
-                )
-            )
-
-            par_bijouterie.append(
-                {
-                    "bijouterie_id": (
-                        bijouterie.id
-                    ),
-
-                    "bijouterie": (
-                        bijouterie.nom
-                    ),
-
-                    "chiffre_affaires": (
-                        ca_bijouterie
-                    ),
-
-                    "ventes": (
-                        ventes_bijouterie.count()
-                    ),
-
-                    "stock_magasin": (
-                        stock_bijouterie
-                    ),
-
-                    "stock_vendeur": (
-                        stock_vendor_bijouterie
-                    ),
-
-                    "stock_total": (
-                        stock_bijouterie
-                        + stock_vendor_bijouterie
-                    ),
-                }
-            )
-
-        # ========================================================
-        # Historique
-        # ========================================================
+        # ====================================================
+        # 15. HISTORIQUE MENSUEL ET ANNUEL
+        # ====================================================
 
         historique_qs = (
             ventes
             .annotate(
-                year=ExtractYear(
-                    "created_at"
-                ),
-                month=ExtractMonth(
-                    "created_at"
-                ),
+                year=ExtractYear("created_at"),
+                month=ExtractMonth("created_at"),
             )
-            .values(
-                "year",
-                "month",
-            )
+            .values("year", "month")
             .annotate(
                 chiffre_affaires=Coalesce(
                     Sum("montant_total"),
-                    Value(
-                        Decimal("0.00"),
-                        output_field=money_output,
-                    ),
+                    Value(self.ZERO, output_field=self.MONEY),
+                    output_field=self.MONEY,
                 ),
-                nombre_ventes=Count(
-                    "id",
-                    distinct=True,
-                ),
+                nombre_ventes=Count("id"),
             )
-            .order_by(
-                "year",
-                "month",
-            )
+            .order_by("year", "month")
         )
 
         month_names = {
@@ -2858,248 +2056,112 @@ class ManagerDashboardView(APIView):
 
         historique_map = {}
 
-        for row in historique_qs:
+        for item in historique_qs:
+            year = item["year"]
+            month = item["month"]
 
-            if row["year"] is None or row["month"] is None:
+            if year is None or month is None:
                 continue
 
-            year = int(
-                row["year"]
-            )
-
-            month_number = int(row["month"])
-
             if year not in historique_map:
-
                 historique_map[year] = {
                     "annee": year,
-
-                    "chiffre_affaires": (
-                        Decimal("0.00")
-                    ),
-
+                    "chiffre_affaires": self.ZERO,
                     "nombre_ventes": 0,
-
                     "mois": [],
                 }
 
-            historique_map[
-                year
-            ]["chiffre_affaires"] += (
-                self._decimal(
-                    row["chiffre_affaires"]
-                )
-            )
+            ca = self._decimal(item["chiffre_affaires"])
+            nombre = self._int(item["nombre_ventes"])
 
-            historique_map[
-                year
-            ]["nombre_ventes"] += (
-                self._int(
-                    row["nombre_ventes"]
-                )
-            )
+            historique_map[year]["chiffre_affaires"] += ca
+            historique_map[year]["nombre_ventes"] += nombre
 
-            historique_map[
-                year
-            ]["mois"].append(
-                {
-                    "numero": (
-                        month_number
-                    ),
+            historique_map[year]["mois"].append({
+                "numero": month,
+                "mois": month_names[month],
+                "chiffre_affaires": ca,
+                "nombre_ventes": nombre,
+            })
 
-                    "mois": (
-                        month_names[
-                            month_number
-                        ]
-                    ),
-
-                    "chiffre_affaires": (
-                        row[
-                            "chiffre_affaires"
-                        ]
-                    ),
-
-                    "nombre_ventes": (
-                        self._int(
-                            row[
-                                "nombre_ventes"
-                            ]
-                        )
-                    ),
-                }
-            )
-
-        historique = list(
-            historique_map.values()
-        )
-
-        historique.sort(
+        historique = sorted(
+            historique_map.values(),
             key=lambda item: item["annee"],
             reverse=True,
         )
 
-        # ========================================================
-        # Response
-        # ========================================================
+        # ====================================================
+        # 16. RÉPONSE FINALE
+        # ====================================================
+
+        data = {
+            "manager": {
+                "id": manager.id,
+                "email": request.user.email,
+                "first_name": request.user.first_name or "",
+                "last_name": request.user.last_name or "",
+            },
+
+            "resume": {
+                "chiffre_affaires_semaine": ca_week,
+                "chiffre_affaires_mois": ca_month,
+                "chiffre_affaires_annee": ca_year,
+                "ventes_semaine": count_week,
+                "ventes_mois": count_month,
+                "ventes_annee": count_year,
+                "nombre_bijouteries": len(bijouterie_ids),
+            },
+
+            "ventes": {
+                "aujourd_hui": count_today,
+                "semaine": count_week,
+                "mois": count_month,
+                "annee": count_year,
+            },
+
+            "stock": {
+                "stock_magasin": stock_magasin,
+                "stock_vendeurs": stock_vendeurs,
+                "quantite_totale": quantite_totale,
+                "poids_magasin": poids_magasin,
+                "poids_vendeurs": poids_vendeurs,
+                "poids_total": poids_total,
+                "produits_stock_faible": produits_stock_faible,
+            },
+
+            "vendeurs": {
+                "nombre_vendeurs": nombre_vendeurs,
+                "vendeurs_actifs": vendeurs_actifs,
+                "performance_vendeurs": performance_vendeurs,
+            },
+
+            "top_produits": top_produits,
+
+            "achats": {
+                "achats_mois": achats_mois,
+                "montant_achats_mois": montant_achats_mois,
+                "derniers_arrivages": derniers_arrivages,
+            },
+
+            "factures": {
+                "non_payees": factures_non_payees,
+                "partielles": factures_partielles,
+                "payees": factures_payees,
+                "reste_a_encaisser": reste_a_encaisser,
+            },
+
+            "par_bijouterie": par_bijouterie,
+
+            "historique": historique,
+        }
+
+        serializer = ManagerDashboardSerializer(instance=data)
 
         return Response(
-            {
-                "manager": {
-                    "id": manager.id,
-
-                    "email": (
-                        request.user.email
-                    ),
-
-                    "first_name": (
-                        request.user.first_name
-                    ),
-
-                    "last_name": (
-                        request.user.last_name
-                    ),
-                },
-
-                "resume": {
-                    "chiffre_affaires_semaine": (
-                        ca_week
-                    ),
-
-                    "chiffre_affaires_mois": (
-                        ca_month
-                    ),
-
-                    "chiffre_affaires_annee": (
-                        ca_year
-                    ),
-
-                    "ventes_semaine": (
-                        ventes_week.count()
-                    ),
-
-                    "ventes_mois": (
-                        ventes_month.count()
-                    ),
-
-                    "ventes_annee": (
-                        ventes_year.count()
-                    ),
-
-                    "nombre_bijouteries": (
-                        len(
-                            bijouterie_ids
-                        )
-                    ),
-                },
-
-                "ventes": {
-                    "aujourd_hui": (
-                        ventes_today.count()
-                    ),
-
-                    "semaine": (
-                        ventes_week.count()
-                    ),
-
-                    "mois": (
-                        ventes_month.count()
-                    ),
-
-                    "annee": (
-                        ventes_year.count()
-                    ),
-                },
-
-                "stock": {
-                    "stock_magasin": (
-                        stock_magasin
-                    ),
-
-                    "stock_vendeurs": (
-                        stock_vendeurs
-                    ),
-
-                    "quantite_totale": (
-                        quantite_totale
-                    ),
-
-                    "poids_magasin": (
-                        poids_magasin
-                    ),
-
-                    "poids_vendeurs": (
-                        poids_vendeurs
-                    ),
-
-                    "poids_total": (
-                        poids_total
-                    ),
-
-                    "produits_stock_faible": (
-                        produits_stock_faible
-                    ),
-                },
-
-                "vendeurs": {
-                    "nombre_vendeurs": (
-                        nombre_vendeurs
-                    ),
-
-                    "vendeurs_actifs": (
-                        vendeurs_actifs
-                    ),
-
-                    "performance_vendeurs": (
-                        performance_vendeurs
-                    ),
-                },
-
-                "top_produits": (
-                    top_produits
-                ),
-
-                "achats": {
-                    "achats_mois": (
-                        achats_month.count()
-                    ),
-
-                    "montant_achats_mois": (
-                        montant_achats_mois
-                    ),
-
-                    "derniers_arrivages": (
-                        derniers_arrivages
-                    ),
-                },
-
-                "factures": {
-                    "non_payees": (
-                        factures_non_payees
-                    ),
-
-                    "partielles": (
-                        factures_partielles
-                    ),
-
-                    "payees": (
-                        factures_payees
-                    ),
-
-                    "reste_a_encaisser": (
-                        reste_a_encaisser
-                    ),
-                },
-
-                "par_bijouterie": (
-                    par_bijouterie
-                ),
-
-                "historique": (
-                    historique
-                ),
-            },
+            serializer.data,
             status=status.HTTP_200_OK,
         )
+
 
 # ///////////////////Caissier dshboard
 class CashierDashboardView(APIView):
