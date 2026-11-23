@@ -4727,86 +4727,148 @@ def _can_access_facture(user, facture: Facture) -> bool:
 
 class TicketProforma58mmView(APIView):
     """
-    Génère un ticket PROFORMA ESC/POS 58 mm.
+    Ticket PROFORMA ESC/POS 58 mm.
+
+    Accès :
+    - Admin : toutes les bijouteries.
+    - Manager : bijouteries attribuées.
+    - Vendeur actif : ses propres ventes.
 
     Conditions :
     - Facture existante.
-    - Utilisateur authentifié et autorisé.
-    - Vente associée.
+    - Vente non annulée.
     - Vente contenant au moins un bijou.
     - Facture de type PROFORMA.
-    - Bijouterie associée.
+    - Bijouterie cohérente avec la vente.
 
     Modes :
-    - Normal : fichier .bin pour imprimante POS.
-    - debug=1 : aperçu texte.
+    - ?debug=1 : aperçu texte.
+    - Sans debug : fichier binaire ESC/POS.
 
-    Règles Rio-Gold :
-    - Bijoux seuls : autorisé.
-    - Bijoux + prestations : autorisé.
-    - Prestations seules : interdit.
-    - Facture définitive : interdit.
+    Cette vue ne modifie ni la vente,
+    ni la facture, ni les stocks.
     """
 
     permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "head", "options"]
+
+    @staticmethod
+    def _error(code, message, status_code):
+        return Response(
+            {
+                "code": code,
+                "message": message,
+            },
+            status=status_code,
+        )
+
+    @staticmethod
+    def _can_access(user, facture):
+        """
+        Vérifie l'accès à la facture selon
+        les rôles Rio-Gold.
+        """
+
+        if not user.is_authenticated or not user.is_active:
+            return False
+
+        role = get_role_name(user)
+
+        if role == ROLE_ADMIN:
+            return True
+
+        if role == ROLE_MANAGER:
+            return (
+                user.staff_manager_profile.verifie
+                and user.staff_manager_profile.bijouteries.filter(
+                    id=facture.bijouterie_id
+                ).exists()
+            ) if hasattr(user, "staff_manager_profile") else False
+
+        if role == ROLE_VENDOR:
+            if not facture.vente_id:
+                return False
+
+            vendor = getattr(
+                user,
+                "staff_vendor_profile",
+                None,
+            )
+
+            if vendor is None or not vendor.verifie:
+                return False
+
+            return (
+                facture.vente.vendor_id == vendor.id
+                and facture.bijouterie_id == vendor.bijouterie_id
+            )
+
+        return False
 
     @swagger_auto_schema(
-        operation_summary=(
-            "Télécharger le ticket PROFORMA 58 mm pour POS"
-        ),
+        operation_summary="Ticket proforma ESC/POS 58 mm",
         operation_description=(
-            "Génère un ticket PROFORMA au format ESC/POS 58 mm.\n\n"
-            "Règles :\n"
-            "- Bijoux uniquement : autorisé.\n"
-            "- Bijoux + prestations : autorisé.\n"
-            "- Prestations uniquement : interdit.\n"
-            "- Facture définitive : interdit.\n\n"
-            "Sans debug : fichier binaire ESC/POS.\n"
-            "Avec ?debug=1 : aperçu texte lisible."
+            "Génère un ticket proforma pour une vente "
+            "contenant au moins un bijou.\n\n"
+            "debug=1 : aperçu texte.\n"
+            "Sans debug : fichier binaire ESC/POS."
         ),
         manual_parameters=[
             openapi.Parameter(
-                name="numero_facture",
-                in_=openapi.IN_PATH,
-                description="Numéro de la facture proforma.",
-                type=openapi.TYPE_STRING,
-                required=True,
-                example="FAC-20260509-0001",
-            ),
-            openapi.Parameter(
                 name="debug",
                 in_=openapi.IN_QUERY,
-                description=(
-                    "Mettre 1 pour afficher le ticket "
-                    "en texte lisible."
-                ),
+                description="1 pour obtenir un aperçu texte.",
                 type=openapi.TYPE_STRING,
                 required=False,
-                example="1",
             ),
         ],
         responses={
-            200: openapi.Response(
-                description=(
-                    "Ticket PROFORMA généré avec succès."
-                )
-            ),
-            400: "Facture ou vente non éligible.",
+            200: "Ticket généré.",
+            400: "Facture non éligible.",
             403: "Accès refusé.",
             404: "Facture introuvable.",
-            500: "Erreur lors de la génération du ticket.",
+            500: "Erreur interne.",
         },
         tags=["Tickets POS"],
     )
-    def get(
-        self,
-        request,
-        numero_facture: str,
-    ):
+    def get(self, request, numero_facture: str):
 
-        # =====================================================
-        # 1. RECHERCHE DE LA FACTURE
-        # =====================================================
+        # ====================================================
+        # 1. VALIDATION DU NUMÉRO
+        # ====================================================
+
+        numero_facture = (numero_facture or "").strip()
+
+        if not numero_facture:
+            return self._error(
+                "INVALID_INVOICE_NUMBER",
+                "Le numéro de facture est obligatoire.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Évite de traiter un placeholder Angular comme
+        # un véritable numéro de facture.
+        if numero_facture.lower() in {
+            "numero-facture",
+            "numero_facture",
+            "undefined",
+            "null",
+        }:
+            return self._error(
+                "INVALID_INVOICE_NUMBER",
+                "Angular n'a pas transmis le véritable numéro de facture.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        logger.info(
+            "Demande ticket proforma 58 mm : facture=%s user_id=%s",
+            numero_facture,
+            request.user.pk,
+        )
+
+        # ====================================================
+        # 2. RECHERCHE DE LA FACTURE
+        # ====================================================
 
         facture = (
             Facture.objects
@@ -4817,127 +4879,126 @@ class TicketProforma58mmView(APIView):
                 "bijouterie",
             )
             .filter(
-                numero_facture__iexact=numero_facture
+                numero_facture__iexact=numero_facture,
             )
             .first()
         )
 
         if facture is None:
-            return error_response(
-                code="FACTURE_NOT_FOUND",
-                message=(
-                    f"Facture introuvable : {numero_facture}."
-                ),
-                status_code=status.HTTP_404_NOT_FOUND,
+            return self._error(
+                "FACTURE_NOT_FOUND",
+                f"Facture introuvable : {numero_facture}.",
+                status.HTTP_404_NOT_FOUND,
             )
 
-        # =====================================================
-        # 2. CONTRÔLE DES PERMISSIONS
-        # =====================================================
+        # ====================================================
+        # 3. PERMISSIONS
+        # ====================================================
 
-        if not _can_access_facture(
-            request.user,
-            facture,
-        ):
-            return error_response(
-                code="FACTURE_ACCESS_DENIED",
-                message="Accès refusé à cette facture.",
-                status_code=status.HTTP_403_FORBIDDEN,
+        if not self._can_access(request.user, facture):
+            return self._error(
+                "FACTURE_ACCESS_DENIED",
+                "Vous n'êtes pas autorisé à consulter cette facture.",
+                status.HTTP_403_FORBIDDEN,
             )
 
-        # =====================================================
-        # 3. VÉRIFICATION DE LA VENTE
-        # =====================================================
+        # ====================================================
+        # 4. VENTE ASSOCIÉE
+        # ====================================================
 
         if not facture.vente_id:
-            return error_response(
-                code="FACTURE_WITHOUT_SALE",
-                message=(
-                    "Aucune vente associée à cette facture."
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
+            return self._error(
+                "FACTURE_WITHOUT_SALE",
+                "Aucune vente associée à cette facture.",
+                status.HTTP_400_BAD_REQUEST,
             )
 
         vente = facture.vente
 
-        # =====================================================
-        # 4. VÉRIFICATION DES BIJOUX
-        # =====================================================
-
-        if not vente.lignes.exists():
-            return error_response(
-                code="SALE_WITHOUT_JEWELRY",
-                message=(
-                    "Cette vente ne contient aucun bijou. "
-                    "Le ticket proforma est interdit pour "
-                    "les ventes composées uniquement de "
-                    "prestations. Utilisez le reçu de paiement."
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
+        if vente.is_cancelled:
+            return self._error(
+                "SALE_CANCELLED",
+                "Impossible d'imprimer une vente annulée.",
+                status.HTTP_400_BAD_REQUEST,
             )
 
-        # =====================================================
-        # 5. TYPE DE FACTURE
-        # =====================================================
+        # ====================================================
+        # 5. BIJOUTERIE
+        # ====================================================
+
+        if not facture.bijouterie_id:
+            return self._error(
+                "FACTURE_WITHOUT_STORE",
+                "Aucune bijouterie associée à cette facture.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        if vente.bijouterie_id != facture.bijouterie_id:
+            logger.error(
+                "Incohérence bijouterie facture=%s vente=%s",
+                facture.pk,
+                vente.pk,
+            )
+
+            return self._error(
+                "INVOICE_STORE_MISMATCH",
+                "La bijouterie de la facture ne correspond pas à celle de la vente.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ====================================================
+        # 6. VÉRIFICATION DES BIJOUX
+        # ====================================================
+
+        if not vente.lignes.exists():
+            return self._error(
+                "SALE_WITHOUT_JEWELRY",
+                (
+                    "Cette vente ne contient aucun bijou. "
+                    "Pour les prestations seules, utilisez "
+                    "le reçu de paiement."
+                ),
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ====================================================
+        # 7. TYPE DE FACTURE
+        # ====================================================
 
         if facture.type_facture != Facture.TYPE_PROFORMA:
-            return error_response(
-                code="FACTURE_NOT_PROFORMA",
-                message=(
+            return self._error(
+                "FACTURE_NOT_PROFORMA",
+                (
                     "Cette facture n'est pas une proforma. "
                     "Le ticket proforma ne peut pas être généré."
                 ),
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status.HTTP_400_BAD_REQUEST,
             )
 
-        # =====================================================
-        # 6. BIJOUTERIE
-        # =====================================================
+        # ====================================================
+        # 8. INFORMATIONS BIJOUTERIE
+        # ====================================================
 
         bijouterie = facture.bijouterie
 
-        if bijouterie is None:
-            return error_response(
-                code="FACTURE_WITHOUT_STORE",
-                message=(
-                    "Aucune bijouterie n'est associée "
-                    "à cette facture."
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
-            )
-
         shop_name = (
-            getattr(bijouterie, "nom", None)
-            or "BIJOUTERIE RIO-GOLD"
+            bijouterie.nom or "BIJOUTERIE RIO-GOLD"
         )
 
         shop_phone = (
-            getattr(
-                bijouterie,
-                "telephone_portable_1",
-                None,
-            )
-            or getattr(
-                bijouterie,
-                "telephone_portable_2",
-                None,
-            )
-            or getattr(
-                bijouterie,
-                "telephone_fix",
-                None,
-            )
+            bijouterie.telephone_portable_1
+            or bijouterie.telephone_portable_2
+            or bijouterie.telephone_fix
             or ""
         )
 
-        # =====================================================
-        # 7. DATE LOCALE
-        # =====================================================
+        # ====================================================
+        # 9. DATE ET HEURE
+        # ====================================================
 
         date_creation = facture.date_creation
 
-        if date_creation:
-
+        if date_creation is not None:
             if timezone.is_aware(date_creation):
                 date_creation = timezone.localtime(
                     date_creation
@@ -4946,73 +5007,78 @@ class TicketProforma58mmView(APIView):
             date_txt = date_creation.strftime(
                 "%d/%m/%Y %H:%M"
             )
-
-            date_day_txt = date_creation.strftime(
-                "%d/%m/%Y"
-            )
-
-            time_txt = date_creation.strftime(
-                "%H:%M"
-            )
-
         else:
             date_txt = ""
-            date_day_txt = ""
-            time_txt = ""
 
-        # =====================================================
-        # 8. STATUT DE LA FACTURE
-        # =====================================================
+        # ====================================================
+        # 10. STATUT
+        # ====================================================
 
-        if facture.status == Facture.STAT_NON_PAYE:
-            statut_txt = "NON PAYE"
+        statuts = {
+            Facture.STAT_NON_PAYE: "NON PAYE",
+            Facture.STAT_PARTIEL: "PARTIEL",
+            Facture.STAT_PAYE: "PAYE",
+        }
 
-        elif facture.status == Facture.STAT_PARTIEL:
-            statut_txt = "PARTIEL"
-
-        elif facture.status == Facture.STAT_PAYE:
-            statut_txt = "PAYE"
-
-        else:
-            statut_txt = str(
-                facture.status or ""
-            ).upper()
-
-        # =====================================================
-        # 9. MONTANT RESTANT À PAYER
-        # =====================================================
-
-        montant_a_payer = Decimal(
-            str(
-                facture.reste_a_payer
-                if facture.reste_a_payer is not None
-                else "0.00"
-            )
+        statut_txt = statuts.get(
+            facture.status,
+            str(facture.status or "").upper(),
         )
 
-        if not montant_a_payer.is_finite():
-            return error_response(
-                code="INVALID_INVOICE_BALANCE",
-                message=(
-                    "Le montant restant à payer "
-                    "de cette facture est invalide."
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
+        # ====================================================
+        # 11. CALCUL DU RESTE À PAYER
+        # ====================================================
+
+        try:
+            reste = facture.reste_a_payer
+
+            montant_a_payer = Decimal(
+                str(
+                    reste if reste is not None else "0.00"
+                )
             )
 
-        if montant_a_payer < Decimal("0.00"):
-            return error_response(
-                code="INVALID_INVOICE_BALANCE",
-                message=(
-                    "Le montant restant à payer "
-                    "ne peut pas être négatif."
-                ),
-                status_code=status.HTTP_400_BAD_REQUEST,
+            if not montant_a_payer.is_finite():
+                raise ValueError(
+                    "Montant non fini."
+                )
+
+            if montant_a_payer < Decimal("0.00"):
+                raise ValueError(
+                    "Montant négatif."
+                )
+
+        except (
+            InvalidOperation,
+            ValueError,
+            TypeError,
+        ):
+            logger.exception(
+                "Solde invalide facture=%s",
+                facture.numero_facture,
             )
 
-        # =====================================================
-        # 10. MODE DEBUG
-        # =====================================================
+            return self._error(
+                "INVALID_INVOICE_BALANCE",
+                "Le montant restant à payer est invalide.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        except Exception:
+            logger.exception(
+                "Erreur calcul du solde facture=%s",
+                facture.numero_facture,
+            )
+
+            return self._error(
+                "INVOICE_BALANCE_ERROR",
+                "Impossible de calculer le montant restant à payer.",
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # ====================================================
+        # 12. APERÇU TEXTE : DEBUG=1
+        # ====================================================
 
         if request.query_params.get("debug") == "1":
 
@@ -5023,24 +5089,22 @@ class TicketProforma58mmView(APIView):
             )
 
             if shop_phone:
-                debug_text += (
-                    f"Tel: {shop_phone}\n"
-                )
+                debug_text += f"Tel: {shop_phone}\n"
 
             debug_text += (
                 f"{separator}\n"
-                f"FACTURE PROFORMA\n"
+                "FACTURE PROFORMA\n"
                 f"N° {facture.numero_facture}\n"
                 f"{separator}\n"
-                f"DATE : {date_day_txt} {time_txt}\n"
+                f"DATE : {date_txt}\n"
                 f"ETAT : {statut_txt}\n"
                 f"{separator}\n"
-                f"MONTANT A PAYER\n"
+                "MONTANT A PAYER\n"
                 f"{montant_a_payer:.2f} FCFA\n"
                 f"{separator}\n"
-                f"Ticket PROFORMA\n"
-                f"A regler en caisse.\n"
-                f"Merci pour votre confiance !\n"
+                "Ticket PROFORMA\n"
+                "A regler en caisse.\n"
+                "Merci pour votre confiance !\n"
             )
 
             response = HttpResponse(
@@ -5049,107 +5113,78 @@ class TicketProforma58mmView(APIView):
             )
 
             response["Cache-Control"] = "no-store"
-
             response["X-Content-Type-Options"] = "nosniff"
 
             return response
 
-        # =====================================================
-        # 11. GÉNÉRATION DU TICKET ESC/POS
-        # =====================================================
+        # ====================================================
+        # 13. GÉNÉRATION ESC/POS 58 MM
+        # ====================================================
 
         try:
-            escpos_bytes = (
-                build_escpos_ticket_proforma_58mm(
-                    shop_name=shop_name,
-                    shop_phone=shop_phone,
-                    numero_facture=facture.numero_facture,
-                    date_txt=date_txt,
-                    montant_a_payer=montant_a_payer,
-                    statut_txt=statut_txt,
-                    note=(
-                        "Ticket PROFORMA "
-                        "a regler en caisse."
-                    ),
-                )
+            escpos_bytes = build_escpos_ticket_proforma_58mm(
+                shop_name=shop_name,
+                shop_phone=shop_phone,
+                numero_facture=facture.numero_facture,
+                date_txt=date_txt,
+                montant_a_payer=montant_a_payer,
+                statut_txt=statut_txt,
+                note="Ticket PROFORMA a regler en caisse.",
             )
 
         except Exception:
             logger.exception(
-                "Erreur de génération du ticket "
-                "proforma ESC/POS 58 mm. "
-                "Facture=%s",
+                "Erreur génération ticket ESC/POS facture=%s",
                 facture.numero_facture,
             )
 
-            return error_response(
-                code="PROFORMA_TICKET_GENERATION_FAILED",
-                message=(
-                    "Erreur lors de la génération "
-                    "du ticket proforma."
-                ),
-                status_code=(
-                    status.HTTP_500_INTERNAL_SERVER_ERROR
-                ),
+            return self._error(
+                "PROFORMA_TICKET_GENERATION_FAILED",
+                "Erreur lors de la génération du ticket proforma.",
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        # =====================================================
-        # 12. VALIDATION DU TICKET GÉNÉRÉ
-        # =====================================================
+        # ====================================================
+        # 14. VALIDATION DU TICKET
+        # ====================================================
 
         if not isinstance(
             escpos_bytes,
             (bytes, bytearray),
         ):
             logger.error(
-                "Ticket ESC/POS non binaire. "
-                "Facture=%s",
+                "Ticket ESC/POS non binaire facture=%s",
                 facture.numero_facture,
             )
 
-            return error_response(
-                code="INVALID_PROFORMA_TICKET",
-                message=(
-                    "Le ticket proforma généré "
-                    "n'est pas au format binaire."
-                ),
-                status_code=(
-                    status.HTTP_500_INTERNAL_SERVER_ERROR
-                ),
+            return self._error(
+                "INVALID_PROFORMA_TICKET",
+                "Le ticket généré n'est pas au format binaire.",
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
         if not escpos_bytes:
-            logger.error(
-                "Ticket ESC/POS vide. Facture=%s",
-                facture.numero_facture,
+            return self._error(
+                "EMPTY_PROFORMA_TICKET",
+                "Le ticket généré est vide.",
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-            return error_response(
-                code="EMPTY_PROFORMA_TICKET",
-                message=(
-                    "Le ticket proforma généré est vide."
-                ),
-                status_code=(
-                    status.HTTP_500_INTERNAL_SERVER_ERROR
-                ),
-            )
+        # ====================================================
+        # 15. NOM DU FICHIER
+        # ====================================================
 
-        # =====================================================
-        # 13. NOM DU FICHIER
-        # =====================================================
-
-        safe_numero_facture = get_valid_filename(
+        safe_numero = get_valid_filename(
             str(facture.numero_facture)
         )
 
         filename = (
-            f"ticket_proforma_"
-            f"{safe_numero_facture}.bin"
+            f"ticket_proforma_{safe_numero}.bin"
         )
 
-        # =====================================================
-        # 14. RÉPONSE POUR IMPRIMANTE POS
-        # =====================================================
+        # ====================================================
+        # 16. RÉPONSE FINALE
+        # ====================================================
 
         response = HttpResponse(
             bytes(escpos_bytes),
@@ -5165,7 +5200,6 @@ class TicketProforma58mmView(APIView):
         )
 
         response["Cache-Control"] = "no-store"
-
         response["X-Content-Type-Options"] = "nosniff"
 
         return response
