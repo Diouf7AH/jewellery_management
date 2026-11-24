@@ -2151,26 +2151,29 @@ class PaiementPrestationAPIView(APIView):
 
 class VenteListAPIView(APIView):
     """
-    Liste paginée des ventes Rio-Gold.
+    Liste générale et paginée des ventes Rio-Gold.
 
-    Périodes :
+    TYPES DE VENTES
+    ----------------
+    - tous : toutes les ventes.
+    - bijoux : bijoux uniquement.
+    - mixte : bijoux + prestations.
+    - prestations : prestations uniquement.
+
+    PÉRIODES
+    --------
     - jour : journée en cours.
     - semaine : semaine en cours.
     - mois : mois en cours.
     - annee : année en cours.
 
-    Accès :
+    ACCÈS
+    -----
     - Admin : toutes les bijouteries.
     - Manager : ses bijouteries.
-    - Vendor : ses propres ventes dans sa bijouterie.
     - Cashier : toutes les ventes de sa bijouterie.
+    - Vendor : ses propres ventes dans sa bijouterie.
     - Buyer : interdit.
-
-    Types de ventes :
-    - Bijoux uniquement.
-    - Bijoux + prestations.
-
-    Les prestations seules sont exclues.
     """
 
     permission_classes = [IsAuthenticated]
@@ -2179,6 +2182,10 @@ class VenteListAPIView(APIView):
 
     DEFAULT_PAGE_SIZE = 20
     MAX_PAGE_SIZE = 100
+
+    # =====================================================
+    # PÉRIODES
+    # =====================================================
 
     PERIODE_JOUR = "jour"
     PERIODE_SEMAINE = "semaine"
@@ -2190,6 +2197,22 @@ class VenteListAPIView(APIView):
         PERIODE_SEMAINE,
         PERIODE_MOIS,
         PERIODE_ANNEE,
+    }
+
+    # =====================================================
+    # TYPES DE VENTES
+    # =====================================================
+
+    TYPE_TOUS = "tous"
+    TYPE_BIJOUX = "bijoux"
+    TYPE_MIXTE = "mixte"
+    TYPE_PRESTATIONS = "prestations"
+
+    TYPES_VENTES_AUTORISES = {
+        TYPE_TOUS,
+        TYPE_BIJOUX,
+        TYPE_MIXTE,
+        TYPE_PRESTATIONS,
     }
 
     # =====================================================
@@ -2220,7 +2243,10 @@ class VenteListAPIView(APIView):
         de la période sélectionnée.
         """
 
-        today = timezone.localdate()
+        if settings.USE_TZ:
+            today = timezone.localdate()
+        else:
+            today = timezone.now().date()
 
         # Journée en cours.
         if periode == cls.PERIODE_JOUR:
@@ -2267,16 +2293,59 @@ class VenteListAPIView(APIView):
 
         return date_debut, date_fin
 
+    @staticmethod
+    def get_datetime_bounds(date_debut, date_fin):
+        """
+        Construit les bornes datetime de la période.
+
+        La borne de début est inclusive.
+        La borne de fin est exclusive.
+
+        Évite la conversion SQL created_at__date.
+        """
+
+        debut = datetime.combine(
+            date_debut,
+            time.min,
+        )
+
+        fin = datetime.combine(
+            date_fin + timedelta(days=1),
+            time.min,
+        )
+
+        if settings.USE_TZ:
+
+            tz = timezone.get_current_timezone()
+
+            debut = timezone.make_aware(
+                debut,
+                timezone=tz,
+            )
+
+            fin = timezone.make_aware(
+                fin,
+                timezone=tz,
+            )
+
+        return debut, fin
+
     # =====================================================
     # DOCUMENTATION SWAGGER
     # =====================================================
 
     @swagger_auto_schema(
         operation_id="liste_ventes_rio_gold",
-        operation_summary="Lister les ventes par période",
+        operation_summary="Lister toutes les ventes",
         operation_description="""
-        Liste paginée des ventes de bijoux
-        et des ventes mixtes.
+        Liste générale et paginée des ventes.
+
+        TYPES DE VENTES
+        ----------------
+        - tous : toutes les ventes (par défaut).
+        - bijoux : bijoux uniquement.
+        - mixte : bijoux + prestations.
+        - prestations : prestations uniquement.
 
         PÉRIODES
         --------
@@ -2289,11 +2358,15 @@ class VenteListAPIView(APIView):
         -----
         - Admin : toutes les bijouteries.
         - Manager : ses bijouteries.
-        - Vendor : uniquement ses propres ventes.
         - Cashier : toutes les ventes de sa bijouterie.
+        - Vendor : uniquement ses propres ventes.
         - Buyer : interdit.
 
-        Les prestations seules sont exclues.
+        Les prestations seules sont incluses,
+        même lorsqu'elles ne possèdent pas de facture.
+
+        Le filtre status_facture concerne uniquement
+        les ventes possédant une facture.
         """,
         manual_parameters=[
             openapi.Parameter(
@@ -2310,6 +2383,19 @@ class VenteListAPIView(APIView):
                 default="jour",
             ),
             openapi.Parameter(
+                "type_vente",
+                openapi.IN_QUERY,
+                description="Type de vente à afficher.",
+                type=openapi.TYPE_STRING,
+                enum=[
+                    "tous",
+                    "bijoux",
+                    "mixte",
+                    "prestations",
+                ],
+                default="tous",
+            ),
+            openapi.Parameter(
                 "bijouterie_id",
                 openapi.IN_QUERY,
                 description=(
@@ -2320,7 +2406,9 @@ class VenteListAPIView(APIView):
             openapi.Parameter(
                 "numero_vente",
                 openapi.IN_QUERY,
-                description="Recherche par numéro de vente.",
+                description=(
+                    "Recherche par numéro de vente."
+                ),
                 type=openapi.TYPE_STRING,
             ),
             openapi.Parameter(
@@ -2341,7 +2429,10 @@ class VenteListAPIView(APIView):
             openapi.Parameter(
                 "status_facture",
                 openapi.IN_QUERY,
-                description="Statut de la facture.",
+                description=(
+                    "Statut de la facture. "
+                    "Ne concerne pas les prestations seules."
+                ),
                 type=openapi.TYPE_STRING,
                 enum=[
                     "non_paye",
@@ -2359,7 +2450,10 @@ class VenteListAPIView(APIView):
             openapi.Parameter(
                 "page_size",
                 openapi.IN_QUERY,
-                description="Nombre de ventes par page.",
+                description=(
+                    "Nombre de ventes par page. "
+                    "Maximum : 100."
+                ),
                 type=openapi.TYPE_INTEGER,
                 default=20,
             ),
@@ -2500,15 +2594,13 @@ class VenteListAPIView(APIView):
         # 6. QUERYSET PRINCIPAL
         # =================================================
 
-        bijoux = VenteProduit.objects.filter(
-            vente_id=OuterRef("pk")
-        )
+        # Toutes les ventes sont incluses :
+        # - Bijoux uniquement.
+        # - Bijoux + prestations.
+        # - Prestations uniquement.
 
         qs = (
             Vente.objects
-
-            # Exclure les prestations seules.
-            .filter(Exists(bijoux))
 
             .select_related(
                 "client",
@@ -2540,7 +2632,7 @@ class VenteListAPIView(APIView):
 
         if role == ROLE_ADMIN:
 
-            # Accès global.
+            # Toutes les ventes de toutes les bijouteries.
             pass
 
         elif role == ROLE_MANAGER:
@@ -2555,6 +2647,13 @@ class VenteListAPIView(APIView):
                 )
             )
 
+        elif role == ROLE_CASHIER:
+
+            # Toutes les ventes de sa bijouterie.
+            qs = qs.filter(
+                bijouterie_id=cashier.bijouterie_id,
+            )
+
         elif role == ROLE_VENDOR:
 
             # Uniquement ses propres ventes
@@ -2562,13 +2661,6 @@ class VenteListAPIView(APIView):
             qs = qs.filter(
                 bijouterie_id=vendor.bijouterie_id,
                 vendor_id=vendor.pk,
-            )
-
-        elif role == ROLE_CASHIER:
-
-            # Toutes les ventes de sa bijouterie.
-            qs = qs.filter(
-                bijouterie_id=cashier.bijouterie_id,
             )
 
         else:
@@ -2600,6 +2692,7 @@ class VenteListAPIView(APIView):
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
+            # Vérifier les droits du manager.
             if role == ROLE_MANAGER:
 
                 if not manager.bijouteries.filter(
@@ -2612,6 +2705,7 @@ class VenteListAPIView(APIView):
                         status_code=status.HTTP_403_FORBIDDEN,
                     )
 
+            # Vérifier les droits du vendeur.
             elif role == ROLE_VENDOR:
 
                 if bijouterie_id != vendor.bijouterie_id:
@@ -2622,6 +2716,7 @@ class VenteListAPIView(APIView):
                         status_code=status.HTTP_403_FORBIDDEN,
                     )
 
+            # Vérifier les droits du caissier.
             elif role == ROLE_CASHIER:
 
                 if bijouterie_id != cashier.bijouterie_id:
@@ -2637,7 +2732,7 @@ class VenteListAPIView(APIView):
             )
 
         # =================================================
-        # 9. PÉRIODE
+        # 9. FILTRE PÉRIODE
         # =================================================
 
         periode = (
@@ -2662,18 +2757,81 @@ class VenteListAPIView(APIView):
             periode
         )
 
+        debut, fin = self.get_datetime_bounds(
+            date_debut,
+            date_fin,
+        )
+
         qs = qs.filter(
-            created_at__date__gte=date_debut,
-            created_at__date__lte=date_fin,
+            created_at__gte=debut,
+            created_at__lt=fin,
         )
 
         # =================================================
-        # 10. RECHERCHE PAR NUMÉRO DE VENTE
+        # 10. FILTRE TYPE DE VENTE
+        # =================================================
+
+        type_vente = (
+            request.query_params.get(
+                "type_vente",
+                self.TYPE_TOUS,
+            ) or self.TYPE_TOUS
+        ).strip().lower()
+
+        if type_vente not in self.TYPES_VENTES_AUTORISES:
+
+            return error_response(
+                code="INVALID_SALE_TYPE",
+                message=(
+                    "Le type de vente doit être : "
+                    "tous, bijoux, mixte ou prestations."
+                ),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        bijoux = VenteProduit.objects.filter(
+            vente_id=OuterRef("pk")
+        )
+
+        prestations = VenteAutre.objects.filter(
+            vente_id=OuterRef("pk")
+        )
+
+        # Bijoux uniquement.
+        if type_vente == self.TYPE_BIJOUX:
+
+            qs = qs.filter(
+                Exists(bijoux),
+                ~Exists(prestations),
+            )
+
+        # Bijoux + prestations.
+        elif type_vente == self.TYPE_MIXTE:
+
+            qs = qs.filter(
+                Exists(bijoux),
+                Exists(prestations),
+            )
+
+        # Prestations uniquement.
+        elif type_vente == self.TYPE_PRESTATIONS:
+
+            qs = qs.filter(
+                ~Exists(bijoux),
+                Exists(prestations),
+            )
+
+        # TYPE_TOUS :
+        # Aucun filtre supplémentaire.
+
+        # =================================================
+        # 11. RECHERCHE PAR NUMÉRO DE VENTE
         # =================================================
 
         numero_vente = (
             request.query_params.get(
-                "numero_vente", ""
+                "numero_vente",
+                "",
             ) or ""
         ).strip()
 
@@ -2684,12 +2842,13 @@ class VenteListAPIView(APIView):
             )
 
         # =================================================
-        # 11. RECHERCHE CLIENT
+        # 12. RECHERCHE CLIENT
         # =================================================
 
         client_q = (
             request.query_params.get(
-                "client_q", ""
+                "client_q",
+                "",
             ) or ""
         ).strip()
 
@@ -2702,7 +2861,7 @@ class VenteListAPIView(APIView):
             )
 
         # =================================================
-        # 12. FILTRE VENDEUR
+        # 13. FILTRE VENDEUR
         # =================================================
 
         vendor_id_raw = request.query_params.get(
@@ -2745,12 +2904,13 @@ class VenteListAPIView(APIView):
             )
 
         # =================================================
-        # 13. FILTRE STATUT FACTURE
+        # 14. FILTRE STATUT FACTURE
         # =================================================
 
         status_facture = (
             request.query_params.get(
-                "status_facture", ""
+                "status_facture",
+                "",
             ) or ""
         ).strip().lower()
 
@@ -2773,12 +2933,14 @@ class VenteListAPIView(APIView):
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
+            # Ce filtre ne concerne que les ventes
+            # possédant une facture.
             qs = qs.filter(
                 facture_vente__status=status_facture
             )
 
         # =================================================
-        # 14. PAGINATION
+        # 15. PAGINATION
         # =================================================
 
         page = self.parse_positive_int(
@@ -2795,7 +2957,9 @@ class VenteListAPIView(APIView):
 
             return error_response(
                 code="INVALID_PAGE",
-                message="page doit être un entier positif.",
+                message=(
+                    "page doit être un entier positif."
+                ),
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2821,7 +2985,7 @@ class VenteListAPIView(APIView):
         )
 
         # =================================================
-        # 15. AUCUN RÉSULTAT
+        # 16. AUCUN RÉSULTAT
         # =================================================
 
         if paginator.count == 0:
@@ -2830,7 +2994,9 @@ class VenteListAPIView(APIView):
 
                 return error_response(
                     code="PAGE_NOT_FOUND",
-                    message="La page demandée n'existe pas.",
+                    message=(
+                        "La page demandée n'existe pas."
+                    ),
                     status_code=status.HTTP_404_NOT_FOUND,
                 )
 
@@ -2841,6 +3007,7 @@ class VenteListAPIView(APIView):
                     "page_size": page_size,
                     "num_pages": 0,
                     "periode": periode,
+                    "type_vente": type_vente,
                     "date_debut": date_debut.isoformat(),
                     "date_fin": date_fin.isoformat(),
                     "results": [],
@@ -2849,7 +3016,7 @@ class VenteListAPIView(APIView):
             )
 
         # =================================================
-        # 16. PAGE DEMANDÉE
+        # 17. PAGE DEMANDÉE
         # =================================================
 
         try:
@@ -2860,12 +3027,14 @@ class VenteListAPIView(APIView):
 
             return error_response(
                 code="PAGE_NOT_FOUND",
-                message="La page demandée n'existe pas.",
+                message=(
+                    "La page demandée n'existe pas."
+                ),
                 status_code=status.HTTP_404_NOT_FOUND,
             )
 
         # =================================================
-        # 17. SERIALIZATION
+        # 18. SERIALIZATION
         # =================================================
 
         serializer = VenteListSerializer(
@@ -2877,7 +3046,7 @@ class VenteListAPIView(APIView):
         )
 
         # =================================================
-        # 18. RÉPONSE FINALE
+        # 19. RÉPONSE FINALE
         # =================================================
 
         return Response(
@@ -2887,14 +3056,13 @@ class VenteListAPIView(APIView):
                 "page_size": page_size,
                 "num_pages": paginator.num_pages,
                 "periode": periode,
+                "type_vente": type_vente,
                 "date_debut": date_debut.isoformat(),
                 "date_fin": date_fin.isoformat(),
                 "results": serializer.data,
             },
             status=status.HTTP_200_OK,
         )
-        
-
 
 class ListFacturesAPayerView(APIView):
     """
