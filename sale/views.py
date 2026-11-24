@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from io import BytesIO
 from uuid import UUID
