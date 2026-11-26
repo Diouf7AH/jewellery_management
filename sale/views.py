@@ -19,7 +19,8 @@ from rest_framework.views import APIView
 
 from backend.bijouteries import (get_user_bijouteries,
                                  user_has_bijouterie_access)
-from backend.permissions import CanCreateSale
+from backend.permissions import (ALLOWED_PAYMENT_ROLES, CanCreateSale,
+                                 CanProcessInvoicePayment)
 from sale.models import Vente, VenteAutre, VenteProduit
 from staff.models import Manager
 from store.models import Bijouterie
@@ -4809,9 +4810,9 @@ class PaiementFactureMultiModeView(APIView):
     @transaction.atomic
     def post(self, request):
 
-        # ====================================================
+        # ============================================================
         # 1. AUTORISATION
-        # ====================================================
+        # ============================================================
 
         user = request.user
 
@@ -4819,15 +4820,14 @@ class PaiementFactureMultiModeView(APIView):
             get_role_name(user) or ""
         ).lower().strip()
 
-        if role not in {
-            ROLE_MANAGER,
-            ROLE_CASHIER,
-        }:
+        if role not in ALLOWED_PAYMENT_ROLES:
+
             return error_response(
                 code="ROLE_NOT_ALLOWED",
                 message=(
-                    "Seul le manager ou le caissier "
-                    "peut réaliser un paiement."
+                    "Seuls les administrateurs, "
+                    "managers et caissiers peuvent "
+                    "effectuer un paiement."
                 ),
                 status_code=status.HTTP_403_FORBIDDEN,
             )

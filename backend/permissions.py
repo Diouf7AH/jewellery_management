@@ -461,27 +461,26 @@ class CanCreateSale(BasePermission):
 
         return False
 
-
 # ============================================================
 # Permissions métier - Paiement facture
 # ============================================================
-
 
 class CanProcessInvoicePayment(BasePermission):
     """
     Autorise l'encaissement d'une facture.
 
-    ADMIN
-        Autorisé.
+    ADMIN :
+        Accès à toutes les bijouteries.
 
-    MANAGER
-        Autorisé si profil manager actif/vérifié.
+    MANAGER :
+        Profil actif/vérifié.
+        Accès à ses bijouteries.
 
-    CASHIER
-        Autorisé si profil caissier actif/vérifié
-        et rattaché à une bijouterie.
+    CASHIER :
+        Profil actif/vérifié.
+        Accès à sa bijouterie.
 
-    VENDOR / BUYER
+    VENDOR / BUYER :
         Non autorisés.
     """
 
@@ -491,34 +490,48 @@ class CanProcessInvoicePayment(BasePermission):
     )
 
     def has_permission(self, request, view):
+
         user = request.user
+
+        # ====================================================
+        # 1. AUTHENTIFICATION
+        # ====================================================
 
         if not _user_is_authenticated(user):
             return False
 
         role = get_role_name(user)
 
-        # ----------------------------------------------------
-        # ADMIN
-        # ----------------------------------------------------
+        # ====================================================
+        # 2. RÔLES AUTORISÉS
+        # ====================================================
+
+        if role not in ALLOWED_PAYMENT_ROLES:
+            return False
+
+        # ====================================================
+        # 3. ADMIN
+        # ====================================================
 
         if role == ROLE_ADMIN:
             return True
 
-        # ----------------------------------------------------
-        # MANAGER
-        # ----------------------------------------------------
+        # ====================================================
+        # 4. MANAGER
+        # ====================================================
 
         if role == ROLE_MANAGER:
+
             return bool(
                 _manager_profile(user)
             )
 
-        # ----------------------------------------------------
-        # CASHIER
-        # ----------------------------------------------------
+        # ====================================================
+        # 5. CASHIER
+        # ====================================================
 
         if role == ROLE_CASHIER:
+
             cashier = _cashier_profile(user)
 
             return bool(
@@ -531,7 +544,6 @@ class CanProcessInvoicePayment(BasePermission):
             )
 
         return False
-
 
 # ============================================================
 # Permission générique par bijouterie
