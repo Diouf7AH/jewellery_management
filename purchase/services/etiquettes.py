@@ -17,9 +17,19 @@ DPI = 203
 LABEL_WIDTH_MM = 40
 LABEL_HEIGHT_MM = 30
 
-MARGIN_MM = 4
+# Marges de sécurité.
+MARGIN_LEFT_MM = 6
+MARGIN_RIGHT_MM = 4
+MARGIN_TOP_MM = 4
+MARGIN_BOTTOM_MM = 4
 
-# True pour tourner l'image de 90 degrés.
+# Espacement horizontal.
+GAP_MM = 0.5
+
+# Taille maximale du QR code.
+QR_MAX_SIZE_MM = 14
+
+# Orientation.
 ROTATE_LABEL = False
 
 
@@ -29,8 +39,6 @@ def mm_to_px(mm):
 
 LABEL_WIDTH_PX = mm_to_px(LABEL_WIDTH_MM)
 LABEL_HEIGHT_PX = mm_to_px(LABEL_HEIGHT_MM)
-
-MARGIN_PX = mm_to_px(MARGIN_MM)
 
 
 # ============================================================
@@ -84,8 +92,9 @@ def _center_text(
     available_width = x2 - x1
 
     if available_width <= 0:
+
         raise ValueError(
-            "Largeur de texte disponible invalide."
+            "Largeur disponible invalide."
         )
 
     font_size = getattr(font, "size", 14)
@@ -144,11 +153,9 @@ def _center_text(
 
 def get_categorie_code(produit):
     """
-    Retourne le préfixe court de la catégorie.
-
-    Bague             -> BG
-    Collier           -> COL
-    Bracelet          -> BRA
+    Bague              -> BG
+    Collier            -> COL
+    Bracelet           -> BRA
     Boucles d'oreilles -> BD
     """
 
@@ -196,12 +203,9 @@ def get_lot_code_court(lot):
     """
     Exemple :
 
-        LOT-20260906-0042
-                ↓
-             260042
-
-    26   = année
-    0042 = compteur du lot
+    LOT-20260906-0042
+            ↓
+         260042
     """
 
     numero_lot = str(
@@ -228,7 +232,6 @@ def get_lot_code_court(lot):
             f"{numero.zfill(4)}"
         )
 
-    # Fallback.
     if getattr(lot, "id", None):
 
         return str(lot.id).zfill(6)
@@ -245,13 +248,7 @@ def get_lot_code_court(lot):
 
 def build_code_etiquette(produit_line):
     """
-    Exemple :
-
-        Catégorie : Bague
-        Lot : LOT-20260906-0042
-        Ligne : 1
-
-        Résultat : BG-260042-01
+    Exemple : BG-260042-01
     """
 
     produit = produit_line.produit
@@ -284,7 +281,7 @@ def build_code_etiquette(produit_line):
 
 
 # ============================================================
-# GÉNÉRATION PNG
+# GÉNÉRATION DE L'ÉTIQUETTE PNG
 # ============================================================
 
 def build_etiquette_produit_png(
@@ -293,12 +290,16 @@ def build_etiquette_produit_png(
     """
     Génère une étiquette Rio Gold.
 
-    Format physique : 40 x 30 mm.
+    Imprimante : Phomemo M221.
     Résolution : 203 DPI.
-    Surface utile : 32 x 22 mm.
-    Marges : 4 mm.
+
+    Format physique : 40 x 30 mm.
+    Surface utile : 30 x 22 mm.
 
     QR code : PL:<uuid ProduitLine>.
+
+    Informations du produit compactes
+    et centrées verticalement.
 
     Le poids affiché correspond au poids
     historique d'achat.
@@ -307,18 +308,46 @@ def build_etiquette_produit_png(
     produit = produit_line.produit
 
     # ========================================================
-    # 1. DIMENSIONS
+    # 1. DIMENSIONS ET MARGES
     # ========================================================
 
     width = LABEL_WIDTH_PX
     height = LABEL_HEIGHT_PX
 
-    margin = MARGIN_PX
+    margin_left = mm_to_px(
+        MARGIN_LEFT_MM
+    )
 
-    content_width = width - (2 * margin)
-    content_height = height - (2 * margin)
+    margin_right = mm_to_px(
+        MARGIN_RIGHT_MM
+    )
 
-    if content_width <= 0 or content_height <= 0:
+    margin_top = mm_to_px(
+        MARGIN_TOP_MM
+    )
+
+    margin_bottom = mm_to_px(
+        MARGIN_BOTTOM_MM
+    )
+
+    gap = mm_to_px(GAP_MM)
+
+    content_width = (
+        width
+        - margin_left
+        - margin_right
+    )
+
+    content_height = (
+        height
+        - margin_top
+        - margin_bottom
+    )
+
+    if (
+        content_width <= gap
+        or content_height <= 0
+    ):
 
         raise ValueError(
             "Dimensions de l'étiquette invalides."
@@ -333,15 +362,15 @@ def build_etiquette_produit_png(
     draw = ImageDraw.Draw(img)
 
     # ========================================================
-    # 2. POLICES
+    # 2. POLICES COMPACTES
     # ========================================================
 
-    font_title = _load_font(18)
-    font_label = _load_font(12)
-    font_purete = _load_font(30)
-    font_marque = _load_font(16)
-    font_poids = _load_font(24)
-    font_code = _load_font(13)
+    font_title = _load_font(15)
+    font_label = _load_font(11)
+    font_purete = _load_font(25)
+    font_marque = _load_font(14)
+    font_poids = _load_font(21)
+    font_code = _load_font(12)
 
     # ========================================================
     # 3. UUID PRODUITLINE
@@ -372,7 +401,9 @@ def build_etiquette_produit_png(
 
     if getattr(produit, "purete", None):
 
-        purete = str(produit.purete)
+        purete = str(
+            produit.purete
+        )
 
     # ========================================================
     # 6. POIDS HISTORIQUE D'ACHAT
@@ -423,15 +454,35 @@ def build_etiquette_produit_png(
     # 8. ZONES D'IMPRESSION
     # ========================================================
 
-    left_width = content_width // 2
+    available_width = (
+        content_width - gap
+    )
 
-    left_x1 = margin
-    left_x2 = margin + left_width
+    # Zone QR : 52 %.
+    # Zone informations : 48 %.
 
-    right_x1 = left_x2 + 4
-    right_x2 = width - margin
+    left_width = round(
+        available_width * 0.52
+    )
 
-    top = margin
+    left_x1 = margin_left
+
+    left_x2 = (
+        left_x1 + left_width
+    )
+
+    right_x1 = (
+        left_x2 + gap
+    )
+
+    right_x2 = (
+        width - margin_right
+    )
+
+    top = margin_top
+
+    code_height = 16
+    code_gap = 2
 
     # ========================================================
     # 9. GÉNÉRATION DU QR CODE
@@ -456,18 +507,18 @@ def build_etiquette_produit_png(
     )
 
     max_qr_size = min(
-        left_width - 4,
-        content_height - 24,
+        mm_to_px(QR_MAX_SIZE_MM),
+        left_width,
+        content_height - code_height - code_gap,
     )
 
-    # Taille entière de chaque module du QR.
     box_size = max_qr_size // modules
 
     if box_size < 2:
 
         raise ValueError(
-            "La zone disponible est trop petite "
-            "pour générer un QR code lisible."
+            "Surface insuffisante pour générer "
+            "un QR code lisible."
         )
 
     qr.box_size = box_size
@@ -480,18 +531,33 @@ def build_etiquette_produit_png(
     qr_size = qr_img.width
 
     # ========================================================
-    # 10. POSITION DU QR CODE
+    # 10. POSITIONNEMENT DU QR CODE
     # ========================================================
 
-    qr_x = (
-        left_x1
-        + (left_width - qr_size) // 2
+    block_height = (
+        qr_size
+        + code_gap
+        + code_height
     )
+
+    qr_x = left_x2 - qr_size
 
     qr_y = (
         top
-        + (content_height - qr_size - 20) // 2
+        + (content_height - block_height) // 2
     )
+
+    if (
+        qr_x < margin_left
+        or qr_y < margin_top
+        or qr_x + qr_size > left_x2
+        or qr_y + block_height > height - margin_bottom
+    ):
+
+        raise ValueError(
+            "Le QR code dépasse "
+            "la zone d'impression."
+        )
 
     img.paste(
         qr_img,
@@ -499,25 +565,22 @@ def build_etiquette_produit_png(
     )
 
     # ========================================================
-    # 11. CODE COURT SOUS LE QR CODE
+    # 11. RÉFÉRENCE SOUS LE QR CODE
     # ========================================================
 
     _center_text(
         draw=draw,
-        x1=left_x1,
-        x2=left_x2,
-        y=qr_y + qr_size + 4,
+        x1=qr_x,
+        x2=qr_x + qr_size,
+        y=qr_y + qr_size + code_gap,
         text=code_etiquette,
         font=font_code,
-        max_height=16,
+        max_height=code_height,
     )
 
     # ========================================================
-    # 12. POSITIONNEMENT VERTICAL ADAPTATIF
+    # 12. POSITIONNEMENT ADAPTATIF DU TEXTE
     # ========================================================
-
-    # Les positions évoluent automatiquement
-    # lorsque MARGIN_MM est modifié.
 
     def right_text(
         position,
@@ -530,10 +593,16 @@ def build_etiquette_produit_png(
             content_height * position
         )
 
-        max_height = max(
-            1,
+        max_height = min(
             round(content_height * height_ratio),
+            height - margin_bottom - y,
         )
+
+        if max_height <= 0:
+
+            raise ValueError(
+                "Position du texte invalide."
+            )
 
         _center_text(
             draw=draw,
@@ -550,10 +619,10 @@ def build_etiquette_produit_png(
     # ========================================================
 
     right_text(
-        position=0.02,
+        position=0.12,
         text="RIO GOLD",
         font=font_title,
-        height_ratio=0.12,
+        height_ratio=0.10,
     )
 
     # ========================================================
@@ -561,17 +630,17 @@ def build_etiquette_produit_png(
     # ========================================================
 
     right_text(
-        position=0.18,
+        position=0.24,
         text="PURETÉ",
         font=font_label,
-        height_ratio=0.08,
+        height_ratio=0.07,
     )
 
     right_text(
-        position=0.28,
+        position=0.34,
         text=purete,
         font=font_purete,
-        height_ratio=0.19,
+        height_ratio=0.15,
     )
 
     # ========================================================
@@ -579,10 +648,10 @@ def build_etiquette_produit_png(
     # ========================================================
 
     right_text(
-        position=0.52,
+        position=0.51,
         text=marque_courte,
         font=font_marque,
-        height_ratio=0.11,
+        height_ratio=0.09,
     )
 
     # ========================================================
@@ -590,17 +659,17 @@ def build_etiquette_produit_png(
     # ========================================================
 
     right_text(
-        position=0.68,
+        position=0.62,
         text="POIDS",
         font=font_label,
-        height_ratio=0.08,
+        height_ratio=0.07,
     )
 
     right_text(
-        position=0.79,
+        position=0.72,
         text=poids,
         font=font_poids,
-        height_ratio=0.16,
+        height_ratio=0.14,
     )
 
     # ========================================================
@@ -628,3 +697,4 @@ def build_etiquette_produit_png(
     output.seek(0)
 
     return output
+

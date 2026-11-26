@@ -13,6 +13,16 @@ from backend.roles import (ROLE_ADMIN, ROLE_BUYER, ROLE_CASHIER, ROLE_MANAGER,
 # ============================================================
 
 
+# ============================================================
+# RÔLES AUTORISÉS À EFFECTUER UN PAIEMENT
+# ============================================================
+
+ALLOWED_PAYMENT_ROLES = frozenset({
+    ROLE_ADMIN,
+    ROLE_MANAGER,
+    ROLE_CASHIER,
+})
+
 def _verified(profile) -> bool:
     """
     Retourne True uniquement si le profil staff existe
