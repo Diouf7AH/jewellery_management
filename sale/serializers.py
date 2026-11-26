@@ -2002,23 +2002,13 @@ class VenteDetailSerializer(serializers.ModelSerializer):
             ),
         }
 
-class VenteProduitDetailSerializer(serializers.ModelSerializer):
-    produit_nom = serializers.CharField(source="produit.nom", read_only=True)
+class VenteProduitDetailSerializer(VenteProduitSerializer):
+    """
+    Détail d'une ligne de bijou vendu.
+    """
 
-    class Meta:
-        model = VenteProduit
-        fields = [
-            "id",
-            "produit_id",
-            "produit_nom",
-            "quantite",
-            "prix_vente_grammes",
-            "montant_ht",
-            "remise",
-            "autres",
-            "montant_total",
-        ]
-
+    class Meta(VenteProduitSerializer.Meta):
+        ref_name = "VenteProduitDetailOut"
 
 class VenteOutWrapperSerializer(serializers.Serializer):
     facture = FactureSerializer()
@@ -2316,31 +2306,33 @@ class PaiementMultiModeSerializer(serializers.Serializer):
 
         return attrs
 
-
-    
 class PaiementLigneResponseSerializer(serializers.Serializer):
+
     id = serializers.IntegerField()
+
     mode_paiement = serializers.CharField()
-    mode_paiement_nom = serializers.CharField()
-    montant_paye = serializers.DecimalField(max_digits=10, decimal_places=2)
-    reference = serializers.CharField(allow_null=True, required=False)
 
+    montant_paye = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=2,
+    )
 
-# class PaiementFactureMultiModeResponseSerializer(serializers.Serializer):
-#     message = serializers.CharField()
-#     paiement_id = serializers.IntegerField()
-#     facture_id = serializers.IntegerField()
-#     numero_facture = serializers.CharField()
-#     type_facture = serializers.CharField()
-#     montant_total_facture = serializers.DecimalField(max_digits=12, decimal_places=2)
-#     montant_operation = serializers.DecimalField(max_digits=12, decimal_places=2)
-#     total_paye = serializers.DecimalField(max_digits=12, decimal_places=2)
-#     reste_a_payer = serializers.DecimalField(max_digits=12, decimal_places=2)
-#     status = serializers.CharField()
-#     lignes = PaiementLigneResponseSerializer(many=True)
-#     facture_pdf_url = serializers.URLField(required=False,allow_null=True,allow_blank=True,)
-    
+    reference = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+    )
 
+    provider_reference = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+    )
+
+    numero_compte = serializers.CharField(
+        required=False,
+        allow_null=True,
+    )
 
 class FacturePaiementResponseSerializer(serializers.Serializer):
     id = serializers.IntegerField()

@@ -2381,7 +2381,6 @@ class ModePaiement(models.Model):
     
 
 
-
 class PaiementLigne(models.Model):
     """
     Ligne d'une opération de paiement.
@@ -2529,7 +2528,7 @@ class PaiementLigne(models.Model):
         super().clean()
 
         # -----------------------------------------------------
-        # 1. Montant
+        # 1. MONTANT
         # -----------------------------------------------------
 
         if self.montant_paye is None:
@@ -2540,7 +2539,11 @@ class PaiementLigne(models.Model):
             })
 
         try:
-            montant_paye = money_strict(self.montant_paye, "montant_paye")
+            montant_paye = money_strict(
+                self.montant_paye,
+                field="montant_paye",
+            )
+
         except (InvalidOperation, TypeError, ValueError):
             raise ValidationError({
                 "montant_paye": "Montant payé invalide."
@@ -2555,7 +2558,7 @@ class PaiementLigne(models.Model):
             })
 
         # -----------------------------------------------------
-        # 2. Mode de paiement
+        # 2. MODE DE PAIEMENT
         # -----------------------------------------------------
 
         if not self.mode_paiement_id:
@@ -2575,7 +2578,7 @@ class PaiementLigne(models.Model):
             })
 
         # -----------------------------------------------------
-        # 3. Référence
+        # 3. RÉFÉRENCE
         # -----------------------------------------------------
 
         if self.reference:
@@ -2616,6 +2619,8 @@ class PaiementLigne(models.Model):
 
             transaction = self.transaction_depot
 
+            # Vérification du compte dépôt.
+
             if transaction.compte_id != self.compte_depot_id:
                 raise ValidationError({
                     "transaction_depot": (
@@ -2623,6 +2628,8 @@ class PaiementLigne(models.Model):
                         "au compte dépôt sélectionné."
                     )
                 })
+
+            # Vérification du type de transaction.
 
             if (
                 transaction.type_transaction
@@ -2635,6 +2642,8 @@ class PaiementLigne(models.Model):
                     )
                 })
 
+            # Vérification du statut.
+
             if (
                 transaction.statut
                 != transaction.STAT_TERMINE
@@ -2646,6 +2655,8 @@ class PaiementLigne(models.Model):
                     )
                 })
 
+            # Vérification du montant retiré.
+
             try:
                 montant_transaction = Decimal(
                     str(transaction.montant)
@@ -2653,6 +2664,7 @@ class PaiementLigne(models.Model):
                     TWOPLACES,
                     rounding=ROUND_HALF_UP,
                 )
+
             except (InvalidOperation, TypeError, ValueError):
                 raise ValidationError({
                     "transaction_depot": (
@@ -2669,7 +2681,7 @@ class PaiementLigne(models.Model):
                 })
 
         # =====================================================
-        # 5. AUTRES MODES
+        # 5. AUTRES MODES DE PAIEMENT
         # =====================================================
 
         else:
@@ -2696,13 +2708,26 @@ class PaiementLigne(models.Model):
 
     def save(self, *args, **kwargs):
 
+        # -----------------------------------------------------
+        # 1. NORMALISATION DU MONTANT
+        # -----------------------------------------------------
+
         if self.montant_paye is not None:
+
             try:
-                self.montant_paye = money_strict(self.montant_paye, "montant_paye")
+                self.montant_paye = money_strict(
+                    self.montant_paye,
+                    field="montant_paye",
+                )
+
             except (InvalidOperation, TypeError, ValueError):
                 raise ValidationError({
                     "montant_paye": "Montant payé invalide."
                 })
+
+        # -----------------------------------------------------
+        # 2. NORMALISATION DES RÉFÉRENCES
+        # -----------------------------------------------------
 
         for field in (
             "reference",
@@ -2714,8 +2739,16 @@ class PaiementLigne(models.Model):
             if value:
                 setattr(self, field, value.strip())
 
+        # -----------------------------------------------------
+        # 3. VALIDATION COMPLÈTE
+        # -----------------------------------------------------
+
         self.full_clean()
 
+        # -----------------------------------------------------
+        # 4. ENREGISTREMENT
+        # -----------------------------------------------------
+
         return super().save(*args, **kwargs)
-    
+
 
