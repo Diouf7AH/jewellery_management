@@ -6,8 +6,9 @@ from django.db import models
 from django.db.models import Sum
 from rest_framework import serializers
 
-from backend.permissions import (ROLE_ADMIN, ROLE_MANAGER, ROLE_VENDOR,
-                                 get_role_name)
+from backend.permissions import (ROLE_ADMIN, ROLE_CASHIER, ROLE_MANAGER,
+                                 ROLE_VENDOR, get_role_name)
+from backend.utils.helpers import user_can_access_bijouterie
 from sale.services.sale_service import validate_facture_payable
 from store.models import Bijouterie, MarquePurete, Produit
 from store.serializers import BijouterieSerializer, ProduitSerializer
@@ -43,125 +44,66 @@ class VendorSerializer(serializers.ModelSerializer):
         ref_name = "VendorOutLight"
 # ----End vendor serializer light ----
 
+class ClientInSerializer(serializers.Serializer):
+    """
+    Informations du client au moment du paiement.
 
-class VenteProduitSerializer(serializers.ModelSerializer):
-    slug = serializers.CharField(source="produit.slug", read_only=True)
+    La validation métier est effectuée
+    dans PaiementMultiModeSerializer.
+    """
 
-    produit_id = serializers.PrimaryKeyRelatedField(
-        source="produit",
-        queryset=Produit.objects.all(),
-        write_only=True,
-    )
-
-    vendor_id = serializers.PrimaryKeyRelatedField(
-        source="vendor",
-        queryset=Vendor.objects.all(),
-        write_only=True,
+    nom = serializers.CharField(
         required=False,
+        allow_blank=True,
         allow_null=True,
+        trim_whitespace=True,
     )
 
-    produit = ProduitSerializer(read_only=True)
-    vendor = VendorSerializer(read_only=True)
-
-    # ✅ NOUVEAUX CHAMPS
-    montant_ht = serializers.DecimalField(
-        max_digits=14,
-        decimal_places=2,
-        read_only=True,
-    )
-
-    montant_total = serializers.DecimalField(
-        max_digits=14,
-        decimal_places=2,
-        read_only=True,
-    )
-
-    prix_vente_grammes = serializers.DecimalField(
-        max_digits=14,
-        decimal_places=2,
+    prenom = serializers.CharField(
         required=False,
+        allow_blank=True,
         allow_null=True,
+        trim_whitespace=True,
     )
 
-    remise = serializers.DecimalField(
-        max_digits=14,
-        decimal_places=2,
+    telephone = serializers.CharField(
         required=False,
+        allow_blank=True,
         allow_null=True,
+        trim_whitespace=True,
     )
-
-    autres = serializers.DecimalField(
-        max_digits=14,
-        decimal_places=2,
-        required=False,
-        allow_null=True,
-    )
-
-    class Meta:
-        model = VenteProduit
-        ref_name = "VenteProduitLine"
-        fields = [
-            "id",
-            "slug",
-            "produit_id",
-            "vendor_id",
-            "produit",
-            "vendor",
-            "quantite",
-            "prix_vente_grammes",
-            "remise",
-            "autres",
-            "montant_ht",
-            "montant_total",
-        ]
-        read_only_fields = (
-            "id",
-            "montant_ht",
-            "montant_total",
-        )
-
-    def to_internal_value(self, data):
-        data = data.copy()
-
-        for field in ("prix_vente_grammes", "remise", "autres"):
-            if field in data and data.get(field) == "":
-                data[field] = None
-
-        return super().to_internal_value(data)
-
-    def validate(self, attrs):
-        for f in ("prix_vente_grammes", "remise", "autres"):
-            v = attrs.get(f)
-            if v is not None and v < 0:
-                raise serializers.ValidationError({f: "Ne peut pas être négatif."})
-
-        q = attrs.get("quantite")
-        if q is not None and q < 1:
-            raise serializers.ValidationError({"quantite": "Doit être ≥ 1."})
-
-        return attrs
-    
 
 
 class ClientOptionalInSerializer(serializers.Serializer):
+    """
+    Informations facultatives du client
+    lors de la création d'une vente.
+    """
+
     nom = serializers.CharField(
         required=False,
         allow_blank=True,
     )
+
     prenom = serializers.CharField(
         required=False,
         allow_blank=True,
     )
+
     telephone = serializers.CharField(
         required=False,
         allow_blank=True,
     )
 
     def validate(self, attrs):
+
         nom = (attrs.get("nom") or "").strip()
+
         prenom = (attrs.get("prenom") or "").strip()
-        telephone = (attrs.get("telephone") or "").strip()
+
+        telephone = (
+            attrs.get("telephone") or ""
+        ).strip()
 
         if not nom and not prenom and not telephone:
             return {}
@@ -179,18 +121,16 @@ class ClientOptionalInSerializer(serializers.Serializer):
             "prenom": prenom,
             "telephone": telephone,
         }
-
-
-class ClientInSerializer(serializers.Serializer):
-    nom = serializers.CharField(required=True, allow_blank=False)
-    prenom = serializers.CharField(required=True, allow_blank=False)
-    telephone = serializers.CharField(required=False, allow_blank=True)
-    
-
+        
+        
 # ============================================================
 # 1. LIGNE DE BIJOU POUR CRÉATION D'UNE VENTE
 # ============================================================
 class VenteProduitSerializer(serializers.ModelSerializer):
+    """
+    Serializer de lecture d'une ligne de bijou vendu.
+    """
+
     produit_id = serializers.IntegerField(
         source="produit_line.produit_id",
         read_only=True,
@@ -237,7 +177,6 @@ class VenteProduitSerializer(serializers.ModelSerializer):
         ]
 
         read_only_fields = fields
-        
 # ============================================================
 # 2. PRESTATIONS / AUTRES PRODUITS
 # ============================================================
@@ -1609,47 +1548,175 @@ class FactureListSerializer(serializers.ModelSerializer):
         return f"{reste:.2f}"
 
 
+# class VenteListSerializer(serializers.ModelSerializer):
+#     client = serializers.SerializerMethodField()
+#     produits = VenteProduitSerializer(source="lignes", many=True, read_only=True)
+#     facture = serializers.SerializerMethodField()
+#     uuid = serializers.UUIDField(read_only=True)
+
+#     class Meta:
+#         model = Vente
+#         fields = [
+#             "id",
+#             "uuid",
+#             "numero_vente",
+#             "created_at",
+#             "montant_total",
+#             "client",
+#             "facture",
+#             "produits",
+#         ]
+#         ref_name = "VenteList_V2"
+
+#     def get_client(self, obj):
+#         c = getattr(obj, "client", None)
+#         return {
+#             "prenom": c.prenom,
+#             "nom": c.nom,
+#             "telephone": c.telephone,
+#         } if c else None
+
+#     def get_facture(self, obj):
+#         facture = getattr(obj, "facture_vente", None)
+#         if not facture:
+#             return None
+
+#         return {
+#             "id": facture.id,
+#             "numero_facture": facture.numero_facture,
+#             "type_facture": facture.type_facture,
+#             "status": facture.status,
+#             "montant_ht": str(facture.montant_ht),
+#             "montant_tva": str(facture.montant_tva),
+#             "montant_total": str(facture.montant_total),
+#         }
+
 class VenteListSerializer(serializers.ModelSerializer):
+    """
+    Liste des ventes Rio-Gold.
+
+    Compatible avec :
+    - Bijoux uniquement.
+    - Bijoux et prestations.
+    - Prestations uniquement.
+    """
+
+    uuid = serializers.UUIDField(
+        read_only=True,
+    )
+
     client = serializers.SerializerMethodField()
-    produits = VenteProduitSerializer(source="lignes", many=True, read_only=True)
+
+    type_vente = serializers.SerializerMethodField()
+
+    produits = VenteProduitSerializer(
+        source="lignes",
+        many=True,
+        read_only=True,
+    )
+
+    prestations = VenteAutreSerializer(
+        source="autres",
+        many=True,
+        read_only=True,
+    )
+
     facture = serializers.SerializerMethodField()
-    uuid = serializers.UUIDField(read_only=True)
 
     class Meta:
         model = Vente
+
         fields = [
             "id",
             "uuid",
             "numero_vente",
+            "type_vente",
             "created_at",
             "montant_total",
             "client",
             "facture",
             "produits",
+            "prestations",
         ]
+
+        read_only_fields = fields
+
         ref_name = "VenteList_V2"
 
-    def get_client(self, obj):
-        c = getattr(obj, "client", None)
-        return {
-            "prenom": c.prenom,
-            "nom": c.nom,
-            "telephone": c.telephone,
-        } if c else None
+    # ========================================================
+    # TYPE DE VENTE
+    # ========================================================
 
-    def get_facture(self, obj):
-        facture = getattr(obj, "facture_vente", None)
-        if not facture:
+    def get_type_vente(self, obj):
+
+        has_produits = bool(obj.lignes.all())
+        has_prestations = bool(obj.autres.all())
+
+        if has_produits and has_prestations:
+            return "mixte"
+
+        if has_produits:
+            return "bijoux"
+
+        if has_prestations:
+            return "prestations"
+
+        return None
+
+    # ========================================================
+    # CLIENT
+    # ========================================================
+
+    def get_client(self, obj):
+
+        client = getattr(obj, "client", None)
+
+        if client is None:
             return None
 
         return {
-            "id": facture.id,
+            "prenom": client.prenom,
+            "nom": client.nom,
+            "telephone": client.telephone,
+        }
+
+    # ========================================================
+    # FACTURE
+    # ========================================================
+
+    def get_facture(self, obj):
+
+        facture = getattr(
+            obj,
+            "facture_vente",
+            None,
+        )
+
+        if facture is None:
+            return None
+
+        return {
+            "id": facture.pk,
+
             "numero_facture": facture.numero_facture,
+
             "type_facture": facture.type_facture,
+
             "status": facture.status,
-            "montant_ht": str(facture.montant_ht),
-            "montant_tva": str(facture.montant_tva),
-            "montant_total": str(facture.montant_total),
+
+            "montant_ht": str(
+                facture.montant_ht
+            ),
+
+            "montant_tva": (
+                str(facture.montant_tva)
+                if facture.montant_tva is not None
+                else None
+            ),
+
+            "montant_total": str(
+                facture.montant_total
+            ),
         }
 
 # ---------------------------------------------------
@@ -2087,11 +2154,13 @@ class PaiementModeItemSerializer(serializers.Serializer):
     def validate_reference(self, value):
         return value.strip() or None if value else None
 
-
 class PaiementMultiModeSerializer(serializers.Serializer):
     """
     Paiement multimode Rio-Gold.
 
+    - Administrateur, manager ou caissier autorisé.
+    - Vérification des droits d'accès à la bijouterie.
+    - Identification unique de la facture.
     - Client facultatif à la création de vente.
     - Nom/prénom requis au paiement ordinaire.
     - Téléphone requis pour le compte dépôt.
@@ -2118,70 +2187,214 @@ class PaiementMultiModeSerializer(serializers.Serializer):
         required=True,
     )
 
+    # ====================================================
+    # VALIDATION DU NUMÉRO DE FACTURE
+    # ====================================================
+
     def validate_numero_facture(self, value):
-        value = value.strip()
 
-        if not Facture.objects.filter(
-            numero_facture__iexact=value
-        ).exists():
-            raise serializers.ValidationError(
-                "Facture introuvable."
-            )
+        return value.strip()
 
-        return value
+    # ====================================================
+    # VALIDATION GLOBALE
+    # ====================================================
 
     def validate(self, attrs):
+
         attrs = super().validate(attrs)
+
+        # ====================================================
+        # 1. AUTHENTIFICATION
+        # ====================================================
+
+        request = self.context.get("request")
+
+        user = getattr(request, "user", None)
+
+        if not (
+            user
+            and user.is_authenticated
+            and user.is_active
+        ):
+            raise serializers.ValidationError({
+                "detail": (
+                    "Authentification obligatoire."
+                )
+            })
+
+        # ====================================================
+        # 2. AUTORISATION
+        # ====================================================
+
+        role = (
+            get_role_name(user) or ""
+        ).lower().strip()
+
+        if role not in {
+            ROLE_ADMIN,
+            ROLE_MANAGER,
+            ROLE_CASHIER,
+        }:
+            raise serializers.ValidationError({
+                "detail": (
+                    "Vous n'êtes pas autorisé "
+                    "à effectuer un paiement."
+                )
+            })
+
+        # ====================================================
+        # 3. RECHERCHE DE LA FACTURE
+        # ====================================================
 
         numero_facture = attrs["numero_facture"]
 
-        facture = (
+        factures = (
             Facture.objects
             .select_related(
+                "bijouterie",
                 "vente",
                 "vente__client",
             )
             .filter(
                 numero_facture__iexact=numero_facture
             )
-            .first()
         )
 
-        if facture is None:
+        factures_accessibles = []
+
+        for facture_candidate in factures:
+
+            if user_can_access_bijouterie(
+                user,
+                facture_candidate.bijouterie,
+            ):
+
+                factures_accessibles.append(
+                    facture_candidate
+                )
+
+                if len(factures_accessibles) > 1:
+                    break
+
+        # ----------------------------------------------------
+        # FACTURE INTROUVABLE OU INACCESSIBLE
+        # ----------------------------------------------------
+
+        if not factures_accessibles:
+
             raise serializers.ValidationError({
-                "numero_facture": "Facture introuvable."
+                "numero_facture": (
+                    "Facture introuvable ou inaccessible."
+                )
             })
+
+        # ----------------------------------------------------
+        # NUMÉRO DE FACTURE AMBIGU
+        # ----------------------------------------------------
+
+        if len(factures_accessibles) > 1:
+
+            raise serializers.ValidationError({
+                "numero_facture": (
+                    "Plusieurs factures accessibles "
+                    "possèdent ce numéro. "
+                    "Impossible d'identifier "
+                    "la facture de manière unique."
+                )
+            })
+
+        facture = factures_accessibles[0]
+
+        # ====================================================
+        # 4. VÉRIFICATION DE LA FACTURE
+        # ====================================================
+
+        if not facture.vente_id:
+
+            raise serializers.ValidationError({
+                "numero_facture": (
+                    "Aucune vente associée "
+                    "à cette facture."
+                )
+            })
+
+        if facture.status == Facture.STAT_PAYE:
+
+            raise serializers.ValidationError({
+                "numero_facture": (
+                    "Cette facture est déjà "
+                    "intégralement payée."
+                )
+            })
+
+        # ====================================================
+        # 5. INFORMATIONS DU CLIENT
+        # ====================================================
 
         client_data = attrs.get("client") or {}
 
-        client_existant = (
-            facture.vente.client
-            if facture.vente_id
-            else None
-        )
+        client_existant = facture.vente.client
 
         telephone_client = str(
             client_data.get("telephone") or ""
         ).strip()
 
+        # ====================================================
+        # 6. INITIALISATION
+        # ====================================================
+
         total_paiement = Decimal("0.00")
+
         modes_utilises = set()
+
         lignes_normalisees = []
+
         paiement_avec_depot = False
 
-        # ============================================
-        # 1. VALIDATION DES MODES
-        # ============================================
+        # ====================================================
+        # 7. VALIDATION DES LIGNES DE PAIEMENT
+        # ====================================================
 
         for index, ligne in enumerate(
             attrs["lignes"],
             start=1,
         ):
-            mode_code = ligne["mode"]
+
+            mode_code = str(
+                ligne["mode"]
+            ).lower().strip()
+
             montant = ligne["montant"]
-            reference = ligne.get("reference")
+
+            reference = (
+                str(
+                    ligne.get("reference") or ""
+                ).strip()
+                or None
+            )
+
+            # ------------------------------------------------
+            # 7.1. VALIDATION DU MONTANT
+            # ------------------------------------------------
+
+            if (
+                not montant.is_finite()
+                or montant <= Decimal("0.00")
+            ):
+
+                raise serializers.ValidationError({
+                    "lignes": (
+                        f"Montant invalide "
+                        f"à la ligne {index}."
+                    )
+                })
+
+            # ------------------------------------------------
+            # 7.2. MODE EN DOUBLE
+            # ------------------------------------------------
 
             if mode_code in modes_utilises:
+
                 raise serializers.ValidationError({
                     "lignes": (
                         f"Le mode '{mode_code}' apparaît "
@@ -2190,6 +2403,10 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                 })
 
             modes_utilises.add(mode_code)
+
+            # ------------------------------------------------
+            # 7.3. RECHERCHE DU MODE DE PAIEMENT
+            # ------------------------------------------------
 
             mode_obj = (
                 ModePaiement.objects
@@ -2201,21 +2418,25 @@ class PaiementMultiModeSerializer(serializers.Serializer):
             )
 
             if mode_obj is None:
+
                 raise serializers.ValidationError({
                     "lignes": (
                         f"Mode invalide ou inactif "
-                        f"à la ligne {index} : {mode_code}."
+                        f"à la ligne {index} : "
+                        f"{mode_code}."
                     )
                 })
 
-            # ========================================
-            # 2. COMPTE DÉPÔT
-            # ========================================
+            # ------------------------------------------------
+            # 7.4. PAIEMENT PAR COMPTE DÉPÔT
+            # ------------------------------------------------
 
             if mode_obj.est_mode_depot:
+
                 paiement_avec_depot = True
 
                 if not telephone_client:
+
                     raise serializers.ValidationError({
                         "client": {
                             "telephone": (
@@ -2226,6 +2447,7 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                     })
 
                 if reference:
+
                     raise serializers.ValidationError({
                         "lignes": (
                             "Ne saisissez pas de référence "
@@ -2233,14 +2455,15 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                         )
                     })
 
-            # ========================================
-            # 3. AUTRES MODES
-            # ========================================
+            # ------------------------------------------------
+            # 7.5. AUTRES MODES DE PAIEMENT
+            # ------------------------------------------------
 
             elif (
                 mode_obj.necessite_reference
                 and not reference
             ):
+
                 raise serializers.ValidationError({
                     "lignes": (
                         f"Référence obligatoire pour "
@@ -2248,7 +2471,15 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                     )
                 })
 
+            # ------------------------------------------------
+            # 7.6. CALCUL DU TOTAL
+            # ------------------------------------------------
+
             total_paiement += montant
+
+            # ------------------------------------------------
+            # 7.7. NORMALISATION DE LA LIGNE
+            # ------------------------------------------------
 
             lignes_normalisees.append({
                 "mode": mode_obj.code,
@@ -2256,13 +2487,54 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                 "reference": reference,
             })
 
-        # ============================================
-        # 4. VALIDATION CLIENT
-        # ============================================
+        # ====================================================
+        # 8. VALIDATION DU MONTANT TOTAL
+        # ====================================================
+
+        if total_paiement <= Decimal("0.00"):
+
+            raise serializers.ValidationError({
+                "lignes": (
+                    "Le montant total du paiement "
+                    "doit être strictement positif."
+                )
+            })
+
+        # ====================================================
+        # 9. VÉRIFICATION DU RESTE À PAYER
+        # ====================================================
+
+        reste_a_payer = facture.reste_a_payer
+
+        if reste_a_payer <= Decimal("0.00"):
+
+            raise serializers.ValidationError({
+                "numero_facture": (
+                    "Aucun montant ne reste à payer."
+                )
+            })
+
+        if total_paiement > reste_a_payer:
+
+            raise serializers.ValidationError({
+                "lignes": (
+                    "Le montant du paiement dépasse "
+                    "le reste à payer de la facture."
+                )
+            })
+
+        # ====================================================
+        # 10. VALIDATION DU CLIENT
+        # ====================================================
 
         if not paiement_avec_depot:
 
+            # ------------------------------------------------
+            # CLIENT TRANSMIS DANS LE JSON
+            # ------------------------------------------------
+
             if client_data:
+
                 nom = str(
                     client_data.get("nom") or ""
                 ).strip()
@@ -2270,43 +2542,81 @@ class PaiementMultiModeSerializer(serializers.Serializer):
                 prenom = str(
                     client_data.get("prenom") or ""
                 ).strip()
+
+            # ------------------------------------------------
+            # CLIENT DÉJÀ ASSOCIÉ À LA VENTE
+            # ------------------------------------------------
+
             else:
+
                 nom = str(
-                    getattr(client_existant, "nom", "") or ""
+                    getattr(
+                        client_existant,
+                        "nom",
+                        "",
+                    ) or ""
                 ).strip()
 
                 prenom = str(
-                    getattr(client_existant, "prenom", "") or ""
+                    getattr(
+                        client_existant,
+                        "prenom",
+                        "",
+                    ) or ""
                 ).strip()
+
+            # ------------------------------------------------
+            # CONTRÔLE DU NOM ET DU PRÉNOM
+            # ------------------------------------------------
 
             erreurs = {}
 
             if not nom:
+
                 erreurs["nom"] = (
                     "Nom obligatoire au paiement."
                 )
 
             if not prenom:
+
                 erreurs["prenom"] = (
                     "Prénom obligatoire au paiement."
                 )
 
             if erreurs:
+
                 raise serializers.ValidationError({
                     "client": erreurs
                 })
 
-        # ============================================
-        # 5. RÉSULTAT
-        # ============================================
+        # ====================================================
+        # 11. RÉSULTAT FINAL
+        # ====================================================
+
+        attrs["facture_id"] = facture.pk
+
+        attrs["numero_facture"] = (
+            facture.numero_facture
+        )
 
         attrs["lignes"] = lignes_normalisees
+
         attrs["total_paiement"] = total_paiement
-        attrs["paiement_avec_depot"] = paiement_avec_depot
+
+        attrs["paiement_avec_depot"] = (
+            paiement_avec_depot
+        )
 
         return attrs
+    
 
 class PaiementLigneResponseSerializer(serializers.Serializer):
+    """
+    Serializer de sortie d'une ligne de paiement.
+
+    Compatible avec les paiements multimodes
+    et les paiements par compte dépôt.
+    """
 
     id = serializers.IntegerField()
 
@@ -2315,6 +2625,7 @@ class PaiementLigneResponseSerializer(serializers.Serializer):
     montant_paye = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
+        coerce_to_string=True,
     )
 
     reference = serializers.CharField(
@@ -2332,50 +2643,45 @@ class PaiementLigneResponseSerializer(serializers.Serializer):
     numero_compte = serializers.CharField(
         required=False,
         allow_null=True,
+        allow_blank=True,
     )
 
+
 class FacturePaiementResponseSerializer(serializers.Serializer):
+    """
+    Informations de la facture après encaissement
+    partiel ou intégral.
+    """
+
     id = serializers.IntegerField()
+
     uuid = serializers.UUIDField()
+
     numero_facture = serializers.CharField()
+
     type_facture = serializers.CharField()
+
     status = serializers.CharField()
 
     montant_total = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
+        coerce_to_string=True,
     )
 
     total_paye = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
+        coerce_to_string=True,
     )
 
     reste_a_payer = serializers.DecimalField(
         max_digits=14,
         decimal_places=2,
+        coerce_to_string=True,
     )
 
-class ClientPaiementResponseSerializer(serializers.Serializer):
-    id = serializers.IntegerField(
-        required=False,
-        allow_null=True,
-    )
-
-    nom = serializers.CharField(
-        required=False,
-        allow_null=True,
-    )
-
-    prenom = serializers.CharField(
-        required=False,
-        allow_null=True,
-    )
-
-    telephone = serializers.CharField(
-        required=False,
-        allow_null=True,
-    )
+    stock_consumed = serializers.BooleanField()
     
 
 class StockAuditResponseSerializer(serializers.Serializer):
@@ -2389,7 +2695,25 @@ class VentePaiementResponseSerializer(serializers.Serializer):
     uuid = serializers.UUIDField()
     numero_vente = serializers.CharField()
     montant_total = serializers.DecimalField(max_digits=14, decimal_places=2)
-    
+
+class ClientPaiementResponseSerializer(serializers.Serializer):
+    """
+    Informations du client après encaissement
+    partiel ou intégral d'une facture.
+    """
+
+    id = serializers.IntegerField()
+
+    nom = serializers.CharField()
+
+    prenom = serializers.CharField()
+
+    telephone = serializers.CharField(
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+    )
+
     
 class PaiementFactureMultiModeResponseSerializer(serializers.Serializer):
     message = serializers.CharField()

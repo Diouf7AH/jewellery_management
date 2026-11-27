@@ -207,6 +207,7 @@ urlpatterns = [
     # path('facture/recherche-facture/<str:numero_facture>', sale_views.RechercherFactureView.as_view(), name='Recherche-facture-par-numero'),
     path('facture/List-factures-payees', sale_views.ListFacturePayeesView.as_view(), name='list-factures-payées'),
     path("facture/List-factures-a-payer", sale_views.ListFacturesAPayerView.as_view(),name="list_factures_a_payer",),
+    path("factures/<uuid:uuid>/download/",sale_views.FactureDownloadAPIView.as_view(),name="facture-download",),
     # path('facture/paiement-facture/<str:facture_numero>', sale_views.PaiementFactureView.as_view(), name='Paiement-facture-par-numero'),
     # path("factures/paiement", sale_views.PaiementFactureMultiModeView.as_view(),name="paiement-facture-multi-mode",),
     path("factures/paiement",sale_views.PaiementFactureMultiModeView.as_view(),name="paiement-facture-multi-mode",),

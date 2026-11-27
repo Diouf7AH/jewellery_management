@@ -26,6 +26,9 @@ MARGIN_BOTTOM_MM = 4
 # Espacement horizontal.
 GAP_MM = 0.5
 
+# Espacement vertical des informations.
+TEXT_GAP_MM = 0.5
+
 # Taille maximale du QR code.
 QR_MAX_SIZE_MM = 14
 
@@ -42,15 +45,16 @@ LABEL_HEIGHT_PX = mm_to_px(LABEL_HEIGHT_MM)
 
 
 # ============================================================
-# CHARGEMENT DES POLICES
+# CHARGEMENT DES POLICES EN GRAS
 # ============================================================
 
 def _load_font(size: int):
 
     font_paths = [
         "C:/Windows/Fonts/arialbd.ttf",
-        "C:/Windows/Fonts/Arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        "C:/Windows/Fonts/Arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
 
@@ -64,14 +68,83 @@ def _load_font(size: int):
             )
 
     try:
-        return ImageFont.load_default(size=size)
+
+        return ImageFont.load_default(
+            size=size,
+        )
 
     except TypeError:
+
         return ImageFont.load_default()
 
 
 # ============================================================
-# CENTRAGE ET AJUSTEMENT AUTOMATIQUE DU TEXTE
+# AJUSTEMENT AUTOMATIQUE DE LA POLICE
+# ============================================================
+
+def _fit_font(
+    draw,
+    text,
+    font,
+    max_width,
+    max_height=None,
+):
+
+    text = str(text or "")
+
+    if max_width <= 0:
+
+        raise ValueError(
+            "Largeur disponible invalide."
+        )
+
+    font_size = getattr(
+        font,
+        "size",
+        14,
+    )
+
+    while True:
+
+        bbox = draw.textbbox(
+            (0, 0),
+            text,
+            font=font,
+        )
+
+        text_width = bbox[2] - bbox[0]
+
+        text_height = bbox[3] - bbox[1]
+
+        width_ok = (
+            text_width <= max_width
+        )
+
+        height_ok = (
+            max_height is None
+            or text_height <= max_height
+        )
+
+        if width_ok and height_ok:
+
+            return font, bbox
+
+        font_size -= 1
+
+        if font_size < 7:
+
+            raise ValueError(
+                f"Le texte '{text}' dépasse "
+                "la zone d'impression."
+            )
+
+        font = _load_font(
+            font_size
+        )
+
+
+# ============================================================
+# CENTRAGE HORIZONTAL DU TEXTE
 # ============================================================
 
 def _center_text(
@@ -87,51 +160,20 @@ def _center_text(
     text = str(text or "")
 
     if not text:
+
         return
 
     available_width = x2 - x1
 
-    if available_width <= 0:
+    font, bbox = _fit_font(
+        draw=draw,
+        text=text,
+        font=font,
+        max_width=available_width,
+        max_height=max_height,
+    )
 
-        raise ValueError(
-            "Largeur disponible invalide."
-        )
-
-    font_size = getattr(font, "size", 14)
-
-    while True:
-
-        bbox = draw.textbbox(
-            (0, 0),
-            text,
-            font=font,
-        )
-
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-
-        width_ok = (
-            text_width <= available_width
-        )
-
-        height_ok = (
-            max_height is None
-            or text_height <= max_height
-        )
-
-        if width_ok and height_ok:
-            break
-
-        font_size -= 1
-
-        if font_size < 7:
-
-            raise ValueError(
-                f"Le texte '{text}' dépasse "
-                "la zone d'impression."
-            )
-
-        font = _load_font(font_size)
+    text_width = bbox[2] - bbox[0]
 
     x = (
         x1
@@ -145,6 +187,169 @@ def _center_text(
         fill="black",
         font=font,
     )
+
+
+# ============================================================
+# CENTRAGE HORIZONTAL ET VERTICAL D'UN BLOC DE TEXTE
+# ============================================================
+
+def _center_text_block(
+    draw,
+    x1,
+    x2,
+    y1,
+    y2,
+    informations,
+    gap,
+):
+
+    available_width = x2 - x1
+
+    available_height = y2 - y1
+
+    if (
+        available_width <= 0
+        or available_height <= 0
+    ):
+
+        raise ValueError(
+            "Dimensions du bloc de texte invalides."
+        )
+
+    lignes = []
+
+    # ========================================================
+    # 1. AJUSTEMENT À LA LARGEUR DISPONIBLE
+    # ========================================================
+
+    for texte, font in informations:
+
+        texte = str(
+            texte or ""
+        ).strip()
+
+        if not texte:
+
+            continue
+
+        font, bbox = _fit_font(
+            draw=draw,
+            text=texte,
+            font=font,
+            max_width=available_width,
+        )
+
+        lignes.append({
+            "texte": texte,
+            "font": font,
+            "height": bbox[3] - bbox[1],
+        })
+
+    if not lignes:
+
+        return
+
+    # ========================================================
+    # 2. CALCUL DE LA HAUTEUR TOTALE
+    # ========================================================
+
+    def calculer_hauteur():
+
+        return (
+            sum(
+                ligne["height"]
+                for ligne in lignes
+            )
+            + gap * max(
+                0,
+                len(lignes) - 1,
+            )
+        )
+
+    total_height = calculer_hauteur()
+
+    # ========================================================
+    # 3. AJUSTEMENT AUTOMATIQUE EN HAUTEUR
+    # ========================================================
+
+    while total_height > available_height:
+
+        reduction_effectuee = False
+
+        for ligne in lignes:
+
+            font_size = getattr(
+                ligne["font"],
+                "size",
+                14,
+            )
+
+            if font_size <= 7:
+
+                continue
+
+            font_size -= 1
+
+            font = _load_font(
+                font_size
+            )
+
+            font, bbox = _fit_font(
+                draw=draw,
+                text=ligne["texte"],
+                font=font,
+                max_width=available_width,
+            )
+
+            ligne["font"] = font
+
+            ligne["height"] = (
+                bbox[3] - bbox[1]
+            )
+
+            reduction_effectuee = True
+
+        if not reduction_effectuee:
+
+            raise ValueError(
+                "Les informations du produit "
+                "dépassent la hauteur disponible."
+            )
+
+        total_height = calculer_hauteur()
+
+    # ========================================================
+    # 4. CENTRAGE VERTICAL
+    # ========================================================
+
+    current_y = (
+        y1
+        + (
+            available_height
+            - total_height
+        ) // 2
+    )
+
+    # ========================================================
+    # 5. AFFICHAGE DES INFORMATIONS
+    # ========================================================
+
+    for ligne in lignes:
+
+        _center_text(
+            draw=draw,
+            x1=x1,
+            x2=x2,
+            y=current_y,
+            text=ligne["texte"],
+            font=ligne["font"],
+            max_height=ligne["height"],
+        )
+
+        current_y += (
+            ligne["height"]
+            + gap
+        )
 
 
 # ============================================================
@@ -164,6 +369,7 @@ def get_categorie_code(produit):
         "categorie",
         None,
     ):
+
         return "AUT"
 
     nom = (
@@ -225,6 +431,7 @@ def get_lot_code_court(lot):
     if match:
 
         annee = match.group(1)[-2:]
+
         numero = match.group(2)
 
         return (
@@ -252,6 +459,7 @@ def build_code_etiquette(produit_line):
     """
 
     produit = produit_line.produit
+
     lot = produit_line.lot
 
     categorie_code = get_categorie_code(
@@ -294,12 +502,23 @@ def build_etiquette_produit_png(
     Résolution : 203 DPI.
 
     Format physique : 40 x 30 mm.
-    Surface utile : 30 x 22 mm.
 
     QR code : PL:<uuid ProduitLine>.
 
-    Informations du produit compactes
-    et centrées verticalement.
+    Colonne gauche :
+        - QR code centré.
+        - Référence centrée sous le QR code.
+
+    Colonne droite :
+        - RIO GOLD.
+        - PURETÉ.
+        - Valeur de la pureté.
+        - Marque.
+        - POIDS.
+        - Valeur du poids.
+
+    Toutes les informations sont centrées
+    horizontalement et verticalement.
 
     Le poids affiché correspond au poids
     historique d'achat.
@@ -312,6 +531,7 @@ def build_etiquette_produit_png(
     # ========================================================
 
     width = LABEL_WIDTH_PX
+
     height = LABEL_HEIGHT_PX
 
     margin_left = mm_to_px(
@@ -330,7 +550,13 @@ def build_etiquette_produit_png(
         MARGIN_BOTTOM_MM
     )
 
-    gap = mm_to_px(GAP_MM)
+    gap = mm_to_px(
+        GAP_MM
+    )
+
+    text_gap = mm_to_px(
+        TEXT_GAP_MM
+    )
 
     content_width = (
         width
@@ -362,15 +588,20 @@ def build_etiquette_produit_png(
     draw = ImageDraw.Draw(img)
 
     # ========================================================
-    # 2. POLICES COMPACTES
+    # 2. POLICES AGRANDIES ET EN GRAS
     # ========================================================
 
-    font_title = _load_font(15)
-    font_label = _load_font(11)
-    font_purete = _load_font(25)
-    font_marque = _load_font(14)
-    font_poids = _load_font(21)
-    font_code = _load_font(12)
+    font_title = _load_font(22)
+
+    font_label = _load_font(18)
+
+    font_purete = _load_font(34)
+
+    font_marque = _load_font(24)
+
+    font_poids = _load_font(30)
+
+    font_code = _load_font(15)
 
     # ========================================================
     # 3. UUID PRODUITLINE
@@ -383,7 +614,9 @@ def build_etiquette_produit_png(
             "ne possède pas d'UUID."
         )
 
-    qr_content = f"PL:{produit_line.uuid}"
+    qr_content = (
+        f"PL:{produit_line.uuid}"
+    )
 
     # ========================================================
     # 4. CODE ÉTIQUETTE
@@ -399,7 +632,11 @@ def build_etiquette_produit_png(
 
     purete = ""
 
-    if getattr(produit, "purete", None):
+    if getattr(
+        produit,
+        "purete",
+        None,
+    ):
 
         purete = str(
             produit.purete
@@ -430,7 +667,9 @@ def build_etiquette_produit_png(
             "strictement supérieur à zéro."
         )
 
-    poids = f"{poids_unitaire_achat:.2f} g"
+    poids = (
+        f"{poids_unitaire_achat:.2f} g"
+    )
 
     # ========================================================
     # 7. MARQUE
@@ -438,7 +677,11 @@ def build_etiquette_produit_png(
 
     marque = ""
 
-    if getattr(produit, "marque", None):
+    if getattr(
+        produit,
+        "marque",
+        None,
+    ):
 
         marque = (
             getattr(
@@ -448,7 +691,9 @@ def build_etiquette_produit_png(
             ) or ""
         )
 
-    marque_courte = marque[:7].upper()
+    marque_courte = (
+        marque[:7].upper()
+    )
 
     # ========================================================
     # 8. ZONES D'IMPRESSION
@@ -458,8 +703,8 @@ def build_etiquette_produit_png(
         content_width - gap
     )
 
-    # Zone QR : 52 %.
-    # Zone informations : 48 %.
+    # Colonne gauche : QR code — 52 %.
+    # Colonne droite : informations — 48 %.
 
     left_width = round(
         available_width * 0.52
@@ -481,7 +726,12 @@ def build_etiquette_produit_png(
 
     top = margin_top
 
+    bottom = (
+        height - margin_bottom
+    )
+
     code_height = 16
+
     code_gap = 2
 
     # ========================================================
@@ -497,9 +747,13 @@ def build_etiquette_produit_png(
         border=4,
     )
 
-    qr.add_data(qr_content)
+    qr.add_data(
+        qr_content
+    )
 
-    qr.make(fit=True)
+    qr.make(
+        fit=True
+    )
 
     modules = (
         qr.modules_count
@@ -509,10 +763,14 @@ def build_etiquette_produit_png(
     max_qr_size = min(
         mm_to_px(QR_MAX_SIZE_MM),
         left_width,
-        content_height - code_height - code_gap,
+        content_height
+        - code_height
+        - code_gap,
     )
 
-    box_size = max_qr_size // modules
+    box_size = (
+        max_qr_size // modules
+    )
 
     if box_size < 2:
 
@@ -531,27 +789,52 @@ def build_etiquette_produit_png(
     qr_size = qr_img.width
 
     # ========================================================
-    # 10. POSITIONNEMENT DU QR CODE
+    # 10. CENTRAGE DU QR CODE ET DE SA RÉFÉRENCE
     # ========================================================
+
+    font_code, code_bbox = _fit_font(
+        draw=draw,
+        text=code_etiquette,
+        font=font_code,
+        max_width=left_width,
+        max_height=code_height,
+    )
+
+    actual_code_height = (
+        code_bbox[3] - code_bbox[1]
+    )
 
     block_height = (
         qr_size
         + code_gap
-        + code_height
+        + actual_code_height
     )
 
-    qr_x = left_x2 - qr_size
+    # Centrage horizontal.
+
+    qr_x = (
+        left_x1
+        + (left_width - qr_size) // 2
+    )
+
+    # Centrage vertical du QR code
+    # et de la référence.
 
     qr_y = (
         top
-        + (content_height - block_height) // 2
+        + (
+            content_height
+            - block_height
+        ) // 2
     )
 
+    # Vérification des limites.
+
     if (
-        qr_x < margin_left
-        or qr_y < margin_top
+        qr_x < left_x1
+        or qr_y < top
         or qr_x + qr_size > left_x2
-        or qr_y + block_height > height - margin_bottom
+        or qr_y + block_height > bottom
     ):
 
         raise ValueError(
@@ -565,115 +848,76 @@ def build_etiquette_produit_png(
     )
 
     # ========================================================
-    # 11. RÉFÉRENCE SOUS LE QR CODE
+    # 11. RÉFÉRENCE CENTRÉE SOUS LE QR CODE
     # ========================================================
 
     _center_text(
         draw=draw,
-        x1=qr_x,
-        x2=qr_x + qr_size,
-        y=qr_y + qr_size + code_gap,
+        x1=left_x1,
+        x2=left_x2,
+        y=(
+            qr_y
+            + qr_size
+            + code_gap
+        ),
         text=code_etiquette,
         font=font_code,
         max_height=code_height,
     )
 
     # ========================================================
-    # 12. POSITIONNEMENT ADAPTATIF DU TEXTE
+    # 12. INFORMATIONS DU PRODUIT
     # ========================================================
 
-    def right_text(
-        position,
-        text,
-        font,
-        height_ratio,
-    ):
+    informations = [
 
-        y = top + round(
-            content_height * position
-        )
+        (
+            "RIO GOLD",
+            font_title,
+        ),
 
-        max_height = min(
-            round(content_height * height_ratio),
-            height - margin_bottom - y,
-        )
+        (
+            "PURETÉ",
+            font_label,
+        ),
 
-        if max_height <= 0:
+        (
+            purete,
+            font_purete,
+        ),
 
-            raise ValueError(
-                "Position du texte invalide."
-            )
+        (
+            marque_courte,
+            font_marque,
+        ),
 
-        _center_text(
-            draw=draw,
-            x1=right_x1,
-            x2=right_x2,
-            y=y,
-            text=text,
-            font=font,
-            max_height=max_height,
-        )
+        (
+            "POIDS",
+            font_label,
+        ),
+
+        (
+            poids,
+            font_poids,
+        ),
+    ]
 
     # ========================================================
-    # 13. NOM DE LA BIJOUTERIE
+    # 13. CENTRAGE DES INFORMATIONS DU PRODUIT
     # ========================================================
 
-    right_text(
-        position=0.12,
-        text="RIO GOLD",
-        font=font_title,
-        height_ratio=0.10,
+    _center_text_block(
+        draw=draw,
+        x1=right_x1,
+        x2=right_x2,
+        y1=top,
+        y2=bottom,
+        informations=informations,
+        gap=text_gap,
     )
 
     # ========================================================
-    # 14. PURETÉ
-    # ========================================================
-
-    right_text(
-        position=0.24,
-        text="PURETÉ",
-        font=font_label,
-        height_ratio=0.07,
-    )
-
-    right_text(
-        position=0.34,
-        text=purete,
-        font=font_purete,
-        height_ratio=0.15,
-    )
-
-    # ========================================================
-    # 15. MARQUE
-    # ========================================================
-
-    right_text(
-        position=0.51,
-        text=marque_courte,
-        font=font_marque,
-        height_ratio=0.09,
-    )
-
-    # ========================================================
-    # 16. POIDS
-    # ========================================================
-
-    right_text(
-        position=0.62,
-        text="POIDS",
-        font=font_label,
-        height_ratio=0.07,
-    )
-
-    right_text(
-        position=0.72,
-        text=poids,
-        font=font_poids,
-        height_ratio=0.14,
-    )
-
-    # ========================================================
-    # 17. ORIENTATION
+    # 14. ORIENTATION
     # ========================================================
 
     if ROTATE_LABEL:
@@ -683,7 +927,7 @@ def build_etiquette_produit_png(
         )
 
     # ========================================================
-    # 18. SORTIE PNG
+    # 15. SORTIE PNG
     # ========================================================
 
     output = BytesIO()
